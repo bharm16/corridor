@@ -35,6 +35,7 @@ from corridor.models import (
     FactClosureSource,
     FactDisposition,
     FactSource,
+    FactStatementTiming,
     ExternalOrg,
     SourceSegment,
 )
@@ -46,7 +47,11 @@ from corridor.fact_types import (
 from corridor.identity import normalize_party
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.sheets import column_mapping
-from corridor.source_segments import dereference_source_segment
+from corridor.source_segments import (
+    dereference_source_segment,
+    replay_recorded_verbal_statement,
+)
+from corridor.statement_values import StatementTiming
 
 
 class FactValidationError(ValueError):
@@ -71,6 +76,13 @@ class ClosureFactValue:
     closure_kind: str
     successor_dependency_id: int | None
     governing_source_segment_ids: tuple[int, ...]
+
+
+@dataclass(frozen=True)
+class StatementTimingFactValue:
+    """One replayed set of a Recorded Verbal Statement's stated timings."""
+
+    timings: tuple[tuple[str, StatementTiming], ...]
 
 
 def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
@@ -497,6 +509,202 @@ def _is_statement_wording_candidate(candidate: Candidate) -> bool:
         and not isinstance(page_no, bool)
         and citation.get("quote") == description
     )
+
+
+def append_recorded_statement_timing_fact(
+    session: Session,
+    *,
+    segment: SourceSegment,
+    subject_key: str,
+    timings: tuple[tuple[str, StatementTiming], ...],
+    recorded_by: str,
+) -> Fact:
+    """Append one human-attributed statement_timing Fact over a verbal segment.
+
+    A Recorded Verbal Statement has no source Document (ADR-0033): the recorder's
+    words already self-certify as a ``recorded_verbal_statement`` segment, and
+    the timing set the party stated is carried in the typed satellite.  The Fact
+    is therefore document-less, and its integrity is the digest's self-consistency
+    with that stored set — there are no external bytes to dereference.
+    """
+
+    if segment.kind != "recorded_verbal_statement":
+        raise FactValidationError(
+            "statement timing requires a recorded verbal statement segment"
+        )
+    if not subject_key.strip():
+        raise FactValidationError("statement timing needs a statement subject")
+    if not recorded_by.strip():
+        raise FactValidationError("statement timing needs a recorder attribution")
+    ordered = _validated_statement_timings(timings)
+    if segment.id is None:
+        session.add(segment)
+        session.flush([segment])
+    structured = _statement_timing_structured(ordered)
+    fact = Fact(
+        project_id=segment.project_id,
+        document_id=None,
+        extraction_run_id=None,
+        fact_type="statement_timing",
+        subject_kind="statement_candidate",
+        subject_key=subject_key,
+        text_value=None,
+        date_value=None,
+        date_range_start=None,
+        date_range_end=None,
+        external_org_value_id=None,
+        document_value_id=None,
+        transformation="typed_statement_timing_v1",
+        recorded_by=recorded_by,
+        content_sha256=_fact_digest(
+            run_identity={"statement_id": segment.statement_id},
+            fact_type="statement_timing",
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            text_value=None,
+            source_links=(("value_source", segment.id),),
+            structured_value=structured,
+        ),
+    )
+    session.add(fact)
+    session.flush([fact])
+    session.add_all(
+        FactStatementTiming(
+            project_id=segment.project_id,
+            fact_id=fact.id,
+            timing_role=role,
+            text=timing.text,
+            precision=timing.precision,
+            start_date=timing.start_date,
+            end_date=timing.end_date,
+        )
+        for role, timing in ordered
+    )
+    session.add(
+        FactSource(
+            project_id=segment.project_id,
+            document_id=None,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+    return fact
+
+
+def replay_recorded_statement_timing_fact(
+    session: Session, fact: Fact
+) -> StatementTimingFactValue:
+    """Replay a statement_timing Fact from its own words and stored timing set.
+
+    There is no Document to dereference (ADR-0033/0068): the value source is the
+    self-certifying verbal segment, and the stored timing members must reproduce
+    the Fact digest exactly.  A tampered word, digest, or timing member fails
+    closed rather than returning a value.
+    """
+
+    if fact.fact_type != "statement_timing":
+        raise FactValidationError("Fact is not a recorded statement timing")
+    sources = tuple(
+        session.scalars(
+            select(FactSource).where(
+                FactSource.fact_id == fact.id,
+                FactSource.role == "value_source",
+            )
+        ).all()
+    )
+    if len(sources) != 1:
+        raise FactValidationError("statement timing Fact needs one value source")
+    segment = session.get(SourceSegment, sources[0].source_segment_id)
+    if segment is None or segment.project_id != fact.project_id:
+        raise FactValidationError("statement timing Fact source is missing")
+    replay_recorded_verbal_statement(segment)
+    rows = tuple(
+        session.scalars(
+            select(FactStatementTiming)
+            .where(FactStatementTiming.fact_id == fact.id)
+            .order_by(FactStatementTiming.timing_role)
+        ).all()
+    )
+    if not rows:
+        raise FactValidationError("statement timing Fact has no stored timing members")
+    timings = tuple(
+        (
+            row.timing_role,
+            StatementTiming(
+                text=row.text,
+                precision=row.precision,
+                start_date=row.start_date,
+                end_date=row.end_date,
+            ),
+        )
+        for row in rows
+    )
+    expected = _fact_digest(
+        run_identity={"statement_id": segment.statement_id},
+        fact_type="statement_timing",
+        subject_kind="statement_candidate",
+        subject_key=fact.subject_key,
+        text_value=None,
+        source_links=(("value_source", segment.id),),
+        structured_value=_statement_timing_structured(timings),
+    )
+    if expected != fact.content_sha256:
+        raise FactReplayMismatch(
+            "statement timing set does not reproduce the Fact digest"
+        )
+    return StatementTimingFactValue(timings)
+
+
+def _validated_statement_timings(
+    timings: tuple[tuple[str, StatementTiming], ...],
+) -> tuple[tuple[str, StatementTiming], ...]:
+    if not timings:
+        raise FactValidationError("a statement timing Fact needs at least one timing")
+    roles = [role for role, _timing in timings]
+    if len(set(roles)) != len(roles):
+        raise FactValidationError("statement timing roles must be unique")
+    if any(role not in ("previous", "new") for role in roles):
+        raise FactValidationError("statement timing role must be previous or new")
+    if "previous" in roles and "new" not in roles:
+        raise FactValidationError(
+            "a previous timing only stands beside the new timing it changed"
+        )
+    for _role, timing in timings:
+        if not isinstance(timing, StatementTiming):
+            raise FactValidationError("statement timing must be a stated timing")
+        if not timing.text.strip():
+            raise FactValidationError("a stated timing needs the party's words")
+        if timing.precision not in ("day", "month", "approximate"):
+            raise FactValidationError("stated timing precision is not supported")
+    return tuple(sorted(timings, key=lambda item: item[0]))
+
+
+def _statement_timing_structured(
+    timings: tuple[tuple[str, StatementTiming], ...],
+) -> dict:
+    return {
+        "timings": [
+            {
+                "role": role,
+                "text": timing.text,
+                "precision": timing.precision,
+                "start_date": (
+                    timing.start_date.isoformat()
+                    if timing.start_date is not None
+                    else None
+                ),
+                "end_date": (
+                    timing.end_date.isoformat()
+                    if timing.end_date is not None
+                    else None
+                ),
+            }
+            for role, timing in timings
+        ]
+    }
 
 
 def append_extracted_proposals(

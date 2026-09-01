@@ -133,4 +133,15 @@ FACT_TYPE_CONTRACTS = {
         current_value_rule="human_decision_effectiveness",
         inclusion_rule="human_record_decision",
     ),
+    "statement_timing": FactTypeContract(
+        value_class="statement_timing",
+        subject_kind="statement_candidate",
+        transformation="typed_statement_timing_v1",
+        accepted_segment_kinds=frozenset({"recorded_verbal_statement"}),
+        automatic_segment_kinds=frozenset(),
+        required_roles=frozenset({"value_source"}),
+        validation_rule="typed_statement_timing_set",
+        current_value_rule="human_decision_effectiveness",
+        inclusion_rule="human_record_decision",
+    ),
 }

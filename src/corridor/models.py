@@ -697,6 +697,9 @@ class SourceSegment(Base):
             "project_id", "document_id", "id", name="uq_source_segments_scope_id"
         ),
         UniqueConstraint(
+            "project_id", "id", name="uq_source_segments_project_id"
+        ),
+        UniqueConstraint(
             "document_id",
             "kind",
             "ordinal",
@@ -821,7 +824,8 @@ class Fact(Base):
         ),
         CheckConstraint(
             f"fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL}, "
-            f"{_STRUCTURED_SATELLITE_FACT_TYPES_SQL}, 'statement_wording')",
+            f"{_STRUCTURED_SATELLITE_FACT_TYPES_SQL}, "
+            "'statement_wording', 'statement_timing')",
             name="ck_facts_type",
         ),
         CheckConstraint(
@@ -829,10 +833,19 @@ class Fact(Base):
             "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
             f"or (fact_type in ({_STRUCTURED_SATELLITE_FACT_TYPES_SQL}) "
             "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
-            "or (fact_type = 'statement_wording' "
+            "or (fact_type in "
+            "('statement_wording', 'statement_timing', 'applies_to') "
             "and subject_kind = 'statement_candidate' "
             "and length(trim(subject_key)) > 0)",
             name="ck_facts_subject",
+        ),
+        CheckConstraint(
+            "(document_id is not null and extraction_run_id is not null "
+            "and fact_type <> 'statement_timing') "
+            "or (document_id is null and extraction_run_id is null "
+            "and fact_type in "
+            "('statement_wording', 'statement_timing', 'applies_to'))",
+            name="ck_facts_source_binding",
         ),
         CheckConstraint(
             f"(fact_type in ({_STRUCTURED_TEXT_FACT_TYPES_SQL}) and text_value is not null "
@@ -859,7 +872,12 @@ class Fact(Base):
             "and length(trim(text_value)) > 0 and date_value is null "
             "and date_range_start is null and date_range_end is null "
             "and external_org_value_id is null and document_value_id is null "
-            "and transformation = 'exact_prose_span_v1')",
+            "and transformation = 'exact_prose_span_v1') or "
+            "(fact_type = 'statement_timing' and text_value is null "
+            "and date_value is null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null "
+            "and transformation = 'typed_statement_timing_v1')",
             name="ck_facts_typed_value",
         ),
         CheckConstraint(
@@ -879,8 +897,11 @@ class Fact(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    extraction_run_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    # Null only for a document-less human-gated verbal Fact (statement_wording
+    # or statement_timing); every other Fact type stays document- and run-bound
+    # (ADR-0033/0074, ck_facts_source_binding).
+    document_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    extraction_run_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     fact_type: Mapped[str] = mapped_column(String(64))
     subject_kind: Mapped[str] = mapped_column(String(32))
     subject_key: Mapped[str] = mapped_column(Text)
@@ -925,6 +946,19 @@ class FactSource(Base):
             ],
             name="fk_fact_sources_segment_scope",
         ),
+        # Project-scoped identity so a document-less verbal Fact Source still
+        # proves its Fact and segment exist; the document-scoped keys above hold
+        # vacuously when document_id is null (ADR-0074).
+        ForeignKeyConstraint(
+            ["project_id", "fact_id"],
+            ["facts.project_id", "facts.id"],
+            name="fk_fact_sources_fact_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "source_segment_id"],
+            ["source_segments.project_id", "source_segments.id"],
+            name="fk_fact_sources_segment_project",
+        ),
         CheckConstraint(
             "role in ('value_source', 'context', 'attribution_source')",
             name="ck_fact_sources_role",
@@ -934,7 +968,7 @@ class FactSource(Base):
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    document_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
     source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     role: Mapped[str] = mapped_column(String(32))
@@ -1030,6 +1064,62 @@ class FactClosureSource(Base):
     fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
     source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class FactStatementTiming(Base):
+    """One source-preserving timing a Recorded Verbal Statement stated.
+
+    A verbal timing carries the party's exact wording at day, month, or
+    approximate precision, mirroring ``dependency_event_timings`` so the spine
+    timing stays byte-exact with the legacy timing it dual-writes beside
+    (ADR-0074).  A statement may state several timings (a change of promise
+    states the ``previous`` and the ``new``), so the set is carried here rather
+    than as a single scalar on the Fact.
+    """
+
+    __tablename__ = "fact_statement_timings"
+    __table_args__ = (
+        UniqueConstraint(
+            "fact_id", "timing_role", name="uq_fact_statement_timing_role"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "fact_id"],
+            ["facts.project_id", "facts.id"],
+            name="fk_fact_statement_timing_fact_scope",
+        ),
+        CheckConstraint(
+            "timing_role in ('previous', 'new')",
+            name="ck_fact_statement_timing_role",
+        ),
+        CheckConstraint(
+            "precision in ('day', 'month', 'approximate')",
+            name="ck_fact_statement_timing_precision",
+        ),
+        CheckConstraint(
+            "length(trim(text)) > 0", name="ck_fact_statement_timing_text"
+        ),
+        CheckConstraint(
+            "(precision = 'day' and start_date is not null "
+            "and end_date = start_date) "
+            "or (precision = 'month' and start_date is not null "
+            "and end_date is not null "
+            "and start_date = date_trunc('month', start_date::timestamp)::date "
+            "and end_date = (date_trunc('month', start_date::timestamp) "
+            "+ interval '1 month - 1 day')::date) "
+            "or (precision = 'approximate' and start_date is null "
+            "and end_date is null)",
+            name="ck_fact_statement_timing_bounds",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    timing_role: Mapped[str] = mapped_column(String(16))
+    text: Mapped[str] = mapped_column(Text)
+    precision: Mapped[str] = mapped_column(String(32))
+    start_date: Mapped[date | None] = mapped_column(Date)
+    end_date: Mapped[date | None] = mapped_column(Date)
 
 
 class SourceFactAppendReceipt(Base):

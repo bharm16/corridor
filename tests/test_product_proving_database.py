@@ -193,10 +193,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # evidence spine (#431-#435), the structured Fact satellites (#449), PDF
     # page Processing Failures (#440), the exact subject registry, attempts,
     # candidates, decisions, and rankings (#453), purpose-specific render
-    # derivatives (#441), Class B retention (#438), and token-layer manifests
-    # (#442).
-    assert fingerprint.table_count == 150
-    assert fingerprint.sequence_count == 139
+    # derivatives (#441), Class B retention (#438), token-layer manifests
+    # (#442), and the Recorded Verbal Statement timing satellite (#451).
+    assert fingerprint.table_count == 151
+    assert fingerprint.sequence_count == 140
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
@@ -225,6 +225,7 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "fact_applies_to",
         "fact_closure_results",
         "fact_closure_sources",
+        "fact_statement_timings",
         "stated_by_people",
         "subject_resolution_attempts",
         "subject_resolution_candidates",
@@ -258,6 +259,7 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
         "fact_applies_to_id_seq",
         "fact_closure_results_id_seq",
         "fact_closure_sources_id_seq",
+        "fact_statement_timings_id_seq",
         "stated_by_people_id_seq",
         "subject_resolution_attempts_id_seq",
         "subject_resolution_candidates_id_seq",

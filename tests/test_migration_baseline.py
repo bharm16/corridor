@@ -38,10 +38,11 @@ RENDER_HEAD = "2e3f4a5b6c7d"
 CLASS_B_RETENTION_HEAD = "7a3e91c4d8b2"
 TOKEN_LAYER_HEAD = "3f4a5b6c7d8e"
 HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
-PREDECESSOR_HEAD = HUMAN_DECISION_HEAD
-CURRENT_HEAD = "5b6c7d8e9f01"
+VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
+PREDECESSOR_HEAD = VERBAL_SEGMENT_HEAD
+CURRENT_HEAD = "6c7d8e9f0a12"
 EXPECTED_SCHEMA_SHA256 = (
-    "1cbb8b28299ec3931546bfe36cdd178388287716186748c6ae0d5d8b4f6dbbee"
+    "71b5872a005204c351f8ad8391da4368b79aa45dde78d1b33ff17b6d85b94744"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -67,7 +68,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{CLASS_B_RETENTION_HEAD}_add_class_b_retention.py",
         f"{TOKEN_LAYER_HEAD}_add_token_layers.py",
         f"{HUMAN_DECISION_HEAD}_add_human_fact_decision.py",
-        f"{CURRENT_HEAD}_add_recorded_verbal_segment.py",
+        f"{VERBAL_SEGMENT_HEAD}_add_recorded_verbal_segment.py",
+        f"{CURRENT_HEAD}_add_statement_timing_fact.py",
     }
 
 
@@ -135,23 +137,26 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        # The recorded-verbal-segment migration adds the statement_id column and
-        # widens the segment-kind check to a document-less verbal wording kind.
+        # The statement_timing migration lets a human-gated verbal Fact be
+        # document-less and adds the typed fact_statement_timings satellite.
         with database.session_factory() as session:
-            assert session.scalar(
+            document_id_nullable = session.scalar(
                 text(
-                    "select exists (select 1 from information_schema.columns "
-                    "where table_name = 'source_segments' "
-                    "and column_name = 'statement_id')"
+                    "select is_nullable from information_schema.columns "
+                    "where table_name = 'facts' and column_name = 'document_id'"
                 )
             )
-            kind_check = session.scalar(
+            assert document_id_nullable == "YES"
+            type_check = session.scalar(
                 text(
                     "select pg_get_constraintdef(oid) from pg_constraint "
-                    "where conname = 'ck_source_segments_kind'"
+                    "where conname = 'ck_facts_type'"
                 )
             )
-            assert "recorded_verbal_statement" in kind_check
+            assert "statement_timing" in type_check
+            assert session.scalar(
+                text("select to_regclass('public.fact_statement_timings')")
+            )
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -315,7 +320,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_drop_the_recorded_verbal_segment_is_unsupported():
+def test_downgrade_that_would_drop_the_statement_timing_fact_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -327,7 +332,7 @@ def test_downgrade_that_would_drop_the_recorded_verbal_segment_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "recorded verbal segment migration downgrade is unsupported" in completed.stderr
+    assert "statement timing fact migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
