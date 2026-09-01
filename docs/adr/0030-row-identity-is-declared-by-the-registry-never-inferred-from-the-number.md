@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
 ---
 
 # Row identity is declared by the registry, never inferred from the number

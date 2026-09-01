@@ -1,5 +1,7 @@
 ---
 status: superseded by ADR-0009
+domain: extraction
+scope: historical
 ---
 
 # Criticality is asserted by the document, not assigned by a reviewer

@@ -1,5 +1,11 @@
 ---
 status: accepted
+domain: record-inclusion
+scope: current product
+amends:
+  - ADR-0026
+amended_by:
+  - ADR-0076
 ---
 
 # Authority follows proof: policy writes exact cases, agents assist, and humans decide ambiguity

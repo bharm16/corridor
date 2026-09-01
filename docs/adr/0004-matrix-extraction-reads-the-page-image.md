@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
+amended_by:
+  - ADR-0006
 ---
 
 # Matrix extraction reads the page image, not the table structure

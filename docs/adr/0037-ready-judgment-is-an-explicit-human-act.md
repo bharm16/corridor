@@ -1,8 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0052
+domain: supporting-documentation
+scope: historical
 ---
 
 # Documentation Review is an explicit human act
+
+> **Superseded by [ADR-0052](0052-a-requirement-is-standard-fields-and-ready-is-derived.md).** ADR-0052 replaced this per-instance Documentation Review shape on acceptance; this status line was corrected on 2026-09-01 to match.
 
 > **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 

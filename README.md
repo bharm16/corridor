@@ -1,8 +1,25 @@
 # corridor
 
-Tracks construction constraints and coordination decisions on highway projects.
-Documented facts link to exact source passages. Statements recorded from
-conversations and project decisions retain the named person and date.
+A source-grounded change-control and exception layer that keeps an existing
+utility coordination record current from the documents, email, and schedule
+updates a highway project already produces
+([ADR-0075](docs/adr/0075-corridor-maintains-the-accepted-coordination-baseline-from-project-evidence.md)).
+
+The customer's Utility Conflict Matrix or utility-management-system export is
+adopted as the accepted baseline. New evidence is captured exactly as the
+source says it, compared against that baseline, and shown as proposed changes
+that a named person accepts, edits, or rejects
+([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+The updated matrix, change summary, chase list, and weekly report come back in
+the customer's existing formats. Documented facts link to exact source
+passages; statements recorded from conversations retain the named person and
+date. Corridor integrates with PMIS, document control, GIS, SUE, CAD, and CPM
+scheduling systems rather than replacing them. Utilities are the first scope;
+railroads, right-of-way, permits, and environmental commitments are later
+expansion areas.
+
+The first paid slice, and the measures it is judged by, are in
+[docs/pilot-success-criteria.md](docs/pilot-success-criteria.md).
 
 ## Boot
 
@@ -50,4 +67,6 @@ establish Contract Acceptance.
 | [`v0-build-spec.md`](v0-build-spec.md) | Implementation detail for M0-M5 |
 | [`corpus-acquisition-spec.md`](corpus-acquisition-spec.md) | Document assembly; runs in parallel from week 0 |
 | [`phase-1-roadmap.md`](phase-1-roadmap.md) | Delivery stages and sequencing rules |
-| [`docs/adr/`](docs/adr) | Decisions with lasting consequences |
+| [`docs/adr/`](docs/adr) | Decisions with lasting consequences; [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists which govern today |
+| [`docs/pilot-success-criteria.md`](docs/pilot-success-criteria.md) | Temporary validation gate for the first paid slice |
+| [`docs/operations/observability-runbook.md`](docs/operations/observability-runbook.md) | Metrics, alerts, escalation, runbooks |

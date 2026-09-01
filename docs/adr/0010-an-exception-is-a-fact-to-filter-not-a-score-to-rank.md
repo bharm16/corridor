@@ -1,5 +1,11 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amends:
+  - ADR-0009
+amended_by:
+  - ADR-0076
 ---
 
 # A Constraint Alert is a fact to filter, not a score to rank

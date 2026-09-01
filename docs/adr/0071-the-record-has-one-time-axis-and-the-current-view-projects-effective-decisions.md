@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0076
 ---
 
 # The record has one time axis, and the current view projects effective decisions

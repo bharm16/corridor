@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: intake
+scope: current product
+amended_by:
+  - ADR-0059
+  - ADR-0078
 ---
 
 # Email is the front door

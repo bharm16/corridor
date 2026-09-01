@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
+amends:
+  - ADR-0003
 ---
 
 # A calculated result names what it covers, and a row with nothing to measure is not published

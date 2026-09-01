@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # A holdout is spent once, on a complete measurement, with labelling blind to extraction

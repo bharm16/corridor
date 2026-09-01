@@ -1,8 +1,19 @@
 ---
-status: accepted
+status: superseded by ADR-0076
+domain: record-inclusion
+scope: historical
+supersedes:
+  - ADR-0020
+  - ADR-0027
+amends:
+  - ADR-0026
+amended_by:
+  - ADR-0034
 ---
 
 # Record Inclusion is mechanical on verified Supporting Documentation, and no sign-off gates the product
+
+> **Superseded by [ADR-0076](0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), 2026-09-01.** Mechanical admission into the accepted record is replaced by one attributable baseline adoption, automatic source-fact capture, and proposed deltas thereafter.
 
 > **Terminology amendment, 2026-08-27 — [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md).** Active prose follows the complete glossary adoption. Source quotations, historical measurements and interviews, and implementation or provenance identifiers retain their original spelling. Those retained names do not restore earlier customer labels or change decision authority.
 

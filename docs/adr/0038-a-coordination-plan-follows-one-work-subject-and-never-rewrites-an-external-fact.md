@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: human-work
+scope: optional module
 ---
 
 # A Follow-up Plan follows one work subject and never rewrites an external fact

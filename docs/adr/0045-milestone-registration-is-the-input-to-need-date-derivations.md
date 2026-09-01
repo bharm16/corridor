@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # Required By dates use exact Key Date Versions

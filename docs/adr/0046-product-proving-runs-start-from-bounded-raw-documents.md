@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: product
+scope: optional module
 ---
 
 # Product Test Runs start from bounded raw Documents

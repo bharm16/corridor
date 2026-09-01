@@ -71,6 +71,10 @@ ingest:
 docs:
 	uv run python -m corridor.docs $(ARGS)
 
+# Regenerate docs/adr/INDEX.md from ADR frontmatter (make check fails when stale).
+adr-index:
+	uv run python scripts/adr_index.py
+
 # Coordination review UI at http://localhost:8412
 queue:
 	uv run uvicorn corridor.web.app:app --port 8412 --reload

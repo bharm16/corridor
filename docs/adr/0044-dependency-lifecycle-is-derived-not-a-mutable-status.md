@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # Constraint lifecycle is derived, not a mutable status

@@ -1,5 +1,12 @@
 ---
 status: accepted
+domain: record-inclusion
+scope: current product
+amended_by:
+  - ADR-0029
+  - ADR-0036
+  - ADR-0042
+  - ADR-0076
 ---
 
 # Events enter by deterministic policy, and a model may only demote

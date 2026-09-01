@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: terminology
+scope: current product
 ---
 
 # Domain language follows researched construction practice

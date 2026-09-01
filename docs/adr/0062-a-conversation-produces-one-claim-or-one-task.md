@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: intake
+scope: current product
+amended_by:
+  - ADR-0078
 ---
 
 # A conversation produces one claim, or one task

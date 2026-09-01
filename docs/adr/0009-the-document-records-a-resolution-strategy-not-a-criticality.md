@@ -1,5 +1,11 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+supersedes:
+  - ADR-0007
+amended_by:
+  - ADR-0010
 ---
 
 # The document records a Utility Conflict Resolution Method, and the work-type filter is derived

@@ -1,8 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0080
+domain: retention
+scope: historical
 ---
 
 # Only intermediary data expires; the record has no delete path
+
+> **Superseded by [ADR-0080](0080-governed-records-disposition-replaces-the-missing-delete-path.md), 2026-09-01.** The retention classes and legal-hold rule stand; "no delete path" is replaced by governed, hold-aware disposition.
 
 Five assistant request families hard-code `retained_indefinitely`; page renders, raw OCR responses, and copied prompt context accumulate without classification; and the earlier research proposed 30/90-day retention as unlabeled hypotheses. The 2026-08-30 records-retention research grounded the classes in the schedules that bind the customer's world.
 

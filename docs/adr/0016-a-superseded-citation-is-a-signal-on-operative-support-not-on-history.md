@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
 ---
 
 # A superseded citation is a signal on supporting documentation in use; documentation sufficiency needs the current revision

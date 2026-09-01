@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # A fact is one typed row, not a JSON payload

@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amends:
+  - ADR-0026
+  - ADR-0033
 ---
 
 # An External Organization commitment preserves who spoke, the date as stated, and its known scope

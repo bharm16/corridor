@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: human-work
+scope: current product
 ---
 
 # Interface operation is not human decision authorship

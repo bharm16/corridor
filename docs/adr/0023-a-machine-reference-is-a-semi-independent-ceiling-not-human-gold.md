@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # A machine reference is a semi-independent ceiling, not human gold

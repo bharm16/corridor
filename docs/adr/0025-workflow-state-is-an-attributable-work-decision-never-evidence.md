@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # Workflow state is an attributable Coordination Decision, never Supporting Documentation

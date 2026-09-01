@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # Organization identity resolves from the whole row, never silently minted

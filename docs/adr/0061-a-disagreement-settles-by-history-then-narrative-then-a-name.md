@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amends:
+  - ADR-0035
 ---
 
 # A disagreement settles by history, then narrative, then a name

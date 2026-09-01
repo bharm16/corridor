@@ -1,5 +1,13 @@
 ---
 status: accepted
+domain: operations
+scope: current product
+amends:
+  - ADR-0052
+  - ADR-0054
+amended_by:
+  - ADR-0057
+  - ADR-0076
 ---
 
 # Setup asks only questions the system cannot answer

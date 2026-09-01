@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0036
 ---
 
 # A recorded verbal statement is an appended event, never a missing citation

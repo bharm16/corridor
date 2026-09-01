@@ -2,7 +2,26 @@
 
 **Goal of Phase 1:** a working, demoable Project Record for utility and External Party readiness, running on 2-3 real highway projects, operable by one person, no external accounts required.
 
-**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences. Build nothing past M5 until M5 is done.
+> **Current direction, 2026-09-01.** The milestones below are the Phase 1 build
+> history and remain accurate as history. The product now optimizes around one
+> slice: take the customer's current record, observe one real new piece of
+> project evidence, present the correct proposed change, and return the updated
+> artifact with less coordinator work than today
+> ([ADR-0075](docs/adr/0075-corridor-maintains-the-accepted-coordination-baseline-from-project-evidence.md),
+> [ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+> The slice is import existing UCM → adopt baseline → connect one mailbox or
+> folder → process one new source → show proposed deltas → accept/reject/edit →
+> export updated UCM and report; its gate is
+> [docs/pilot-success-criteria.md](docs/pilot-success-criteria.md). Until that
+> pilot runs, the readiness system (ADR-0052/0056/0060), the generalized
+> task-management surface (ADR-0035), phone and offline work, broad
+> notifications, further automatic Record Inclusion classes, global
+> content-inferred email routing, new legacy-table capabilities (ADR-0081), and
+> extra report formats are frozen. Platform work is ADR-0078 (connectors),
+> ADR-0079 (deployment), ADR-0080 (disposition), and ADR-0081 (spine
+> migration).
+
+**Companion docs:** `v0-build-spec.md` covers milestones M0-M5 in implementation detail. `corpus-acquisition-spec.md` covers document assembly, which runs in parallel from week 0. `CONTEXT-MAP.md` locates the domain vocabulary; `docs/adr/` records decisions with lasting consequences; `docs/adr/INDEX.md` says which govern today. Build nothing past M5 until M5 is done.
 
 ---
 

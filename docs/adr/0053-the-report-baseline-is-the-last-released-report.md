@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: reports
+scope: current product
 ---
 
 # The report baseline is the last released report

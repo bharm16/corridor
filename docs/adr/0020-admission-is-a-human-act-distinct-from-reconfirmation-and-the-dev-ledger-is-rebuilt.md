@@ -1,5 +1,7 @@
 ---
 status: superseded by ADR-0021 and ADR-0029
+domain: record-inclusion
+scope: historical
 ---
 
 # Record Inclusion is a human act distinct from Human Support Update, and the development Ledger is rebuilt, not ratified

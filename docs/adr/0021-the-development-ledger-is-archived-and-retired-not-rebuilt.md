@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: historical
+supersedes:
+  - ADR-0020
 ---
 
 # The development Ledger is archived and retired, not rebuilt

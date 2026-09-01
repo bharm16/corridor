@@ -1,8 +1,14 @@
 ---
-status: accepted
+status: superseded by ADR-0079
+domain: operations
+scope: historical
+amends:
+  - ADR-0034
 ---
 
 # Production and experimental runs are separated by database, not annotation
+
+> **Superseded by [ADR-0079](0079-one-application-one-worker-managed-postgres-and-one-database-per-customer.md), 2026-09-01.** Location remains the enforcement boundary; the claim that an old run is production because of where it resides is retired.
 
 An Extraction Run is one recorded attempt to read one Document. A test read must never become the reading a project uses. ADR-0034 required the implementation to distinguish production runs from experiments before automatic Current Production Run selection ships. The planned fix was a purpose label on every run, plus a migration to decide what old unlabeled runs mean. The decision ruling is on [#323](https://github.com/bharm16/corridor/issues/323).
 
