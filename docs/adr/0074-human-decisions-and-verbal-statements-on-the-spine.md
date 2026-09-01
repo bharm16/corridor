@@ -31,3 +31,27 @@ The migration is additive and staged, each stage its own mergeable change: (1) t
 ## Consequences
 
 The spine gains its second and general writer — attributable human decisions — behind the same append-only, revision-bound, hold-aware authority as the policy path. Nothing is retracted; the current view stays a plain projection. The guided flows keep their exact guard-test behavior (`test_statement_coordination`, `test_work_list`) and the evidence-bound-fact authority rule.
+
+## #451 Stage 3 decisions
+
+Governing distinction, applied consistently: a **source segment** says where the information came from; a **fact** says what proposition or value was recorded; a **decision** says what the Project Record does with that fact; a **command name** says which human action produced the decision. A source kind supplies provenance; it never determines which Project Record fields are representable, and readers never branch on the command name.
+
+### Cited statement inclusion command
+
+`coordinate_statement` is the human command name for inclusion of a Cited statement. The Recorded Verbal Statement command remains exclusive to capture of a Recorded Verbal Statement. Both commands record the existing typed inclusion decision. The command identifies the human action; the source segment kind identifies provenance. Reusing the verbal command would make the Audit Trail falsely claim a verbal capture and make command-level metrics, debugging, and reversals ambiguous.
+
+### Meeting Notes passage fact eligibility
+
+A Meeting Notes passage may support `statement_wording`, `statement_timing`, and `applies_to` facts. These fact types are source-neutral. No Cited-specific timing or Applies To fact types are introduced. Unknown Applies To is represented by an existing `applies_to` fact with an empty member set, not by absence of a fact. The source segment supplies evidence context and `human_principal` records who entered the normalized fact; the normalized date or scope identifiers need not appear byte-for-byte in the source passage.
+
+### Do Not Add
+
+Do Not Add is a statement-level record disposition, not a fact value. Before `mark_statement_not_relevant` records its decision, the save ensures that the statement source and candidate fact bundle exist. The `statement_wording` fact is the anchor for the statement's Commitment Lineage. An active Do Not Add decision suppresses the lineage's Project Record facts. A legacy statement may be materialized on the spine as part of a new human save; this is a forward write and does not mutate or bulk-migrate legacy data. `restore_statement_not_relevant` writes a compensating decision against the same lineage. It restores the predecessor state and does not imply inclusion.
+
+### Discrepancy Resolution
+
+Every resolved field belongs to the discrepancy's target Commitment Lineage. Commitment wording maps to `statement_wording`, timing maps to `statement_timing`, and Applies To maps to `applies_to`. Selecting an unchanged existing fact reuses that fact when it already belongs to the target lineage. A synthesized or cross-lineage result creates a new human-attributed fact of the matching type and retains provenance to the discrepancy and contributing facts. A resolution may emit multiple field decisions. They share one operation identifier, use one expected predecessor per field lineage, and commit atomically with the legacy resolution. A stale field aborts the complete save.
+
+### Supporting Documentation in Use
+
+`supporting_documentation_in_use` is a relationship fact between a Project Record subject or Commitment Lineage and one immutable document revision. Designation records a human decision for that relationship fact. Resolution writes a compensating decision against the same fact. Supporting documents are modeled independently rather than as one replaceable set: designation and resolution are member-local, so one relationship fact per document avoids full-set rewrites, spurious stale-write conflicts, first-save backfill of every legacy designation, and set-level (rather than document-level) attribution. The identity is an immutable document revision or digest-backed identity, not a filename or mutable current-document reference.
