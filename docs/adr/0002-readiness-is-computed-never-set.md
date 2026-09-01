@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # A documentation requirement is met through reviewed sources, not a status click

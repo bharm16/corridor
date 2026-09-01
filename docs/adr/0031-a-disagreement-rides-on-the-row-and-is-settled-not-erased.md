@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0076
 ---
 
 # A source discrepancy stays with the row and is resolved without erasing its sources

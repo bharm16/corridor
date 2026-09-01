@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: operations
+scope: current product
 ---
 
 # One approvals table, one runs table; outcomes stay with their family

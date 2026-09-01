@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: terminology
+scope: current product
 ---
 
 # Complete glossary adoption preserves record and source identity

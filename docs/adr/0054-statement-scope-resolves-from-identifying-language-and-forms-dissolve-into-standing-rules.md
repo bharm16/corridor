@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0055
+  - ADR-0076
 ---
 
 # Statement scope resolves from identifying language, and forms dissolve into standing rules

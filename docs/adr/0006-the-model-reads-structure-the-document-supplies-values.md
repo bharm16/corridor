@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
+amends:
+  - ADR-0004
 ---
 
 # The model reads the structure; the document supplies the values

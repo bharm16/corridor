@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: migration
+scope: current product
+amended_by:
+  - ADR-0081
+migration: Dual-write of every human flow and the statement_id legacy reference remain; exit criteria and stages are in ADR-0081.
 ---
 
 # Human Record Decisions and Recorded Verbal Statements on the spine

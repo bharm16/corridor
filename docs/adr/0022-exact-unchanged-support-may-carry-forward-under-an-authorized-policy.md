@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
+amended_by:
+  - ADR-0034
 ---
 
 # Exact unchanged support may carry forward under an authorized policy

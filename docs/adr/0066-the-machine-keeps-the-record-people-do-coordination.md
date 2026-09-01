@@ -1,8 +1,12 @@
 ---
-status: accepted
+status: superseded by ADR-0075
+domain: product
+scope: historical
 ---
 
 # The machine keeps the record; people do coordination
+
+> **Superseded by [ADR-0075](0075-corridor-maintains-the-accepted-coordination-baseline-from-project-evidence.md), 2026-09-01.** The research below stands as research; the spreadsheet-incumbent, market-emptiness, and extraction-economics premises are no longer the product's foundation.
 
 On 2026-08-30 the maintainer asked whether this product is needed at all — whether existing systems already handle utility conflict coordination. Three research passes answered it: a competitive landscape of every findable system, the documented evidence of the problem, and how the record-to-action loop is occupied today. This ADR records the verdict, the value framing that survives it, and the open questions it produced.
 

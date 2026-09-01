@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # The reference denominator and extracted-row eligibility are not yet one rule

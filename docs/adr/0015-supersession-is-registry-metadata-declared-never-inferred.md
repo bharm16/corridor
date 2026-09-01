@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
 ---
 
 # Supersession is registry metadata — declared, never inferred, and not an Assertion

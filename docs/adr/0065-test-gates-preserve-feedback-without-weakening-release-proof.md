@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: testing
+scope: current product
 ---
 
 # Test gates preserve feedback without weakening release proof

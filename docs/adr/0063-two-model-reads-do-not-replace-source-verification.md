@@ -1,8 +1,12 @@
 ---
 status: superseded by ADR-0064
+domain: extraction
+scope: historical
 ---
 
 # Two model reads do not replace source verification
+
+> Its proposed second-read workflow never shipped: ADR-0064 replaced the design before any implementation.
 
 A scanned page can have no usable OCR text because its image is skewed, degraded, or obstructed. Two independent model calls can expose disagreement and prepare a bounded comparison for a person, but their agreement is not Supporting Documentation and cannot replace the citation check: ADR-0042 expressly excludes model agreement as a Record Inclusion predicate. This proposed decision keeps that boundary while defining the only safe use of a second reading.
 

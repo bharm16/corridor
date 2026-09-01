@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: human-work
+scope: current product
 ---
 
 # A guided statement decision is atomic, reversible, and bound to Supporting Documentation

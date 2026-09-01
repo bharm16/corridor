@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: optional module
+amends:
+  - ADR-0052
 ---
 
 # An interpretation field is settled by a cited confirmation

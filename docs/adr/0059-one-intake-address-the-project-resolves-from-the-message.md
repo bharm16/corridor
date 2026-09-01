@@ -1,8 +1,14 @@
 ---
-status: accepted
+status: superseded by ADR-0078
+domain: intake
+scope: historical
+amends:
+  - ADR-0058
 ---
 
 # One intake address; the project resolves from the message
+
+> **Superseded by [ADR-0078](0078-sources-enter-through-project-bound-connectors-under-one-small-contract.md), 2026-09-01.** Project-bound connectors and aliases are primary; content-based routing survives only as a fallback inside an already-bound customer.
 
 ADR-0058 gave each project its own inbound address. Reviewed the same evening and corrected: addresses don't scale as identity (a thousand projects is not a thousand mailboxes), humans misdirect mail, and two projects with similar names must never collide. The fix is the same move made everywhere else in this system: the content already carries the answer — match on it.
 

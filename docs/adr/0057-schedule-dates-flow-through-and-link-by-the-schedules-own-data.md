@@ -1,5 +1,11 @@
 ---
 status: accepted
+domain: operations
+scope: current product
+amends:
+  - ADR-0055
+amended_by:
+  - ADR-0076
 ---
 
 # Schedule dates flow through and link by the schedule's own data

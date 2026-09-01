@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
 ---
 
 # The queue fails closed on a registered successor, and the Current Production Run is declared, not latest

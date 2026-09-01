@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: record-inclusion
+scope: current product
+amended_by:
+  - ADR-0076
 ---
 
 # Automatic Record Inclusion follows the segment kind

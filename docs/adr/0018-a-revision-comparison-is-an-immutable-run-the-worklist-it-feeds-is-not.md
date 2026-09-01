@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
 ---
 
 # A Revision Comparison is an immutable run; the worklist it feeds is not

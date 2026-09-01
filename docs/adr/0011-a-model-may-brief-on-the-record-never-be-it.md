@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # A model may brief on the record, never be it

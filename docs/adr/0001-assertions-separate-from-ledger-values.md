@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0076
 ---
 
 # Source field values are stored separately from the project's conclusions

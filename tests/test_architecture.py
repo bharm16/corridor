@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
+import sys
 from collections import defaultdict
 from pathlib import Path
 
@@ -122,14 +124,99 @@ def test_context_map_names_both_bounded_context_glossaries():
     assert (REPO_ROOT / "docs" / "operations" / "CONTEXT.md").is_file()
 
 
+def _adr_index_module():
+    spec = importlib.util.spec_from_file_location(
+        "adr_index", REPO_ROOT / "scripts" / "adr_index.py"
+    )
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_every_adr_declares_machine_readable_status():
-    missing = []
+    """The lifecycle rules in docs/adr/README.md, mechanically."""
+    adr_index = _adr_index_module()
+    problems = []
     for path in sorted((REPO_ROOT / "docs" / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")):
         lines = path.read_text().splitlines()
         if len(lines) < 3 or lines[0] != "---" or not lines[1].startswith("status: "):
-            missing.append(path.name)
+            problems.append(f"{path.name}: frontmatter must open with status")
+    adrs = adr_index.load_adrs()
+    for adr in adrs.values():
+        if not adr_index.STATUS_PATTERN.match(adr.status):
+            problems.append(f"{adr.ref}: invalid status {adr.status!r}")
+        if adr.scope not in adr_index.SCOPES:
+            problems.append(f"{adr.ref}: invalid scope {adr.scope!r}")
+        if not adr.domain:
+            problems.append(f"{adr.ref}: missing domain")
+        for successor in adr.superseded_by:
+            target = adrs.get(successor[4:])
+            if target is None:
+                problems.append(f"{adr.ref}: superseded by missing {successor}")
+            elif adr.ref not in target.supersedes:
+                problems.append(f"{successor} must list supersedes: {adr.ref}")
+        for predecessor in adr.supersedes:
+            target = adrs.get(predecessor[4:])
+            if target is None:
+                problems.append(f"{adr.ref}: supersedes missing {predecessor}")
+            elif adr.ref not in target.superseded_by:
+                problems.append(f"{predecessor} must carry status superseded by {adr.ref}")
+        for predecessor in adr.amends:
+            target = adrs.get(predecessor[4:])
+            if target is None:
+                problems.append(f"{adr.ref}: amends missing {predecessor}")
+            elif adr.ref not in target.amended_by:
+                problems.append(f"{predecessor} must list amended_by: {adr.ref}")
+        for successor in adr.amended_by:
+            target = adrs.get(successor[4:])
+            if target is None:
+                problems.append(f"{adr.ref}: amended_by missing {successor}")
+            elif adr.ref not in target.amends:
+                problems.append(f"{successor} must list amends: {adr.ref}")
+        if adr.status == "deprecated" and (adr.superseded_by or adr.supersedes):
+            problems.append(f"{adr.ref}: deprecated ADRs name no successor")
 
-    assert missing == []
+    assert problems == []
+
+
+def test_adr_lifecycle_graph_has_no_cycles():
+    adr_index = _adr_index_module()
+    adrs = adr_index.load_adrs()
+    edges = defaultdict(set)
+    for adr in adrs.values():
+        for older in adr.supersedes + adr.amends:
+            edges[older[4:]].add(adr.number)
+    visiting: list[str] = []
+    done: set[str] = set()
+    cycles = []
+
+    def visit(node: str) -> None:
+        if node in done:
+            return
+        if node in visiting:
+            cycles.append(" -> ".join(visiting[visiting.index(node):] + [node]))
+            return
+        visiting.append(node)
+        for successor in sorted(edges[node]):
+            visit(successor)
+        visiting.pop()
+        done.add(node)
+
+    for number in sorted(adrs):
+        visit(number)
+
+    assert cycles == []
+
+
+def test_adr_index_matches_frontmatter():
+    adr_index = _adr_index_module()
+    adrs = adr_index.load_adrs()
+    expected = adr_index.render(adrs, adr_index.citing_modules(adrs))
+
+    assert adr_index.INDEX_PATH.read_text(encoding="utf-8") == expected, (
+        "docs/adr/INDEX.md is stale; run `make adr-index`"
+    )
 
 
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():

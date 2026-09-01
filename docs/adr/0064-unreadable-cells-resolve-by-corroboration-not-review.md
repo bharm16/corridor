@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
+supersedes:
+  - ADR-0063
 ---
 
 # Unreadable cells resolve by corroboration, not review

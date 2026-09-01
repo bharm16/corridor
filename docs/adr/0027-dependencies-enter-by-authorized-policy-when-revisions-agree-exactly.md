@@ -1,5 +1,7 @@
 ---
 status: superseded by ADR-0029
+domain: record-inclusion
+scope: historical
 ---
 
 # Constraints enter by authorized policy when revisions agree exactly

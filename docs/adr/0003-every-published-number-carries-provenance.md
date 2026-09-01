@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: supporting-documentation
+scope: current product
+amended_by:
+  - ADR-0013
+  - ADR-0077
 ---
 
 # Every published number has source or calculation provenance

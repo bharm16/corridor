@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
+amended_by:
+  - ADR-0080
 ---
 
 # Nothing the machine surfaced is lost, and nothing is deleted

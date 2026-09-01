@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: reports
+scope: current product
 ---
 
 # External Coordination Report release seals one fixed PDF artifact

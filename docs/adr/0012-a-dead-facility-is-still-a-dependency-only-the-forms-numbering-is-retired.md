@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: current product
 ---
 
 # A dead facility can still be a Utility Conflict; only the form's numbering is retired

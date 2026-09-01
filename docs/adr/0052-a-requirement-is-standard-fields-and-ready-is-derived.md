@@ -1,5 +1,12 @@
 ---
 status: accepted
+domain: project-record
+scope: optional module
+supersedes:
+  - ADR-0037
+amended_by:
+  - ADR-0055
+  - ADR-0056
 ---
 
 # A requirement is standard fields, and Ready is derived

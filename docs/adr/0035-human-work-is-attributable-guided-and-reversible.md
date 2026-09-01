@@ -1,5 +1,10 @@
 ---
 status: accepted
+domain: human-work
+scope: optional module
+amended_by:
+  - ADR-0061
+  - ADR-0076
 ---
 
 # Human work is attributable, guided, and reversible

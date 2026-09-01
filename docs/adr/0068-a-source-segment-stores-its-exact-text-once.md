@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
+amended_by:
+  - ADR-0079
 ---
 
 # A source segment stores its exact text once

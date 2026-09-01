@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: extraction
+scope: current product
 ---
 
 # The structured original is the Preferred Source File, not its printed rendering

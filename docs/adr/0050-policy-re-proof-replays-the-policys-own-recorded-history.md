@@ -1,5 +1,9 @@
 ---
 status: accepted
+domain: record-inclusion
+scope: current product
+amended_by:
+  - ADR-0079
 ---
 
 # Policy re-proof replays the policy's own recorded history

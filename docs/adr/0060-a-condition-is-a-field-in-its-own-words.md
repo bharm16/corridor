@@ -1,5 +1,7 @@
 ---
 status: accepted
+domain: project-record
+scope: optional module
 ---
 
 # A condition is a field in its own words
