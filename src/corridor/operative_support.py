@@ -18,11 +18,15 @@ from sqlalchemy.orm import Session
 from corridor import audit
 from corridor.dependency_events import current_statement_evidence_memberships
 from corridor.documentation_checklist import read_checklists
+from corridor.fact_decisions import record_human_fact_decision
+from corridor.facts import append_supporting_documentation_fact
 from corridor.models import (
     Dependency,
     DependencyEvidenceSufficiency,
     Document,
     EvidenceLink,
+    Fact,
+    FactDecision,
     OperativeSupport,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -186,12 +190,98 @@ def designate_publication_support(
     session.flush()
     lock_project(session, dependency.project_id)
     session.expire_all()
-    return _designate_publication_support_under_lock(
+    designation = _designate_publication_support_under_lock(
         session,
         dependency_id,
         evidence_link_id,
         designated_by=principal.subject,
         field_name=field_name,
+    )
+    _record_support_designation_on_spine(
+        session,
+        project_id=dependency.project_id,
+        dependency_id=dependency_id,
+        field_name=field_name,
+        evidence_link_id=evidence_link_id,
+        recorder=principal,
+    )
+    return designation
+
+
+def _record_support_designation_on_spine(
+    session: Session,
+    *,
+    project_id: int,
+    dependency_id: int,
+    field_name: str | None,
+    evidence_link_id: int,
+    recorder: HumanPrincipal,
+) -> None:
+    """Dual-write the designation as a supporting_documentation_in_use decision.
+
+    The relationship fact is member-local — one fact per (subject, document
+    revision) — so replacing the designated document compensates the displaced
+    member's decision and includes the new member's, never rewriting a set
+    (ADR-0074 stage 3). An unchanged designation records no attributable no-op
+    (ADR-0039). Only this human command dual-writes; the sealed machine
+    transfer path stays legacy-only.
+    """
+
+    link = session.get(EvidenceLink, evidence_link_id)
+    if link is None:
+        return
+    subject_key = f"dependency:{dependency_id}"
+    if field_name is not None:
+        subject_key = f"{subject_key}:field:{field_name}"
+    active = session.scalars(
+        select(FactDecision).where(
+            FactDecision.project_id == project_id,
+            FactDecision.subject_key == subject_key,
+            FactDecision.fact_type == "supporting_documentation_in_use",
+            FactDecision.superseded_by.is_(None),
+            FactDecision.disposition == "include",
+        )
+    ).all()
+    unchanged = False
+    for decision in active:
+        member = session.get(Fact, decision.fact_id)
+        if member.document_value_id == link.document_id:
+            unchanged = True
+            continue
+        record_human_fact_decision(
+            session,
+            member,
+            principal=recorder,
+            command_type="designate_support",
+            disposition="restore",
+            idempotency_key=f"resolve-support:{decision.id}",
+            expected_predecessor=decision.id,
+        )
+    if unchanged:
+        return
+    fact = append_supporting_documentation_fact(
+        session,
+        project_id=project_id,
+        subject_key=subject_key,
+        document_id=link.document_id,
+        recorded_by=recorder.subject,
+    )
+    # A re-designated member supersedes its own standing compensation, so the
+    # fact keeps one effective decision and the key stays unique per act.
+    predecessor = session.scalar(
+        select(FactDecision.id).where(
+            FactDecision.fact_id == fact.id,
+            FactDecision.superseded_by.is_(None),
+        )
+    )
+    record_human_fact_decision(
+        session,
+        fact,
+        principal=recorder,
+        command_type="designate_support",
+        disposition="include",
+        idempotency_key=f"designate-support:{fact.id}:{predecessor or 0}",
+        expected_predecessor=predecessor,
     )
 
 

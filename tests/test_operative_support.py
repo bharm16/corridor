@@ -16,7 +16,10 @@ from corridor.models import (
     Document,
     ExternalOrg,
     EvidenceLink,
+    Fact,
+    FactDecision,
     Project,
+    ProjectRecordRevision,
 )
 from corridor.operative_support import (
     designate_publication_support,
@@ -551,3 +554,83 @@ def test_superseded_publication_support_preserves_its_exact_field_scope(
 
 def test_resolver_is_batched_and_empty_input_is_empty(session):
     assert resolve_operative_support(session, []) == {}
+
+
+def test_designation_dual_writes_the_relationship_fact_on_the_spine(
+    session, project
+):
+    document = _document(
+        session, project, suffix="matrix-spine", text="FOC1-1 spine claim"
+    )
+    dependency = accept_candidate(
+        session,
+        _candidate(session, project, document, quote="FOC1-1 spine claim"),
+        principal=TEST_PRINCIPAL,
+    )
+    [first_link] = _evidence_links(session, dependency.id)
+    other_document = _document(
+        session, project, suffix="agreement-spine", text="FOC1-1 newer support"
+    )
+    second_link = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=other_document.id,
+        page_no=1,
+        quote="FOC1-1 newer support",
+        verified=True,
+    )
+    session.add(second_link)
+    session.flush()
+    subject_key = f"dependency:{dependency.id}"
+
+    designate_publication_support(
+        session, dependency.id, first_link.id, principal=TEST_PRINCIPAL
+    )
+
+    def decisions():
+        return session.scalars(
+            select(FactDecision)
+            .where(
+                FactDecision.project_id == project.id,
+                FactDecision.subject_key == subject_key,
+                FactDecision.fact_type == "supporting_documentation_in_use",
+            )
+            .order_by(FactDecision.id)
+        ).all()
+
+    [first] = decisions()
+    assert first.disposition == "include"
+    assert first.superseded_by is None
+    first_fact = session.get(Fact, first.fact_id)
+    assert first_fact.document_value_id == document.id
+    assert first_fact.subject_kind == "record_subject"
+    revision = session.get(ProjectRecordRevision, first.revision_id)
+    assert revision.command_type == "designate_support"
+    assert revision.human_principal == TEST_PRINCIPAL.subject
+
+    # An unchanged designation records no attributable no-op.
+    designate_publication_support(
+        session, dependency.id, first_link.id, principal=TEST_PRINCIPAL
+    )
+    assert len(decisions()) == 1
+
+    # Replacing the designated document compensates the displaced member and
+    # includes the new one — member-local, never a set rewrite.
+    designate_publication_support(
+        session, dependency.id, second_link.id, principal=TEST_PRINCIPAL
+    )
+    displaced, compensation, included = decisions()
+    assert displaced.id == first.id
+    assert displaced.superseded_by == compensation.id
+    assert compensation.disposition == "restore"
+    assert compensation.fact_id == first.fact_id
+    assert included.disposition == "include"
+    assert session.get(Fact, included.fact_id).document_value_id == other_document.id
+
+    # Designating the original again re-decides the same relationship fact.
+    designate_publication_support(
+        session, dependency.id, first_link.id, principal=TEST_PRINCIPAL
+    )
+    final = decisions()
+    assert len(final) == 5
+    assert final[-1].disposition == "include"
+    assert final[-1].fact_id == first.fact_id
