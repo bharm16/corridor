@@ -11,9 +11,11 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session, aliased
 
 from corridor.fact_types import FACT_TYPE_CONTRACTS
+from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.models import (
     ActiveExtractionRun,
     Fact,
@@ -42,11 +44,99 @@ class FactDecisionRefused(ValueError):
     """A caller cannot establish an authorized typed Record Inclusion decision."""
 
 
+class StaleHumanDecision(FactDecisionRefused):
+    """The predecessor a Human Record Decision named was superseded first."""
+
+
+# One command_type per Human Record Decision, mirrored in the SQL guard
+# (migration 4a5b6c7d8e9f). The record command writes a human_principal
+# revision; automatic inclusion keeps writing a released_policy revision.
+HUMAN_DECISION_COMMANDS = frozenset(
+    {
+        "record_verbal_statement",
+        "correct_statement_scope",
+        "correct_statement_facts",
+        "mark_do_not_add",
+        "resolve_discrepancy",
+        "designate_support",
+    }
+)
+
+
 @dataclass(frozen=True)
 class InclusionDecisionResult:
     revision: ProjectRecordRevision
     decision: FactDecision
     created: bool
+
+
+@dataclass(frozen=True)
+class HumanDecisionResult:
+    revision: ProjectRecordRevision
+    decision: FactDecision
+    created: bool
+
+
+def record_human_fact_decision(
+    session: Session,
+    fact: Fact,
+    *,
+    principal: HumanPrincipal,
+    command_type: str,
+    idempotency_key: str,
+    expected_predecessor: int | None = None,
+) -> HumanDecisionResult:
+    """Record one attributable Human Record Decision on the spine (ADR-0070).
+
+    Writes an atomic revision carrying the human principal (no released policy)
+    and a typed decision, mirroring the automatic policy path. Correcting or
+    reversing supersedes the named ``expected_predecessor``; a first decision
+    passes ``None``. Because the set-valued human types have no effectiveness
+    index, a stale predecessor is refused here rather than by the database
+    unique constraint.
+    """
+
+    if not idempotency_key.strip():
+        raise FactDecisionRefused("Human Record Decision idempotency key is required")
+    if command_type not in HUMAN_DECISION_COMMANDS:
+        raise FactDecisionRefused(
+            f"unrecognized human record decision command {command_type!r}"
+        )
+    contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
+    if contract is None:
+        raise FactDecisionRefused("Fact type has no released inclusion contract")
+    if contract.inclusion_rule != "human_record_decision":
+        raise FactDecisionRefused(
+            "Fact type is not settled by a Human Record Decision"
+        )
+    actor = require_human_principal(principal).subject
+
+    lock_project(session, fact.project_id)
+    try:
+        outcome = session.scalar(
+            select(
+                func.record_human_fact_decision(
+                    fact.project_id,
+                    fact.id,
+                    fact.subject_key,
+                    fact.fact_type,
+                    command_type,
+                    actor,
+                    idempotency_key,
+                    expected_predecessor,
+                )
+            )
+        )
+    except DBAPIError as exc:
+        if "predecessor is stale" in str(getattr(exc, "orig", exc)):
+            raise StaleHumanDecision(
+                "Human Record Decision predecessor was superseded first"
+            ) from exc
+        raise
+    session.expire_all()
+    revision = session.get(ProjectRecordRevision, int(outcome["revision_id"]))
+    decision = session.get(FactDecision, int(outcome["decision_id"]))
+    return HumanDecisionResult(revision, decision, bool(outcome["created"]))
 
 
 def include_structured_cell_fact_by_policy(

@@ -36,10 +36,11 @@ SUBJECT_RESOLUTION_HEAD = "453a1b2c3d4e"
 PROSE_ACCOUNTING_HEAD = "452c7d8e9f10"
 RENDER_HEAD = "2e3f4a5b6c7d"
 CLASS_B_RETENTION_HEAD = "7a3e91c4d8b2"
-PREDECESSOR_HEAD = CLASS_B_RETENTION_HEAD
-CURRENT_HEAD = "3f4a5b6c7d8e"
+TOKEN_LAYER_HEAD = "3f4a5b6c7d8e"
+PREDECESSOR_HEAD = TOKEN_LAYER_HEAD
+CURRENT_HEAD = "4a5b6c7d8e9f"
 EXPECTED_SCHEMA_SHA256 = (
-    "098829a9727153fd3b5f2fa6c962ba07ef2747bcaabcd4171f66bd84b1871075"
+    "ad597ce50eef94ff998c24581917821dea7e8780261113d52bd9850ca75e822d"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -63,7 +64,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{PROSE_ACCOUNTING_HEAD}_add_prose_completeness_accounting.py",
         f"{RENDER_HEAD}_add_page_render_derivatives.py",
         f"{CLASS_B_RETENTION_HEAD}_add_class_b_retention.py",
-        f"{CURRENT_HEAD}_add_token_layers.py",
+        f"{TOKEN_LAYER_HEAD}_add_token_layers.py",
+        f"{CURRENT_HEAD}_add_human_fact_decision.py",
     }
 
 
@@ -131,18 +133,14 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        # The token-layers migration adds an empty manifest table and widens the
-        # processing-artifact kinds to accept a token layer.
-        with database.session_factory.begin() as session:
-            assert session.scalar(text("select count(*) from token_layers")) == 0
-            session.execute(
+        # The human-fact-decision migration adds the human-authored spine
+        # command and lets the fact-decision guard accept the human branch.
+        with database.session_factory() as session:
+            assert session.scalar(
                 text(
-                    "insert into processing_artifacts (project_id, kind, "
-                    "retention_class, storage_path, content_sha256, terminal_at) "
-                    "values (:project_id, 'token_layer', 'class_b', "
-                    "'/tmp/token-layer.json', :digest, now())"
-                ),
-                {"project_id": project_id, "digest": "a" * 64},
+                    "select exists (select 1 from pg_proc "
+                    "where proname = 'record_human_fact_decision')"
+                )
             )
 
 
@@ -307,7 +305,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_delete_token_layers_is_unsupported():
+def test_downgrade_that_would_drop_the_human_decision_command_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -319,7 +317,7 @@ def test_downgrade_that_would_delete_token_layers_is_unsupported():
         completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
 
     assert completed.returncode != 0
-    assert "token layer migration downgrade is unsupported" in completed.stderr
+    assert "human fact decision migration downgrade is unsupported" in completed.stderr
 
 
 def _project_row(session_factory):
