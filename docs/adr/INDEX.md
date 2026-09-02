@@ -94,17 +94,19 @@ for everything else.
 
 | ADR | Title | Scope | Supersedes | Amends | Amended by | Citing modules | Unresolved migration |
 |---|---|---|---|---|---|---|---|
-| [ADR-0035](0035-human-work-is-attributable-guided-and-reversible.md) | Human work is attributable, guided, and reversible | optional module | — | — | [ADR-0061](0061-a-disagreement-settles-by-history-then-narrative-then-a-name.md), [ADR-0076](0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md) | `access`, `audit`, `documentation_checklist`, `milestones`, `models`, `schedule_linking`, `source_intake`, `statement_coordination`, `statement_matcher`, `statement_matching`, `statement_scope_match`, `support_update_routing`, `web.app`, `work_decisions` | — |
+| [ADR-0035](0035-human-work-is-attributable-guided-and-reversible.md) | Human work is attributable, guided, and reversible | optional module | — | — | [ADR-0061](0061-a-disagreement-settles-by-history-then-narrative-then-a-name.md), [ADR-0076](0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0085](0085-the-adopted-project-work-list-is-a-derived-reading-of-adaptive-review-packets.md) | `access`, `audit`, `documentation_checklist`, `milestones`, `models`, `schedule_linking`, `source_intake`, `statement_coordination`, `statement_matcher`, `statement_matching`, `statement_scope_match`, `support_update_routing`, `web.app`, `work_decisions` | — |
 | [ADR-0038](0038-a-coordination-plan-follows-one-work-subject-and-never-rewrites-an-external-fact.md) | A Follow-up Plan follows one work subject and never rewrites an external fact | optional module | — | — | — | `audit`, `models`, `notifications`, `statement_coordination`, `work_decisions` | — |
 | [ADR-0039](0039-guided-statement-adjudication-is-evidence-bound-atomic-and-reversible.md) | A guided statement decision is atomic, reversible, and bound to Supporting Documentation | current product | — | — | — | `milestones`, `operative_support`, `source_intake`, `verbal` | — |
 | [ADR-0041](0041-interface-operation-is-not-human-decision-authorship.md) | Interface operation is not human decision authorship | current product | — | — | — | `extraction_failure_diagnosis`, `production_run_explanation`, `revision_change_explanation`, `source_intake_draft` | — |
+| [ADR-0085](0085-the-adopted-project-work-list-is-a-derived-reading-of-adaptive-review-packets.md) | The adopted-project Work List is a derived reading of adaptive Review Packets | current product | — | [ADR-0035](0035-human-work-is-attributable-guided-and-reversible.md) | — | — | no Review Packet exists; the adaptive keying, the three visible consequence levels, the four primary decisions, and the Defer receipt are unimplemented (#494, #526, #527, #528). |
 
 ### reports
 
 | ADR | Title | Scope | Supersedes | Amends | Amended by | Citing modules | Unresolved migration |
 |---|---|---|---|---|---|---|---|
-| [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md) | External Coordination Report release seals one fixed PDF artifact | current product | — | — | — | `export`, `models`, `report_publication`, `web.app` | — |
-| [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | The report baseline is the last released report | current product | — | — | — | `changes`, `due_work`, `models`, `report_publication`, `web.app` | — |
+| [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md) | External Coordination Report release seals one fixed PDF artifact | current product | — | — | [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | `export`, `models`, `report_publication`, `web.app` | — |
+| [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | The report baseline is the last released report | current product | — | — | [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | `changes`, `due_work`, `models`, `report_publication`, `web.app` | — |
+| [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | One authorized release package is the external issue unit | current product | — | [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md), [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | — | — | no ReleasePackage exists; preparation, the package receipt, and the authorization gate are unimplemented (#529, #533). |
 
 ### operations
 
