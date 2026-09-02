@@ -16,7 +16,7 @@ import json
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import delete, func, insert, select, text, update
+from sqlalchemy import delete, insert, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor import audit
@@ -31,6 +31,8 @@ from corridor.db import Session, engine
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
+from spine_support import delete_project_spine, project_spine_counts
+
 from corridor.models import (
     ActiveExtractionRun,
     Assertion,
@@ -44,26 +46,14 @@ from corridor.models import (
     Document,
     EvidenceLink,
     ExternalOrg,
-    ExtractedProposalFact,
     ExtractionRun,
-    Fact,
-    FactAppliesTo,
-    FactClosureResult,
-    FactClosureSource,
-    FactDecision,
-    FactDisposition,
-    FactSource,
-    FactStatementTiming,
     OperativeSupport,
     PolicyApproval,
     PolicyRun,
     Project,
-    ProjectRecordRevision,
     ReconfirmationReceipt,
     RevisionComparisonFinding,
     RevisionComparisonRun,
-    SourceFactAppendReceipt,
-    SourceSegment,
 )
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal
@@ -608,25 +598,6 @@ def _human_reconfirm(session, scenario, transition) -> EvidenceLink:
     )
 
 
-# Every spine table is project-scoped; deleted in dependency order under
-# replica mode, and asserted empty afterwards so a new dual-write that this
-# list misses fails here, in the leaking test, not in a later victim.
-_SPINE_TABLES = (
-    FactDecision,
-    FactDisposition,
-    ProjectRecordRevision,
-    FactSource,
-    FactAppliesTo,
-    FactClosureResult,
-    FactClosureSource,
-    FactStatementTiming,
-    ExtractedProposalFact,
-    SourceFactAppendReceipt,
-    Fact,
-    SourceSegment,
-)
-
-
 def _delete_committed_carry_forward_project(project_id: int) -> None:
     with Session() as cleanup:
         cleanup.execute(text("set local session_replication_role = replica"))
@@ -723,10 +694,7 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         # supporting_documentation_in_use fact. Left behind in the shared
         # per-worker database they break every later test that asserts an
         # empty spine (#521), so the committed scenario removes them too.
-        for spine_table in _SPINE_TABLES:
-            cleanup.execute(
-                delete(spine_table).where(spine_table.project_id == project_id)
-            )
+        delete_project_spine(cleanup, project_id)
         cleanup.execute(
             delete(ActiveExtractionRun).where(
                 ActiveExtractionRun.document_id.in_(document_ids)
@@ -756,14 +724,7 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
     with Session() as check:
-        leaked = {
-            spine_table.__tablename__: check.scalar(
-                select(func.count())
-                .select_from(spine_table)
-                .where(spine_table.project_id == project_id)
-            )
-            for spine_table in _SPINE_TABLES
-        }
+        leaked = project_spine_counts(check, project_id)
         assert all(count == 0 for count in leaked.values()), leaked
 
 

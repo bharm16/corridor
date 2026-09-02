@@ -23,6 +23,8 @@ from corridor.extraction_runs import (
 )
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.ledger import mark_satisfies
+from spine_support import delete_project_spine, project_spine_counts
+
 from corridor.models import (
     ActiveExtractionRun,
     Assertion,
@@ -568,6 +570,7 @@ def _delete_committed_review_project(project_id: int) -> None:
             delete(DocPage).where(DocPage.document_id.in_(document_ids))
         )
         cleanup.execute(delete(Document).where(Document.project_id == project_id))
+        delete_project_spine(cleanup, project_id)
         cleanup.execute(delete(Project).where(Project.id == project_id))
         # The registry is global, not project-scoped: leaving the committed
         # organization behind pollutes other files' registry-wide reads on the
@@ -575,6 +578,9 @@ def _delete_committed_review_project(project_id: int) -> None:
         # deterministic resolution). Its dependencies are already gone above.
         cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
+    with Session() as check:
+        leaked = project_spine_counts(check, project_id)
+        assert all(count == 0 for count in leaked.values()), leaked
 
 
 def test_registry_work_exists_before_extraction_or_comparison(session):
