@@ -10,7 +10,8 @@ concurrency:
 jobs:
   check:
     # Fast source and architecture checks, including the ADR lifecycle and
-    # index tests; required as a status on every pull request.
+    # index tests; emitted as a standalone status on every pull request
+    # (branch protection is not enabled on this plan; see AGENTS.md).
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:

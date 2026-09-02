@@ -186,6 +186,62 @@ def test_adr_index_matches_frontmatter():
     )
 
 
+def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanup():
+    """A committed test scenario deletes the spine by name pattern (#521).
+
+    Any table that references the spine roots, directly or through another
+    spine table, must match the pattern and carry project_id; otherwise a
+    committed scenario could leave its rows behind for a later module.
+    """
+    import importlib
+
+    spine_support = importlib.import_module("spine_support")
+    from corridor.models import Base
+
+    referencing: dict[str, set[str]] = {}
+    for table in Base.metadata.sorted_tables:
+        for fk in table.foreign_keys:
+            referencing.setdefault(fk.column.table.name, set()).add(table.name)
+    dependent: set[str] = set()
+    frontier = set(spine_support.SPINE_ROOTS)
+    while frontier:
+        name = frontier.pop()
+        for child in referencing.get(name, ()):
+            if child not in dependent:
+                dependent.add(child)
+                frontier.add(child)
+    covered = {table.name for table in spine_support.SPINE_TABLES}
+
+    # The entity-resolution subsystem also references source_segments but is
+    # not part of the human-decision spine dual-write, and no committed test
+    # scenario creates its rows; two of its tables are not even project-scoped.
+    # It is classified out explicitly so that a genuinely new spine table
+    # (a support-assessment, proposed-delta, or decision table) cannot be
+    # added without either matching the cleanup pattern or being classified
+    # here on purpose.
+    resolution_subsystem = {
+        "subject_resolution_attempts",
+        "subject_resolution_candidates",
+        "subject_resolution_decisions",
+        "subject_candidate_suggestions",
+    }
+    uncovered = sorted(
+        name
+        for name in (dependent | set(spine_support.SPINE_ROOTS))
+        if name not in covered and name not in resolution_subsystem
+    )
+    missing_project_id = sorted(
+        table.name for table in spine_support.SPINE_TABLES if "project_id" not in table.c
+    )
+
+    assert uncovered == [], (
+        "a new spine-dependent table is not covered by the committed-scenario "
+        f"cleanup; extend SPINE_TABLE_PATTERN in tests/spine_support.py or "
+        f"classify it in test_architecture.py: {uncovered}"
+    )
+    assert missing_project_id == []
+
+
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
     paths = sorted((REPO_ROOT / "tests").glob("test_*migration*.py"))
 

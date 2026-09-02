@@ -30,6 +30,7 @@ Done in the ADR-0082/0083 change unless marked open.
 5. ADR-0078/0080/0081 corrections recorded in ADR-0083.
 
 6. Implementation-readiness corrections (the [2026-09-01 readiness review](docs/research/implementation-readiness-review-2026-09-01.md)): main restored to green (#516); amended issues rewritten into single contracts; #510 corrected and split; pilot sampling fixed; contributor docs mark the current pipeline transitional.
+7. Implementation-contract corrections (the [2026-09-01 late contract review](docs/research/implementation-contract-review-2026-09-01-late.md)): ADR-0084 (deferral is Work List scheduling, not a semantic disposition; non-verbal work precedes spine-native verbal origin; adopted-baseline projects read the spine natively). #492/#518/#519/#520 contracts hardened; #530 Support Assessment relation added; #489 split from live activation (#535); #491 split into #491A/#532; #534 change summary and weekly report owned; #503 decision separated from its implementation (#531); a metadata-derived spine-cleanup inventory test replaces the hand-listed table set.
 
 **Exit:** #505, #507, #508, #516 closed and this change merged. Server-side status enforcement (#506) stays unavailable on this plan; the manual all-green merge rule in AGENTS.md applies.
 
@@ -37,20 +38,25 @@ Done in the ADR-0082/0083 change unless marked open.
 
 1. #428: validate the consultant-first buyer, budget, sponsor, procurement, and pricing hypotheses with real discovery.
 2. #461: resolve PyMuPDF licensing before any external deployment that uses it.
-3. #492 authority boundary first (the first substantive code PR: runtime, source-append, and record-decision roles; the database refuses direct application-role writes to accepted authority). Then #487 storage interface and object storage; #490 untrusted-intake hardening (real scanner or a named, time-bounded risk acceptance before external data); #491 structured logs and metrics; #489 design-partner shadow environment, which activates customer data only after the licensing, intake-security, identity, disposition, and customer-data governance gates.
+3. #492 least-privileged database write authority first (the first substantive code PR: separate deployment credentials, NOLOGIN function owners, no PUBLIC execute, command-only appends; the database itself refuses application-role writes to accepted authority). Then #487 storage interface and object storage; #490 staged untrusted-intake hardening (byte gate, sandboxed structural inspection, rich processing; real scanner or a named risk acceptance before external data); #491A operational telemetry; #489 synthetic environment foundation (no customer data).
 4. #496 pull connector and normalized SourceEnvelope; #511 project-bound push intake, built only for channels the partner needs.
-5. #503 pilot and enterprise identity, authorization, and deprovisioning; #514 customer-environment disposition, legal hold, and backup-expiration contract; #522 customer-data and model-provider governance gate. All three precede live customer data in #489.
+5. Live-activation gates (#535): #461 licensing, #522 customer-data and provider governance, #531 identity/authorization/deprovisioning (implementing #503), #514 customer-environment disposition. Real customer data enters only after all of them and after the project is in adopted-baseline mode (#520); development bytes may enter only an isolated non-authoritative environment with processing disabled.
 
-**Exit:** a staging environment with one customer database, backups restored once, intake hardened, and one partner's connector registered.
+**Exit:** #489 synthetic environment with one customer database, backups restored once, intake hardened; #535 gates identified and tracked; one partner's connector registered.
 
 ## Phase 2 — build the paid vertical slice on the spine
 
-1. #509 Adopt Baseline: preview and atomically import one customer UCM or system export (accepted-record writer blocked by #492).
-2. #510 Proposed Delta and Resolve Delta, split into #518 (Proposed Delta identity and lifecycle), #519 (Resolve Delta commands, blocked by #492), and #520 (baseline/delta operating mode: once a project has an adopted baseline, the legacy admission, structured-cell inclusion, event admission, and schedule paths may capture Source Facts and create Proposed Deltas but may not replace accepted values).
-3. #450 schedule source, #455 email source, #456 minutes source, each only for the partner's source classes.
-4. #494 change inbox rebuilt around Proposed Delta.
-5. #495 customer-format UCM export from the adopted native workbook.
-6. #425 pilot chase list from unresolved deltas and current Follow-up Plans.
+The spine foundations come before Adopt Baseline; non-authoritative #509 parsing, preview, and fixtures may proceed earlier. Corrected order:
+
+1. #530 Support Assessment relation (proposition-to-source assessments; ADR-0082), on #492.
+2. #446 replayable Source Fact materialization enforcement (a model literal never becomes a Source Fact).
+3. #518 Proposed Delta identity, groups, and lifecycle (immutable occurrence + derived live view; source-lineage coalescing; apparent-removal completeness proof).
+4. #520 adopted-baseline operating-mode rails and database refusal (before #509, not after).
+5. #509 Adopt Baseline, invoking the #520 transition atomically (accepted writer on #492, #520, #530).
+6. #519 typed Resolve Delta commands (accept/edit/reject are semantic; defer is Work List scheduling, ADR-0084).
+7. #494 Work List of Proposed Deltas.
+8. #495 UCM export + #534 change summary and weekly report + #425 chase list, all from one frozen revision.
+9. #450 schedule source, #455 email source, #456 minutes source, each only for the partner's source classes (#455/#456 on #446).
 
 **Exit:** the slice runs end to end on one partner project with the partner's own workbook and one connected source, and the adopted project runs in baseline/delta operating mode (no legacy automatic accepted-value update).
 
