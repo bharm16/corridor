@@ -1,0 +1,9 @@
+{
+  "tests/test_dependency_admission.py": 48.45,
+  "tests/test_event_admission.py": 5.89,
+  "tests/test_geometry.py": 58.63,
+  "tests/test_m8_acceptance.py": 258.52,
+  "tests/test_product_proving_database.py": 8.15,
+  "tests/test_sh99_admission_acceptance.py": 0.59,
+  "tests/test_sh99_shared_admission_seal.py": 1.16
+}

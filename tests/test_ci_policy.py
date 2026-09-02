@@ -71,31 +71,37 @@ def test_every_test_file_lands_in_exactly_one_shard():
     import sys
 
     shards = _shard_count()
-    assigned: list[str] = []
-    for shard in range(1, shards + 1):
-        completed = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "test_shard.py"),
-                "--shards",
-                str(shards),
-                "--shard",
-                str(shard),
-            ],
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        assigned.extend(completed.stdout.split())
-
     expected = {
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
     }
-    assert len(assigned) == len(set(assigned)), "a file landed in two shards"
-    assert set(assigned) == expected, (
-        "shards do not cover the suite: "
-        f"{sorted(expected.symmetric_difference(assigned))}"
-    )
+
+    # Each gate balances on its own recorded seconds, so each has its own
+    # partition; both must cover the suite exactly.
+    for profile in ([], ["--slow"]):
+        assigned: list[str] = []
+        for shard in range(1, shards + 1):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "test_shard.py"),
+                    "--shards",
+                    str(shards),
+                    "--shard",
+                    str(shard),
+                    *profile,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assigned.extend(completed.stdout.split())
+
+        label = profile[0] if profile else "--fast"
+        assert len(assigned) == len(set(assigned)), f"{label}: a file landed twice"
+        assert set(assigned) == expected, (
+            f"{label}: shards do not cover the suite: "
+            f"{sorted(expected.symmetric_difference(assigned))}"
+        )
 
 
 def _shard_count() -> int:

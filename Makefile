@@ -62,7 +62,7 @@ test-shard:
 test-slow-shard:
 	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
 	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
-	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD)); \
+	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD) --slow); \
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" $$files; \
 	status=$$?; \
 	if [ $$status -eq 5 ]; then \

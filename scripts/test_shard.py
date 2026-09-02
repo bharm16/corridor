@@ -26,6 +26,7 @@ import sys
 
 ROOT = Path(__file__).resolve().parents[1]
 DURATIONS = ROOT / "tests" / "durations.json"
+SLOW_DURATIONS = ROOT / "tests" / "durations-slow.json"
 
 
 def test_files() -> list[str]:
@@ -35,10 +36,18 @@ def test_files() -> list[str]:
     )
 
 
-def recorded_seconds() -> dict[str, float]:
-    if not DURATIONS.exists():
+def recorded_seconds(path: Path = DURATIONS) -> dict[str, float]:
+    """Per-file seconds for the gate being sharded.
+
+    The two gates select different tests from the same files, so balancing
+    the slow shards by the non-slow timings puts every slow test in one
+    shard: exactly what happened on the first sharded run, where one slow
+    shard took 6m21s and the other three about 1m15s each.
+    """
+
+    if not path.exists():
         return {}
-    return json.loads(DURATIONS.read_text(encoding="utf-8"))
+    return json.loads(path.read_text(encoding="utf-8"))
 
 
 def shard(files: list[str], durations: dict[str, float], shards: int) -> list[list[str]]:
@@ -63,13 +72,21 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--shards", type=int, required=True)
     parser.add_argument("--shard", type=int, required=True, help="1-based")
+    parser.add_argument(
+        "--slow",
+        action="store_true",
+        help="balance by the slow gate's recorded seconds",
+    )
     arguments = parser.parse_args(argv)
 
     if arguments.shards < 1 or not 1 <= arguments.shard <= arguments.shards:
         print("shard must be within 1..shards", file=sys.stderr)
         return 2
 
-    buckets = shard(test_files(), recorded_seconds(), arguments.shards)
+    durations = recorded_seconds(
+        SLOW_DURATIONS if arguments.slow else DURATIONS
+    )
+    buckets = shard(test_files(), durations, arguments.shards)
     print(" ".join(buckets[arguments.shard - 1]))
     return 0
 
