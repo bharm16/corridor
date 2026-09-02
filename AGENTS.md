@@ -73,7 +73,7 @@ against `dependencies`, `dependency_events`, `work_decisions`,
 must not introduce another legacy-only write; a compatibility write may keep a
 legacy reader working during migration. Do not treat the current pipeline as
 the authority model for a customer pilot until the adopted-baseline operating
-mode exists (#510C).
+mode exists (#520).
 
 Extractors only ever produce Extracted Proposals. Every module opens with a docstring
 saying why it exists and what was tried before — read it before changing one.

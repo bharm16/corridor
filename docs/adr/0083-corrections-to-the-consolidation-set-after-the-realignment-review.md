@@ -9,6 +9,8 @@ amends:
   - ADR-0079
   - ADR-0080
   - ADR-0081
+amended_by:
+  - ADR-0084
 migration: none of the corrected contracts (SourceEnvelope, PullConnector, PushIntake, run-kind provenance, customer-environment disposition, historical backfill) exists yet.
 ---
 

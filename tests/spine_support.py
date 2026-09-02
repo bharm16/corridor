@@ -5,61 +5,58 @@ Session can observe it, then delete that graph under
 ``session_replication_role = replica``. Since #451 every guided human act
 dual-writes the spine, so a cleanup that removes only legacy tables leaves
 facts, decisions, and revisions in the shared per-worker database and breaks
-every later module that asserts an empty spine. Every spine table is
-project-scoped; this helper deletes them in dependency order and asserts the
-spine is empty afterwards, so the next dual-write a cleanup misses fails in
-the leaking test rather than in a victim.
+every later module that asserts an empty spine.
+
+The spine table set is derived from the ORM metadata by name, never listed
+by hand: ``tests/test_architecture.py`` fails when a table that depends on
+the spine does not match ``SPINE_TABLE_PATTERN`` or lacks ``project_id``,
+so a new support, delta, or decision table cannot recreate the leak
+silently. Tables are deleted dependents-first, and the counts helper lets a
+cleanup assert the spine is empty afterwards so the next missed dual-write
+fails in the leaking test rather than in a victim.
 """
 
 from __future__ import annotations
 
-from sqlalchemy import delete, func, select
+import re
+
+from sqlalchemy import Table, delete, func, select
 from sqlalchemy.orm import Session
 
-from corridor.models import (
-    ExtractedProposalFact,
-    Fact,
-    FactAppliesTo,
-    FactClosureResult,
-    FactClosureSource,
-    FactDecision,
-    FactDisposition,
-    FactSource,
-    FactStatementTiming,
-    ProjectRecordRevision,
-    SourceFactAppendReceipt,
-    SourceSegment,
-)
+from corridor.models import Base
 
-SPINE_TABLES = (
-    FactDecision,
-    FactDisposition,
-    ProjectRecordRevision,
-    FactSource,
-    FactAppliesTo,
-    FactClosureResult,
-    FactClosureSource,
-    FactStatementTiming,
-    ExtractedProposalFact,
-    SourceFactAppendReceipt,
-    Fact,
-    SourceSegment,
+SPINE_TABLE_PATTERN = re.compile(
+    r"^(facts|fact_[a-z_]+|source_segments|source_fact_[a-z_]+|"
+    r"project_record_[a-z_]+|extracted_proposal_facts|"
+    r"support_assessment[a-z_]*|proposed_delta[a-z_]*|delta_[a-z_]+)$"
 )
+SPINE_ROOTS = frozenset({"facts", "source_segments", "project_record_revisions"})
+
+
+def spine_tables() -> tuple[Table, ...]:
+    """Every spine table, dependents first, so deletion never trips a key."""
+
+    return tuple(
+        table
+        for table in reversed(Base.metadata.sorted_tables)
+        if SPINE_TABLE_PATTERN.match(table.name)
+    )
+
+
+SPINE_TABLES = spine_tables()
 
 
 def delete_project_spine(cleanup: Session, project_id: int) -> None:
     """Delete every spine row of one project inside an open replica-mode cleanup."""
 
-    for spine_table in SPINE_TABLES:
-        cleanup.execute(delete(spine_table).where(spine_table.project_id == project_id))
+    for table in SPINE_TABLES:
+        cleanup.execute(delete(table).where(table.c.project_id == project_id))
 
 
 def project_spine_counts(session: Session, project_id: int) -> dict[str, int]:
     return {
-        spine_table.__tablename__: session.scalar(
-            select(func.count())
-            .select_from(spine_table)
-            .where(spine_table.project_id == project_id)
+        table.name: session.scalar(
+            select(func.count()).select_from(table).where(table.c.project_id == project_id)
         )
-        for spine_table in SPINE_TABLES
+        for table in SPINE_TABLES
     }
