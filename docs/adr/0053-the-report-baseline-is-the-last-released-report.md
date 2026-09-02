@@ -2,6 +2,8 @@
 status: accepted
 domain: reports
 scope: current product
+amended_by:
+  - ADR-0086
 ---
 
 # The report baseline is the last released report

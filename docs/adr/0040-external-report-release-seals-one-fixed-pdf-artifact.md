@@ -2,6 +2,8 @@
 status: accepted
 domain: reports
 scope: current product
+amended_by:
+  - ADR-0086
 ---
 
 # External Coordination Report release seals one fixed PDF artifact
