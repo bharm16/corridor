@@ -82,6 +82,18 @@ saying why it exists and what was tried before — read it before changing one.
 
 ## Merging
 
+**Start on a branch, before the first commit.** `main` is for merges only, so
+a direct commit to it is a defect even when the change is small and even when
+an instruction says to commit to the current branch. Check where you are
+first, and branch if the answer is `main`:
+
+```bash
+git rev-parse --abbrev-ref HEAD
+```
+
+Recovering a commit already made on `main` is `git branch <name> && git reset
+--hard origin/main && git checkout <name>`, before anything is pushed.
+
 Server-side required status checks are unavailable on this private free-plan
 repository (#506). Until that changes, every PR merges only after every job is
 green, verified with:
