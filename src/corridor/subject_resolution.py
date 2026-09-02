@@ -734,9 +734,15 @@ def _stored_candidates(
     rows = session.scalars(
         select(SubjectResolutionCandidate)
         .where(SubjectResolutionCandidate.attempt_id == attempt_id)
-        .order_by(SubjectResolutionCandidate.subject_key)
+        # Insertion order, then sorted on the typed target below. Ordering on
+        # `subject_key` sorted the string "constraint:<id>", so "…:100" came
+        # before "…:99" and the candidate order inverted whenever the ids
+        # straddled a digit-length boundary — which depends on how much else
+        # had been written to the database, not on the record. A
+        # coordinator-facing list orders by what it means (ADR-0035, ADR-0085).
+        .order_by(SubjectResolutionCandidate.id)
     ).all()
-    return tuple(
+    candidates = tuple(
         ResolutionCandidate(
             subject_type=row.subject_type,
             subject_id=_target_value(row, row.subject_type),
@@ -745,6 +751,12 @@ def _stored_candidates(
             match_source=row.match_source,
         )
         for row in rows
+    )
+    return tuple(
+        sorted(
+            candidates,
+            key=lambda candidate: (candidate.subject_type, candidate.subject_id),
+        )
     )
 
 

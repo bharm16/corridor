@@ -13,6 +13,7 @@ from pathlib import Path
 import re
 import subprocess
 import sys
+import time
 from uuid import uuid4
 
 from dotenv import dotenv_values
@@ -32,8 +33,9 @@ SOURCE_DATABASE_URL_ENV = "CORRIDOR_PYTEST_SOURCE_DATABASE_URL"
 _RUN_ID = re.compile(r"^([1-9][0-9]*)_[0-9a-f]{8}$")
 _WORKER_ID = re.compile(r"^gw[0-9]+$")
 _DATABASE_NAME = re.compile(
-    r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_gw[0-9]+$"
+    r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_(gw[0-9]+|tmpl)$"
 )
+TEMPLATE_ENV = "CORRIDOR_PYTEST_TEMPLATE"
 
 
 def pytest_configure(config) -> None:
@@ -45,6 +47,20 @@ def pytest_configure(config) -> None:
             run_id = new_worker_run_id()
             os.environ[RUN_ID_ENV] = run_id
             config._corridor_pytest_run_id = run_id
+            # Migrate once for the whole run. Every worker used to run the
+            # full chain against its own fresh database, so an ordinary
+            # change replayed it once per worker per job; cloning a migrated
+            # template does that work once and removes the concurrent
+            # cluster-role DDL those parallel migrations were racing on
+            # (#548, #545).
+            template = f"{DATABASE_PREFIX}{run_id}_tmpl"
+            _create_database(parsed, template)
+            try:
+                _migrate_database(parsed.set(database=template))
+            except BaseException:
+                _drop_databases(parsed, (template,))
+                raise
+            os.environ[TEMPLATE_ENV] = template
         return
 
     run_id = os.environ.get(RUN_ID_ENV, "")
@@ -59,14 +75,24 @@ def pytest_configure(config) -> None:
     os.environ[SOURCE_DATABASE_URL_ENV] = parsed.render_as_string(
         hide_password=False
     )
-    _create_database(parsed, database_name)
+    template = os.environ.get(TEMPLATE_ENV, "")
+    if template and _DATABASE_NAME.fullmatch(template):
+        _clone_database(parsed, template, database_name)
+    else:
+        # No template: a single-worker run, or a controller that could not
+        # build one. Fall back to migrating this database directly.
+        _create_database(parsed, database_name)
+        worker_url = parsed.set(database=database_name)
+        os.environ["DATABASE_URL"] = worker_url.render_as_string(
+            hide_password=False
+        )
+        try:
+            _migrate_database(worker_url)
+        except BaseException:
+            _drop_databases(parsed, (database_name,))
+            raise
     worker_url = parsed.set(database=database_name)
     os.environ["DATABASE_URL"] = worker_url.render_as_string(hide_password=False)
-    try:
-        _migrate_database(worker_url)
-    except BaseException:
-        _drop_databases(parsed, (database_name,))
-        raise
     config._corridor_pytest_database = (parsed, database_name)
 
 
@@ -86,6 +112,7 @@ def pytest_unconfigure(config) -> None:
     parsed = _validated_admin_url(_configured_database_url())
     _drop_databases(parsed, _run_database_names(parsed, run_id))
     os.environ.pop(RUN_ID_ENV, None)
+    os.environ.pop(TEMPLATE_ENV, None)
 
 
 @pytest.fixture(scope="session")
@@ -162,6 +189,37 @@ def _create_database(admin_url: URL, database_name: str) -> None:
     try:
         with engine.connect() as connection:
             connection.execute(text(f'create database "{database_name}"'))
+    finally:
+        engine.dispose()
+
+
+def _clone_database(admin_url: URL, template: str, database_name: str) -> None:
+    """Copy one migrated template, retrying while another worker holds it.
+
+    PostgreSQL locks the template for the duration of a copy, so workers
+    starting together collide; the collision is expected and brief.
+    """
+
+    engine = create_engine(
+        admin_url, isolation_level="AUTOCOMMIT", poolclass=NullPool
+    )
+    try:
+        for attempt in range(30):
+            with engine.connect() as connection:
+                try:
+                    connection.execute(
+                        text(
+                            f'create database "{database_name}" '
+                            f'template "{template}"'
+                        )
+                    )
+                except Exception as error:  # noqa: BLE001 - narrowed below
+                    if "being accessed by other users" not in str(error):
+                        raise
+                    time.sleep(0.2)
+                    continue
+                return
+        raise RuntimeError("parallel test template stayed busy")
     finally:
         engine.dispose()
 
