@@ -31,14 +31,14 @@ from corridor.db import Session, engine
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
+from spine_support import delete_project_spine, project_spine_counts
+
 from corridor.models import (
     ActiveExtractionRun,
     Assertion,
     AuditLog,
-    PolicyApproval,
     AutomaticCarryForwardOutcome,
     AutomaticCarryForwardReceipt,
-    PolicyRun,
     Candidate,
     Dependency,
     DependencyEvidenceSufficiency,
@@ -48,6 +48,8 @@ from corridor.models import (
     ExternalOrg,
     ExtractionRun,
     OperativeSupport,
+    PolicyApproval,
+    PolicyRun,
     Project,
     ReconfirmationReceipt,
     RevisionComparisonFinding,
@@ -687,6 +689,12 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         )
         cleanup.execute(delete(Candidate).where(Candidate.project_id == project_id))
         cleanup.execute(delete(Dependency).where(Dependency.project_id == project_id))
+        # Human reconfirmation dual-writes the spine (#451 stage 3): a
+        # designate_support decision, its revision, and the
+        # supporting_documentation_in_use fact. Left behind in the shared
+        # per-worker database they break every later test that asserts an
+        # empty spine (#521), so the committed scenario removes them too.
+        delete_project_spine(cleanup, project_id)
         cleanup.execute(
             delete(ActiveExtractionRun).where(
                 ActiveExtractionRun.document_id.in_(document_ids)
@@ -715,6 +723,9 @@ def _delete_committed_carry_forward_project(project_id: int) -> None:
         # matrix test), so this committed scenario removes it too.
         cleanup.execute(delete(ExternalOrg).where(ExternalOrg.name == "AT&T"))
         cleanup.commit()
+    with Session() as check:
+        leaked = project_spine_counts(check, project_id)
+        assert all(count == 0 for count in leaked.values()), leaked
 
 
 def test_automatic_carry_forward_is_normal_processing(session):

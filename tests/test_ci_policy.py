@@ -28,13 +28,16 @@ def test_normal_pr_ci_runs_non_overlapping_behavior_gates_once():
     workflow = _workflow("test.yml")
 
     assert set(workflow["on"]) == {"pull_request"}
-    assert set(workflow["jobs"]) == {"pytest", "slow"}
+    assert set(workflow["jobs"]) == {"check", "pytest", "slow"}
     commands = _run_commands(workflow)
-    assert "make check" in commands
-    assert "make test" in commands
-    assert "make test-slow" in commands
+    # Each behavior gate runs exactly once across the workflow: the standalone
+    # check job owns `make check`, so the pytest job must not repeat it.
+    assert commands.count("make check") == 1
+    assert commands.count("make test") == 1
+    assert commands.count("make test-slow") == 1
     assert "make test-full" not in commands
     assert "make test-migrations" not in commands
+    assert "make check" not in _run_commands({"jobs": {"pytest": workflow["jobs"]["pytest"]}})
 
 
 def test_migration_ci_is_path_scoped_and_full_history_is_scheduled():
