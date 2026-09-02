@@ -73,8 +73,8 @@ establish Contract Acceptance.
 | | |
 |---|---|
 | [`CONTEXT-MAP.md`](CONTEXT-MAP.md) | Domain contexts and their canonical vocabulary. |
-| [`roadmap.md`](roadmap.md) | Current phases, exits, and the frozen list |
+| [`roadmap.md`](roadmap.md) | Current phases, exits, and how work is classified against the pilot checkpoint |
 | [`docs/history/`](docs/history) | Historical Phase 1 roadmap, v0 build spec, and corpus spec, closed 2026-09-01; not implementation authority |
 | [`docs/adr/`](docs/adr) | Decisions with lasting consequences; [`docs/adr/INDEX.md`](docs/adr/INDEX.md) lists the accepted decisions in force |
-| [`docs/pilot-success-criteria.md`](docs/pilot-success-criteria.md) | Temporary validation gate for the first paid slice |
+| [`docs/pilot-success-criteria.md`](docs/pilot-success-criteria.md) | Temporary measurement contract for the first paid slice, and the checkpoint outcome it produces |
 | [`docs/operations/observability-runbook.md`](docs/operations/observability-runbook.md) | Metrics, alerts, escalation, runbooks |
