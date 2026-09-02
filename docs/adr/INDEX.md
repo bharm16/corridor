@@ -136,7 +136,8 @@ for everything else.
 
 | ADR | Title | Scope | Supersedes | Amends | Amended by | Citing modules | Unresolved migration |
 |---|---|---|---|---|---|---|---|
-| [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | Test gates preserve feedback without weakening release proof | current product | — | — | — | — | — |
+| [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | Test gates preserve feedback without weakening release proof | current product | — | — | [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | — | — |
+| [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | The migration window and the feedback budget are enforced numbers, not prose | current product | — | [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | — | — | the executable chain still carries 21 unreleased transitions against a target of 1, and the PR gate still runs both full suites. |
 
 ### terminology
 

@@ -14,6 +14,10 @@ from sqlalchemy.exc import DBAPIError
 
 from corridor.config import settings
 from corridor.m8_acceptance_database import provision_disposable_postgres
+from alembic.config import Config
+from alembic.script import ScriptDirectory
+
+from corridor.migrations import policy
 from corridor.product_proving_database import fingerprint_database_url
 from corridor.report_release import retrieve_released_external_report
 
@@ -51,32 +55,76 @@ EXPECTED_SCHEMA_SHA256 = (
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
 
 
-def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
-    assert {path.name for path in VERSIONS.glob("*.py")} == {
-        f"{SCHEMA_BUILDER}_current_schema_baseline.py",
-        f"{BASELINE_MARKER}_establish_current_baseline.py",
-        f"{SPREADSHEET_HEAD}_add_spreadsheet_source_segments.py",
-        f"{FACT_HEAD}_add_typed_facts.py",
-        f"{RELEASE_HEAD}_release_references_artifact.py",
-        f"{APPEND_HEAD}_add_scoped_source_fact_append.py",
-        f"{PAGE_INVENTORY_HEAD}_add_pdf_page_inventory.py",
-        f"{IMMUTABLE_PROPOSAL_HEAD}_add_immutable_proposals.py",
-        f"{PROSE_HEAD}_add_prose_spans_and_statement_facts.py",
-        f"{DECISION_HEAD}_add_fact_decisions.py",
-        f"{CURRENT_RECORD_HEAD}_add_current_project_record_view.py",
-        f"{STRUCTURED_FACT_HEAD}_add_structured_cell_facts.py",
-        f"{SUBJECT_RESOLUTION_HEAD}_add_subject_resolution_registry.py",
-        f"{PROSE_ACCOUNTING_HEAD}_add_prose_completeness_accounting.py",
-        f"{RENDER_HEAD}_add_page_render_derivatives.py",
-        f"{CLASS_B_RETENTION_HEAD}_add_class_b_retention.py",
-        f"{TOKEN_LAYER_HEAD}_add_token_layers.py",
-        f"{HUMAN_DECISION_HEAD}_add_human_fact_decision.py",
-        f"{VERBAL_SEGMENT_HEAD}_add_recorded_verbal_segment.py",
-        f"{STATEMENT_TIMING_HEAD}_add_statement_timing_fact.py",
-        f"{COORDINATE_COMMAND_HEAD}_add_coordinate_statement_command.py",
-        f"{DISPOSITION_HEAD}_add_decision_dispositions_and_support_designation.py",
-        f"{CURRENT_HEAD}_least_privileged_write_authority.py",
+def test_the_executable_migration_window_matches_the_recorded_policy():
+    """Assert the revision graph, not a list of filenames.
+
+    The guard this replaces enumerated the permitted filenames, so every
+    migration-bearing change added its name and passed. It could not fail as
+    the chain grew, which is how 2 executable revisions became 23 after #423
+    bounded them.
+    """
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option(
+        "script_location", "src/corridor/migrations"
+    )
+    script = ScriptDirectory.from_config(config)
+
+    heads = script.get_heads()
+    assert list(heads) == [policy.CURRENT_HEAD], (
+        "the executable graph must have exactly one head, and it must be the "
+        f"revision the policy records: {heads}"
+    )
+
+    revisions = list(script.walk_revisions())
+    by_id = {revision.revision: revision for revision in revisions}
+    assert policy.SCHEMA_BUILDER in by_id, "the fresh-install builder must exist"
+    assert policy.SUPPORTED_FROM_REVISION in by_id, (
+        "the supported revision must exist in the executable graph"
+    )
+
+    # The supported revision reaches the head, so a supported database can
+    # upgrade without replaying history it never had.
+    reachable = {
+        revision.revision
+        for revision in script.iterate_revisions(
+            policy.CURRENT_HEAD, policy.SUPPORTED_FROM_REVISION
+        )
     }
+    assert policy.CURRENT_HEAD in reachable
+
+    # No executable revision sits outside the builder's line: history before
+    # the supported revision is source bytes, not an upgrade path.
+    unreachable = {
+        revision.revision
+        for revision in revisions
+        if revision.revision not in reachable
+        and revision.revision
+        not in {policy.SCHEMA_BUILDER, policy.SUPPORTED_FROM_REVISION}
+    }
+    assert unreachable == set(), (
+        f"unrelated executable history remains: {sorted(unreachable)}"
+    )
+
+    # The ratchet. `UNRELEASED_EDGES` may fall and must never rise; a change
+    # needing another revision folds into the current unreleased transition,
+    # or consolidates the chain and lowers the recorded number.
+    # `iterate_revisions` excludes its lower bound, so the reachable set is
+    # exactly the transitions after the supported revision.
+    edges = len(reachable)
+    assert edges <= policy.UNRELEASED_EDGES, (
+        f"the executable chain grew to {edges} transitions after "
+        f"{policy.SUPPORTED_FROM_REVISION}, above the recorded "
+        f"{policy.UNRELEASED_EDGES}. Fold the change into the current "
+        "unreleased transition, or consolidate and lower the policy."
+    )
+    assert edges == policy.UNRELEASED_EDGES, (
+        f"the chain is down to {edges} transitions; lower "
+        f"UNRELEASED_EDGES in the migration policy to hold the gain."
+    )
+    assert policy.UNRELEASED_EDGE_TARGET == 1, (
+        "ADR-0065's window is one supported transition; the target does not move"
+    )
 
 
 def test_fresh_database_matches_the_released_schema_exactly():
