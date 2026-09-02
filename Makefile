@@ -43,6 +43,32 @@ test-full:
 test-slow:
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration"
 
+# One balanced slice of the non-slow suite. CI runs the slices as a matrix so
+# each lands on its own runner: the gate is CPU-bound on a four-core runner,
+# so redistributing between workers on one machine cannot help and more
+# actual CPU can (#548).
+test-shard:
+	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
+	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
+	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD)); \
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" $$files; \
+	status=$$?; \
+	if [ $$status -eq 5 ]; then \
+	  echo "shard $(SHARD) holds no matching tests"; exit 0; fi; \
+	exit $$status
+
+# One balanced slice of the exhaustive non-migration complement, sharded for
+# the same reason as test-shard.
+test-slow-shard:
+	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
+	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
+	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD) --slow); \
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" $$files; \
+	status=$$?; \
+	if [ $$status -eq 5 ]; then \
+	  echo "shard $(SHARD) holds no slow tests"; exit 0; fi; \
+	exit $$status
+
 # Per-file timing for the feedback budget (#548). Writes a JUnit report so a
 # revision can be compared against its base branch before any test is cut.
 # Example: make test-timing && uv run python scripts/test_timing.py out/timing/non-slow.xml

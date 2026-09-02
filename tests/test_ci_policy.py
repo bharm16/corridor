@@ -33,8 +33,12 @@ def test_normal_pr_ci_runs_non_overlapping_behavior_gates_once():
     # Each behavior gate runs exactly once across the workflow, and the
     # standalone check workflow owns `make check`, so neither job repeats it.
     assert "make check" not in commands
-    assert commands.count("make test") == 1
-    assert commands.count("make test-slow") == 1
+    # The non-slow suite is sharded across runners, so it appears once as a
+    # matrix step rather than as one whole-suite command (#548).
+    assert commands.count("make test") == 0
+    assert sum("make test-shard" in command for command in commands) == 1
+    assert commands.count("make test-slow") == 0
+    assert sum("make test-slow-shard" in command for command in commands) == 1
     assert "make test-full" not in commands
     assert "make test-migrations" not in commands
 
@@ -54,6 +58,55 @@ def test_check_runs_on_every_revision_including_documentation_only():
     assert not workflow["on"]["pull_request"], "no paths / paths-ignore scoping"
     assert set(workflow["jobs"]) == {"check"}
     assert _run_commands(workflow).count("make check") == 1
+
+
+def test_every_test_file_lands_in_exactly_one_shard():
+    """Sharding must cover the suite, or the gate silently proves less.
+
+    The risk of splitting a suite across runners is a file that falls in no
+    shard: the gate stays green while nothing runs it.
+    """
+
+    import subprocess
+    import sys
+
+    shards = _shard_count()
+    expected = {
+        str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
+    }
+
+    # Each gate balances on its own recorded seconds, so each has its own
+    # partition; both must cover the suite exactly.
+    for profile in ([], ["--slow"]):
+        assigned: list[str] = []
+        for shard in range(1, shards + 1):
+            completed = subprocess.run(
+                [
+                    sys.executable,
+                    str(ROOT / "scripts" / "test_shard.py"),
+                    "--shards",
+                    str(shards),
+                    "--shard",
+                    str(shard),
+                    *profile,
+                ],
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            assigned.extend(completed.stdout.split())
+
+        label = profile[0] if profile else "--fast"
+        assert len(assigned) == len(set(assigned)), f"{label}: a file landed twice"
+        assert set(assigned) == expected, (
+            f"{label}: shards do not cover the suite: "
+            f"{sorted(expected.symmetric_difference(assigned))}"
+        )
+
+
+def _shard_count() -> int:
+    workflow = _workflow("test.yml")
+    return len(workflow["jobs"]["pytest"]["strategy"]["matrix"]["shard"])
 
 
 def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():
