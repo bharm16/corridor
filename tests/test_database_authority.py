@@ -214,6 +214,47 @@ def test_public_cannot_create_objects_in_the_public_schema(admin):
     assert creatable is False
 
 
+# --- The application's own bindings ---------------------------------------
+
+
+def test_the_application_bindings_do_not_carry_the_schema_owner(admin):
+    """The web and worker engines connect as capability logins (#492).
+
+    The architecture test proves no module imports the owner binding; this
+    proves the bindings those modules do import resolve to logins the database
+    refuses accepted-authority writes to.
+    """
+
+    from corridor.db import WEB_DATABASE_URL, WORKER_DATABASE_URL
+
+    owner = make_url(ADMIN_URL).username
+    for label, url in (
+        ("web", WEB_DATABASE_URL),
+        ("worker", WORKER_DATABASE_URL),
+    ):
+        login = make_url(url).username
+        assert login != owner, f"{label} binding connects as the schema owner"
+
+        attributes = admin.execute(
+            text(
+                "select rolsuper, rolcreaterole, rolcreatedb "
+                "from pg_roles where rolname = :login"
+            ),
+            {"login": login},
+        ).one()
+        assert attributes.rolsuper is False, label
+        assert attributes.rolcreaterole is False, label
+        assert attributes.rolcreatedb is False, label
+
+        writes_accepted = admin.execute(
+            text(
+                "select has_table_privilege(:login, 'fact_decisions', 'insert')"
+            ),
+            {"login": login},
+        ).scalar_one()
+        assert writes_accepted is False, f"{label} can write accepted authority"
+
+
 # --- Refusals proved against the real runtime logins ----------------------
 
 

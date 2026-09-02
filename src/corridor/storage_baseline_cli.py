@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from corridor.db import Session
+from corridor.db import WorkerSession as Session
 from corridor.storage_baseline import (
     BaselineSelection,
     build_storage_baseline,

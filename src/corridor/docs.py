@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.db import Session as SessionFactory
+from corridor.db import WorkerSession as SessionFactory
 from corridor.models import DocPage, Document, Project
 from corridor.pipeline import ingest_manifest
 from corridor.storage import stored_file, stored_pdf

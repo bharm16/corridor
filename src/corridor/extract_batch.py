@@ -288,7 +288,7 @@ def run_extraction(
     import sys
     import time
 
-    from corridor.db import Session as DefaultSessionFactory
+    from corridor.db import WorkerSession as DefaultSessionFactory
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 

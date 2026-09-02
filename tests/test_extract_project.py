@@ -1040,7 +1040,7 @@ def test_main_returns_nonzero_when_any_document_failed(
         def __exit__(self, *exc):
             return False
 
-    monkeypatch.setattr("corridor.db.Session", lambda: Scoped())
+    monkeypatch.setattr("corridor.db.WorkerSession", lambda: Scoped())
     monkeypatch.setattr("corridor.llm.OpenAIClient", StubClient)
     monkeypatch.setattr(
         "corridor.extract_project.extract_project",

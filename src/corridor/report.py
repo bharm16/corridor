@@ -1478,7 +1478,7 @@ def main(argv: list[str]) -> int:
     from pathlib import Path
 
     from corridor.changes import record_run
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
     from corridor.export import to_pdf, to_xlsx
 
     arguments = list(argv)

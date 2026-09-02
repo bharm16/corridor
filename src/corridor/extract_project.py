@@ -543,7 +543,7 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 def main(argv: list[str]) -> int:
     """`make extract ARGS="<slug> [--redo]"`"""
     from corridor.admission import load_and_report
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
     from corridor.llm import OpenAIClient
 
     args = [a for a in argv if not a.startswith("-")]

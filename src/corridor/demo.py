@@ -18,7 +18,7 @@ from sqlalchemy.exc import DBAPIError
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session
+from corridor.db import WorkerSession as Session
 from corridor.extraction_runs import declare_active_run
 from corridor.models import (
     Assertion,

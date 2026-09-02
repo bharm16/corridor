@@ -594,7 +594,7 @@ def main(argv: list[str]) -> int:
     """
     import sys
 
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
