@@ -41,8 +41,9 @@ HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
 VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
 STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
 COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
-PREDECESSOR_HEAD = COORDINATE_COMMAND_HEAD
-CURRENT_HEAD = "8e9f0a1b2c34"
+DISPOSITION_HEAD = "8e9f0a1b2c34"
+PREDECESSOR_HEAD = DISPOSITION_HEAD
+CURRENT_HEAD = "a1c4e7b0d2f3"
 EXPECTED_SCHEMA_SHA256 = (
     "c5adc7a1fd96bf1acc506329217c66917b4e4ec20a54aa047642fc2ca97f26fc"
 )
@@ -73,7 +74,8 @@ def test_migration_inventory_is_one_builder_marker_and_two_linear_successors():
         f"{VERBAL_SEGMENT_HEAD}_add_recorded_verbal_segment.py",
         f"{STATEMENT_TIMING_HEAD}_add_statement_timing_fact.py",
         f"{COORDINATE_COMMAND_HEAD}_add_coordinate_statement_command.py",
-        f"{CURRENT_HEAD}_add_decision_dispositions_and_support_designation.py",
+        f"{DISPOSITION_HEAD}_add_decision_dispositions_and_support_designation.py",
+        f"{CURRENT_HEAD}_least_privileged_write_authority.py",
     }
 
 
@@ -113,7 +115,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows():
+def test_supported_predecessor_adds_the_authority_boundary_without_changing_rows():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -141,48 +143,49 @@ def test_supported_predecessor_adds_empty_append_receipts_without_changing_rows(
         assert _project_row(database.session_factory) == before
         assert _source_segment_rows(database.session_factory) == []
         assert _fact_rows(database.session_factory) == []
-        # The disposition migration adds the decision disposition column, the
-        # partial one-effective-decision-per-fact unique, the compensating
-        # restore_do_not_add command, the relationship fact type, and the
-        # suppression-aware current record view.
+        # The authority migration adds the role matrix and replaces PUBLIC
+        # execution with per-capability grants; it transforms no rows.
         with database.session_factory() as session:
-            definition = session.scalar(
+            logins = session.execute(
                 text(
-                    "select pg_get_functiondef(oid) from pg_proc "
-                    "where proname = 'record_human_fact_decision'"
+                    "select rolname, rolsuper, rolcreaterole, rolcreatedb "
+                    "from pg_roles where rolname = any(:names) order by rolname"
+                ),
+                {"names": ["corridor_legacy_dev", "corridor_web", "corridor_worker"]},
+            ).all()
+            assert [row.rolname for row in logins] == [
+                "corridor_legacy_dev",
+                "corridor_web",
+                "corridor_worker",
+            ]
+            assert all(
+                (row.rolsuper, row.rolcreaterole, row.rolcreatedb)
+                == (False, False, False)
+                for row in logins
+            )
+            owner_can_login = session.scalar(
+                text(
+                    "select bool_or(rolcanlogin) from pg_roles "
+                    "where rolname = 'corridor_source_append'"
                 )
             )
-            assert "restore_do_not_add" in definition
-            assert "p_disposition" in definition
-            disposition_default = session.scalar(
+            assert owner_can_login is False
+            public_execute = session.scalar(
                 text(
-                    "select column_default from information_schema.columns "
-                    "where table_name = 'fact_decisions' "
-                    "and column_name = 'disposition'"
+                    "select bool_or(proacl is null or array_to_string(proacl,',') "
+                    "like '=%') from pg_proc p "
+                    "join pg_namespace n on n.oid = p.pronamespace "
+                    "where n.nspname = 'public' and p.prosecdef"
                 )
             )
-            assert disposition_default == "'include'::character varying"
-            partial_unique = session.scalar(
+            assert public_execute is False
+            web_writes_accepted = session.scalar(
                 text(
-                    "select pg_get_indexdef(indexrelid) from pg_index "
-                    "join pg_class on pg_class.oid = indexrelid "
-                    "where relname = 'uq_fact_decision_fact'"
+                    "select has_table_privilege("
+                    "'corridor_web', 'fact_decisions', 'insert')"
                 )
             )
-            assert "WHERE (superseded_by IS NULL)" in partial_unique
-            type_check = session.scalar(
-                text(
-                    "select pg_get_constraintdef(oid) from pg_constraint "
-                    "where conname = 'ck_facts_type'"
-                )
-            )
-            assert "supporting_documentation_in_use" in type_check
-            view_definition = session.scalar(
-                text(
-                    "select pg_get_viewdef('current_project_record'::regclass)"
-                )
-            )
-            assert "do_not_add" in view_definition
+            assert web_writes_accepted is False
 
 
 def test_supported_predecessor_creates_immutable_scoped_append_receipt():
@@ -346,7 +349,7 @@ def test_supported_predecessor_creates_immutable_scoped_append_receipt():
         ]
 
 
-def test_downgrade_that_would_drop_the_decision_dispositions_is_unsupported():
+def test_downgrade_that_would_reopen_write_authority_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -359,7 +362,7 @@ def test_downgrade_that_would_drop_the_decision_dispositions_is_unsupported():
 
     assert completed.returncode != 0
     assert (
-        "decision disposition migration downgrade is unsupported"
+        "least-privileged write authority migration downgrade is unsupported"
         in completed.stderr
     )
 
