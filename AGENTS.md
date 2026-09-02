@@ -143,9 +143,16 @@ remote-tracking ref outlives the work it carried.
   supported database has advanced past its starting revision; current behavior
   stays in ordinary tests.
 - The supported migration window is the current released head and its immediate
-  successor only. Add one linear successor, test exact transformed rows, and
-  retire the predecessor test when that window advances. Do not add another
-  feature-specific blank-database history test; the baseline test owns that.
+  successor only. **At most one unreleased executable successor may exist after
+  the revision recorded in `src/corridor/migrations/policy.py`.** A second
+  migration-bearing change folds into the current unreleased transition, or
+  consolidates the chain and lowers the recorded count first — it does not
+  append another revision. "Add one linear successor" was read as "append one
+  more successor in every pull request", which grew the chain from 2 revisions
+  to 23 after #423 bounded it (#548).
+- Test exact transformed rows, and retire the predecessor test when the window
+  advances. Do not add another feature-specific blank-database history test;
+  the baseline test owns that.
 - Executable revisions live in `src/corridor/migrations/baseline_versions`.
   `migrations/versions` contains inert source bytes retained only for released
   policy fingerprints; Alembic does not load that directory.

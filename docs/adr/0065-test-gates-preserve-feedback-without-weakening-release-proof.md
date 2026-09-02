@@ -2,6 +2,8 @@
 status: accepted
 domain: testing
 scope: current product
+amended_by:
+  - ADR-0087
 ---
 
 # Test gates preserve feedback without weakening release proof
