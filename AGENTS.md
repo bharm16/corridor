@@ -92,6 +92,23 @@ gh pr checks <pr-number> --watch --fail-fast
 
 A merge with a red or still-running job is a regression to file (#516).
 
+Merge as soon as a reviewed PR is green; do not leave finished work open.
+Every merge squashes and deletes its branch in the same act:
+
+```bash
+gh pr merge <pr-number> --squash --delete-branch
+```
+
+Then update and prune, because `--delete-branch` removes the branch on the
+server but leaves the local remote-tracking ref behind:
+
+```bash
+git checkout main && git pull --ff-only && git fetch --prune
+```
+
+Closing an issue follows the same rule: no branch, worktree, or
+remote-tracking ref outlives the work it carried.
+
 ## Gotchas
 
 - Postgres is on host port **5433**. A Homebrew Postgres 14 takes 5432 and
