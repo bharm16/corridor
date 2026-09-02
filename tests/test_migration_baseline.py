@@ -25,7 +25,6 @@ from corridor.report_release import retrieve_released_external_report
 ROOT = Path(__file__).resolve().parents[1]
 VERSIONS = ROOT / "src" / "corridor" / "migrations" / "baseline_versions"
 SCHEMA_BUILDER = "b7d3f9a1c2e5"
-BASELINE_MARKER = "c0a1d0b5e11e"
 SPREADSHEET_HEAD = "0ca809014df7"
 FACT_HEAD = "444758f7b4a7"
 RELEASE_HEAD = "d430a1b2c3d4"
@@ -45,7 +44,6 @@ HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
 VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
 STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
 COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
-DISPOSITION_HEAD = "8e9f0a1b2c34"
 CURRENT_HEAD = "a1c4e7b0d2f3"
 EXPECTED_SCHEMA_SHA256 = (
     "c5adc7a1fd96bf1acc506329217c66917b4e4ec20a54aa047642fc2ca97f26fc"

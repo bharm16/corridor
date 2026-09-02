@@ -42,7 +42,9 @@ from corridor.product_proving_database import (
 
 
 REVISION = "a" * 40
-MIGRATION_HEAD = "c0a1d0b5e11e"
+# The consolidated baseline (#548); the builder and marker it replaced
+# are retained as source bytes only.
+MIGRATION_HEAD = "a1c4e7b0d2f3"
 SOURCE_URL = "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
 ADMIN_URL = SOURCE_URL
 REPO_ROOT = Path(__file__).resolve().parents[1]
