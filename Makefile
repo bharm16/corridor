@@ -7,7 +7,7 @@ boot:
 	uv sync
 	uv sync --project workers/render --frozen
 	docker compose up -d --wait
-	uv run alembic upgrade head
+	CORRIDOR_LEGACY_DEV_LOGIN=1 uv run alembic upgrade head
 
 up:
 	docker compose up -d --wait
