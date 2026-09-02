@@ -294,6 +294,16 @@ def test_released_policy_sources_are_outside_executable_migration_history():
         "version_locations = %(here)s/src/corridor/migrations/baseline_versions"
         in config
     )
-    assert len(
-        tuple((SOURCE_ROOT / "migrations" / "versions").glob("*.py"))
-    ) == 13
+    # The inert directory holds the retained source bytes of every revision
+    # the executable graph no longer runs: thirteen from #423, plus the
+    # twenty-three consolidated into the current baseline by #548. It only
+    # grows, and never becomes executable.
+    retained = tuple((SOURCE_ROOT / "migrations" / "versions").glob("*.py"))
+    assert len(retained) == 36
+    executable = tuple(
+        (SOURCE_ROOT / "migrations" / "baseline_versions").glob("*.py")
+    )
+    assert len(executable) == 1, (
+        "the executable graph is one consolidated baseline; "
+        "src/corridor/migrations/policy.py records the window"
+    )
