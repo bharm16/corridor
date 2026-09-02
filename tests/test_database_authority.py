@@ -14,18 +14,45 @@ import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
+from corridor.config import settings
+from corridor.models import FactDecision
 
-ADMIN_URL = os.environ.get(
-    "DATABASE_URL", "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
-)
+
+# The configured URL, never a private copy of it: AGENTS.md records that a
+# Homebrew PostgreSQL 14 answers on 5432 with the same credentials, so a test
+# that hardcodes its own fallback can pass against the wrong server.
+ADMIN_URL = settings.database_url
+
 OWNER_ROLES = (
     "corridor_source_append",
     "corridor_fact_decision_writer",
     "corridor_statement_retirement",
 )
-LOGIN_ROLES = ("corridor_web", "corridor_worker", "corridor_legacy_dev")
+RUNTIME_LOGIN_ROLES = ("corridor_web", "corridor_worker")
+
+# The legacy-development login is created only where a deployment asks for it,
+# so a customer environment holds no credential that can write the frozen
+# legacy accepted tables at all.
+LEGACY_DEV_ROLE = "corridor_legacy_dev"
+LEGACY_DEV_ENABLED = os.environ.get(
+    "CORRIDOR_LEGACY_DEV_LOGIN", ""
+).strip().lower() in {"1", "true", "yes"}
+LOGIN_ROLES = RUNTIME_LOGIN_ROLES + (
+    (LEGACY_DEV_ROLE,) if LEGACY_DEV_ENABLED else ()
+)
+
+# The passwords the migration gives each login, resolved the same way it
+# resolves them, so a deployment that sets its own does not break this proof.
+LOGIN_PASSWORDS = {
+    "corridor_web": os.environ.get("CORRIDOR_WEB_DB_PASSWORD") or "corridor_web",
+    "corridor_worker": os.environ.get("CORRIDOR_WORKER_DB_PASSWORD")
+    or "corridor_worker",
+    LEGACY_DEV_ROLE: os.environ.get("CORRIDOR_LEGACY_DEV_DB_PASSWORD")
+    or LEGACY_DEV_ROLE,
+}
 ACCEPTED_TABLES = (
     "project_record_revisions",
     "fact_decisions",
@@ -44,8 +71,10 @@ LEGACY_ACCEPTED_TABLES = (
 def _url_for(role: str) -> str:
     """The runtime URL for one capability, on the database under test."""
 
-    return make_url(ADMIN_URL).set(username=role, password=role).render_as_string(
-        hide_password=False
+    return (
+        make_url(ADMIN_URL)
+        .set(username=role, password=LOGIN_PASSWORDS[role])
+        .render_as_string(hide_password=False)
     )
 
 
@@ -63,14 +92,8 @@ def runtime(request):
 
     engine = create_engine(_url_for(request.param), poolclass=NullPool, future=True)
     with engine.connect() as connection:
-        connection.role = request.param
-        yield connection
+        yield request.param, connection
     engine.dispose()
-
-
-def _connection_for(role: str):
-    engine = create_engine(_url_for(role), poolclass=NullPool, future=True)
-    return engine, engine.connect()
 
 
 # --- Role attributes ------------------------------------------------------
@@ -153,13 +176,12 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
                 select r.rolname
                 from pg_proc p
                 join pg_namespace n on n.oid = p.pronamespace
-                cross join unnest(array['corridor_web','corridor_worker',
-                                        'corridor_legacy_dev']) as r(rolname)
+                cross join unnest(cast(:logins as text[])) as r(rolname)
                 where n.nspname = 'public' and p.proname = :name
                   and has_function_privilege(r.rolname, p.oid, 'execute')
                 """
             ),
-            {"name": command},
+            {"name": command, "logins": list(LOGIN_ROLES)},
         ).scalars().all()
 
         assert granted == ["corridor_web"], f"{command}: {granted}"
@@ -172,13 +194,13 @@ def test_machine_policy_commands_are_callable_only_by_the_worker_capability(admi
             select r.rolname
             from pg_proc p
             join pg_namespace n on n.oid = p.pronamespace
-            cross join unnest(array['corridor_web','corridor_worker',
-                                    'corridor_legacy_dev']) as r(rolname)
+            cross join unnest(cast(:logins as text[])) as r(rolname)
             where n.nspname = 'public'
               and p.proname = 'include_structured_cell_fact_decision'
               and has_function_privilege(r.rolname, p.oid, 'execute')
             """
-        )
+        ),
+        {"logins": list(LOGIN_ROLES)},
     ).scalars().all()
 
     assert granted == ["corridor_worker"]
@@ -197,58 +219,100 @@ def test_public_cannot_create_objects_in_the_public_schema(admin):
 
 @pytest.mark.parametrize("table", ACCEPTED_TABLES)
 def test_a_runtime_capability_cannot_write_accepted_authority(runtime, table):
+    _role, connection = runtime
+
     with pytest.raises(ProgrammingError) as refused:
-        runtime.execute(text(f"insert into {table} default values"))
+        connection.execute(text(f"insert into {table} default values"))
 
     assert "permission denied" in str(refused.value)
 
 
 @pytest.mark.parametrize("table", LEGACY_ACCEPTED_TABLES)
 def test_a_runtime_capability_cannot_write_legacy_accepted_tables(runtime, table):
+    _role, connection = runtime
+
     with pytest.raises(ProgrammingError) as refused:
-        runtime.execute(text(f"insert into {table} default values"))
+        connection.execute(text(f"insert into {table} default values"))
 
     assert "permission denied" in str(refused.value)
 
 
+def test_a_runtime_capability_cannot_write_accepted_authority_through_the_orm(
+    runtime,
+):
+    """The refusal is the database's, so the ORM cannot route around it.
+
+    Every other refusal here is raw SQL.  This one goes through the mapped
+    class and a Session, which is how the application actually writes, so a
+    future ORM write path cannot quietly hold authority the raw-SQL proof
+    denies.
+    """
+
+    _role, connection = runtime
+    with Session(bind=connection) as session:
+        session.add(
+            FactDecision(
+                project_id=1,
+                fact_id=1,
+                subject_key="authority-probe",
+                fact_type="stationing",
+                revision_id=1,
+            )
+        )
+
+        with pytest.raises(ProgrammingError) as refused:
+            session.flush()
+
+    assert "permission denied for table fact_decisions" in str(refused.value)
+
+
 def test_a_runtime_capability_cannot_set_role_into_a_command_owner(runtime):
+    _role, connection = runtime
+
     for owner in OWNER_ROLES:
         with pytest.raises(ProgrammingError) as refused:
-            runtime.execute(text(f"set role {owner}"))
-        runtime.rollback()
+            connection.execute(text(f"set role {owner}"))
+        connection.rollback()
 
         assert "permission denied to set role" in str(refused.value)
 
 
 def test_a_runtime_capability_cannot_disable_a_guarding_trigger(runtime):
+    _role, connection = runtime
+
     with pytest.raises(ProgrammingError) as refused:
-        runtime.execute(text("alter table facts disable trigger all"))
+        connection.execute(text("alter table facts disable trigger all"))
 
     assert "must be owner of table facts" in str(refused.value)
 
 
 def test_a_runtime_capability_cannot_call_the_other_command_family(runtime):
+    role, connection = runtime
     wrong_family = (
         "select include_structured_cell_fact_decision(1,1,'k','t','i','p')"
-        if runtime.role == "corridor_web"
+        if role == "corridor_web"
         else "select record_human_fact_decision(1,1,'k','t','c','d','p','i',null)"
     )
 
     with pytest.raises(ProgrammingError) as refused:
-        runtime.execute(text(wrong_family))
+        connection.execute(text(wrong_family))
 
     assert "permission denied for function" in str(refused.value)
 
 
+@pytest.mark.skipif(
+    not LEGACY_DEV_ENABLED,
+    reason="the legacy-development login is created only where it is asked for",
+)
 def test_the_legacy_development_login_writes_legacy_tables_and_nothing_accepted(admin):
     for table in LEGACY_ACCEPTED_TABLES:
         assert admin.execute(
-            text("select has_table_privilege('corridor_legacy_dev', :t, 'insert')"),
-            {"t": table},
+            text("select has_table_privilege(:role, :t, 'insert')"),
+            {"role": LEGACY_DEV_ROLE, "t": table},
         ).scalar_one() is True, table
 
     for table in ACCEPTED_TABLES:
         assert admin.execute(
-            text("select has_table_privilege('corridor_legacy_dev', :t, 'insert')"),
-            {"t": table},
+            text("select has_table_privilege(:role, :t, 'insert')"),
+            {"role": LEGACY_DEV_ROLE, "t": table},
         ).scalar_one() is False, table
