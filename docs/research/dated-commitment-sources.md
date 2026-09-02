@@ -262,7 +262,7 @@ page carries a provision revision footer (`1/7/2025`, `9/10/25`, `5/13/25`) that
 regex will read as the commitment. In Onslow U-5789 a naive scan flags `4/11/25` next to
 Conterra when the actual sentence contains no calendar date at all.
 
-The strategic caveat is the one `corpus-acquisition-spec.md` §2 already states: a stream covering
+The strategic caveat is the one `../history/corpus-acquisition-spec-2026-07.md` §2 already states: a stream covering
 a different project cannot be borrowed. NCDOT is a third project, with its own spine and its own
 ledger, not an upgrade to NHHIP or SH 99.
 
@@ -330,7 +330,7 @@ other rather than failing loudly.
 The City of Denton Friday Staff Reports
 ([cityofdenton.com/510](https://www.cityofdenton.com/510/Friday-Staff-Reports-to-City-Council))
 are the same genre at weekly cadence with the same caveats, and are already named in
-`corpus-acquisition-spec.md` §7.3.
+`../history/corpus-acquisition-spec-2026-07.md` §7.3.
 
 **5. Executed Standard Utility Agreements found in county and city agenda packets.** The
 highest-fidelity single record found anywhere, and the worst corpus. Fort Bend County's executed
@@ -467,7 +467,7 @@ notice-to-proceed."* GDOT's Utility Adjustment Schedule is the same again, and i
 downloadable — form 6863-9b states the schedules *"will be made available for examination by the
 Contractor at the Department's District Office."*
 
-**`corpus-acquisition-spec.md` line 170 should be corrected on four points.** It describes the
+**`../history/corpus-acquisition-spec-2026-07.md` line 170 should be corrected on four points.** It describes the
 FDOT UWS in a way that reads as though the form is a schedule of dates; it is not, and this
 document is the measurement behind that sentence. Three of its supporting claims are also wrong:
 the share is **not** 403 and does not require harvesting search-engine URLs — folder URLs return
@@ -558,7 +558,7 @@ relocation schedules. `Utility Owner Information.zip` (23 MB) is sixteen generic
 encroachment standards documents.
 
 **Two smaller corrections.** The WSDOT contracts root has 393 folders today, so
-`corpus-acquisition-spec.md` §7.2's figure of 392 is accurate and current, not stale. And no other
+`../history/corpus-acquisition-spec-2026-07.md` §7.2's figure of 392 is accurate and current, not stale. And no other
 Texas county publishes the Rockwall-style consortium report — a search for the exact field string
 `"Utility Relocations Complete:"` outside Rockwall returns only Rockwall's own files and generic
 TxDOT manual pages, so the format is one county's local practice rather than a Dallas District

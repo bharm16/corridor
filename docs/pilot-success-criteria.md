@@ -31,7 +31,7 @@ Import one customer UCM
 | Design partners | at least 2, each with a signed pilot agreement |
 | Active projects | at least 4 in total, at least 2 per partner, each with a current UCM |
 | Duration | 8 consecutive weeks of live evidence per project, after a 2-week onboarding period that is measured but not gated |
-| Source classes | at least the partner's UCM revisions and one connected mailbox or folder; minutes and schedule exports if the partner produces them |
+| Source classes | at least the partner's UCM revisions and one connected mailbox or folder; minutes and schedule exports if the partner produces them. Recorded Verbal Statements are **excluded from the gated source population**: they may remain available as legacy-compatible project context but count toward neither coverage nor delta accuracy until their spine-native source origin (#512) ships |
 | Source events | at least 40 captured source arrivals per partner over the 8 weeks, or the pilot is extended until reached |
 | Baseline measurement | partner's own maintenance and report-preparation minutes, logged per project-week for the 2 weeks before adoption, by the coordinator who does the work |
 | Comparison method | same coordinator, same projects, same weekly artifact; Corridor time logged in the product, partner time logged by the coordinator |
@@ -48,10 +48,10 @@ weeks). A pilot passes only if every criterion passes for both partners.
 | Corridor operations time | setup, triage, connector maintenance, and support at most 15 minutes per active project per week from week 3 onward |
 | Source-arrival to Proposed Delta latency | median at most 24 hours; 90th percentile at most 3 business days |
 | Proposed Delta to decision latency | reported; no threshold, because it is the coordinator's cadence |
-| Baseline adoption accuracy | a random sample of 100 adopted rows per project (all rows if fewer), every material field checked against the source workbook: at least 99% field accuracy and zero silently discarded rows or columns |
+| Baseline adoption accuracy | a random sample of 100 adopted rows per project (all rows if fewer), every material field checked against the source workbook: at least 99% accuracy where the denominator is **checked populated material fields** (not sampled rows), and zero silently discarded rows or columns |
 | Accept-without-edit, routine deltas | at least 80% |
 | Accept-without-edit, material-field stratum | at least 70%, reported separately for Utility Owner, conflict identity, Promised For, Required By linkage, closure, Applies To, agreement or permit status, cost responsibility |
-| Material false writes | zero automatic projections to a material field that a person later reverses as a confirmed policy error; any occurrence fails the pilot for that policy class |
+| Material false writes | zero automatic projections to a material field that a person later reverses as a confirmed policy error. Any occurrence fails that policy-class criterion, and it stays failed even when the pilot continues for diagnosis |
 | Material misses | at most 5% of sampled material changes absent from Proposed Deltas |
 | Coverage | at least 95% of source arrivals in the connected channel captured within the latency window; the remainder listed by cause |
 | False or low-value exceptions | at most 20% of surfaced exceptions judged low-value by the coordinator in weeks 7 through 10, and at least a 30% relative reduction from weeks 3 through 4 |
@@ -60,7 +60,7 @@ weeks). A pilot passes only if every criterion passes for both partners.
 
 ## Sampling rules
 
-- **Material change sample.** Each week, 20 source arrivals per partner are drawn at random from the connected channel and read by a person who did not resolve their deltas. Every material change found is checked against the Proposed Deltas produced. Misses and their causes are logged.
+- **Material change sample.** Each week, when a partner has 20 or fewer eligible source arrivals, every one is inspected; when more than 20 arrive, 20 are drawn at random without replacement. The reader is a person who did not resolve the arrivals' deltas. Every material change found is checked against the Proposed Deltas produced; misses and their causes are logged. Across the full pilot, sampling continues until at least **30 eligible material-change cases per partner** have been reviewed; if that minimum is not reached by week 10 the pilot is extended, or the report states insufficient evidence for the miss criterion. Sampling is without replacement within the measurement period.
 - **Low-value exception sample.** Each week the coordinator marks every surfaced exception they acted on as useful or low-value at the moment of triage; no retrospective relabeling.
 - **Baseline sample.** Drawn once per project at adoption, before any delta is resolved, and checked within the onboarding period.
 
