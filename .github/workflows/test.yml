@@ -2,26 +2,18 @@ name: test
 
 on:
   pull_request:
+    # Documentation-only changes cannot alter behavior these gates prove.
+    # `make check` still runs on every pull request from check.yml, and it
+    # owns the only tests that read documentation (tests/test_architecture.py).
+    paths-ignore:
+      - "**.md"
+      - "docs/**"
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
-  check:
-    # Fast source and architecture checks, including the ADR lifecycle and
-    # index tests; emitted as a standalone status on every pull request
-    # (branch protection is not enabled on this plan; see AGENTS.md).
-    runs-on: ubuntu-latest
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@v4
-      - uses: astral-sh/setup-uv@v6
-        with:
-          enable-cache: true
-      - run: uv sync --locked
-      - run: make check
-
   pytest:
     runs-on: ubuntu-latest
     timeout-minutes: 20
