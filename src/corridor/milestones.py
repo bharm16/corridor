@@ -770,7 +770,7 @@ def main(argv: list[str]) -> int:
     """`make milestones ARGS="<slug> <schedule.csv|schedule.xer> [milestone-code-to-link]"`"""
     import sys
 
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
     from corridor.models import Project
 
     if len(argv) < 2:

@@ -15,7 +15,7 @@ import json
 from sqlalchemy import select
 
 from corridor.config import settings
-from corridor.db import Session
+from corridor.db import WorkerSession as Session
 from corridor.models import RetentionManifestItem
 from corridor.principals import HumanPrincipal
 from corridor.retention import (

@@ -134,6 +134,39 @@ def _adr_index_module():
     return module
 
 
+def test_no_application_module_binds_the_schema_owner_credential():
+    """An application process uses a capability login, never the owner (#492).
+
+    `corridor.db.Session` and `corridor.db.engine` carry the migration
+    credential that owns the schema. The database refuses accepted-authority
+    writes to the capability logins, so a module that quietly imported the
+    owner binding would hold authority the boundary is meant to deny.
+    """
+
+    offenders = []
+    for path in sorted((REPO_ROOT / "src" / "corridor").rglob("*.py")):
+        if path.name == "db.py":
+            continue
+        source = path.read_text(encoding="utf-8")
+        for line in source.splitlines():
+            stripped = line.strip()
+            if not stripped.startswith("from corridor.db import"):
+                continue
+            imported = stripped.removeprefix("from corridor.db import")
+            names = {
+                part.split(" as ")[0].strip() for part in imported.split(",")
+            }
+            if names & {"Session", "engine"}:
+                offenders.append(
+                    f"{path.relative_to(REPO_ROOT)}: {stripped}"
+                )
+
+    assert offenders == [], (
+        "application modules must import WebSession, WorkerSession, "
+        "web_engine, or worker_engine: " + "; ".join(offenders)
+    )
+
+
 def test_every_adr_declares_machine_readable_status():
     """The lifecycle rules in docs/adr/README.md, mechanically."""
     adr_index = _adr_index_module()

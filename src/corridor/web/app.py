@@ -64,7 +64,7 @@ from corridor.candidate_statement_facts import (
     CandidateStatementFacts,
     prepare_candidate_statement_facts,
 )
-from corridor.db import Session as SessionFactory
+from corridor.db import WebSession as SessionFactory
 from corridor import access
 from corridor.web import auth
 from corridor.check_configuration import (

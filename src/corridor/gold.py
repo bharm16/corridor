@@ -529,7 +529,7 @@ def main(argv: list[str]) -> int:
     """`make gold ARGS="<slug>"`"""
     import sys
 
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
 
     if not argv:
         print("usage: python -m corridor.gold <slug> [--author]", file=sys.stderr)

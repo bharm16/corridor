@@ -710,7 +710,7 @@ def main(argv: list[str]) -> int:
     """`make exceptions ARGS="<slug>"`"""
     import sys
 
-    from corridor.db import Session as SessionFactory
+    from corridor.db import WorkerSession as SessionFactory
     from corridor.models import Project
 
     slug = argv[0] if argv else "nhhip-3c2"

@@ -11,8 +11,22 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
+    # The migration and DDL credential: it owns the schema and runs alembic.
+    # No application process connects with it (#492); the capability URLs
+    # below are what the web application and the worker use.
     database_url: str = (
         "postgresql+psycopg://corridor:corridor@localhost:5433/corridor"
+    )
+    # Deployment-resolved runtime credentials. Left empty, each is derived
+    # from `database_url` by swapping in that capability's login, so a local
+    # clone boots without configuring three URLs.
+    web_database_url: str = ""
+    worker_database_url: str = ""
+    web_db_password: str = Field(
+        default="corridor_web", validation_alias="CORRIDOR_WEB_DB_PASSWORD"
+    )
+    worker_db_password: str = Field(
+        default="corridor_worker", validation_alias="CORRIDOR_WORKER_DB_PASSWORD"
     )
     # Content-addressed store written by `make corpus`. The queue resolves a
     # Document back to its PDF from here to compute quote highlights, and product

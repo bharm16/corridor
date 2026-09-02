@@ -835,7 +835,7 @@ def main(argv: list[str], *, session_factory=None) -> int:
         return 2
 
     if session_factory is None:
-        from corridor.db import Session as session_factory
+        from corridor.db import WorkerSession as session_factory
 
     with session_factory() as session:
         try:
@@ -871,7 +871,7 @@ def _single_run_documents_main(slug: str, *, session_factory=None) -> int:
         return 2
 
     if session_factory is None:
-        from corridor.db import Session as session_factory
+        from corridor.db import WorkerSession as session_factory
 
     from corridor.models import Project
 
