@@ -7,9 +7,9 @@
 
 ## Relationships
 
-- **Corridor Operations -> Project Record**: supported Extracted Proposals enter through Record Inclusion; an Abstention leaves the proposed change unapplied, while a Processing Failure remains a failed attempt.
+- **Corridor Operations -> Project Record**: on the legacy route, supported Extracted Proposals enter through Record Inclusion; an Abstention leaves the proposed change unapplied, while a Processing Failure remains a failed attempt. On the adopted-baseline route, captured Source Facts are compared with the accepted record and enter only as Proposed Deltas that a person or a narrow released policy resolves; no legacy path silently replaces an accepted value.
 - **Project Record -> Corridor Operations**: Supporting Documentation in Use and registered Supersession identify the revision work that Corridor Operations must process.
-- **Project Record -> Publication**: Coordination Reports and Coordination Summaries read the Project Record; a Report Approved for Release is one exact retained PDF approved for sharing, not evidence that it was sent or received.
+- **Project Record -> Publication**: Coordination Reports and Coordination Summaries read the Project Record; a Report Approved for Release is the complete immutable set of configured customer artifacts a named person approved for sharing, sealed as one Release Package, not evidence that it was sent or received.
 
 ## Terminology
 

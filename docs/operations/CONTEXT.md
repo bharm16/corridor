@@ -1,6 +1,8 @@
 # Corridor Operations
 
-Corridor Operations turns registered Documents into reproducible Extracted Proposals and maintains supporting sources without asking customer users to operate technical machinery. Project decisions and their construction meaning belong to the [Project Record](../../CONTEXT.md).
+Corridor Operations turns registered Documents into reproducible extraction output and maintains supporting sources without asking customer users to operate technical machinery. Project decisions and their construction meaning belong to the [Project Record](../../CONTEXT.md).
+
+Two routes exist. The **legacy route** produces Extracted Proposals that enter the Project Record through Record Inclusion; it is frozen against new capability ([ADR-0081](../adr/0081-the-spine-is-the-target-model-and-legacy-tables-retire-by-staged-exit-criteria.md)). The **adopted-baseline route** captures Source Segments and Source Facts and compares them with the accepted record to produce Proposed Deltas, which only a person or a narrow released policy resolves ([ADR-0076](../adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
 
 ## Language
 
@@ -22,6 +24,11 @@ A particular file representation of the same Document Revision, such as its issu
 _Customer label_: File, with Format shown separately
 _Avoid_: format metadata alone, automatically an independent source or newer revision, unproven equivalence
 
+**Source Segment**:
+One addressable piece of a source, holding its exact text or value once, a digest of those bytes, and a typed locator identifying where it sits in a stated Document Revision — page and span, or sheet, row, and cell ([ADR-0068](../adr/0068-a-source-segment-stores-its-exact-text-once.md)). A Source Fact references its segments rather than restating their text, and a Support Assessment relates a proposition to them.
+_Customer label_: The exact wording, shown at its place in the source
+_Avoid_: a paraphrase, a page number without the text, one segment per document, a semantic judgment about what the passage supports
+
 **Extraction Run**:
 One recorded attempt to extract information from one exact Document using an identified extractor configuration, with its input, configuration, outcome, and output identity preserved.
 _Customer label_: Document processing attempt, in technical history
@@ -37,8 +44,8 @@ _Customer label_: Proposed constraint or Proposed statement, with the actual han
 _Avoid_: an accepted fact, every proposal still pending review
 
 **Source Passage Check**:
-A check that a Cited Passage is present in the identified source page or row, under the stated matching method and its limits.
-_Avoid_: Documentation Review, physical inspection, proof the statement is true
+A check that a Cited Passage is present in the identified source page or row, under the stated matching method and its limits. It says nothing about what the passage supports; that is the Support Assessment ([ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)).
+_Avoid_: Documentation Review, physical inspection, proof the statement is true, Support Assessment
 
 ### Record decisions and outcomes
 

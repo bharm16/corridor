@@ -152,7 +152,7 @@ _Avoid_: an External Party Statement, Documentation Review, contractual approval
 
 **Follow-up Plan**:
 The current project response for one Constraint or Commitment: Assigned To, Next Action, Action Due Date, and any required Effect on Key Dates decision.
-_Avoid_: an External Party Commitment, a plan copied to every linked Constraint
+_Avoid_: an External Organization Commitment, a plan copied to every linked Constraint, a Defer, an unresolved Proposed Delta treated as external follow-up without an explicit accepted plan
 
 ### Source values and supporting records
 
@@ -162,32 +162,36 @@ _Customer label_: Source field value
 _Avoid_: External Party Statement, the project's settled conclusion, a verified physical fact
 
 **Source Fact**:
-What one incoming source states: a typed value with its Source Segment, the mapping that produced it, and the identity it resolves to, captured before any decision about the Project Record; generalizes Assertion to every typed fact on the spine ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md); research in [docs/research/baseline-delta-terminology-2026-09-01.md](docs/research/baseline-delta-terminology-2026-09-01.md)).
+What one incoming source states: a typed value referencing one or more [Source Segments](docs/operations/CONTEXT.md), the mapping or materializer that produced it, and either the existing identity it concerns or a source-bound proposed identity when no accepted subject exists, captured before any decision about the Project Record; generalizes Assertion to every typed fact on the spine ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md); research in [docs/research/baseline-delta-terminology-2026-09-01.md](docs/research/baseline-delta-terminology-2026-09-01.md)).
 _Customer label_: What the source says
 _Avoid_: the project's conclusion, a verified physical fact, an accepted value, an automatic update
 
 **Source Discrepancy**:
-Two or more retained, verified Source Field Values give incompatible answers for the same Constraint field, and no applicable human conclusion resolves them.
+Two or more retained Source Facts or legacy Source Field Values give incompatible answers for the same identified proposition or field, with their exact source segments preserved and no applicable current decision settling them.
 _Customer label_: Sources disagree
-_Avoid_: Utility Conflict, automatically a contractual dispute, a stored flag
+_Avoid_: Utility Conflict, automatically a contractual dispute, a stored flag, a failed Source Passage Check
 
 **Discrepancy Resolution**:
-A named person's conclusion for one field with conflicting Source Field Values, preserving the sources considered and the decision's scope.
+A named person's current conclusion for one identified proposition or field with incompatible source-backed answers, preserving every source and Support Assessment considered and the decision's scope. On an adopted-baseline project, the conclusion is recorded through the applicable source-contradiction Proposed Delta and Resolve Delta decision.
 _Customer label_: Record conclusion
-_Avoid_: contract settlement, deletion of the losing value, a conclusion about unseen later sources
+_Avoid_: contract settlement, deletion of the losing proposition, a conclusion about unseen later sources
+
+**Support Assessment**:
+An attributable, typed relation between one identified proposition and one or more [Source Segments](docs/operations/CONTEXT.md). It records the role each segment serves — value support, attribution, timing, scope, or context — whether the proposition is supported, partially supported, contradicted, unclear, or not assessed, and the responsible human principal or released policy and time; this is an internal concept ([ADR-0082](docs/adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)).
+_Avoid_: Source Passage Check, a property stored on the passage itself, Supporting Documentation in Use designation, the Human Record Decision about what the accepted record shows
 
 **Supporting Documentation**:
-The verified parts of identified source Documents used to support a recorded fact, with exact document and page or row references.
-_Avoid_: a document title alone, proof that every related condition is satisfied
+The identified [Source Segments](docs/operations/CONTEXT.md) assessed as supporting or partially supporting a recorded proposition for a stated role, with exact Document Revision and page, row, cell, or span locators. A passed Source Passage Check establishes that the segment is present; the Support Assessment records what it supports.
+_Avoid_: a document title alone, locator validity treated as semantic support, proof that every related condition is satisfied
 
 **Cited Passage**:
 The exact part of a source Document shown beside a recorded fact, with its document and page or row locator.
 _Avoid_: an entire attachment, a Documentation Review judgment
 
 **Supporting Documentation in Use**:
-The supporting passages designated for a current published value or Documentation Review, with the purpose identified; selected support can still refer to a superseded Document.
+The Source Segments currently designated, by purpose, for a published value or Documentation Review. Their designation, locator validation, and Support Assessments remain separately identifiable; selected support may still refer to a superseded Document Revision.
 _Customer label_: Used for this value or Used for this review
-_Avoid_: every historical citation, automatically the current document revision
+_Avoid_: every historical citation, locator validity treated as support, automatically the current Document Revision
 
 **Derivation**:
 A result produced from identified Project Record inputs by a stated calculation or rule for the date being assessed, including a nonnumeric rule result.
@@ -225,16 +229,16 @@ _Avoid_: a prohibition on resolution columns, proof that all conflicts are resol
 **Retired Matrix Row**:
 A source matrix row containing only an explicit retirement or unused-row marker, optionally with its identifier, and no substantive conflict information.
 _Customer label_: Row marked not used, or the actual retirement wording
-_Avoid_: a populated row merely containing a retirement phrase, a blank row, an abandoned utility facility
+_Avoid_: a populated row merely containing a retirement phrase, a blank row, an abandoned utility facility, a row merely absent from a later, partial, filtered, or unsuccessfully processed source revision
 
 **Audit Trail**:
 The chronological record of changes and their authors, times, and affected records.
 _Avoid_: proof every attempted operation was logged, proof a recorded change was correct
 
 **Provenance**:
-Information linking a recorded result to its sources, processing steps, and responsible people or systems. For a processing run, this includes exact inputs, configuration, outputs, and execution identity.
+The class-appropriate information that makes a recorded result traceable. A source-backed value carries its source locator, Source Passage Check, Support Assessment, and decision lineage; a Recorded Verbal Statement carries its recorder and source-origin history; a Coordination Decision carries its actor, subject, time, and decision lineage; and a Derivation carries its rule and version, exact inputs, and evaluation time. For a processing run, this includes exact inputs, configuration, outputs, and execution identity ([ADR-0082](docs/adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)).
 _Customer label_: Source traceability
-_Avoid_: certification of physical truth, a source title without traceable identity
+_Avoid_: one fixed source-to-decision chain required for every value class, certification of physical truth, a source title without traceable identity
 
 ### Documentation review and supported outcomes
 
@@ -267,39 +271,49 @@ _Avoid_: relocation completed, every utility on the project cleared
 ### Decisions and signals
 
 **Adopt Baseline**:
-A named person's approval of one exact UCM workbook or existing-system export, identified by digest, as the initial accepted Project Record in one atomic revision; the baseline is adopted from the customer's artifact, not authored ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)).
+A named person's approval of one exact UCM workbook or existing-system export, identified by digest, as the initial accepted Project Record in one atomic revision; the baseline is adopted from the customer's artifact, not authored ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)). The act establishes the accepted data baseline. The output-template identity and field-mapping identity are recorded separately and may later be replaced without performing another initial Adopt Baseline or changing accepted values.
 _Customer label_: Adopt baseline; Adopt this matrix as the starting record
-_Avoid_: import alone, project approval, sign-off, hundreds of row-level confirmations
+_Avoid_: import alone, project approval, sign-off, hundreds of row-level confirmations, treating the adopted workbook as the permanent output template
 
 **Proposed Delta**:
-The typed difference between a Source Fact and the current accepted record, awaiting a decision: new conflict, field changed, promise moved, organization changed, schedule date changed, existing support superseded, apparent removal, or source contradiction. The accepted record is unchanged while it is open; this is an internal name ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+An immutable, typed occurrence representing a proposed change to the accepted Project Record, produced by comparing one or more Source Facts with the current accepted revision and bound to the incoming source version and comparison rule. Initial kinds include a new subject, a changed field or timing, an organization change, a schedule or Key Date change, an apparent removal supported by a complete enumerative source revision, and a source contradiction. It remains open until accepted, edited, or rejected, or until a newer occurrence supersedes it. Defer leaves it open. Exact unchanged support transfer and no-semantic-change normalization do not create a Proposed Delta; this is an internal name ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md), [ADR-0084](docs/adr/0084-deferral-is-scheduling-and-adopted-projects-read-the-spine-natively.md)).
 _Customer label_: Proposed change, with its type
-_Avoid_: change order, change request, contract modification, an automatic update, an urgency score
+_Avoid_: change order, change request, contract modification, an automatic update, an urgency score, an unchanged supporting-source replacement
 
 **Resolve Delta**:
-A named person's, or a separately released narrow policy's, decision that closes a Proposed Delta by accepting, editing, rejecting, or deferring it, creating the next Project Record revision ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md)).
+A named person's, or a separately released narrow policy's, semantic disposition of an open Proposed Delta by accepting, editing, or rejecting it. The decision remains separately identified and is recorded in an atomic Project Record revision; a Review Packet may commit several separately identified decisions in one revision. Defer is Work List scheduling and is not a Resolve Delta decision ([ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0084](docs/adr/0084-deferral-is-scheduling-and-adopted-projects-read-the-spine-natively.md)).
 _Customer label_: Decide this change
-_Avoid_: approve alone, close, deletion of the incoming value, contract settlement
+_Avoid_: approve alone, Defer, close without a disposition, deletion of the incoming value, contract settlement
+
+**Defer**:
+An attributable Work List scheduling act that leaves a Proposed Delta open and the accepted Project Record unchanged, and removes the item from immediate work until its return date or a defined wake condition. It creates no Follow-up Plan by itself and writes no Project Record revision ([ADR-0084](docs/adr/0084-deferral-is-scheduling-and-adopted-projects-read-the-spine-natively.md)).
+_Customer label_: Defer until [date]
+_Avoid_: Resolve Delta, Keep current, Needs coordination, Snooze, hiding the underlying record
 
 **Do Not Add**:
-A person's reversible decision that a proposed entry does not belong in the Project Record, with the proposal, reason, actor, and history preserved.
+A person's reversible handling decision on a legacy Extracted Proposal that it does not belong in the Project Record, with the proposal, reason, actor, and history preserved. For an adopted-baseline project, Keep current or the retained internal reject disposition handles a new-subject Proposed Delta.
 _Customer label_: Do not add to project record
 _Avoid_: deletion, rejected contract work, a no-conflict conclusion
 
 **Remove from Active Log**:
 A person's reversible removal of an incorrectly admitted Constraint from current work while preserving its record and history.
 _Customer label_: Remove incorrect entry from active log
-_Avoid_: hiding a real Constraint, work completed, Constraint satisfied
+_Avoid_: hiding a real Constraint, work completed, Constraint satisfied, a row's absence from a later source treated as authorization to remove it
 
 **Attention Reason**:
-A current derived condition explaining why one coordination question or follow-up action needs a person's attention; this is an internal concept.
+A current derived condition explaining why one coordination question or follow-up action needs a person's attention; this is an internal concept. For an adopted-baseline project, Attention Reasons are grouped under Must handle before this issue, Affects this issue, or Can wait; those visible levels are derived presentation and do not replace or erase the exact reasons ([ADR-0085](docs/adr/0085-the-adopted-project-work-list-is-a-derived-reading-of-adaptive-review-packets.md)).
 _Customer label_: Why this needs attention
-_Avoid_: only document review, a stored status, an urgency score
+_Avoid_: only document review, a stored status, an urgency score, a visible consequence level treated as stored record state
 
 **Work Item**:
-One current coordination question or follow-up need tied to an Extracted Proposal or Coordination Subject and shown with all its Attention Reasons; this is an internal concept.
+One current, actionable coordinator interaction shown in the Work List with all of its Attention Reasons. For a legacy project it may represent an Extracted Proposal or one Coordination Subject. For an adopted-baseline project it represents one derived Review Packet or an accepted follow-up need. Decision controls appear in only one place for the underlying work; references elsewhere are read-only. This is an internal concept.
 _Customer label_: The actual question or Next Action; Coordination item when a type label is needed
-_Avoid_: one duplicate card per reason, only document review, a construction Activity
+_Avoid_: one card per reason, one card per Proposed Delta regardless of coherence, a stored queue record, duplicate decision controls, only document review, a construction Activity
+
+**Review Packet**:
+The smallest coherent set of open Proposed Deltas that a coordinator can sensibly decide at once, derived deterministically from the current record and the packet-keying rule. It may be keyed by one authoritative source revision, one cross-source coordination question, or one shared Commitment. A Review Packet is an internal presentation concept, not an authoritative record, a queue, or a lifecycle, and every open Proposed Delta is actionable in exactly one packet ([ADR-0085](docs/adr/0085-the-adopted-project-work-list-is-a-derived-reading-of-adaptive-review-packets.md)).
+_Customer label_: Show the source revision, coordination question, or Commitment itself; do not show Review Packet as a customer type
+_Avoid_: always grouping by source, always grouping by Utility Conflict, a stored open/closed packet, duplicate action on the same Proposed Delta
 
 **Constraint Alert**:
 A condition identified by an automatic check on a Constraint that needs attention, grouped by the rule and ordered only by that rule's own quantity.
@@ -313,14 +327,29 @@ _Avoid_: Extraction Measurement, a professional audit, the source schedule's pro
 ### Publication
 
 **Coordination Report**:
-A dated presentation of recorded Constraints, Commitments, project decisions, and results from the same set of checks; an internal view can refresh, while an approved copy remains fixed.
+A dated presentation of recorded Constraints, Commitments, project decisions, and results from the same set of checks. An internal view can refresh; a rendered Coordination Report included in an approved Release Package remains fixed by digest.
 _Customer label_: Constraint status report
 _Avoid_: automatically an agency Utility Status Report, a released artifact that can change in place
 
+**Release Package**:
+The internal identity of one immutable, configured set of customer artifacts prepared from one accepted Project Record revision, zero or one previous approved package, one source cutoff, one declared coverage state, and one approved template and mapping set. Each artifact retains its own digest, and one attributable authorization seals the complete set ([ADR-0086](docs/adr/0086-one-authorized-release-package-is-the-external-issue-unit.md)).
+_Customer label_: Use the customer's existing issue or reporting-package name; do not expose Release Package as a required customer term
+_Avoid_: a ZIP file by definition, separately approving each artifact, preparation treated as approval, delivery or receipt
+
 **Report Approved for Release**:
-The exact retained PDF that a named authorized project person approved for external sharing, with the approver and time recorded.
+The complete immutable set of configured customer artifacts that a named authorized project person approved for external sharing. The approval retains every artifact identity and digest, the accepted Project Record revision, zero or one previous approved issue, the source cutoff, declared coverage state, template and mapping identities, approver, and approval time ([ADR-0086](docs/adr/0086-one-authorized-release-package-is-the-external-issue-unit.md)).
 _Customer label_: Approved to share
-_Avoid_: approval of a live page, Contract Acceptance, proof of sending or receipt
+_Avoid_: approval of only one file when the configured issue contains several, approval of a live page, Contract Acceptance, proof of sending or receipt
+
+**Change Summary**:
+The customer artifact describing accepted Project Record changes since the previous approved Release Package. Before the first approved package there is no comparison predecessor. Open, deferred, rejected, stale, and superseded Proposed Deltas are not presented as accepted changes.
+_Customer label_: What changed since the last issue
+_Avoid_: every incoming source difference, a prepared artifact advancing the comparison baseline, an unresolved Proposed Delta described as a record change
+
+**Chase List**:
+The customer artifact of contact-ready follow-up bundles derived from accepted Commitments, accepted project dependencies, current Follow-up Plans, accepted communication state, and deterministic timing or silence rules. An unresolved Proposed Delta alone creates no chase item.
+_Customer label_: Who to chase, and for what
+_Avoid_: every open Proposed Delta, an empty inbox treated as proof of no response, autonomous sending or escalation
 
 **Coordination Summary**:
 A source-linked AI draft narrative of the Project Record that cannot change facts or decisions and retains every required Constraint Alert, individually or through a bucket preserving all its members.
