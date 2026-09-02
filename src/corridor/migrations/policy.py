@@ -22,15 +22,16 @@ from __future__ import annotations
 
 # The revision a fresh database installs from. It builds the whole schema
 # rather than replaying development history.
-SCHEMA_BUILDER = "b7d3f9a1c2e5"
+SCHEMA_BUILDER = "a1c4e7b0d2f3"
 
-# The marker a database already stamped at the released head runs instead of
-# the builder, so both paths reach the same schema fingerprint.
-COMPATIBILITY_MARKER = "c0a1d0b5e11e"
+# No compatibility marker is needed: the consolidated builder keeps the
+# identifier the previous head already carried, so a database standing there
+# is stamped correctly and runs nothing.
+COMPATIBILITY_MARKER = None
 
 # The revision every supported database is at or past. Upgrades are proved
 # from here, and history before it is not executable.
-SUPPORTED_FROM_REVISION = COMPATIBILITY_MARKER
+SUPPORTED_FROM_REVISION = SCHEMA_BUILDER
 
 # The single head the executable graph must have.
 CURRENT_HEAD = "a1c4e7b0d2f3"
@@ -39,8 +40,8 @@ CURRENT_HEAD = "a1c4e7b0d2f3"
 # ADR-0065 decided and the shape the graph must return to.
 UNRELEASED_EDGE_TARGET = 1
 
-# What the graph carries today. It may fall and must never rise: raising it
-# is how the 112-revision chain came back after #423. A change needing
-# another revision folds into the current unreleased transition, or
-# consolidates the chain first and lowers this number.
-UNRELEASED_EDGES = 21
+# What the graph carries today: nothing beyond the builder, after the
+# twenty-one unreleased transitions were consolidated into it (#548). It may
+# rise to UNRELEASED_EDGE_TARGET and no further. A second migration-bearing
+# change folds into the first one's transition rather than appending another.
+UNRELEASED_EDGES = 0

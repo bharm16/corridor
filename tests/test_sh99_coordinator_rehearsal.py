@@ -1247,20 +1247,22 @@ def test_v3_verifier_refuses_rehashed_release_metadata_mismatch(
         )
 
 
-def test_clone_upgrade_pins_the_direct_predecessor_and_current_head():
-    repo_root = Path(__file__).resolve().parents[1]
+def test_clone_upgrade_refuses_a_pair_that_is_not_a_direct_successor():
+    """#548 consolidated the chain, so there is no successor pair to accept.
 
-    _require_direct_migration_successor(
-        repo_root,
-        source_revision="b7d3f9a1c2e5",
-        target_revision="c0a1d0b5e11e",
-    )
+    The accepting half of this test named the builder and marker #423 left
+    behind; both are retired, and the executable graph is now one baseline
+    with no edges. The refusal is what still guards a live path, so it stays
+    and the acceptance returns when the next migration adds an edge.
+    """
+
+    repo_root = Path(__file__).resolve().parents[1]
 
     with pytest.raises(ValueError, match="direct predecessor"):
         _require_direct_migration_successor(
             repo_root,
-            source_revision="c0a1d0b5e11e",
-            target_revision="b7d3f9a1c2e5",
+            source_revision="a1c4e7b0d2f3",
+            target_revision="a1c4e7b0d2f3",
         )
 
 

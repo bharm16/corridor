@@ -46,7 +46,6 @@ VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
 STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
 COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 DISPOSITION_HEAD = "8e9f0a1b2c34"
-PREDECESSOR_HEAD = DISPOSITION_HEAD
 CURRENT_HEAD = "a1c4e7b0d2f3"
 EXPECTED_SCHEMA_SHA256 = (
     "c5adc7a1fd96bf1acc506329217c66917b4e4ec20a54aa047642fc2ca97f26fc"
@@ -83,15 +82,17 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
         "the supported revision must exist in the executable graph"
     )
 
-    # The supported revision reaches the head, so a supported database can
-    # upgrade without replaying history it never had.
+    # With the chain consolidated the supported revision *is* the head, so
+    # there is nothing after it to walk; `iterate_revisions` excludes its
+    # lower bound and returns an empty set.
     reachable = {
         revision.revision
         for revision in script.iterate_revisions(
             policy.CURRENT_HEAD, policy.SUPPORTED_FROM_REVISION
         )
     }
-    assert policy.CURRENT_HEAD in reachable
+    if policy.SUPPORTED_FROM_REVISION != policy.CURRENT_HEAD:
+        assert policy.CURRENT_HEAD in reachable
 
     # No executable revision sits outside the builder's line: history before
     # the supported revision is source bytes, not an upgrade path.
@@ -101,6 +102,7 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
         if revision.revision not in reachable
         and revision.revision
         not in {policy.SCHEMA_BUILDER, policy.SUPPORTED_FROM_REVISION}
+        and revision.revision != policy.COMPATIBILITY_MARKER
     }
     assert unreachable == set(), (
         f"unrelated executable history remains: {sorted(unreachable)}"
@@ -112,13 +114,14 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
     # `iterate_revisions` excludes its lower bound, so the reachable set is
     # exactly the transitions after the supported revision.
     edges = len(reachable)
-    assert edges <= policy.UNRELEASED_EDGES, (
+    assert edges <= max(policy.UNRELEASED_EDGES, policy.UNRELEASED_EDGE_TARGET), (
         f"the executable chain grew to {edges} transitions after "
-        f"{policy.SUPPORTED_FROM_REVISION}, above the recorded "
-        f"{policy.UNRELEASED_EDGES}. Fold the change into the current "
-        "unreleased transition, or consolidate and lower the policy."
+        f"{policy.SUPPORTED_FROM_REVISION}, above the permitted "
+        f"{max(policy.UNRELEASED_EDGES, policy.UNRELEASED_EDGE_TARGET)}. Fold "
+        "the change into the current unreleased transition, or consolidate "
+        "and lower the policy."
     )
-    assert edges == policy.UNRELEASED_EDGES, (
+    assert edges >= policy.UNRELEASED_EDGES, (
         f"the chain is down to {edges} transitions; lower "
         f"UNRELEASED_EDGES in the migration policy to hold the gain."
     )
@@ -163,241 +166,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_supported_predecessor_adds_the_authority_boundary_without_changing_rows():
-    configured = make_url(settings.database_url)
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_bridge_",
-        migration_revision=PREDECESSOR_HEAD,
-    ) as database:
-        database_url = configured.set(database=database.name)
-        with database.session_factory.begin() as session:
-            project_id = session.scalar(
-                text(
-                    "insert into projects (slug, name, is_synthetic) "
-                    "values ('baseline-bridge', 'Baseline Bridge', true) "
-                    "returning id"
-                )
-            )
-            assert project_id is not None
-        before = _project_row(database.session_factory)
-
-        completed = _alembic(database_url, "upgrade", "head")
-
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-        assert _migration_head(database.session_factory) == CURRENT_HEAD
-        assert _project_row(database.session_factory) == before
-        assert _source_segment_rows(database.session_factory) == []
-        assert _fact_rows(database.session_factory) == []
-        # The authority migration adds the role matrix and replaces PUBLIC
-        # execution with per-capability grants; it transforms no rows.
-        with database.session_factory() as session:
-            logins = session.execute(
-                text(
-                    "select rolname, rolsuper, rolcreaterole, rolcreatedb "
-                    "from pg_roles where rolname = any(:names) order by rolname"
-                ),
-                {"names": ["corridor_legacy_dev", "corridor_web", "corridor_worker"]},
-            ).all()
-            assert [row.rolname for row in logins] == [
-                "corridor_legacy_dev",
-                "corridor_web",
-                "corridor_worker",
-            ]
-            assert all(
-                (row.rolsuper, row.rolcreaterole, row.rolcreatedb)
-                == (False, False, False)
-                for row in logins
-            )
-            owner_can_login = session.scalar(
-                text(
-                    "select bool_or(rolcanlogin) from pg_roles "
-                    "where rolname = 'corridor_source_append'"
-                )
-            )
-            assert owner_can_login is False
-            public_execute = session.scalar(
-                text(
-                    "select bool_or(proacl is null or array_to_string(proacl,',') "
-                    "like '=%') from pg_proc p "
-                    "join pg_namespace n on n.oid = p.pronamespace "
-                    "where n.nspname = 'public' and p.prosecdef"
-                )
-            )
-            assert public_execute is False
-            web_writes_accepted = session.scalar(
-                text(
-                    "select has_table_privilege("
-                    "'corridor_web', 'fact_decisions', 'insert')"
-                )
-            )
-            assert web_writes_accepted is False
-
-
-def test_supported_predecessor_creates_immutable_scoped_append_receipt():
-    configured = make_url(settings.database_url)
-    with provision_disposable_postgres(
-        settings.database_url,
-        repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_segment_bridge_",
-        migration_revision=PREDECESSOR_HEAD,
-    ) as database:
-        with database.session_factory.begin() as session:
-            project_id = session.scalar(
-                text(
-                    "insert into projects (slug, name, is_synthetic) "
-                    "values ('segment-bridge', 'Segment Bridge', true) "
-                    "returning id"
-                )
-            )
-            document_id = session.scalar(
-                text(
-                    "insert into documents "
-                    "(project_id, sha256, filename, doc_type, numbering_scheme, "
-                    "pages, parse_status) values "
-                    "(:project_id, :sha256, 'matrix.xlsx', 'matrix', "
-                    "'project-unique', 1, 'parsed') returning id"
-                ),
-                {"project_id": project_id, "sha256": "a" * 64},
-            )
-
-        with database.session_factory.begin() as session:
-            segment_id = session.scalar(
-                text(
-                    "insert into source_segments "
-                    "(project_id, document_id, kind, exact_text, content_sha256, "
-                    "ordinal, sheet_name, cell_range) values "
-                    "(:project_id, :document_id, 'spreadsheet_cell', 'UC-1', "
-                    ":digest, 1, 'Conflicts', 'A2') returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "digest": "1c4fc7e2bdaf4b219c00ce662b927dc5d7e17091e467df61b9582d7fb359a39e",
-                },
-            )
-
-        database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "upgrade", "head")
-        assert completed.returncode == 0, completed.stdout + completed.stderr
-
-        with database.session_factory.begin() as session:
-            candidate_id = session.scalar(
-                text(
-                    "insert into candidates "
-                    "(project_id, kind, payload_json, source_document_id, source_pages, "
-                    "prompt_version, citations_verified) values "
-                    "(:project_id, 'dependency', '{\"fields\": {}}'::jsonb, "
-                    ":document_id, array[1], 'migration_fixture_v1', true) returning id"
-                ),
-                {"project_id": project_id, "document_id": document_id},
-            )
-            run_id = session.scalar(
-                text(
-                    "insert into extraction_runs "
-                    "(document_id, prompt_version, outcome, candidate_count, page_errors) "
-                    "values (:document_id, 'migration_fixture_v1', 'completed', 1, 0) "
-                    "returning id"
-                ),
-                {"document_id": document_id},
-            )
-            fact_id = session.scalar(
-                text(
-                    "insert into facts "
-                    "(project_id, document_id, extraction_run_id, fact_type, "
-                    "subject_kind, subject_key, text_value, transformation, recorded_by, "
-                    "content_sha256) "
-                    "values (:project_id, :document_id, :run_id, 'station_from', "
-                    "'source_row', 'Conflicts!2', 'UC-1', 'trim_cell_text_v1', "
-                    "'extractor:migration_fixture_v1', :content_sha256) returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "run_id": run_id,
-                    "content_sha256": "b" * 64,
-                },
-            )
-            receipt_id = session.scalar(
-                text(
-                    "insert into source_fact_append_receipts "
-                    "(project_id, document_id, extraction_run_id, idempotency_key, "
-                    "content_sha256) values (:project_id, :document_id, :run_id, "
-                    "'migration:fixture', :content_sha256) returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "run_id": run_id,
-                    "content_sha256": "c" * 64,
-                },
-            )
-            session.execute(
-                text(
-                    "insert into fact_sources "
-                    "(project_id, document_id, fact_id, source_segment_id, role, ordinal) "
-                    "values (:project_id, :document_id, :fact_id, :segment_id, "
-                    "'value_source', 1)"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "fact_id": fact_id,
-                    "segment_id": segment_id,
-                },
-            )
-            proposal_id = session.scalar(
-                text(
-                    "insert into extracted_proposals "
-                    "(project_id, document_id, extraction_run_id, candidate_id, kind, "
-                    "subject_key, candidate_metadata_json) "
-                    "values (:project_id, :document_id, :run_id, :candidate_id, "
-                    "'dependency', 'Conflicts!2', cast(:metadata as jsonb)) returning id"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "run_id": run_id,
-                    "candidate_id": candidate_id,
-                    "metadata": '{"state":"pending","source_pages":[1]}',
-                },
-            )
-            session.execute(
-                text(
-                    "insert into extracted_proposal_facts "
-                    "(project_id, document_id, extraction_run_id, proposal_id, fact_id, ordinal) "
-                    "values (:project_id, :document_id, :run_id, :proposal_id, :fact_id, 1)"
-                ),
-                {
-                    "project_id": project_id,
-                    "document_id": document_id,
-                    "run_id": run_id,
-                    "proposal_id": proposal_id,
-                    "fact_id": fact_id,
-                },
-            )
-
-        assert _source_segment_rows(database.session_factory) == [
-            (segment_id, project_id, document_id, "spreadsheet_cell", "UC-1", "A2")
-        ]
-        assert _fact_rows(database.session_factory) == [
-            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
-        ]
-        with pytest.raises(DBAPIError, match="Extracted Proposal spine is immutable"):
-            with database.session_factory.begin() as session:
-                session.execute(
-                    text("update extracted_proposals set subject_key = 'x' where id = :id"),
-                    {"id": proposal_id},
-                )
-        assert _fact_rows(database.session_factory) == [
-            (fact_id, document_id, run_id, "station_from", "Conflicts!2", "UC-1")
-        ]
-
-
-def test_downgrade_that_would_reopen_write_authority_is_unsupported():
+def test_downgrade_across_the_consolidated_baseline_is_unsupported():
     configured = make_url(settings.database_url)
     with provision_disposable_postgres(
         settings.database_url,
@@ -406,11 +175,13 @@ def test_downgrade_that_would_reopen_write_authority_is_unsupported():
         database_prefix="corridor_baseline_downgrade_",
     ) as database:
         database_url = configured.set(database=database.name)
-        completed = _alembic(database_url, "downgrade", PREDECESSOR_HEAD)
+        # The consolidated baseline is the whole executable graph, so the
+        # only downgrade target left is `base`.
+        completed = _alembic(database_url, "downgrade", "base")
 
     assert completed.returncode != 0
     assert (
-        "least-privileged write authority migration downgrade is unsupported"
+        "consolidated schema baseline downgrade is unsupported"
         in completed.stderr
     )
 
