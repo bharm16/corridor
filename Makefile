@@ -43,6 +43,14 @@ test-full:
 test-slow:
 	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration"
 
+# Per-file timing for the feedback budget (#548). Writes a JUnit report so a
+# revision can be compared against its base branch before any test is cut.
+# Example: make test-timing && uv run python scripts/test_timing.py out/timing/non-slow.xml
+test-timing:
+	@mkdir -p out/timing
+	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow" \
+	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
+
 # Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
 test-migrations:
 	uv run pytest -n 1 --dist loadfile -m migration
