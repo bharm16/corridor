@@ -33,22 +33,22 @@ test-focused:
 # Broad developer gate. Run after a broad change, not after every edit.
 # This is the non-slow subset of test-full; do not run both on one revision.
 test:
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow"
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow"
 
 # Complete manual/scheduled gate. PR workflows use the scoped gates below.
 test-full:
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal
 
 # Exhaustive non-migration complement to test.
 test-slow:
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration"
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration"
 
 # Per-file timing for the feedback budget (#548). Writes a JUnit report so a
 # revision can be compared against its base branch before any test is cut.
 # Example: make test-timing && uv run python scripts/test_timing.py out/timing/non-slow.xml
 test-timing:
 	@mkdir -p out/timing
-	uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "not slow" \
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
 	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
 
 # Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.

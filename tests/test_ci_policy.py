@@ -56,6 +56,29 @@ def test_check_runs_on_every_revision_including_documentation_only():
     assert _run_commands(workflow).count("make check") == 1
 
 
+def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():
+    """`--dist loadfile` made one file the suite's floor (#548).
+
+    tests/test_facts was 42.7% of the non-slow suite, and loadfile puts a
+    whole file on one worker, so that file alone set a ~306s wall clock no
+    worker count could beat. Rebalancing cut the same suite from 351.9s to
+    134.9s. The focused and migration gates stay on loadfile: they run on one
+    worker, where the mode is irrelevant.
+    """
+
+    makefile = (ROOT / "Makefile").read_text()
+    parallel = [
+        line
+        for line in makefile.splitlines()
+        if "pytest -n $(TEST_WORKERS)" in line
+    ]
+
+    assert parallel, "expected the parallel gates to be defined in the Makefile"
+    assert all("--dist worksteal" in line for line in parallel), (
+        "a parallel gate reverted to loadfile: " + "; ".join(parallel)
+    )
+
+
 def test_migration_ci_is_path_scoped_and_full_history_is_scheduled():
     workflow = _workflow("migration-test.yml")
 
