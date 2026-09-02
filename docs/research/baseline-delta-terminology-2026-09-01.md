@@ -6,6 +6,15 @@ for the four terms ADR-0076 introduced without glossary entries. Each entry
 records what published practice means by the nearest term, where Corridor's use
 matches it, and where Corridor's use is product-specific.
 
+> **Correction, 2026-09-02 — [ADR-0084](../adr/0084-deferral-is-scheduling-and-adopted-projects-read-the-spine-natively.md).**
+> This note's Resolve Delta paragraph predates ADR-0084 and is superseded on one
+> point: **defer is not a disposition and does not resolve a delta.** The
+> semantic dispositions are accept, edit, and reject. A Defer is Work List
+> scheduling: it leaves the Proposed Delta open, writes no Project Record
+> revision, and returns the item on its date or wake condition. The published
+> research below stands; only Corridor's mapping onto it changed. The current
+> definitions are in [CONTEXT.md](../../CONTEXT.md).
+
 ## Baseline and change control
 
 **Published meaning.** The PMI *Lexicon of Project Management Terms* and the
@@ -59,6 +68,11 @@ reject, or defer. Published practice calls this *dispositioning* a change
 (ISO 10007) or *approving/rejecting* a change request (PMI). Customer label:
 "Decide this change". *Avoid*: "approve" alone (an edit is also a decision),
 "close" (a deferred delta is resolved for now and reopens on new evidence).
+
+*Corrected 2026-09-02 by ADR-0084: defer was removed from this list. It is Work
+List scheduling, not a disposition, and a deferred delta stays open rather than
+being "resolved for now". The rest of the paragraph, including the objection to
+"approve" alone, stands.*
 
 ## Source fact, assertion, source field value
 
