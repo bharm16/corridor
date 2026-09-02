@@ -24,8 +24,10 @@ Use non-overlapping gates appropriate to the exact revision
   for the changed seam. Do not run the broad suite after every edit.
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
-- Normal PR CI runs `make check`, `make test`, and the non-migration
-  `make test-slow` selection. A merge to `main` does not repeat that suite.
+- Normal PR CI runs `make check` on every pull request, and `make test` plus
+  the non-migration `make test-slow` selection unless every changed file is
+  documentation (`**.md`, `docs/**`). A merge to `main` does not repeat that
+  suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate
   post-merge test workflow.
 - A change to migrations, schema models, or the database test harness also runs
