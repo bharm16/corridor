@@ -55,6 +55,11 @@ jobs:
       - run: make test-shard SHARDS=4 SHARD=${{ matrix.shard }}
 
   slow:
+    # Sharded for the same reason as pytest (#548).
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -85,4 +90,4 @@ jobs:
       - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
       - run: uv sync --locked
       - run: uv run alembic upgrade head
-      - run: make test-slow
+      - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}

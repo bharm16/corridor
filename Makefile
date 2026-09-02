@@ -53,6 +53,14 @@ test-shard:
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
 	  $$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD))
 
+# One balanced slice of the exhaustive non-migration complement, sharded for
+# the same reason as test-shard.
+test-slow-shard:
+	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
+	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
+	  $$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD))
+
 # Per-file timing for the feedback budget (#548). Writes a JUnit report so a
 # revision can be compared against its base branch before any test is cut.
 # Example: make test-timing && uv run python scripts/test_timing.py out/timing/non-slow.xml

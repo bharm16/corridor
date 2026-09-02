@@ -37,7 +37,8 @@ def test_normal_pr_ci_runs_non_overlapping_behavior_gates_once():
     # matrix step rather than as one whole-suite command (#548).
     assert commands.count("make test") == 0
     assert sum("make test-shard" in command for command in commands) == 1
-    assert commands.count("make test-slow") == 1
+    assert commands.count("make test-slow") == 0
+    assert sum("make test-slow-shard" in command for command in commands) == 1
     assert "make test-full" not in commands
     assert "make test-migrations" not in commands
 
