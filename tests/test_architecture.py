@@ -412,6 +412,92 @@ def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanu
     assert missing_project_id == []
 
 
+def test_only_the_storage_interface_builds_a_path_into_the_content_store():
+    """Every content-addressed artifact goes through `corridor.object_storage` (#487).
+
+    Two idioms built a store path by hand before the interface existed:
+    reading `settings.corpus_store` directly, and sharding a digest with
+    `<sha>[:2] / ...`. Either one in another module is a new direct
+    filesystem path built for the store, which is exactly what ADR-0079
+    forbids once the backend may be an object store.
+    """
+
+    offenders = []
+    for path in _module_paths():
+        if path.name == "object_storage.py":
+            continue
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Attribute)
+                and node.attr == "corpus_store"
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "settings"
+            ):
+                offenders.append(f"{path.name}:{node.lineno} reads settings.corpus_store")
+            if isinstance(node, ast.BinOp) and isinstance(node.op, ast.Div):
+                for operand in (node.left, node.right):
+                    if (
+                        isinstance(operand, ast.Subscript)
+                        and isinstance(operand.slice, ast.Slice)
+                        and operand.slice.lower is None
+                        and isinstance(operand.slice.upper, ast.Constant)
+                        and operand.slice.upper.value == 2
+                    ):
+                        offenders.append(
+                            f"{path.name}:{node.lineno} shards a digest into a path"
+                        )
+
+    assert offenders == []
+
+
+def test_store_deletion_is_permitted_only_by_retention():
+    """`delete_under_policy` is the only removal path and a hold precedes it
+    (ADR-0080): the permit it needs is constructed in retention alone, and only
+    retention and reconciliation may call it."""
+
+    permit_sites = []
+    delete_sites = []
+    for path in _module_paths():
+        if path.name == "object_storage.py":
+            continue
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+            if name == "DeletionPermit" and path.name != "retention.py":
+                permit_sites.append(f"{path.name}:{node.lineno}")
+            if name == "delete_under_policy" and path.name not in {
+                "retention.py",
+                "storage_operations.py",
+            }:
+                delete_sites.append(f"{path.name}:{node.lineno}")
+
+    assert permit_sites == []
+    assert delete_sites == []
+
+
+def test_the_render_worker_has_no_database_or_storage_dependency():
+    """The isolated render subprocess reads staged bytes and writes a local
+    staging directory; the parent owns persistence (ADR-0079 as amended by
+    ADR-0083). Its lockfile and imports must not reach the database or a
+    storage backend."""
+
+    worker = REPO_ROOT / "workers" / "render"
+    tree = ast.parse((worker / "render_worker.py").read_text(encoding="utf-8"))
+    imported = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            imported.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            imported.add(node.module.split(".")[0])
+    forbidden = {"corridor", "sqlalchemy", "psycopg", "boto3", "botocore"}
+
+    assert imported & forbidden == set()
+    lock = (worker / "uv.lock").read_text(encoding="utf-8")
+    assert not any(f'name = "{name}"' in lock for name in forbidden)
+
+
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
     paths = sorted((REPO_ROOT / "tests").glob("test_*migration*.py"))
 

@@ -38,6 +38,7 @@ from corridor.models import (
     IntakeProjectIdentifier,
     Project,
 )
+from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.source_intake import IntakeRefused, validate_and_stage
 
@@ -564,8 +565,4 @@ def _parsed_date(value: str | None) -> datetime | None:
 def _store_raw(digest: str, raw_bytes: bytes) -> Path:
     # The one content-addressed store every source shares, so `stored_file`
     # resolves a registered raw message exactly like any other Document.
-    target = Path(settings.corpus_store) / digest[:2] / f"{digest}.eml"
-    target.parent.mkdir(parents=True, exist_ok=True)
-    if not target.exists():
-        target.write_bytes(raw_bytes)
-    return target
+    return store_bytes(raw_bytes, sha256=digest, suffix=".eml")

@@ -38,8 +38,9 @@ import pytesseract
 
 from corridor.models import Document, TokenLayerManifest
 from corridor.page_inventory import FIXED_POINT_SCALE, PdfRect
+from corridor.object_storage import content_store
 from corridor.render_profiles import RenderDerivative
-from corridor.retention import register_processing_artifact
+from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
 
 
@@ -392,9 +393,19 @@ def _classify_layer_for_retention(
 
 
 def load_token_layer(manifest: TokenLayerManifest) -> TokenLayer:
-    """Rebuild the token layer from its retained artifact for geometry readers."""
+    """Rebuild the token layer from its retained artifact for geometry readers.
 
-    return TokenLayer.model_validate_json(Path(manifest.artifact_path).read_bytes())
+    The staged local file is read when present; otherwise the bytes come from
+    the store, digest-verified, and are staged for the next reader."""
+
+    destination = Path(manifest.artifact_path)
+    if not destination.is_file():
+        content_store().stage(
+            artifact_key(manifest.artifact_sha256, manifest.artifact_path),
+            destination,
+            sha256=manifest.artifact_sha256,
+        )
+    return TokenLayer.model_validate_json(destination.read_bytes())
 
 
 def _pymupdf_version() -> str:
