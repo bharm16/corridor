@@ -151,6 +151,12 @@ AUTHORIZE_DEPENDENCY_ADMISSION = "authorize_dependency_admission"
 # "record condition" action — nothing is written to raise a condition.
 CLEAR_CONDITION = "clear_condition"
 DISMISS_CONDITION = "dismiss_condition"
+# One named person adopted one exact customer UCM workbook or system export as
+# the initial accepted Project Record (#509, ADR-0076). Like CONFIRM_SOURCE_INTAKE
+# it is an AuditLog action rather than a second table, so the attribution shares
+# the exact transaction as the Project Record revision and the operating-mode
+# transition it authorizes, and a rolled-back adoption records nothing.
+ADOPT_BASELINE = "adopt_baseline"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
@@ -205,6 +211,7 @@ ACTIONS = frozenset(
         AUTHORIZE_DEPENDENCY_ADMISSION,
         CLEAR_CONDITION,
         DISMISS_CONDITION,
+        ADOPT_BASELINE,
         FLAG_INCORRECT_ASSIGNMENT,
     }
 )

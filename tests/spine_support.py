@@ -27,7 +27,7 @@ from corridor.models import Base
 
 SPINE_TABLE_PATTERN = re.compile(
     r"^(facts|fact_[a-z_]+|source_segments|source_fact_[a-z_]+|"
-    r"project_record_[a-z_]+|project_baseline_adoptions|"
+    r"project_record_[a-z_]+|project_baseline_[a-z_]+|"
     r"extracted_proposal_facts|"
     r"support_assessment[a-z_]*|proposed_delta[a-z_]*|delta_[a-z_]+)$"
 )

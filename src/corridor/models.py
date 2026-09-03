@@ -1745,6 +1745,189 @@ class BaselineAdoption(Base):
     )
 
 
+BASELINE_SOURCE_KINDS = ("ucm_workbook", "system_export")
+BASELINE_FORMAT_KINDS = ("output_template", "field_mapping")
+
+
+class BaselineSource(Base):
+    """The accepted data-baseline identity one project adopted (#509).
+
+    One row per project, because a project has one initial Adopt Baseline;
+    replacing it is a later record change rather than a second adoption. The
+    row retains the exact bytes' digest, the customer and their own name for
+    the revision, the adopted worksheet or record scope, the importer, the
+    coordinator preview the named person actually adopted, and the Corridor
+    operations reading that resolved the workbook mechanics first.
+    """
+
+    __tablename__ = "project_baseline_sources"
+    __table_args__ = (
+        UniqueConstraint("project_id", name="uq_project_baseline_sources_project"),
+        UniqueConstraint(
+            "project_id", "id", name="uq_project_baseline_sources_project_id"
+        ),
+        UniqueConstraint("revision_id", name="uq_project_baseline_sources_revision"),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_baseline_sources_digest",
+        ),
+        CheckConstraint(
+            "preview_fingerprint ~ '^[0-9a-f]{64}$'",
+            name="ck_project_baseline_sources_preview",
+        ),
+        CheckConstraint(
+            "source_kind in ('ucm_workbook', 'system_export')",
+            name="ck_project_baseline_sources_kind",
+        ),
+        CheckConstraint(
+            "length(btrim(adopted_by_principal)) > 0",
+            name="ck_project_baseline_sources_principal",
+        ),
+        CheckConstraint("byte_size > 0", name="ck_project_baseline_sources_byte_size"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    revision_id: Mapped[int] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    byte_size: Mapped[int] = mapped_column(BigInteger)
+    filename: Mapped[str] = mapped_column(Text)
+    source_identity: Mapped[str] = mapped_column(String(160))
+    customer: Mapped[str] = mapped_column(String(160))
+    source_kind: Mapped[str] = mapped_column(String(32))
+    worksheet_scope: Mapped[Any] = mapped_column(JSONB)
+    unknown_columns: Mapped[Any] = mapped_column(JSONB)
+    coordinator_questions: Mapped[Any] = mapped_column(JSONB)
+    operations_summary: Mapped[Any] = mapped_column(JSONB)
+    importer_identity: Mapped[str] = mapped_column(String(128))
+    importer_version: Mapped[str] = mapped_column(String(64))
+    preview_fingerprint: Mapped[str] = mapped_column(String(64))
+    adopted_by_principal: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    adopted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class BaselineSourceRow(Base):
+    """One adopted source row's identity, distinct from its record subject (#509).
+
+    ``source_row_key`` locates the row in the customer's own file;
+    ``record_subject_key`` is the Project Record subject it resolves to, and the
+    two never merge — two rows repeating one ``business_identity`` keep separate
+    subjects, so a duplicate matrix id cannot silently collapse distinct
+    facilities. ``external_system_id`` and ``source_url`` preserve the
+    utility-management-system record ids and document-control references the
+    workbook itself printed, for later read-only deep links (#527, #528).
+    """
+
+    __tablename__ = "project_baseline_source_rows"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "baseline_source_id"],
+            [
+                "project_baseline_sources.project_id",
+                "project_baseline_sources.id",
+            ],
+            name="fk_project_baseline_source_rows_source",
+        ),
+        UniqueConstraint(
+            "baseline_source_id",
+            "source_row_key",
+            name="uq_project_baseline_source_rows_key",
+        ),
+        UniqueConstraint(
+            "baseline_source_id",
+            "record_subject_key",
+            name="uq_project_baseline_source_rows_subject",
+        ),
+        CheckConstraint(
+            "row_number > 0", name="ck_project_baseline_source_rows_row_number"
+        ),
+        CheckConstraint(
+            "(excluded and record_subject_key is null "
+            "and exclusion_reason is not null) "
+            "or (not excluded and record_subject_key is not null "
+            "and exclusion_reason is null)",
+            name="ck_project_baseline_source_rows_exclusion",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    baseline_source_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_row_key: Mapped[str] = mapped_column(String(160))
+    sheet_name: Mapped[str] = mapped_column(Text)
+    row_number: Mapped[int] = mapped_column(Integer)
+    business_identity: Mapped[str | None] = mapped_column(String(128))
+    record_subject_key: Mapped[str | None] = mapped_column(String(160))
+    external_system_id: Mapped[str | None] = mapped_column(String(160))
+    source_url: Mapped[str | None] = mapped_column(Text)
+    excluded: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false")
+    )
+    exclusion_reason: Mapped[str | None] = mapped_column(String(64))
+
+
+class BaselineFormat(Base):
+    """One registered output-template or field-mapping identity (#509).
+
+    Held apart from ``BaselineSource`` on purpose: a later output template or
+    column mapping is registered on its own attributable act, supersedes its
+    predecessor, and changes no accepted value. Registering one is never a
+    second Adopt Baseline.
+    """
+
+    __tablename__ = "project_baseline_formats"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_project_baseline_formats_key"
+        ),
+        UniqueConstraint(
+            "superseded_by", name="uq_project_baseline_formats_superseded_by"
+        ),
+        CheckConstraint(
+            "format_kind in ('output_template', 'field_mapping')",
+            name="ck_project_baseline_formats_kind",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_baseline_formats_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(registered_by_principal)) > 0",
+            name="ck_project_baseline_formats_principal",
+        ),
+        Index(
+            "uq_project_baseline_formats_effective",
+            "project_id",
+            "format_kind",
+            unique=True,
+            postgresql_where=text("superseded_by is null"),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    format_kind: Mapped[str] = mapped_column(String(32))
+    format_identity: Mapped[str] = mapped_column(String(160))
+    format_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    registered_by_principal: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey(
+            "project_baseline_formats.id", deferrable=True, initially="DEFERRED"
+        )
+    )
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class FactDecision(Base):
     """One typed Record Inclusion decision whose effectiveness may be superseded."""
 

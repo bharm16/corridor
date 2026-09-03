@@ -92,6 +92,19 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/candidates.py",
         "src/corridor/models.py",
     ),
+    # The Adopt Baseline importer (#509). It uses no model either, and its
+    # reading is sealed for the same reason the native sheet reader's is: a
+    # baseline adopted under one reading and a later revision read under
+    # another are not comparable, and the accepted record is what is at stake.
+    "baseline": (
+        "src/corridor/baseline_workbook.py",
+        "src/corridor/baseline_adoption.py",
+        "src/corridor/sheets.py",
+        "src/corridor/source_segments.py",
+        "src/corridor/vocabulary.py",
+        "src/corridor/materializer.py",
+        "src/corridor/models.py",
+    ),
 }
 
 
@@ -213,6 +226,23 @@ def deployed_extractor_config(
                 logprobs=False,
             ),
         )
+    if extractor == "baseline":
+        from corridor import baseline_workbook
+
+        if client is not None:
+            raise ValueError("the Adopt Baseline importer cannot have a model client")
+        return _deployed_config(
+            extractor=extractor,
+            prompt_version=baseline_workbook.IMPORTER_VERSION,
+            model=None,
+            schema_version=baseline_workbook.IMPORTER_VERSION,
+            prompt_bytes=b"Corridor Adopt Baseline importer; no model prompt.\n",
+            schema={
+                "type": "adopted-baseline",
+                "schema_version": baseline_workbook.IMPORTER_VERSION,
+            },
+            request_controls={"provider": "native", "model_requests": 0},
+        )
     if extractor == "sheet":
         from corridor import extract_sheet
 
@@ -277,7 +307,7 @@ def _deployed_config(
     schema: Mapping[str, Any],
     request_controls: Mapping[str, Any],
 ) -> ExtractorConfig:
-    if extractor != "sheet" and model is None:
+    if extractor not in ("sheet", "baseline") and model is None:
         raise ValueError("a model-backed deployed extractor must name its model")
     return injected_extractor_config(
         extractor=extractor,
