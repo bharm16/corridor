@@ -47,7 +47,14 @@ from corridor.fact_types import (
 from corridor.identity import normalize_party
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.sheets import column_mapping
+from corridor.source_append import (
+    ClosureValues,
+    TimingValues,
+    append_extracted_proposal,
+    append_fact,
+)
 from corridor.source_segments import (
+    append_source_segment,
     dereference_source_segment,
     replay_recorded_verbal_statement,
 )
@@ -185,15 +192,7 @@ def append_structured_cell_facts(
                     transformation=contract.transformation,
                     segment=segment,
                     structured_value={"dependency_ids": dependency_ids},
-                )
-                session.add_all(
-                    FactAppliesTo(
-                        project_id=document.project_id,
-                        fact_id=fact.id,
-                        dependency_id=dependency_id,
-                        ordinal=ordinal,
-                    )
-                    for ordinal, dependency_id in enumerate(dependency_ids, 1)
+                    applies_to=dependency_ids,
                 )
                 appended.append(fact)
                 continue
@@ -209,7 +208,8 @@ def append_structured_cell_facts(
                 if fact_type == "external_org"
                 else None
             )
-            fact = Fact(
+            fact = append_fact(
+                session,
                 project_id=document.project_id,
                 document_id=document.id,
                 extraction_run_id=run.id,
@@ -218,10 +218,7 @@ def append_structured_cell_facts(
                 subject_key=f"{sheet_name}!{source_row}",
                 text_value=value if isinstance(value, str) else None,
                 date_value=value if isinstance(value, date) else None,
-                date_range_start=None,
-                date_range_end=None,
                 external_org_value_id=external_org_id,
-                document_value_id=None,
                 transformation=contract.transformation,
                 recorded_by=f"extractor:{run.prompt_version}",
                 content_sha256=_fact_digest(
@@ -240,18 +237,7 @@ def append_structured_cell_facts(
                     external_org_value_id=external_org_id,
                     source_links=(("value_source", segment.id),),
                 ),
-            )
-            session.add(fact)
-            session.flush([fact])
-            session.add(
-                FactSource(
-                    project_id=document.project_id,
-                    document_id=document.id,
-                    fact_id=fact.id,
-                    source_segment_id=segment.id,
-                    role="value_source",
-                    ordinal=1,
-                )
+                sources=(("value_source", segment.id),),
             )
             appended.append(fact)
             if fact_type == "marked_resolution":
@@ -269,23 +255,11 @@ def append_structured_cell_facts(
                         "closure_kind": "source_marked_resolved",
                         "successor_dependency_id": None,
                     },
-                )
-                session.add(
-                    FactClosureResult(
-                        project_id=document.project_id,
-                        fact_id=closure.id,
+                    closure=ClosureValues(
                         closure_kind="source_marked_resolved",
                         successor_dependency_id=None,
-                    )
-                )
-                session.add(
-                    FactClosureSource(
-                        project_id=document.project_id,
-                        document_id=document.id,
-                        fact_id=closure.id,
-                        source_segment_id=segment.id,
-                        ordinal=1,
-                    )
+                        governing_source_segment_ids=(segment.id,),
+                    ),
                 )
                 appended.append(closure)
     session.flush()
@@ -424,7 +398,8 @@ def append_statement_wording_facts(
         if candidate.id is None:
             raise FactValidationError("statement Candidate needs an immutable identity")
         subject_key = f"candidate:{candidate.id}"
-        fact = Fact(
+        fact = append_fact(
+            session,
             project_id=document.project_id,
             document_id=document.id,
             extraction_run_id=run.id,
@@ -432,11 +407,6 @@ def append_statement_wording_facts(
             subject_kind=contract.subject_kind,
             subject_key=subject_key,
             text_value=description,
-            date_value=None,
-            date_range_start=None,
-            date_range_end=None,
-            external_org_value_id=None,
-            document_value_id=None,
             transformation=contract.transformation,
             recorded_by=f"extractor:{run.prompt_version}",
             content_sha256=_fact_digest(
@@ -453,19 +423,7 @@ def append_statement_wording_facts(
                 text_value=description,
                 source_links=links,
             ),
-        )
-        session.add(fact)
-        session.flush([fact])
-        session.add_all(
-            FactSource(
-                project_id=document.project_id,
-                document_id=document.id,
-                fact_id=fact.id,
-                source_segment_id=segment_id,
-                role=role,
-                ordinal=1,
-            )
-            for role, segment_id in links
+            sources=links,
         )
         appended.append(fact)
     session.flush()
@@ -569,23 +527,16 @@ def append_recorded_statement_timing_fact(
     if not recorded_by.strip():
         raise FactValidationError("statement timing needs a recorder attribution")
     ordered = _validated_statement_timings(timings)
-    if segment.id is None:
-        session.add(segment)
-        session.flush([segment])
+    segment = append_source_segment(session, segment)
     structured = _statement_timing_structured(ordered)
-    fact = Fact(
+    return append_fact(
+        session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
         fact_type="statement_timing",
         subject_kind="statement_candidate",
         subject_key=subject_key,
-        text_value=None,
-        date_value=None,
-        date_range_start=None,
-        date_range_end=None,
-        external_org_value_id=None,
-        document_value_id=None,
         transformation="typed_statement_timing_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
@@ -597,33 +548,18 @@ def append_recorded_statement_timing_fact(
             source_links=(("value_source", segment.id),),
             structured_value=structured,
         ),
+        sources=(("value_source", segment.id),),
+        timings=tuple(
+            TimingValues(
+                role=role,
+                text=timing.text,
+                precision=timing.precision,
+                start_date=timing.start_date,
+                end_date=timing.end_date,
+            )
+            for role, timing in ordered
+        ),
     )
-    session.add(fact)
-    session.flush([fact])
-    session.add_all(
-        FactStatementTiming(
-            project_id=segment.project_id,
-            fact_id=fact.id,
-            timing_role=role,
-            text=timing.text,
-            precision=timing.precision,
-            start_date=timing.start_date,
-            end_date=timing.end_date,
-        )
-        for role, timing in ordered
-    )
-    session.add(
-        FactSource(
-            project_id=segment.project_id,
-            document_id=None,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
-    )
-    session.flush()
-    return fact
 
 
 def replay_recorded_statement_timing_fact(
@@ -725,14 +661,13 @@ def append_recorded_statement_wording_fact(
         raise FactValidationError(
             "statement wording must appear in its cited passage"
         )
-    if segment.id is None:
-        session.add(segment)
-        session.flush([segment])
+    segment = append_source_segment(session, segment)
     links = (
         ("value_source", segment.id),
         ("attribution_source", segment.id),
     )
-    fact = Fact(
+    return append_fact(
+        session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
@@ -740,11 +675,6 @@ def append_recorded_statement_wording_fact(
         subject_kind="statement_candidate",
         subject_key=subject_key,
         text_value=description,
-        date_value=None,
-        date_range_start=None,
-        date_range_end=None,
-        external_org_value_id=None,
-        document_value_id=None,
         transformation="exact_prose_span_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
@@ -755,22 +685,8 @@ def append_recorded_statement_wording_fact(
             text_value=description,
             source_links=links,
         ),
+        sources=links,
     )
-    session.add(fact)
-    session.flush([fact])
-    session.add_all(
-        FactSource(
-            project_id=segment.project_id,
-            document_id=None,
-            fact_id=fact.id,
-            source_segment_id=segment_id,
-            role=role,
-            ordinal=1,
-        )
-        for role, segment_id in links
-    )
-    session.flush()
-    return fact
 
 
 def append_recorded_applies_to_fact(
@@ -800,23 +716,16 @@ def append_recorded_applies_to_fact(
         raise FactValidationError("statement Applies To needs a recorder attribution")
     if len(set(dependency_ids)) != len(dependency_ids):
         raise FactValidationError("statement Applies To members must be unique")
-    if segment.id is None:
-        session.add(segment)
-        session.flush([segment])
+    segment = append_source_segment(session, segment)
     structured = {"dependency_ids": list(dependency_ids)}
-    fact = Fact(
+    return append_fact(
+        session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
         fact_type="applies_to",
         subject_kind="statement_candidate",
         subject_key=subject_key,
-        text_value=None,
-        date_value=None,
-        date_range_start=None,
-        date_range_end=None,
-        external_org_value_id=None,
-        document_value_id=None,
         transformation="structured_reference_set_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
@@ -828,30 +737,9 @@ def append_recorded_applies_to_fact(
             source_links=(("value_source", segment.id),),
             structured_value=structured,
         ),
+        sources=(("value_source", segment.id),),
+        applies_to=dependency_ids,
     )
-    session.add(fact)
-    session.flush([fact])
-    session.add_all(
-        FactAppliesTo(
-            project_id=segment.project_id,
-            fact_id=fact.id,
-            dependency_id=dependency_id,
-            ordinal=ordinal,
-        )
-        for ordinal, dependency_id in enumerate(dependency_ids, 1)
-    )
-    session.add(
-        FactSource(
-            project_id=segment.project_id,
-            document_id=None,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
-    )
-    session.flush()
-    return fact
 
 
 def replay_recorded_statement_wording_fact(
@@ -1024,26 +912,20 @@ def append_supporting_documentation_fact(
     )
     if existing is not None:
         return existing
-    fact = Fact(
+    return append_fact(
+        session,
         project_id=project_id,
         document_id=None,
         extraction_run_id=None,
         fact_type="supporting_documentation_in_use",
         subject_kind="record_subject",
         subject_key=subject_key,
-        text_value=None,
-        date_value=None,
-        date_range_start=None,
-        date_range_end=None,
-        external_org_value_id=None,
         document_value_id=document_id,
         transformation="supporting_document_revision_v1",
         recorded_by=recorded_by,
         content_sha256=digest,
+        sources=(),
     )
-    session.add(fact)
-    session.flush([fact])
-    return fact
 
 
 def append_extracted_proposals(
@@ -1084,28 +966,20 @@ def append_extracted_proposals(
         candidate = candidates_by_subject.get(subject_key)
         if candidate is None:
             raise FactValidationError("Fact subject has no Extracted Proposal identity")
-        proposal = ExtractedProposal(
+        proposal = append_extracted_proposal(
+            session,
             project_id=document.project_id,
             document_id=document.id,
             extraction_run_id=run.id,
             candidate_id=candidate.id,
             kind=candidate.kind,
             subject_key=subject_key,
-            candidate_metadata_json=_proposal_candidate_metadata(candidate),
+            candidate_metadata=_proposal_candidate_metadata(candidate),
+            fact_ids=tuple(
+                fact.id
+                for fact in sorted(subject_facts, key=lambda item: item.fact_type)
+            ),
         )
-        session.add(proposal)
-        session.flush([proposal])
-        for ordinal, fact in enumerate(sorted(subject_facts, key=lambda item: item.fact_type), 1):
-            session.add(
-                ExtractedProposalFact(
-                    project_id=document.project_id,
-                    document_id=document.id,
-                    extraction_run_id=run.id,
-                    proposal_id=proposal.id,
-                    fact_id=fact.id,
-                    ordinal=ordinal,
-                )
-            )
         proposals.append(proposal)
     session.flush()
     return tuple(proposals)
@@ -1136,7 +1010,8 @@ def correct_fact(
         else None
     )
     links = tuple((role, segment.id) for role in sorted(contract.required_roles))
-    successor = Fact(
+    successor = append_fact(
+        session,
         project_id=predecessor.project_id,
         document_id=predecessor.document_id,
         extraction_run_id=predecessor.extraction_run_id,
@@ -1145,10 +1020,7 @@ def correct_fact(
         subject_key=predecessor.subject_key,
         text_value=text_value,
         date_value=date_value,
-        date_range_start=None,
-        date_range_end=None,
         external_org_value_id=external_org_value_id,
-        document_value_id=None,
         transformation=predecessor.transformation,
         recorded_by=actor.subject,
         content_sha256=_fact_digest(
@@ -1165,19 +1037,7 @@ def correct_fact(
             external_org_value_id=external_org_value_id,
             source_links=links,
         ),
-    )
-    session.add(successor)
-    session.flush([successor])
-    session.add_all(
-        FactSource(
-            project_id=successor.project_id,
-            document_id=successor.document_id,
-            fact_id=successor.id,
-            source_segment_id=linked_segment_id,
-            role=role,
-            ordinal=1,
-        )
-        for role, linked_segment_id in links
+        sources=links,
     )
     disposition = FactDisposition(
         project_id=successor.project_id,
@@ -1498,20 +1358,19 @@ def _append_fact_envelope(
     transformation: str,
     segment: SourceSegment,
     structured_value: object,
+    applies_to: tuple[int, ...] | None = None,
+    closure: ClosureValues | None = None,
 ) -> Fact:
-    fact = Fact(
+    """Append one structured-value Fact whose value lives in a typed satellite."""
+
+    return append_fact(
+        session,
         project_id=document.project_id,
         document_id=document.id,
         extraction_run_id=run.id,
         fact_type=fact_type,
         subject_kind=subject_kind,
         subject_key=subject_key,
-        text_value=None,
-        date_value=None,
-        date_range_start=None,
-        date_range_end=None,
-        external_org_value_id=None,
-        document_value_id=None,
         transformation=transformation,
         recorded_by=f"extractor:{run.prompt_version}",
         content_sha256=_fact_digest(
@@ -1529,20 +1388,10 @@ def _append_fact_envelope(
             source_links=(("value_source", segment.id),),
             structured_value=structured_value,
         ),
+        sources=(("value_source", segment.id),),
+        applies_to=applies_to,
+        closure=closure,
     )
-    session.add(fact)
-    session.flush([fact])
-    session.add(
-        FactSource(
-            project_id=document.project_id,
-            document_id=document.id,
-            fact_id=fact.id,
-            source_segment_id=segment.id,
-            role="value_source",
-            ordinal=1,
-        )
-    )
-    return fact
 
 
 def _fact_digest(

@@ -45,6 +45,7 @@ from corridor.project_lock import lock_project
 from corridor.record_inclusion import request_record_inclusion
 from corridor.revision_reconciliation_request import request_revision_reconciliation
 from corridor.row_accounting import validate_row_accounting
+from corridor.source_append import append_source_fact_receipt
 from corridor.source_segments import (
     append_ingested_source_segments,
     dereference_source_segment,
@@ -253,14 +254,13 @@ def append_source_facts(
             candidate.extraction_run_id = run.id
         session.flush()
         _fail_after(fail_after_stage, "facts")
-        session.add(
-            SourceFactAppendReceipt(
-                project_id=document.project_id,
-                document_id=document.id,
-                extraction_run_id=run.id,
-                idempotency_key=key,
-                content_sha256=content_sha256,
-            )
+        append_source_fact_receipt(
+            session,
+            project_id=document.project_id,
+            document_id=document.id,
+            extraction_run_id=run.id,
+            idempotency_key=key,
+            content_sha256=content_sha256,
         )
         session.flush()
         _fail_after(fail_after_stage, "receipt")

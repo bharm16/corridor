@@ -55,7 +55,10 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
-from corridor.source_segments import recorded_verbal_statement_segment
+from corridor.source_segments import (
+    append_source_segment,
+    recorded_verbal_statement_segment,
+)
 from corridor.statement_lifecycle import observe_current_statement
 
 
@@ -492,13 +495,14 @@ def _record_verbal_on_spine(
     """
 
     subject_key = f"lineage:{event.commitment_lineage_id}"
-    segment = recorded_verbal_statement_segment(
-        project_id=project.id,
-        statement_id=event.id,
-        exact_text=description,
+    segment = append_source_segment(
+        session,
+        recorded_verbal_statement_segment(
+            project_id=project.id,
+            statement_id=event.id,
+            exact_text=description,
+        ),
     )
-    session.add(segment)
-    session.flush([segment])
     timings = (("new", new_timing),) + (
         (("previous", previous_timing),) if previous_timing is not None else ()
     )
