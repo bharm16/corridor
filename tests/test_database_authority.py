@@ -139,12 +139,17 @@ RECORDED_VERBAL_RECEIPT_TABLES = (
     "recorded_verbal_origin_backfill_receipts",
     "recorded_verbal_origin_fact_digests",
 )
-# The push-intake boundary (#511): the application inserts a credential and a
-# delivery and may revoke a credential, and nothing else. Neither an alias's
-# project binding nor the record of a taken delivery is rewritable at runtime.
+# The intake boundary (#511, ADR-0089): the application inserts a credential,
+# a delivery of either transport, and the advance its cursor reached, and may
+# revoke a credential, and nothing else. Neither an alias's project binding,
+# nor the record of a delivery, nor the coverage that made an advance safe is
+# rewritable at runtime — which is what makes deleting a Due Work receipt
+# unable to move an external cursor (#599).
 PUSH_INTAKE_TABLES = (
     "push_intake_credentials",
-    "push_deliveries",
+    "source_deliveries",
+    "connector_checkpoint_advances",
+    "connector_checkpoint_advance_deliveries",
 )
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",

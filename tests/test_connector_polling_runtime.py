@@ -2,10 +2,14 @@
 
 ADR-0083 fixes one rule for a pull connector: the checkpoint advances only
 after every change up to and including its token is durably stored under its
-digest. These tests hold that rule where it is actually at risk — a worker that
-stores bytes and then dies before its receipt — and prove the next pass resumes
-from the token the last completed receipt retained, taking each change again
-without producing a second object.
+digest. ADR-0089 states the rest of it — a delivery the intake gate refused
+permits an advance once its digest and refusal evidence are durable, and a
+transient failure never does — and moves the cursor off the Due Work receipt
+onto its own append-only relation.
+
+These tests hold those rules where they are actually at risk: a worker that
+stores bytes and then dies before its receipt, a scanner that fails rather than
+deciding, and an operator who deletes an old receipt.
 """
 
 from __future__ import annotations
@@ -16,6 +20,9 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
+
+from sqlalchemy import delete, func, select, text
+from sqlalchemy.exc import IntegrityError
 
 from corridor import connector_polling
 from corridor.connectors.pull_connector import ChangeItem
@@ -29,8 +36,21 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
-from corridor.models import Project
+from corridor.models import (
+    ConnectorCheckpointAdvance,
+    ConnectorCheckpointAdvanceDelivery,
+    DueWorkReceipt,
+    Project,
+    SourceDelivery,
+)
 from corridor.object_storage import content_key, content_store
+from corridor.source_delivery import (
+    DeliveryBinding,
+    DeliveryObservation,
+    current_checkpoint_token,
+    record_checkpoint_advance,
+    record_delivery,
+)
 
 
 TEST_CONNECTOR = "test-fixture-v1"
@@ -95,7 +115,10 @@ def installed_connector(monkeypatch):
     """
 
     connector = RecordingConnector(
-        {"item-a": b"first delivery", "item-b": b"second delivery"}
+        {
+            "item-a": b"%PDF-1.4 first delivery",
+            "item-b": b"%PDF-1.4 second delivery",
+        }
     )
     monkeypatch.setattr(
         connector_polling,
@@ -165,8 +188,9 @@ def test_polling_stores_every_change_and_retains_its_checkpoint(
     assert body["channel"] == "shared-files"
     assert result.safe_next_step == "none"
     # The bytes are in the content-addressed store before the receipt exists.
-    assert _stored(b"first delivery") == b"first delivery"
-    assert _stored(b"second delivery") == b"second delivery"
+    assert _stored(b"%PDF-1.4 first delivery") == b"%PDF-1.4 first delivery"
+    assert _stored(b"%PDF-1.4 second delivery") == b"%PDF-1.4 second delivery"
+    assert body["dispositions"] == {"stored": 2}
     assert installed_connector.checkpoints == ["item-b"]
 
     with factory() as verify:
@@ -187,7 +211,7 @@ def test_the_next_pass_resumes_from_the_retained_checkpoint(
         factory, clock=ControlledClock(now), owner="runtime:polling-worker"
     )
 
-    installed_connector.items["item-c"] = b"third delivery"
+    installed_connector.items["item-c"] = b"%PDF-1.4 third delivery"
     later = now + timedelta(hours=1)
     with factory() as ticking:
         enqueue_due_work(ticking, now=later)
@@ -204,10 +228,18 @@ def test_the_next_pass_resumes_from_the_retained_checkpoint(
     assert installed_connector.fetches == ["item-a", "item-b", "item-c"]
 
 
-def test_a_crash_before_the_receipt_leaves_the_checkpoint_where_it_was(
+def test_a_crash_before_the_receipt_keeps_the_advance_it_durably_made(
     runtime_database, installed_connector
 ):
-    """The restart drill: stored bytes, no receipt, no advanced checkpoint."""
+    """The restart drill, as ADR-0089 leaves it.
+
+    #488 kept the token on the completed receipt, so a worker that stored every
+    change and then died lost the cursor with the receipt it never wrote and
+    the recovery re-listed the whole location. The cursor now lives with the
+    connector configuration and is recorded as its own act, so the crash costs
+    the receipt and nothing else — and the recovered attempt resumes from what
+    was durably taken instead of taking it all again.
+    """
 
     factory = runtime_database.session_factory
     now = datetime(2026, 9, 3, 9, 0, tzinfo=timezone.utc)
@@ -221,17 +253,16 @@ def test_a_crash_before_the_receipt_leaves_the_checkpoint_where_it_was(
         assert claim is not None
         claiming.commit()
 
-    # The crashed worker durably stored both changes and checkpointed its own
-    # connector, but never finalized, so nothing retained the token.
     crashed = connector_polling.execute_connector_polling(
         factory,
         schedule_id=schedule_id,
         clock=ControlledClock(now),
+        run_identity="due-attempt:crashed",
         connector=installed_connector,
     )
     assert crashed["changes_taken"] == 2
     with factory() as reading:
-        assert connector_polling.last_checkpoint_token(reading, schedule_id) is None
+        assert current_checkpoint_token(reading, schedule_id) == "item-b"
 
     recover_at = claim.lease_expires_at + timedelta(seconds=1)
     recovered = run_due_work_once(
@@ -241,16 +272,253 @@ def test_a_crash_before_the_receipt_leaves_the_checkpoint_where_it_was(
     assert recovered is not None
     assert recovered.execution_outcome == "completed"
     assert recovered.attempt_id != claim.attempt_id
-    # It re-listed from the same place and re-stored content-addressed bytes.
-    assert recovered.handler_result["cursor"] == ""
-    assert recovered.handler_result["changes_taken"] == 2
-    assert recovered.handler_result["checkpoint_token"] == "item-b"
-    assert installed_connector.fetches == ["item-a", "item-b", "item-a", "item-b"]
-    assert _stored(b"first delivery") == b"first delivery"
+    assert recovered.handler_result["cursor"] == "item-b"
+    assert recovered.handler_result["changes_taken"] == 0
+    assert installed_connector.fetches == ["item-a", "item-b"]
+    assert _stored(b"%PDF-1.4 first delivery") == b"%PDF-1.4 first delivery"
     with factory() as reading:
-        assert (
-            connector_polling.last_checkpoint_token(reading, schedule_id) == "item-b"
+        assert current_checkpoint_token(reading, schedule_id) == "item-b"
+
+
+def test_a_crash_before_the_advance_leaves_the_cursor_where_it_was(
+    runtime_database, installed_connector
+):
+    """Storing bytes is not advancing: the advance is its own durable act."""
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 9, 30, tzinfo=timezone.utc)
+    _, schedule_id = _seed_project(factory, now)
+
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    class DiesBeforeCheckpoint:
+        def __init__(self, inner):
+            self._inner = inner
+
+        def list_changes(self, cursor=None):
+            return self._inner.list_changes(cursor)
+
+        def fetch_version(self, item_id, version_id):
+            return self._inner.fetch_version(item_id, version_id)
+
+        def get_metadata(self, item_id):
+            return self._inner.get_metadata(item_id)
+
+        def checkpoint(self, token):
+            raise RuntimeError("the worker died before it could checkpoint")
+
+    with pytest.raises(RuntimeError, match="died before it could checkpoint"):
+        connector_polling.execute_connector_polling(
+            factory,
+            schedule_id=schedule_id,
+            clock=ControlledClock(now),
+            run_identity="due-attempt:half-way",
+            connector=DiesBeforeCheckpoint(installed_connector),
         )
+
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) is None
+        # The deliveries it did take are still recorded: the bytes are in the
+        # store and the ledger says so, which is what makes the next pass a
+        # duplicate rather than a second taking.
+        assert reading.scalars(
+            select(SourceDelivery.disposition).order_by(SourceDelivery.id)
+        ).all() == ["stored", "stored"]
+
+
+def test_deleting_an_old_receipt_never_moves_the_external_cursor(
+    runtime_database, installed_connector
+):
+    """#488's cursor was a derived property of receipt retention (ADR-0089).
+
+    Retention is not identity. A receipt sweep, a retention-policy change, or
+    an ordinary cleanup would have reset a live connector's cursor and re-listed
+    an entire location; the cursor now lives with the configuration, which
+    nothing sweeps.
+    """
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 13, 0, tzinfo=timezone.utc)
+    _, schedule_id = _seed_project(factory, now)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+    run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    with factory() as sweeping:
+        # A receipt is immutable to the application, so the sweep is modelled
+        # the only way one can happen: the disposal path, with the append-only
+        # guard lifted.
+        sweeping.execute(text("set local session_replication_role = replica"))
+        swept = sweeping.execute(
+            delete(DueWorkReceipt).where(
+                DueWorkReceipt.handler_key == HANDLER_CONNECTOR_POLLING
+            )
+        ).rowcount
+        sweeping.commit()
+    assert swept > 0
+
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) == "item-b"
+
+    later = now + timedelta(hours=1)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=later)
+        ticking.commit()
+    after_sweep = run_due_work_once(
+        factory, clock=ControlledClock(later), owner="runtime:polling-worker"
+    )
+
+    assert after_sweep.handler_result["cursor"] == "item-b"
+    assert after_sweep.handler_result["changes_taken"] == 0
+    assert installed_connector.fetches == ["item-a", "item-b"]
+
+
+def test_a_refused_delivery_is_recorded_and_the_cursor_advances_past_it(
+    runtime_database, installed_connector, monkeypatch
+):
+    """ADR-0089's refused case, end to end and durable.
+
+    ADR-0083's rule read literally stalls a location forever on one object the
+    gate will never admit. The advance is safe here because the digest and the
+    reason are in the ledger: the record still answers what arrived and why it
+    was refused, without the bytes.
+    """
+
+    from corridor import intake_hardening
+
+    class Refusing:
+        def scan(self, body, filename):
+            if b"second delivery" in body:
+                return intake_hardening.ScanResult(
+                    is_clean=False, threat_name="Test", reason="marked bytes"
+                )
+            return intake_hardening.ScanResult(is_clean=True)
+
+    monkeypatch.setattr(intake_hardening, "_GLOBAL_SCANNER", Refusing())
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
+    _, schedule_id = _seed_project(factory, now)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    result = run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    assert result.execution_outcome == "completed"
+    assert result.handler_result["dispositions"] == {
+        "stored": 1,
+        "terminally_refused": 1,
+    }
+    assert result.handler_result["advanced"] is True
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) == "item-b"
+        refused = reading.scalars(
+            select(SourceDelivery).where(
+                SourceDelivery.disposition == "terminally_refused"
+            )
+        ).one()
+        assert refused.transport == "pull"
+        assert refused.external_identity == "item-b"
+        assert refused.content_sha256 == sha256(b"%PDF-1.4 second delivery").hexdigest()
+        assert refused.refusal_reason.startswith("malware_detected:")
+        assert refused.bytes_reference == ""
+        # The advance names the deliveries it covered, refusal included.
+        covered = reading.scalars(
+            select(ConnectorCheckpointAdvanceDelivery.delivery_id)
+        ).all()
+        assert refused.id in covered
+
+
+def test_a_transient_scanner_failure_never_advances_the_cursor(
+    runtime_database, installed_connector, monkeypatch
+):
+    """The other half of the rule, and the one that loses a source revision.
+
+    A cursor that fails to advance is visible: the connector re-lists and
+    somebody notices. A cursor that advances past a change nobody stored is
+    silent, so a scanner that failed rather than deciding must never move it.
+    """
+
+    from corridor import intake_hardening
+
+    class Failing:
+        def scan(self, body, filename):
+            raise RuntimeError("scanner unavailable")
+
+    monkeypatch.setattr(intake_hardening, "_GLOBAL_SCANNER", Failing())
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 15, 0, tzinfo=timezone.utc)
+    _, schedule_id = _seed_project(factory, now)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    result = run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    assert result.execution_outcome == "completed"
+    assert result.handler_result["dispositions"] == {"transient_failure": 2}
+    assert result.handler_result["advanced"] is False
+    assert result.handler_result["blocked_by"] == ["item-a", "item-b"]
+    assert result.handler_result["health"] == "polling_attention_required"
+    assert installed_connector.checkpoints == []
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) is None
+        assert reading.scalar(select(func.count(ConnectorCheckpointAdvance.id))) == 0
+        failed = reading.scalars(select(SourceDelivery)).all()
+        assert {row.disposition for row in failed} == {"transient_failure"}
+        assert all(row.refusal_reason.startswith("scan_failed:") for row in failed)
+
+
+def test_the_database_refuses_an_advance_past_a_transient_failure(
+    runtime_database, installed_connector, monkeypatch
+):
+    """The rule is enforced where the coverage is written, not remembered.
+
+    ADR-0089 asks for one rule in one place. The pass above declines to advance;
+    this proves the database would refuse the coverage even if a writer tried.
+    """
+
+    from corridor import intake_hardening
+
+    class Failing:
+        def scan(self, body, filename):
+            raise RuntimeError("scanner unavailable")
+
+    monkeypatch.setattr(intake_hardening, "_GLOBAL_SCANNER", Failing())
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 16, 0, tzinfo=timezone.utc)
+    project_id, schedule_id = _seed_project(factory, now)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+    run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    with factory() as writing:
+        failed = writing.scalars(select(SourceDelivery.id)).first()
+        with pytest.raises(IntegrityError, match="transient_failure"):
+            record_checkpoint_advance(
+                writing,
+                project_id=project_id,
+                schedule_id=schedule_id,
+                configuration_identity=TEST_CONNECTOR,
+                configuration_version="connector-polling-v1",
+                channel="shared-files",
+                checkpoint_token="item-b",
+                service_identity="tests",
+                run_identity="tests:forced",
+                delivery_ids=(failed,),
+            )
 
 
 def test_an_idle_pass_takes_nothing_and_keeps_its_token(
@@ -315,3 +583,93 @@ def test_gate7_refuses_an_uninstalled_connector_and_an_unsafe_location(
             configure_connector_polling(
                 setup, replace(base, notification_budget=1), now=now
             )
+
+
+def test_a_quarantined_delivery_advances_only_where_its_bytes_are_held(
+    runtime_database, installed_connector
+):
+    """The disposition #490's byte-hold carries, and the rule the database keeps.
+
+    Corridor's approved intake policy refuses hostile bytes outright today
+    rather than retaining them, so no runtime path produces ``quarantined``
+    yet. The ledger carries it because ADR-0089's checkpoint rule turns on it:
+    an advance passes a held delivery only where the quarantine reference and
+    the refusal evidence are both durable, and the database is where that is
+    settled.
+    """
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 17, 0, tzinfo=timezone.utc)
+    project_id, schedule_id = _seed_project(factory, now)
+
+    with factory() as writing:
+        binding = DeliveryBinding(
+            customer="acme-utilities",
+            project_id=project_id,
+            project_slug=writing.get(Project, project_id).slug,
+            transport="pull",
+            channel="shared-files",
+            configuration_identity=TEST_CONNECTOR,
+        )
+        held = record_delivery(
+            writing,
+            binding,
+            DeliveryObservation(
+                external_identity="item-held",
+                external_version="v1",
+                content_digest=sha256(b"held bytes").hexdigest(),
+                bytes_reference="quarantine/item-held",
+            ),
+            disposition="quarantined",
+            service_identity="tests",
+            run_identity="tests:quarantine",
+            refusal_reason="malware_detected: held for inspection",
+        )
+        unheld = record_delivery(
+            writing,
+            binding,
+            DeliveryObservation(
+                external_identity="item-unheld",
+                external_version="v1",
+                content_digest=sha256(b"unheld bytes").hexdigest(),
+            ),
+            disposition="quarantined",
+            service_identity="tests",
+            run_identity="tests:quarantine",
+            refusal_reason="malware_detected: nothing kept",
+        )
+        writing.commit()
+        held_id, unheld_id = held.delivery_id, unheld.delivery_id
+
+    with factory() as advancing:
+        record_checkpoint_advance(
+            advancing,
+            project_id=project_id,
+            schedule_id=schedule_id,
+            configuration_identity=TEST_CONNECTOR,
+            configuration_version="connector-polling-v1",
+            channel="shared-files",
+            checkpoint_token="item-held",
+            service_identity="tests",
+            run_identity="tests:quarantine",
+            delivery_ids=(held_id,),
+        )
+        advancing.commit()
+
+    with factory() as refusing:
+        with pytest.raises(IntegrityError, match="missing_quarantine_reference"):
+            record_checkpoint_advance(
+                refusing,
+                project_id=project_id,
+                schedule_id=schedule_id,
+                configuration_identity=TEST_CONNECTOR,
+                configuration_version="connector-polling-v1",
+                channel="shared-files",
+                checkpoint_token="item-unheld",
+                service_identity="tests",
+                run_identity="tests:quarantine",
+                delivery_ids=(unheld_id,),
+            )
+
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) == "item-held"

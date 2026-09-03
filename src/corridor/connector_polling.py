@@ -1,4 +1,4 @@
-"""Poll one connected location's PullConnector on a schedule (#488, #496).
+"""Poll one connected location's PullConnector on a schedule (#488, #496, #599).
 
 ``location_discovery`` already walks an HTML index and registers Documents, but
 it is not the pull contract ADR-0083 fixed: it has no cursor, so every pass
@@ -6,16 +6,27 @@ re-enumerates the whole location and can never say what it has already taken
 delivery of.  This module runs the four-method ``PullConnector`` instead, one
 bounded pass per claimed Due Work occurrence.
 
-Where the cursor lives was the design question.  A checkpoint table was
-rejected: the migration window is closed (``corridor.migrations.policy``), and
-the runtime already writes exactly the durable, append-only, ordered record a
-cursor needs.  The token a pass reached is returned in the handler result, so
-the runtime retains it on that occurrence's completed receipt *after* every
-listed change is durably in the content-addressed store under its digest.  A
-crash between storage and the receipt leaves the previous token standing, so
-the next pass re-lists and re-stores bytes that are already there — ADR-0083's
-rule that a checkpoint never advances past an unstored change, kept without a
-second record of the same fact.
+Where the cursor lives was the design question, and the answer changed.  A
+checkpoint table was rejected here once, in these words: "the migration window
+is closed (``corridor.migrations.policy``), and the runtime already writes
+exactly the durable, append-only, ordered record a cursor needs."  The second
+half was true and the first half was a scheduling constraint standing in for a
+design one.  The consequence was that the external cursor became a derived
+property of *receipt retention*: a receipt sweep, a retention-policy change, or
+an ordinary cleanup would reset a live connector's cursor or land it on a stale
+token, and #488 could only mitigate that by retaining those receipts for 3650
+days.  ADR-0089 reverses the decision.  The cursor now lives with the connector
+configuration, in ``connector_checkpoint_advances``, and the current checkpoint
+is derived from the newest advance recorded there.  The Due Work receipt is
+still the record of the occurrence; it is no longer the record of the cursor.
+
+The pass also records what it took delivery of.  ADR-0083 made the
+``SourceEnvelope`` common to pull and push and #511 persisted only the push
+half, so a pull delivery existed nowhere and a delivery the intake gate refused
+was simply lost.  Both transports now write one ``source_deliveries`` family
+through ``corridor.source_delivery``, and the checkpoint advance names the
+deliveries it covered — which is what lets the database refuse an advance past
+a transient failure.
 
 Which connector a persisted schedule may name is a server-owned registry, for
 the same reason the Due Work handler registry is one: a stored row selects a
@@ -29,6 +40,7 @@ idempotent work one claimed occurrence performs.
 
 from __future__ import annotations
 
+from collections import Counter
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Sequence
@@ -43,10 +55,17 @@ from corridor.connectors.pull_connector import (
     sync_pull_connector,
 )
 from corridor.models import (
-    DueWorkOccurrence,
-    DueWorkReceipt,
     DueWorkSchedule,
     Project,
+)
+from corridor.source_delivery import (
+    DISPOSITION_STORED,
+    DeliveryBinding,
+    DeliveryObservation,
+    current_checkpoint_token,
+    record_checkpoint_advance,
+    record_delivery,
+    take_delivery,
 )
 
 # The one server-owned handler key this module's work runs under.  It matches
@@ -54,6 +73,9 @@ from corridor.models import (
 # module is the lower layer and the runtime imports its execution, never the
 # reverse.
 HANDLER_KEY = "connector_polling"
+
+# Who took delivery, for the ledger ADR-0089 shares with the push half.
+SERVICE_IDENTITY = "corridor.connector_polling"
 
 _RESULT_SCHEMA_VERSION = "connector-polling-result-v1"
 
@@ -79,7 +101,7 @@ class CheckpointRecorder:
     ``PullConnector`` has no way to report the token it checkpointed, and
     adding one would change #496's four-method interface for every adapter.
     This delegate records the token as it passes through, so the handler can
-    retain it on the receipt while the connector still performs its own
+    record the durable advance while the connector still performs its own
     checkpoint exactly as ADR-0083 requires.
     """
 
@@ -103,30 +125,62 @@ class CheckpointRecorder:
         self.token = token
 
 
-def last_checkpoint_token(session: Session, schedule_id: int) -> str | None:
-    """The token this schedule's newest completed attempt durably reached.
+class LedgerWriter:
+    """Record one pass's deliveries, one committed transaction at a time.
 
-    Ordered by receipt identity rather than ``finished_at``: the identifier is
-    monotonic in insertion order no matter what any clock said, and "newest"
-    here must mean the last one retained.
+    Each delivery is written in its own short transaction rather than under one
+    long one held open across the fetches, which is the property #488 already
+    had and this must not give up: the pass holds no runtime transaction while
+    it talks to the external system.  Committing per delivery is also what makes
+    the refusal evidence durable *before* the pass decides whether it may
+    advance past it (ADR-0089).
     """
 
-    result = session.scalars(
-        select(DueWorkReceipt.handler_result_json)
-        .join(
-            DueWorkOccurrence,
-            DueWorkOccurrence.id == DueWorkReceipt.occurrence_id,
+    def __init__(self, session_factory, binding: DeliveryBinding, run_identity: str):
+        self._session_factory = session_factory
+        self._binding = binding
+        self._run_identity = run_identity
+        self.dispositions: Counter[str] = Counter()
+
+    def record(
+        self,
+        item: ChangeItem,
+        *,
+        disposition: str,
+        content_digest: str,
+        bytes_reference: str,
+        refusal_reason: str | None,
+    ) -> int:
+        observation = DeliveryObservation(
+            external_identity=item.item_id,
+            external_version=item.version_id,
+            content_digest=content_digest,
+            bytes_reference=bytes_reference,
+            original_timestamps=dict(item.original_timestamps),
+            metadata=dict(item.metadata),
         )
-        .where(
-            DueWorkOccurrence.scheduled_job_id == schedule_id,
-            DueWorkReceipt.handler_key == HANDLER_KEY,
-            DueWorkReceipt.execution_outcome == "completed",
-        )
-        .order_by(DueWorkReceipt.id.desc())
-        .limit(1)
-    ).first()
-    token = (result or {}).get("checkpoint_token") or None
-    return str(token) if token else None
+        with self._session_factory() as writing:
+            with writing.begin():
+                if disposition == DISPOSITION_STORED:
+                    recorded = take_delivery(
+                        writing,
+                        self._binding,
+                        observation,
+                        service_identity=SERVICE_IDENTITY,
+                        run_identity=self._run_identity,
+                    )
+                else:
+                    recorded = record_delivery(
+                        writing,
+                        self._binding,
+                        observation,
+                        disposition=disposition,
+                        service_identity=SERVICE_IDENTITY,
+                        run_identity=self._run_identity,
+                        refusal_reason=refusal_reason,
+                    )
+        self.dispositions[recorded.disposition] += 1
+        return recorded.delivery_id
 
 
 def execute_connector_polling(
@@ -134,6 +188,7 @@ def execute_connector_polling(
     *,
     schedule_id: int,
     clock,
+    run_identity: str,
     connector: PullConnector | None = None,
 ) -> dict[str, Any]:
     """Take delivery of one connected location's changes since its checkpoint.
@@ -141,8 +196,9 @@ def execute_connector_polling(
     ``connector`` is injectable so a test can drive the contract without an
     outbound request; production leaves it unset and the declared adapter is
     built from the server-owned registry.  The pass holds no runtime
-    transaction while it fetches and stores, and the token it returns is
-    retained only if the runtime completes the attempt.
+    transaction while it fetches and stores: each delivery is recorded in its
+    own committed transaction, and the advance is recorded last, so a crash
+    anywhere in the pass leaves the cursor where it was.
     """
 
     observed_at = _aware_utc(clock.now())
@@ -158,7 +214,7 @@ def execute_connector_polling(
         )
         if project_slug is None:
             raise ConnectorPollingRefusal(f"project {project_id} does not exist")
-        cursor = last_checkpoint_token(reading, schedule_id)
+        cursor = current_checkpoint_token(reading, schedule_id)
 
     connector_identity = str(scope.get("connector_identity", ""))
     if connector is None:
@@ -167,21 +223,50 @@ def execute_connector_polling(
             raise ConnectorPollingRefusal("connector is not server-owned")
         connector = factory(scope)
 
-    recorder = CheckpointRecorder(connector)
-    envelopes = sync_pull_connector(
-        recorder,
+    channel = str(scope["channel"])
+    binding = DeliveryBinding(
         customer=str(scope["customer"]),
-        project=project_slug,
-        channel=str(scope["channel"]),
-        cursor=cursor,
+        project_id=project_id,
+        project_slug=project_slug,
+        transport="pull",
+        channel=channel,
+        configuration_identity=connector_identity,
+        configuration_version=configuration_version,
     )
-    checkpoint_token = recorder.token or cursor
-    advanced = recorder.token is not None and recorder.token != cursor
+    ledger = LedgerWriter(session_factory, binding, run_identity)
+
+    recorder = CheckpointRecorder(connector)
+    sync = sync_pull_connector(
+        recorder,
+        customer=binding.customer,
+        project=project_slug,
+        channel=channel,
+        cursor=cursor,
+        ledger=ledger,
+    )
+
+    checkpoint_token = sync.checkpoint_token or cursor
+    advanced = sync.advanced and recorder.token is not None
+    if advanced:
+        with session_factory() as writing:
+            with writing.begin():
+                record_checkpoint_advance(
+                    writing,
+                    project_id=project_id,
+                    schedule_id=schedule_id,
+                    configuration_identity=connector_identity,
+                    configuration_version=configuration_version,
+                    channel=channel,
+                    checkpoint_token=str(recorder.token),
+                    service_identity=SERVICE_IDENTITY,
+                    run_identity=run_identity,
+                    delivery_ids=sync.delivery_ids(),
+                )
     # Taking delivery of changes without moving the cursor means the next pass
     # re-takes exactly the same ones: bounded and safe, but never finished.
     health = (
         "polling_attention_required"
-        if envelopes and not advanced
+        if sync.records and not advanced
         else "healthy"
     )
     return {
@@ -190,12 +275,14 @@ def execute_connector_polling(
         "configuration_version": configuration_version,
         "observed_at": _iso(observed_at),
         "health": health,
-        "channel": str(scope["channel"]),
+        "channel": channel,
         "connector_identity": connector_identity,
         "cursor": cursor or "",
         "checkpoint_token": checkpoint_token or "",
         "advanced": advanced,
-        "changes_taken": len(envelopes),
+        "changes_taken": len(sync.envelopes),
+        "dispositions": dict(sorted(ledger.dispositions.items())),
+        "blocked_by": list(sync.blocked_by),
     }
 
 

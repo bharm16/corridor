@@ -16,7 +16,7 @@ from uuid import uuid4
 
 import pymupdf
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from corridor import email_intake, push_intake
 from corridor.config import settings
@@ -28,7 +28,7 @@ from corridor.models import (
     InboundMessage,
     InboundThread,
     Project,
-    PushDelivery,
+    SourceDelivery,
     PushIntakeCredential,
 )
 from corridor.object_storage import content_store
@@ -257,7 +257,7 @@ def test_a_wrong_alias_binds_nothing_and_leaves_nothing_behind(session, isolated
     with pytest.raises(push_intake.PushIntakeRefused):
         push(session, ALPHA_ALIAS, payload)
 
-    assert session.scalar(select(func.count(PushDelivery.id))) == 0
+    assert session.scalar(select(func.count(SourceDelivery.id))) == 0
     assert session.scalar(select(func.count(InboundMessage.id))) == 0
     # Binding precedes persistence, so an unbound delivery leaves no bytes to
     # attribute to anyone later.
@@ -304,7 +304,12 @@ def test_a_pushed_delivery_cannot_be_accepted_without_an_established_binding(
 
 def test_duplicate_delivery_is_idempotent_by_delivery_identity(session):
     """A transport that sends the same delivery twice produces one delivery,
-    one message, and one registered Document."""
+    one message, and one registered Document.
+
+    The second sending is recorded as its own outcome of the same delivery
+    (ADR-0089): one ``stored`` row and one ``duplicate`` row, sharing one
+    delivery identity, and nothing new written for the bytes. A third sending
+    converges on the ``duplicate`` row rather than appending another."""
 
     alpha = make_project(session, "Alpha")
     bind_alias(session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS)
@@ -312,11 +317,18 @@ def test_duplicate_delivery_is_idempotent_by_delivery_identity(session):
 
     first = push(session, ALPHA_ALIAS, payload, delivery_id="mta-0001")
     second = push(session, ALPHA_ALIAS, payload, delivery_id="mta-0001")
+    push(session, ALPHA_ALIAS, payload, delivery_id="mta-0001")
 
     assert first.created is True
     assert second.created is False
     assert second.message_id == first.message_id
-    assert session.scalar(select(func.count(PushDelivery.id))) == 1
+    dispositions = session.scalars(
+        select(SourceDelivery.disposition).order_by(SourceDelivery.id)
+    ).all()
+    assert dispositions == ["stored", "duplicate"]
+    assert (
+        len(set(session.scalars(select(SourceDelivery.delivery_identity)).all())) == 1
+    )
     assert session.scalar(select(func.count(InboundMessage.id))) == 1
 
 
@@ -337,12 +349,12 @@ def test_the_same_bytes_delivered_to_two_customers_are_two_deliveries(session):
     assert to_alpha.message_id != to_bravo.message_id
     assert to_alpha.project_id == alpha.id
     assert to_bravo.project_id == bravo.id
-    assert session.scalar(select(func.count(PushDelivery.id))) == 2
+    assert session.scalar(select(func.count(SourceDelivery.id))) == 2
     digest = sha256(payload).hexdigest()
     assert (
         session.scalar(
-            select(func.count(func.distinct(PushDelivery.bytes_reference))).where(
-                PushDelivery.content_sha256 == digest
+            select(func.count(func.distinct(SourceDelivery.bytes_reference))).where(
+                SourceDelivery.content_sha256 == digest
             )
         )
         == 1
@@ -358,7 +370,7 @@ def test_the_raw_bytes_are_persisted_through_the_storage_interface(session):
 
     received = push(session, ALPHA_ALIAS, payload)
 
-    delivery = session.scalars(select(PushDelivery)).one()
+    delivery = session.scalars(select(SourceDelivery)).one()
     digest = sha256(payload).hexdigest()
     assert delivery.content_sha256 == digest
     assert content_store().get(delivery.bytes_reference, sha256=digest) == payload
@@ -651,10 +663,16 @@ def test_a_retry_after_a_crash_takes_the_delivery_exactly_once(runtime_database)
         retry.commit()
 
     with factory() as reading:
-        assert reading.scalar(select(func.count(PushDelivery.id))) == 1
+        assert reading.scalar(
+            select(func.count(SourceDelivery.id)).where(
+                SourceDelivery.disposition == "stored"
+            )
+        ) == 1
         assert reading.scalar(select(func.count(InboundMessage.id))) == 1
         digest = sha256(payload).hexdigest()
-        delivery = reading.scalars(select(PushDelivery)).one()
+        delivery = reading.scalars(
+            select(SourceDelivery).where(SourceDelivery.disposition == "stored")
+        ).one()
         assert content_store().get(delivery.bytes_reference, sha256=digest) == payload
 
 
@@ -710,7 +728,7 @@ def test_the_inbound_webhook_binds_on_the_envelope_recipient_not_the_headers(
     finally:
         app.dependency_overrides.clear()
 
-    assert session.scalar(select(func.count(PushDelivery.id))) == 1
+    assert session.scalar(select(func.count(SourceDelivery.id))) == 1
     assert (
         session.scalar(
             select(func.count(InboundMessage.id)).where(
@@ -719,3 +737,98 @@ def test_the_inbound_webhook_binds_on_the_envelope_recipient_not_the_headers(
         )
         == 0
     )
+
+
+# --- Refused deliveries are records, not absences (#599, ADR-0089) --------
+
+
+def test_a_delivery_the_intake_gate_refuses_is_recorded_with_its_reason(session):
+    """A refusal used to be lost: the gate raised and nothing was written.
+
+    ADR-0089 makes the refusal a record — the exact digest of what arrived, the
+    rule that refused it, and the binding it arrived under — so an intake
+    failure is an operational metric rather than an absence somebody has to
+    notice. The bytes themselves are not stored: the digest and the reason are
+    what the record needs.
+    """
+
+    alpha = make_project(session, "Alpha")
+    credential = bind_alias(
+        session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS
+    )
+    binding = push_intake.bind_credential(
+        session,
+        push_intake.PushCredential(channel="project_alias", material=ALPHA_ALIAS),
+    )
+    hostile = b"this is not a PDF at all"
+
+    with pytest.raises(push_intake.PushDeliveryRefused) as refused:
+        push_intake.accept_delivery(
+            session,
+            binding,
+            push_intake.PushPayload(
+                body=hostile, filename="exhibit.pdf", transport_delivery_id="mta-99"
+            ),
+        )
+
+    assert "magic_mismatch" in str(refused.value)
+    delivery = session.scalars(select(SourceDelivery)).one()
+    assert delivery.id == refused.value.delivery_id
+    assert delivery.disposition == "terminally_refused"
+    assert delivery.transport == "push"
+    assert delivery.credential_id == credential.id
+    assert delivery.configuration_identity == f"credential:{credential.id}"
+    assert delivery.service_identity == "corridor.push_intake"
+    assert delivery.content_sha256 == sha256(hostile).hexdigest()
+    assert delivery.external_identity == "mta-99"
+    assert delivery.refusal_reason.startswith("magic_mismatch:")
+    assert delivery.bytes_reference == ""
+    # Nothing was admitted: no message, and no object under that digest.
+    assert session.scalar(select(func.count(InboundMessage.id))) == 0
+    assert content_store().resolve(delivery.content_sha256) is None
+
+
+def test_the_inbound_webhook_keeps_the_refusal_it_recorded(session, monkeypatch):
+    """Refusing the request must not roll back the record of the refusal.
+
+    The endpoint commits the ledger row the gate's refusal produced and then
+    answers 400: a refusal that rolls back with its response is exactly the
+    loss ADR-0089 set out to remove.
+    """
+
+    from fastapi.testclient import TestClient
+
+    from corridor import intake_hardening
+    from corridor.web.app import app, get_session
+
+    monkeypatch.setattr(settings, "inbound_webhook_secret", "server-secret")
+    monkeypatch.setattr(settings, "inbound_service_address", "")
+    monkeypatch.setattr(
+        intake_hardening,
+        "_GLOBAL_SCANNER",
+        intake_hardening.FakeMalwareScanner(infected_signatures={b"EICAR-MARKER"}),
+    )
+    alpha = make_project(session, "Alpha")
+    bind_alias(session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS)
+    hostile = raw(message_id="<hostile@example.test>", body="EICAR-MARKER inside")
+    app.dependency_overrides[get_session] = lambda: session
+    try:
+        with TestClient(app) as client:
+            response = client.post(
+                "/intake/inbound",
+                content=hostile,
+                headers={
+                    "X-Corridor-Inbound-Token": "server-secret",
+                    "X-Corridor-Delivered-To": ALPHA_ALIAS,
+                    "X-Corridor-Delivery-Id": "mta-hostile",
+                },
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert response.status_code == 400
+    delivery = session.scalars(select(SourceDelivery)).one()
+    assert delivery.disposition == "terminally_refused"
+    assert delivery.external_identity == "mta-hostile"
+    assert delivery.refusal_reason.startswith("malware_detected:")
+    assert session.scalar(select(func.count(InboundMessage.id))) == 0

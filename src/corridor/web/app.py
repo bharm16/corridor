@@ -7210,6 +7210,13 @@ async def receive_inbound_mail(
             )
         else:
             raise HTTPException(401, "inbound sender is not authorized")
+    except push_intake.PushDeliveryRefused as exc:
+        # The refusal is a record, not an absence (ADR-0089): the delivery was
+        # bound and its digest and reason are in the ledger, so the response
+        # refuses and the record it just made is committed rather than rolled
+        # back with it.
+        session.commit()
+        raise HTTPException(400, str(exc)) from exc
     except push_intake.PushIntakeRefused as exc:
         raise HTTPException(403, str(exc)) from exc
     except email_intake.InboundMailRefused as exc:

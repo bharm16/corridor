@@ -373,65 +373,202 @@ class PushIntakeCredential(Base):
     )
 
 
-class PushDelivery(Base):
-    """One normalized push ingress record: ADR-0083's SourceEnvelope, persisted.
+class SourceDelivery(Base):
+    """One delivery, persisted once, whatever transport carried it (ADR-0089).
 
-    A pull connector re-lists what it has not checkpointed; a push channel gets
-    one chance at each delivery, so the ledger is what makes a replay
-    idempotent.  ``idempotency_key`` is unique, and it is derived from the
-    binding's customer, project, and channel together with the transport's own
-    delivery identity and the content digest — never from anything read out of
-    the payload.
+    ADR-0083 made the ``SourceEnvelope`` common to pull and push, and #511
+    persisted only the push half; the pull half had no record at all, so "did
+    we take delivery of this external version" was a database read on one
+    transport and a re-listing of the customer's own system on the other.
+    ADR-0089 calls that an accidental implementation asymmetry and puts both
+    transports in this one family, under one identity rule.
+
+    A row is one *outcome* of one delivery, not one attempt at it.  The
+    identity ``(project_id, delivery_identity, content_sha256, disposition)``
+    is unique and every column of it is ``not null``, so the record answers
+    what arrived, what became of it, and why, and a replay converges on the
+    row it already wrote.  ``delivery_identity`` and ``idempotency_key`` are
+    re-derived from the row's own columns by a trigger, so a writer that
+    derives them wrongly is refused rather than silently trusted (#457).
+
+    What was considered and rejected: one row per *attempt*, discriminated by
+    the run that made it.  It reads as the more literal ledger, but the run
+    identity is fresh on every pass, so the delivery identity would never be
+    unique and the relation would be a log rather than a record.  Attempts are
+    already recorded — the Due Work receipt for a pull pass, the transport's
+    own delivery for a push — and what is missing is the delivery.
     """
 
-    __tablename__ = "push_deliveries"
+    __tablename__ = "source_deliveries"
     __table_args__ = (
-        UniqueConstraint("idempotency_key", name="uq_push_delivery_idempotency"),
         # The envelope's structural key, so dedup no longer rests on the
-        # derived digest having been derived correctly (#457). A trigger
-        # re-derives both ADR-0083 digests from the row's own columns and the
-        # bound project's slug, and refuses a row whose identity is not its
-        # own; this constraint holds even if that derivation is bypassed.
+        # derived digest having been derived correctly (#457), extended by
+        # ADR-0089 with the disposition: one delivery may be stored, and later
+        # found duplicate, and it is the same delivery each time.
         UniqueConstraint(
             "project_id",
             "delivery_identity",
             "content_sha256",
-            name="uq_push_deliveries_envelope",
+            "disposition",
+            name="uq_source_deliveries_observation",
         ),
         CheckConstraint(
             "content_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_push_delivery_content_sha256",
+            name="ck_source_delivery_content_sha256",
         ),
         CheckConstraint(
-            "delivery_identity ~ '^[0-9a-f]{64}$'", name="ck_push_delivery_identity"
+            "delivery_identity ~ '^[0-9a-f]{64}$'", name="ck_source_delivery_identity"
         ),
         CheckConstraint(
-            "idempotency_key ~ '^[0-9a-f]{64}$'", name="ck_push_delivery_idempotency"
+            "idempotency_key ~ '^[0-9a-f]{64}$'", name="ck_source_delivery_idempotency"
+        ),
+        CheckConstraint(
+            "transport in ('pull', 'push')", name="ck_source_delivery_transport"
+        ),
+        CheckConstraint(
+            "disposition in ('stored', 'duplicate', 'quarantined', "
+            "'terminally_refused', 'transient_failure')",
+            name="ck_source_delivery_disposition",
+        ),
+        # A pushed delivery is bound by its credential and a pulled one is not;
+        # neither may borrow the other's binding.
+        CheckConstraint(
+            "(transport = 'push') = (credential_id is not null)",
+            name="ck_source_delivery_push_credential",
+        ),
+        CheckConstraint(
+            "length(btrim(configuration_identity)) > 0",
+            name="ck_source_delivery_configuration",
+        ),
+        CheckConstraint(
+            "length(btrim(service_identity)) > 0 and length(btrim(run_identity)) > 0",
+            name="ck_source_delivery_run",
+        ),
+        # The refusal evidence the checkpoint rule turns on: a delivery that
+        # was refused, held, or failed says why, and one that was taken has
+        # nothing to say (ADR-0089).
+        CheckConstraint(
+            "(disposition in ('stored', 'duplicate')) = (refusal_reason is null)",
+            name="ck_source_delivery_refusal_reason",
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    credential_id: Mapped[int] = mapped_column(
+    credential_id: Mapped[int | None] = mapped_column(
         ForeignKey("push_intake_credentials.id")
     )
     customer: Mapped[str] = mapped_column(Text)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    transport: Mapped[str] = mapped_column(String(8))
     channel: Mapped[str] = mapped_column(String(32))
+    # The connector or channel configuration this delivery arrived under, and
+    # its version: the server-owned connector identity for a pull, the bound
+    # credential for a push.
+    configuration_identity: Mapped[str] = mapped_column(Text)
+    configuration_version: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
     external_identity: Mapped[str] = mapped_column(Text)
     external_version: Mapped[str] = mapped_column(Text)
     original_timestamps_json: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
     content_sha256: Mapped[str] = mapped_column(String(64))
+    # The object-store key for bytes that were taken, the quarantine reference
+    # for bytes that are held, and empty for a delivery whose bytes Corridor
+    # never kept.
     bytes_reference: Mapped[str] = mapped_column(Text)
     metadata_json: Mapped[dict] = mapped_column(
         JSONB, default=dict, server_default=text("'{}'::jsonb")
     )
     delivery_identity: Mapped[str] = mapped_column(String(64))
     idempotency_key: Mapped[str] = mapped_column(String(64))
+    service_identity: Mapped[str] = mapped_column(Text)
+    run_identity: Mapped[str] = mapped_column(Text)
+    disposition: Mapped[str] = mapped_column(String(24))
+    refusal_reason: Mapped[str | None] = mapped_column(Text)
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ConnectorCheckpointAdvance(Base):
+    """One durable advance of one connector configuration's external cursor.
+
+    #488 kept the token on the completed Due Work receipt of the pass that
+    reached it, and said so in its own docstring: a checkpoint table was
+    rejected because the migration window was closed.  ADR-0089 reverses that.
+    Retention is not identity — a receipt sweep, a retention-policy change, or
+    an ordinary cleanup would have reset a live connector's external cursor, or
+    landed it on a stale token — so the cursor lives with the *configuration*,
+    which nothing sweeps, and the current checkpoint is derived from the
+    newest advance rather than stored anywhere.
+
+    Ordered by identity, not by ``advanced_at``: the identifier is monotonic in
+    insertion order whatever any clock said, and "current" here must mean the
+    last one recorded.
+    """
+
+    __tablename__ = "connector_checkpoint_advances"
+    __table_args__ = (
+        UniqueConstraint(
+            "schedule_id",
+            "run_identity",
+            "checkpoint_token",
+            name="uq_connector_checkpoint_advance",
+        ),
+        CheckConstraint(
+            "length(btrim(checkpoint_token)) > 0",
+            name="ck_connector_checkpoint_token",
+        ),
+        CheckConstraint(
+            "length(btrim(service_identity)) > 0 and length(btrim(run_identity)) > 0",
+            name="ck_connector_checkpoint_run",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    schedule_id: Mapped[int] = mapped_column(
+        ForeignKey("due_work_schedules.id"), index=True
+    )
+    configuration_identity: Mapped[str] = mapped_column(Text)
+    configuration_version: Mapped[str] = mapped_column(
+        Text, default="", server_default=""
+    )
+    channel: Mapped[str] = mapped_column(String(32))
+    checkpoint_token: Mapped[str] = mapped_column(Text)
+    service_identity: Mapped[str] = mapped_column(Text)
+    run_identity: Mapped[str] = mapped_column(Text)
+    advanced_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ConnectorCheckpointAdvanceDelivery(Base):
+    """One delivery an advance covered, and the reason the advance was safe.
+
+    ADR-0089's checkpoint rule is a property of what an advance covers, so it
+    is enforced where the coverage is written: a trigger refuses a
+    ``transient_failure``, because a scanner that timed out or a provider that
+    returned a 500 has said nothing about the delivery, and refuses a refused
+    or quarantined delivery whose evidence is not durable.
+    """
+
+    __tablename__ = "connector_checkpoint_advance_deliveries"
+    __table_args__ = (
+        UniqueConstraint(
+            "advance_id",
+            "delivery_id",
+            name="uq_connector_checkpoint_advance_delivery",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    advance_id: Mapped[int] = mapped_column(
+        ForeignKey("connector_checkpoint_advances.id"), index=True
+    )
+    delivery_id: Mapped[int] = mapped_column(ForeignKey("source_deliveries.id"))
 
 
 class InboundThread(Base):
@@ -506,7 +643,7 @@ class InboundMessage(Base):
     # The one push delivery this message arrived on (#511). Null for a message
     # the frozen global-address path received.
     push_delivery_id: Mapped[int | None] = mapped_column(
-        ForeignKey("push_deliveries.id")
+        ForeignKey("source_deliveries.id")
     )
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

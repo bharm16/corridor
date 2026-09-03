@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "0ceb6beb7b07bdb1348642d05d342df8ce79f2c53079ec1b1cb15069d0bb10a4"
+    "224366542e2867256cd6198b61f92013972ff38c07654a280f2b0e57daffe968"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -1309,7 +1309,8 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
                     "   'uq_delta_groups_source_change', "
                     "   'uq_fact_decisions_revision_fact', "
                     "   'uq_delta_deferrals_occurrence', "
-                    "   'uq_push_deliveries_envelope') order by conname"
+                    "   'uq_push_deliveries_envelope', "
+                    "   'uq_source_deliveries_observation') order by conname"
                 )
             ).all() == [
                 ("ck_project_record_revisions_idempotency_key", "c"),
@@ -1317,7 +1318,10 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
                 ("uq_delta_groups_source_change", "u"),
                 ("uq_fact_decisions_revision_fact", "u"),
                 ("uq_facts_content_sha256", "u"),
-                ("uq_push_deliveries_envelope", "u"),
+                # The connector-delivery identity #457 established, carried
+                # onto the family both transports share and widened by the
+                # disposition (#599, ADR-0089).
+                ("uq_source_deliveries_observation", "u"),
             ]
             assert session.scalar(
                 text(
@@ -1361,7 +1365,8 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
                     " where conname in ('uq_facts_content_sha256', "
                     "   'ck_project_record_revisions_idempotency_key', "
                     "   'uq_delta_deferrals_occurrence', "
-                    "   'uq_push_deliveries_envelope')"
+                    "   'uq_push_deliveries_envelope', "
+                    "   'uq_source_deliveries_observation')"
                 )
             ) == 0
             assert session.scalar(
@@ -1412,6 +1417,139 @@ def test_the_deduplication_transition_refuses_a_fact_with_no_identity():
             assert session.scalar(
                 text(
                     "select count(*) from pg_constraint "
-                    " where conname = 'uq_push_deliveries_envelope'"
+                    " where conname = 'uq_source_deliveries_observation'"
                 )
             ) == 0
+
+
+DELIVERY_BYTES = b"%PDF-1.7\nrelocation exhibit\n%%EOF"
+
+
+def _seed_pulled_delivery(session, *, slug: str) -> dict:
+    """One pulled delivery and one push delivery, on the unified family.
+
+    Seeded after the upgrade rather than before it, because the push ledger
+    this family is made from is itself created by this same transition: a
+    database standing at the supported head has no delivery table at all.
+    """
+
+    project_id = session.scalar(
+        text(
+            "insert into projects (slug, name, is_synthetic) "
+            "values (:slug, 'Delivery Family', true) returning id"
+        ),
+        {"slug": slug},
+    )
+    digest = sha256(DELIVERY_BYTES).hexdigest()
+    identity = sha256(
+        f"acme-utilities:{slug}:shared-files:item-a:v1".encode("utf-8")
+    ).hexdigest()
+    key = sha256(f"{identity}:{digest}".encode("utf-8")).hexdigest()
+    delivery_id = session.scalar(
+        text(
+            "insert into source_deliveries ("
+            "customer, project_id, transport, channel, configuration_identity, "
+            "configuration_version, external_identity, external_version, "
+            "content_sha256, bytes_reference, delivery_identity, "
+            "idempotency_key, service_identity, run_identity, disposition"
+            ") values ("
+            "'acme-utilities', :project_id, 'pull', 'shared-files', "
+            "'txdot-rid-box-v1', 'connector-polling-v1', 'item-a', 'v1', "
+            ":digest, :reference, :identity, :key, "
+            "'corridor.connector_polling', 'due-attempt:seed', 'stored'"
+            ") returning id"
+        ),
+        {
+            "project_id": project_id,
+            "digest": digest,
+            "reference": f"{digest[:2]}/{digest}.pdf",
+            "identity": identity,
+            "key": key,
+        },
+    )
+    return {
+        "project_id": project_id,
+        "delivery_id": delivery_id,
+        "digest": digest,
+        "delivery_identity": identity,
+        "idempotency_key": key,
+    }
+
+
+def test_the_delivery_family_transition_refuses_a_downgrade_that_would_lose_a_pull():
+    """#599, proved on the exact rows the push-only ledger cannot hold.
+
+    The upgrade renames rather than copies, so there is nothing to reconcile on
+    a fresh database — the push ledger is born in this same transition. What
+    the transition still owes is the other direction: a pulled delivery, and a
+    refused one, have no representation in the shape the downgrade restores,
+    and dropping them is exactly the loss ADR-0089 set out to remove. The
+    transition counts what it cannot carry back, names it, and leaves every row
+    exactly as it was.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_delivery_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with database.session_factory.begin() as session:
+            seeded = _seed_pulled_delivery(session, slug="delivery-family")
+
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+
+        assert refused.returncode != 0
+        assert "#599 downgrade refuses" in refused.stderr
+        assert "1 delivery row(s) are pulled, refused, or failed" in refused.stderr
+        assert "Nothing is merged or dropped here" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+        with database.session_factory() as session:
+            row = session.execute(
+                text(
+                    "select customer, project_id, transport, channel, "
+                    "       configuration_identity, configuration_version, "
+                    "       external_identity, external_version, content_sha256, "
+                    "       bytes_reference, delivery_identity, idempotency_key, "
+                    "       service_identity, run_identity, disposition, "
+                    "       refusal_reason, credential_id "
+                    "  from source_deliveries where id = :delivery_id"
+                ),
+                {"delivery_id": seeded["delivery_id"]},
+            ).one()
+            assert row.customer == "acme-utilities"
+            assert row.project_id == seeded["project_id"]
+            assert row.transport == "pull"
+            assert row.channel == "shared-files"
+            assert row.configuration_identity == "txdot-rid-box-v1"
+            assert row.configuration_version == "connector-polling-v1"
+            assert row.external_identity == "item-a"
+            assert row.external_version == "v1"
+            assert row.content_sha256 == seeded["digest"]
+            assert row.bytes_reference == (
+                f"{seeded['digest'][:2]}/{seeded['digest']}.pdf"
+            )
+            assert row.delivery_identity == seeded["delivery_identity"]
+            assert row.idempotency_key == seeded["idempotency_key"]
+            assert row.service_identity == "corridor.connector_polling"
+            assert row.run_identity == "due-attempt:seed"
+            assert row.disposition == "stored"
+            assert row.refusal_reason is None
+            assert row.credential_id is None
+
+        # A push-only ledger downgrades: every row it holds is representable.
+        with database.session_factory.begin() as session:
+            session.execute(
+                text("delete from source_deliveries where id = :delivery_id"),
+                {"delivery_id": seeded["delivery_id"]},
+            )
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD

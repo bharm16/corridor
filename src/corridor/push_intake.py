@@ -34,6 +34,14 @@ method for pushed deliveries.  The four methods are a cursor protocol —
 ``list_changes``/``checkpoint`` only mean something to a caller that decides
 when to fetch — and a push channel decides nothing.  ADR-0083 separates the two
 contracts for that reason, and they meet only at the envelope.
+
+They now also meet in one persisted family.  ``push_deliveries`` was the
+envelope persisted for push alone, and the pull half had no record at all;
+ADR-0089 calls that an accidental implementation asymmetry and makes both
+transports write ``source_deliveries`` through ``corridor.source_delivery``.
+This module keeps the part that is genuinely a push concern — the credential
+that binds the boundary before anything parses — and hands the delivery itself
+to the shared ledger.
 """
 
 from __future__ import annotations
@@ -42,6 +50,7 @@ from dataclasses import dataclass, field
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Mapping, Protocol
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -51,9 +60,21 @@ from corridor.connectors.pull_connector import (
     build_delivery_identity,
     build_idempotency_key,
 )
-from corridor.intake_hardening import inspect_byte_gate
-from corridor.models import Project, PushDelivery, PushIntakeCredential
+from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
+from corridor.models import Project, PushIntakeCredential, SourceDelivery
 from corridor.object_storage import content_key, store_bytes
+from corridor.source_delivery import (
+    DISPOSITION_DUPLICATE,
+    DISPOSITION_TERMINALLY_REFUSED,
+    DeliveryBinding,
+    DeliveryObservation,
+    record_delivery,
+    stored_delivery,
+    take_delivery,
+)
+
+# Who took delivery, for the ledger ADR-0089 shares with the pull half.
+SERVICE_IDENTITY = "corridor.push_intake"
 
 # The push channels ADR-0078 lists that a credential may bind.  A channel is
 # not a routing hint: it is part of the credential's identity, so a webhook
@@ -64,6 +85,19 @@ CHANNELS = MAIL_CHANNELS | {"webhook"}
 
 class PushIntakeRefused(ValueError):
     """A presented credential does not bind exactly one customer and project."""
+
+
+class PushDeliveryRefused(PushIntakeRefused):
+    """The intake gate refused a bound delivery, and the ledger recorded it.
+
+    Carries the ledger identity so the caller can commit the refusal record
+    before refusing the request: a refusal that rolls back with the response is
+    exactly the loss ADR-0089 set out to remove.
+    """
+
+    def __init__(self, message: str, *, delivery_id: int) -> None:
+        super().__init__(message)
+        self.delivery_id = delivery_id
 
 
 @dataclass(frozen=True, slots=True)
@@ -289,15 +323,44 @@ def delivery_identity_of(binding: PushBinding, payload: PushPayload) -> tuple[st
     return delivery_identity, build_idempotency_key(delivery_identity, digest)
 
 
+def _delivery_binding(binding: PushBinding) -> DeliveryBinding:
+    """One pushed delivery's place in ADR-0089's shared family.
+
+    The channel credential *is* the configuration a pushed delivery arrived
+    under, which is what the pull side names with a connector identity.
+    """
+
+    return DeliveryBinding(
+        customer=binding.customer,
+        project_id=binding.project_id,
+        project_slug=binding.project_slug,
+        transport="push",
+        channel=binding.channel,
+        configuration_identity=f"credential:{binding.credential_id}",
+        credential_id=binding.credential_id,
+    )
+
+
+def _observation(
+    binding: PushBinding, payload: PushPayload, digest: str, bytes_reference: str
+) -> DeliveryObservation:
+    return DeliveryObservation(
+        external_identity=(payload.transport_delivery_id or "").strip() or digest,
+        external_version=digest,
+        content_digest=digest,
+        bytes_reference=bytes_reference,
+        original_timestamps=dict(payload.original_timestamps),
+        metadata=dict(payload.metadata),
+    )
+
+
 def replay_delivery(
     session: Session, binding: PushBinding, payload: PushPayload
 ) -> PushReceipt | None:
     """The receipt of an already-taken delivery, without taking it again."""
 
     _delivery_identity, idempotency_key = delivery_identity_of(binding, payload)
-    row = session.scalars(
-        select(PushDelivery).where(PushDelivery.idempotency_key == idempotency_key)
-    ).first()
+    row = stored_delivery(session, idempotency_key=idempotency_key)
     if row is None:
         return None
     return PushReceipt(
@@ -317,53 +380,65 @@ def accept_delivery(
     through the storage interface before the row that references it, and the
     ledger row is keyed by delivery identity so a retry after a crash converges
     on the delivery already taken instead of producing a second one.
+
+    A delivery the gate refuses is now *recorded* rather than lost (ADR-0089).
+    The digest is taken first, so the refusal carries the exact identity of
+    what arrived, and the refusal is raised as a ``PushDeliveryRefused``
+    naming the ledger row, so the caller can commit the record it just made
+    while still refusing the request.
     """
 
     if not isinstance(binding, PushBinding):
         raise PushIntakeRefused("a pushed delivery needs an established binding")
-    inspect_byte_gate(payload.body, payload.filename)
     digest = sha256(payload.body).hexdigest()
-    delivery_identity, idempotency_key = delivery_identity_of(binding, payload)
-
-    existing = session.scalars(
-        select(PushDelivery).where(PushDelivery.idempotency_key == idempotency_key)
-    ).first()
-    if existing is not None:
-        return PushReceipt(
-            envelope=_envelope(existing, binding),
-            delivery_id=existing.id,
-            staged_path=_stage(payload, digest),
-            replayed=True,
+    delivery_binding = _delivery_binding(binding)
+    # A push channel has no pass and no cursor: the run that took delivery is
+    # this acceptance.  It is not part of the delivery's identity, so a replay
+    # converges on the row the first run wrote and keeps that run's name.
+    run_identity = f"push-intake:{uuid4().hex}"
+    try:
+        inspect_byte_gate(payload.body, payload.filename)
+    except HostileContentRefused as exc:
+        refused = record_delivery(
+            session,
+            delivery_binding,
+            _observation(binding, payload, digest, ""),
+            disposition=DISPOSITION_TERMINALLY_REFUSED,
+            service_identity=SERVICE_IDENTITY,
+            run_identity=run_identity,
+            refusal_reason=f"{exc.rule}: {exc.reason}",
         )
+        raise PushDeliveryRefused(
+            f"this delivery was refused at intake [{exc.rule}]: {exc.reason}",
+            delivery_id=refused.delivery_id,
+        ) from exc
 
     # The object is written first, so a crash between the two leaves an
     # unreferenced object rather than a ledger row without its bytes.
     staged = _stage(payload, digest)
-    row = PushDelivery(
-        credential_id=binding.credential_id,
-        customer=binding.customer,
-        project_id=binding.project_id,
-        channel=binding.channel,
-        external_identity=(payload.transport_delivery_id or "").strip() or digest,
-        external_version=digest,
-        original_timestamps_json=dict(payload.original_timestamps),
-        content_sha256=digest,
-        bytes_reference=content_key(digest, _suffix(payload.filename)),
-        metadata_json=dict(payload.metadata),
-        delivery_identity=delivery_identity,
-        idempotency_key=idempotency_key,
+    observation = _observation(
+        binding, payload, digest, content_key(digest, _suffix(payload.filename))
     )
-    session.add(row)
-    session.flush()
+    recorded = take_delivery(
+        session,
+        delivery_binding,
+        observation,
+        service_identity=SERVICE_IDENTITY,
+        run_identity=run_identity,
+    )
+    # The receipt always names the row the bytes were taken on, never the
+    # duplicate observation of it: a registered message points at the taking,
+    # and a retry must reach the same one.
+    taken = stored_delivery(session, idempotency_key=recorded.idempotency_key)
     return PushReceipt(
-        envelope=_envelope(row, binding),
-        delivery_id=row.id,
+        envelope=_envelope(taken, binding),
+        delivery_id=taken.id,
         staged_path=staged,
-        replayed=False,
+        replayed=recorded.disposition == DISPOSITION_DUPLICATE,
     )
 
 
-def _envelope(row: PushDelivery, binding: PushBinding) -> SourceEnvelope:
+def _envelope(row: SourceDelivery, binding: PushBinding) -> SourceEnvelope:
     """The shared ingress record #496 defined, filled from one pushed delivery."""
 
     return SourceEnvelope(

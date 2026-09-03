@@ -203,11 +203,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # separately registered output-template and field-mapping identities, and
     # the push-intake boundary (#511): the credential registry an inbound
     # alias or webhook binds a customer and project through, and the delivery
-    # ledger that makes a replay idempotent, and the spine-native Recorded
-    # Verbal origin with its temporary legacy mapping and the two receipt
-    # relations the #512 backfill reconciled through.
-    assert fingerprint.table_count == 176
-    assert fingerprint.sequence_count == 164
+    # ledger that makes a replay idempotent — one family for both transports
+    # since ADR-0089, with the append-only connector checkpoint advance and the
+    # coverage that makes each advance safe (#599) — and the spine-native
+    # Recorded Verbal origin with its temporary legacy mapping and the two
+    # receipt relations the #512 backfill reconciled through.
+    assert fingerprint.table_count == 178
+    assert fingerprint.sequence_count == 166
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

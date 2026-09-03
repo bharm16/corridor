@@ -12,8 +12,9 @@ from corridor.connectors import (
     build_idempotency_key,
     sync_pull_connector,
 )
+from corridor.connectors import pull_connector
 from corridor.location_discovery import BoxSharedFile
-from corridor.object_storage import content_store
+from corridor.object_storage import content_key, content_store
 
 
 class FakePullConnector:
@@ -136,16 +137,18 @@ def test_sync_pull_connector_crash_safety(isolated_content_store) -> None:
     )
 
     # Successful sync: all items stored, checkpoint advances
-    envelopes = sync_pull_connector(
+    result = sync_pull_connector(
         connector,
         customer="cust-test",
         project="proj-test",
         channel="test_pull",
     )
 
-    assert len(envelopes) == 2
+    assert len(result.envelopes) == 2
+    assert result.advanced is True
+    assert [record.disposition for record in result.records] == ["stored", "stored"]
     assert connector.checkpoints == ["doc-2"]
-    for env in envelopes:
+    for env in result.envelopes:
         # Verify stored in content store
         assert content_store().exists(env.bytes_reference)
 
@@ -197,3 +200,183 @@ def test_box_pull_connector_implements_protocol() -> None:
 
     connector.checkpoint(token)
     assert connector.current_checkpoint == "123456"
+
+
+class RecordingLedger:
+    """A durable-enough ledger for the sync loop: it hands back identities."""
+
+    def __init__(self) -> None:
+        self.records: list[dict] = []
+
+    def record(self, item, *, disposition, content_digest, bytes_reference, refusal_reason):
+        self.records.append(
+            {
+                "item_id": item.item_id,
+                "disposition": disposition,
+                "content_digest": content_digest,
+                "bytes_reference": bytes_reference,
+                "refusal_reason": refusal_reason,
+            }
+        )
+        return len(self.records)
+
+
+class RefusingScanner:
+    """The #490 malware seam, refusing exactly one delivery's bytes."""
+
+    def __init__(self, marker: bytes) -> None:
+        self.marker = marker
+
+    def scan(self, body: bytes, filename: str):
+        from corridor.intake_hardening import ScanResult
+
+        if self.marker in body:
+            return ScanResult(
+                is_clean=False, threat_name="Test-Signature", reason="marked bytes"
+            )
+        return ScanResult(is_clean=True)
+
+
+class FailingScanner:
+    """A scanner that fails rather than deciding: one attempt, not one delivery."""
+
+    def scan(self, body: bytes, filename: str):
+        raise RuntimeError("scanner unavailable")
+
+
+def _gated_connector():
+    return FakePullConnector(
+        {
+            "doc-1": {"v1": b"%PDF-1.4 clean file"},
+            "doc-2": {"v1": b"%PDF-1.4 REFUSE ME file"},
+        }
+    )
+
+
+def test_a_refusal_the_ledger_recorded_lets_the_checkpoint_advance_past_it(
+    isolated_content_store, monkeypatch
+) -> None:
+    """ADR-0089's refused case: the evidence is what makes the advance safe.
+
+    Read literally, ADR-0083's rule stalls a location forever on one poisoned
+    object. The digest and the reason, durably recorded, are what let the
+    cursor move without losing the answer to what arrived and why it was
+    refused.
+    """
+
+    from corridor import intake_hardening
+
+    monkeypatch.setattr(
+        intake_hardening, "_GLOBAL_SCANNER", RefusingScanner(b"REFUSE ME")
+    )
+    connector = _gated_connector()
+    ledger = RecordingLedger()
+
+    result = sync_pull_connector(
+        connector,
+        customer="cust-test",
+        project="proj-test",
+        channel="test_pull",
+        ledger=ledger,
+    )
+
+    assert [record.disposition for record in result.records] == [
+        "stored",
+        "terminally_refused",
+    ]
+    refused = result.records[1]
+    assert refused.content_digest == hashlib.sha256(
+        b"%PDF-1.4 REFUSE ME file"
+    ).hexdigest()
+    assert refused.refusal_reason.startswith("malware_detected:")
+    assert refused.delivery_id is not None
+    assert result.advanced is True
+    assert connector.checkpoints == ["doc-2"]
+    # The refused bytes are not in the store; the record of them is.
+    assert not content_store().exists(content_key(refused.content_digest, ".pdf"))
+
+
+def test_a_refusal_nobody_recorded_holds_the_checkpoint_where_it_was(
+    isolated_content_store, monkeypatch
+) -> None:
+    """No ledger, no evidence, no advance: the condition is the record."""
+
+    from corridor import intake_hardening
+
+    monkeypatch.setattr(
+        intake_hardening, "_GLOBAL_SCANNER", RefusingScanner(b"REFUSE ME")
+    )
+    connector = _gated_connector()
+
+    result = sync_pull_connector(
+        connector,
+        customer="cust-test",
+        project="proj-test",
+        channel="test_pull",
+    )
+
+    assert result.advanced is False
+    assert result.blocked_by == ("doc-2",)
+    assert connector.checkpoints == []
+
+
+def test_a_transient_scanner_failure_never_advances_the_checkpoint(
+    isolated_content_store, monkeypatch
+) -> None:
+    """A scanner that failed said nothing about the delivery (ADR-0089).
+
+    The failure is recorded — an intake failure is an operational metric, not
+    an absence somebody has to notice — and the cursor stays exactly where it
+    was, so the next pass re-lists the change instead of dropping it.
+    """
+
+    from corridor import intake_hardening
+
+    monkeypatch.setattr(intake_hardening, "_GLOBAL_SCANNER", FailingScanner())
+    connector = _gated_connector()
+    ledger = RecordingLedger()
+
+    result = sync_pull_connector(
+        connector,
+        customer="cust-test",
+        project="proj-test",
+        channel="test_pull",
+        ledger=ledger,
+    )
+
+    assert [record.disposition for record in result.records] == [
+        "transient_failure",
+        "transient_failure",
+    ]
+    assert all(
+        record.refusal_reason.startswith("scan_failed:") for record in result.records
+    )
+    assert result.advanced is False
+    assert result.blocked_by == ("doc-1", "doc-2")
+    assert connector.checkpoints == []
+
+
+def test_a_transient_storage_failure_never_advances_the_checkpoint(
+    isolated_content_store, monkeypatch
+) -> None:
+    """An object store that rejected the write is the same kind of fact."""
+
+    def refuse_write(data, *, sha256, suffix):
+        raise RuntimeError("object store unavailable")
+
+    monkeypatch.setattr(pull_connector, "store_bytes", refuse_write)
+    connector = FakePullConnector({"doc-1": {"v1": b"%PDF-1.4 clean file"}})
+    ledger = RecordingLedger()
+
+    result = sync_pull_connector(
+        connector,
+        customer="cust-test",
+        project="proj-test",
+        channel="test_pull",
+        ledger=ledger,
+    )
+
+    assert [record.disposition for record in result.records] == ["transient_failure"]
+    assert result.records[0].refusal_reason.startswith("store_failed:")
+    assert result.advanced is False
+    assert connector.checkpoints == []
