@@ -7,7 +7,7 @@ supersedes:
 amends:
   - ADR-0003
   - ADR-0017
-migration: locator_validation_status and the support-assessment relation do not exist; EvidenceLink.verified is still the only field and is still shown to customers as "verified".
+migration: the support-assessment relation exists as support_assessments and its append command (#530) but no baseline, delta, policy, or screen writes or cites it yet; locator_validation_status does not exist, and EvidenceLink.verified is still the only locator field and is still shown to customers as "verified".
 ---
 
 # Provenance follows the value class, and semantic support is a relation between a proposition and its sources

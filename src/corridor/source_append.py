@@ -6,10 +6,10 @@ Each append is a ``SECURITY DEFINER`` command owned by ``corridor_source_append`
 that enforces project scope on every typed reference, the digest of every
 exact text it stores or cites, locator identity, and idempotent replay.  This
 module is the one place the application calls those commands; the appenders in
-``facts.py`` and ``source_segments.py`` shape the values and call here.  A Fact
-value arrives only as a ``MaterializedValue`` sealed by ``materializer.py``
-from a Source Segment's exact text (#446): this command has no parameter that
-takes a value literal.
+``facts.py``, ``source_segments.py``, and ``support_assessments.py`` shape the
+values and call here.  A Fact value arrives only as a ``MaterializedValue``
+sealed by ``materializer.py`` from a Source Segment's exact text (#446): this
+command has no parameter that takes a value literal.
 
 An ORM write to any of those tables, from any module, is refused by the
 database; the boundary is not a convention this module asks callers to keep
@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, datetime
 import json
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
@@ -34,6 +34,7 @@ from corridor.models import (
     Fact,
     SourceFactAppendReceipt,
     SourceSegment,
+    SupportAssessment,
 )
 
 
@@ -237,6 +238,53 @@ def append_source_fact_receipt(
         )
     )
     return session.get_one(SourceFactAppendReceipt, int(receipt_id))
+
+
+def append_support_assessment(
+    session: Session,
+    *,
+    project_id: int,
+    proposition_kind: str,
+    fact_id: int | None,
+    extracted_proposal_id: int | None,
+    source_segment_ids: Sequence[int],
+    evidence_role: str,
+    assessment: str,
+    human_principal: str | None,
+    released_policy: str | None,
+    ruleset_version: str | None,
+    assessed_at: datetime | None = None,
+    supersedes_id: int | None = None,
+) -> SupportAssessment:
+    """Append one Support Assessment, or return the row a replay already wrote.
+
+    The command derives the content digest itself, so an identical call is
+    the same assessment; a different assessment of a proposition and role
+    that already has an effective one must name it in ``supersedes_id``.
+    """
+
+    assessment_id = session.scalar(
+        select(
+            func.append_support_assessment(
+                project_id,
+                proposition_kind,
+                fact_id,
+                extracted_proposal_id,
+                cast(bindparam(None, list(source_segment_ids)), ARRAY(BigInteger)),
+                evidence_role,
+                assessment,
+                human_principal,
+                released_policy,
+                ruleset_version,
+                assessed_at,
+                supersedes_id,
+            )
+        )
+    )
+    # A supersession changed the predecessor inside the command; the identity
+    # map must not keep serving its pre-supersession state.
+    session.expire_all()
+    return session.get_one(SupportAssessment, int(assessment_id))
 
 
 def _jsonb(value: object):
