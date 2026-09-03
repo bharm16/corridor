@@ -4,7 +4,7 @@ domain: migration
 scope: current product
 amended_by:
   - ADR-0081
-migration: Dual-write of every human flow and the statement_id legacy reference remain; exit criteria and stages are in ADR-0081.
+migration: Dual-write of every human flow remains; the statement_id legacy reference was demoted to a compatibility mapping by ADR-0081 stage 1 (#512); exit criteria and stages are in ADR-0081.
 ---
 
 # Human Record Decisions and Recorded Verbal Statements on the spine

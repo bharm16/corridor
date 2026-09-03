@@ -7,7 +7,7 @@ amends:
 amended_by:
   - ADR-0083
   - ADR-0084
-migration: recorded_verbal_statement segments still reference dependency_events through statement_id; every human flow dual-writes legacy and spine; no reader consumes the spine projection alone; stages 1 through 6 below are all open.
+migration: stage 1 is built (#512): recorded_verbal_statement segments and Fact identity now hang from recorded_verbal_origins, and the legacy statement key survives only in the recorded_verbal_origin_statements compatibility mapping; every human flow still dual-writes legacy and spine; no reader consumes the spine projection alone; stages 2 through 6 below are open.
 ---
 
 # The spine is the target model, and legacy tables retire by staged exit criteria

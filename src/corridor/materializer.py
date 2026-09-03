@@ -316,7 +316,7 @@ def _certify(
     if segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError(f"{fact_type} does not accept {segment.kind} support")
     if segment.kind == "recorded_verbal_statement" and (
-        segment.statement_id is None or segment.document_id is not None
+        segment.recorded_verbal_origin_id is None or segment.document_id is not None
     ):
         raise FactValidationError(
             "recorded verbal statement segment locator is incomplete"

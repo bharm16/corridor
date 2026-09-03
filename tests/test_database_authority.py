@@ -128,6 +128,16 @@ SOURCE_TABLES = (
     "delta_dispositions",
     "delta_supersessions",
     "delta_deferrals",
+    # The spine-native Recorded Verbal origin and its temporary legacy
+    # mapping join the same matrix (#512).
+    "recorded_verbal_origins",
+    "recorded_verbal_origin_statements",
+)
+# The #512 backfill receipts: written once by the migration that reconciled
+# the legacy statements, read-only to every runtime capability afterwards.
+RECORDED_VERBAL_RECEIPT_TABLES = (
+    "recorded_verbal_origin_backfill_receipts",
+    "recorded_verbal_origin_fact_digests",
 )
 # The push-intake boundary (#511): the application inserts a credential and a
 # delivery and may revoke a credential, and nothing else. Neither an alias's
@@ -143,6 +153,7 @@ SOURCE_APPEND_COMMANDS = (
     "append_source_fact_receipt",
     "append_support_assessment",
     "append_proposed_deltas",
+    "append_recorded_verbal_origin",
 )
 
 
@@ -542,6 +553,21 @@ def test_source_append_commands_are_callable_by_both_runtime_capabilities_only(a
 @pytest.mark.parametrize("table", SOURCE_TABLES)
 def test_a_runtime_capability_cannot_write_a_source_table_directly(runtime, table):
     _role, connection = runtime
+
+    with pytest.raises(ProgrammingError) as refused:
+        connection.execute(text(f"insert into {table} default values"))
+
+    assert "permission denied" in str(refused.value)
+
+
+@pytest.mark.parametrize("table", RECORDED_VERBAL_RECEIPT_TABLES)
+def test_a_runtime_capability_cannot_write_a_backfill_receipt(runtime, table):
+    """The #512 reconciliation is the migration's, and nothing rewrites it."""
+
+    _role, connection = runtime
+
+    # Readable first: the refusal aborts the transaction it is raised in.
+    assert connection.execute(text(f"select count(*) from {table}")).scalar_one() == 0
 
     with pytest.raises(ProgrammingError) as refused:
         connection.execute(text(f"insert into {table} default values"))

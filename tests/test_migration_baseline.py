@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from hashlib import sha256
 import os
 from pathlib import Path
@@ -13,7 +14,14 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import DBAPIError
 
 from corridor.config import settings
+from corridor.facts import _fact_digest, _statement_timing_structured
 from corridor.m8_acceptance_database import provision_disposable_postgres
+from corridor.materializer import (
+    materialize_quoted_statement_wording,
+    materialize_typed_satellite,
+)
+from corridor.models import SourceSegment
+from corridor.statement_values import StatementTiming
 from alembic.config import Config
 from alembic.script import ScriptDirectory
 
@@ -47,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "64ab7f7669c0bf7af03d74fc190af66c9b5c6d00a64c9c1830530a41b817e7cc"
+    "7f52224c3368e9f846dfe784c4811268f49df87850776b3c192833afe4abe57b"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -176,10 +184,8 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back():
     Support Assessment tables that only the fifth command writes (#530), and
     it establishes the baseline/delta operating mode with its immutable
     adoption receipt and the guards that refuse a legacy accepted-value write
-    for an adopted project (#520), and it moves the delta disposition and the
-    Work List scheduling receipt behind the record-decision role's Resolve
-    Delta commands (#519).  A database standing at the supported revision must
-    cross that transition in both directions.
+    for an adopted project (#520).  A database standing at the supported
+    revision must cross that transition in both directions.
     """
 
     configured = make_url(settings.database_url)
@@ -604,3 +610,533 @@ def _alembic(database_url, command: str, target: str):
         text=True,
         check=False,
     )
+
+
+# --- The #512 recorded-verbal backfill, on its exact transformed rows -------
+
+VERBAL_WORDS = "Equistar will submit the signed exhibit by March 2025."
+VERBAL_RECORDER = "local:dana-fields"
+# Supplied logical times. The recorded time this transition must preserve is
+# written explicitly, so the assertion is exact and reads no wall clock.
+VERBAL_RECORDED_AT = datetime(2025, 3, 3, 14, 30, tzinfo=timezone.utc)
+VERBAL_CONVERSATION_DATE = date(2025, 3, 3)
+SECOND_VERBAL_WORDS = "Oncor will set the pole the week of April 7, 2025."
+SECOND_VERBAL_RECORDED_AT = datetime(2025, 4, 1, 9, 15, tzinfo=timezone.utc)
+SECOND_VERBAL_CONVERSATION_DATE = date(2025, 4, 1)
+
+
+def _seed_dual_written_verbal(
+    session,
+    *,
+    slug: str,
+    words: str,
+    recorded_at: datetime,
+    conversation_date: date,
+    dependency_count: int,
+    unreconcilable_fact_type: str | None = None,
+) -> dict:
+    """Write one verbal exactly as the #451 dual-write left it at the released head."""
+
+    project_id = session.scalar(
+        text(
+            "insert into projects (slug, name, is_synthetic) "
+            "values (:slug, :name, true) returning id"
+        ),
+        {"slug": slug, "name": slug},
+    )
+    dependency_ids = [
+        session.scalar(
+            text(
+                "insert into dependencies (project_id, ref_code, dep_type, title) "
+                "values (:project_id, :ref_code, 'utility_relocation', :title) "
+                "returning id"
+            ),
+            {
+                "project_id": project_id,
+                "ref_code": f"DEP-{index + 1}",
+                "title": f"{slug} constraint {index + 1}",
+            },
+        )
+        for index in range(dependency_count)
+    ]
+    org_id = session.scalar(
+        text(
+            "insert into external_orgs (name, org_type) "
+            "values (:name, 'utility') returning id"
+        ),
+        {"name": f"{slug} utility"},
+    )
+    lineage_id = session.scalar(
+        text(
+            "insert into commitment_lineages (project_id) values (:project_id) "
+            "returning id"
+        ),
+        {"project_id": project_id},
+    )
+    statement_id = session.scalar(
+        text(
+            "insert into dependency_events ("
+            "project_id, commitment_lineage_id, event_type, source_kind, "
+            "affected_external_org_id, stated_external_org_id, attribution_state, "
+            "stated_party, description, created_by, event_date, created_at"
+            ") values ("
+            ":project_id, :lineage_id, 'commitment', 'verbal', :org_id, :org_id, "
+            "'resolved', :party, :words, :recorder, :conversation_date, "
+            ":recorded_at) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "lineage_id": lineage_id,
+            "org_id": org_id,
+            "party": f"{slug} utility",
+            "words": words,
+            "recorder": VERBAL_RECORDER,
+            "conversation_date": conversation_date,
+            "recorded_at": recorded_at,
+        },
+    )
+    session.execute(
+        text(
+            "insert into dependency_event_timings ("
+            "event_id, kind, text, precision, start_date, end_date"
+            ") values (:event_id, 'new', 'March 3, 2025', 'day', "
+            "date '2025-03-03', date '2025-03-03')"
+        ),
+        {"event_id": statement_id},
+    )
+    segment_id = session.scalar(
+        text(
+            "insert into source_segments ("
+            "project_id, statement_id, kind, exact_text, content_sha256, ordinal"
+            ") values ("
+            ":project_id, :statement_id, 'recorded_verbal_statement', :words, "
+            ":digest, 1) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "statement_id": statement_id,
+            "words": words,
+            "digest": sha256(words.encode("utf-8")).hexdigest(),
+        },
+    )
+    subject_key = f"lineage:{lineage_id}"
+    timings = (("new", StatementTiming.day("March 3, 2025", date(2025, 3, 3))),)
+    expected = _verbal_fact_digests(
+        segment_id=segment_id,
+        project_id=project_id,
+        words=words,
+        subject_key=subject_key,
+        run_identity={"statement_id": statement_id},
+        timings=timings,
+        dependency_ids=tuple(dependency_ids),
+    )
+    if unreconcilable_fact_type is not None:
+        # A stored identity the recipe cannot reproduce, written as it would
+        # have to arrive: `facts` refuses every later UPDATE.
+        expected = {**expected, unreconcilable_fact_type: "0" * 64}
+
+    fact_ids = {}
+    fact_ids["statement_wording"] = session.scalar(
+        text(
+            "insert into facts ("
+            "project_id, fact_type, subject_kind, subject_key, text_value, "
+            "transformation, recorded_by, content_sha256"
+            ") values ("
+            ":project_id, 'statement_wording', 'statement_candidate', :subject_key, "
+            ":words, 'exact_prose_span_v1', :recorder, :digest) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "subject_key": subject_key,
+            "words": words,
+            "recorder": VERBAL_RECORDER,
+            "digest": expected["statement_wording"],
+        },
+    )
+    for role in ("value_source", "attribution_source"):
+        session.execute(
+            text(
+                "insert into fact_sources ("
+                "project_id, fact_id, source_segment_id, role, ordinal"
+                ") values (:project_id, :fact_id, :segment_id, :role, 1)"
+            ),
+            {
+                "project_id": project_id,
+                "fact_id": fact_ids["statement_wording"],
+                "segment_id": segment_id,
+                "role": role,
+            },
+        )
+
+    fact_ids["statement_timing"] = session.scalar(
+        text(
+            "insert into facts ("
+            "project_id, fact_type, subject_kind, subject_key, transformation, "
+            "recorded_by, content_sha256"
+            ") values ("
+            ":project_id, 'statement_timing', 'statement_candidate', :subject_key, "
+            "'typed_statement_timing_v1', :recorder, :digest) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "subject_key": subject_key,
+            "recorder": VERBAL_RECORDER,
+            "digest": expected["statement_timing"],
+        },
+    )
+    session.execute(
+        text(
+            "insert into fact_sources ("
+            "project_id, fact_id, source_segment_id, role, ordinal"
+            ") values (:project_id, :fact_id, :segment_id, 'value_source', 1)"
+        ),
+        {
+            "project_id": project_id,
+            "fact_id": fact_ids["statement_timing"],
+            "segment_id": segment_id,
+        },
+    )
+    for role, timing in timings:
+        session.execute(
+            text(
+                "insert into fact_statement_timings ("
+                "project_id, fact_id, timing_role, text, precision, "
+                "start_date, end_date"
+                ") values ("
+                ":project_id, :fact_id, :role, :timing_text, :precision, "
+                ":start_date, :end_date)"
+            ),
+            {
+                "project_id": project_id,
+                "fact_id": fact_ids["statement_timing"],
+                "role": role,
+                "timing_text": timing.text,
+                "precision": timing.precision,
+                "start_date": timing.start_date,
+                "end_date": timing.end_date,
+            },
+        )
+
+    fact_ids["applies_to"] = session.scalar(
+        text(
+            "insert into facts ("
+            "project_id, fact_type, subject_kind, subject_key, transformation, "
+            "recorded_by, content_sha256"
+            ") values ("
+            ":project_id, 'applies_to', 'statement_candidate', :subject_key, "
+            "'structured_reference_set_v1', :recorder, :digest) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "subject_key": subject_key,
+            "recorder": VERBAL_RECORDER,
+            "digest": expected["applies_to"],
+        },
+    )
+    session.execute(
+        text(
+            "insert into fact_sources ("
+            "project_id, fact_id, source_segment_id, role, ordinal"
+            ") values (:project_id, :fact_id, :segment_id, 'value_source', 1)"
+        ),
+        {
+            "project_id": project_id,
+            "fact_id": fact_ids["applies_to"],
+            "segment_id": segment_id,
+        },
+    )
+    for slot, dependency_id in enumerate(dependency_ids, start=1):
+        session.execute(
+            text(
+                "insert into fact_applies_to ("
+                "project_id, fact_id, dependency_id, ordinal"
+                ") values (:project_id, :fact_id, :dependency_id, :ordinal)"
+            ),
+            {
+                "project_id": project_id,
+                "fact_id": fact_ids["applies_to"],
+                "dependency_id": dependency_id,
+                "ordinal": slot,
+            },
+        )
+
+    return {
+        "project_id": project_id,
+        "statement_id": statement_id,
+        "segment_id": segment_id,
+        "subject_key": subject_key,
+        "words": words,
+        "recorded_at": recorded_at,
+        "conversation_date": conversation_date,
+        "timings": timings,
+        "dependency_ids": tuple(dependency_ids),
+        "fact_ids": fact_ids,
+        "prior_digests": expected,
+    }
+
+
+def _verbal_fact_digests(
+    *,
+    segment_id: int,
+    project_id: int,
+    words: str,
+    subject_key: str,
+    run_identity: dict,
+    timings,
+    dependency_ids,
+) -> dict[str, str]:
+    """The three Fact identity digests, from the application's own recipe.
+
+    The migration carries a frozen copy of that recipe; computing the expected
+    values here proves the copy still agrees with `corridor.facts`, on both the
+    digest the backfill must reproduce and the one it must write.
+    """
+
+    segment = SourceSegment(
+        project_id=project_id,
+        document_id=None,
+        recorded_verbal_origin_id=0,
+        kind="recorded_verbal_statement",
+        exact_text=words,
+        content_sha256=sha256(words.encode("utf-8")).hexdigest(),
+        ordinal=1,
+    )
+    segment.id = segment_id
+    return {
+        "statement_wording": _fact_digest(
+            run_identity=run_identity,
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            value=materialize_quoted_statement_wording(segment, words),
+        ),
+        "statement_timing": _fact_digest(
+            run_identity=run_identity,
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            value=materialize_typed_satellite("statement_timing", segment),
+            structured_value=_statement_timing_structured(timings),
+        ),
+        "applies_to": _fact_digest(
+            run_identity=run_identity,
+            subject_kind="statement_candidate",
+            subject_key=subject_key,
+            value=materialize_typed_satellite("applies_to", segment),
+            structured_value={"dependency_ids": list(dependency_ids)},
+        ),
+    }
+
+
+def test_the_recorded_verbal_backfill_reconciles_one_to_one(tmp_path):
+    """ADR-0081 stage 1, proved on the exact rows the transition transformed.
+
+    Two dual-written verbals cross the transition. Each must gain exactly one
+    origin carrying the recorder and the original recorded time, exactly one
+    compatibility mapping, exactly one receipt, and three Fact identity digests
+    replaced from a receipt that names both values. Nothing else moves, and the
+    downgrade puts every one of them back.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_verbal_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            first = _seed_dual_written_verbal(
+                session,
+                slug="verbal-backfill-one",
+                words=VERBAL_WORDS,
+                recorded_at=VERBAL_RECORDED_AT,
+                conversation_date=VERBAL_CONVERSATION_DATE,
+                dependency_count=2,
+            )
+            second = _seed_dual_written_verbal(
+                session,
+                slug="verbal-backfill-two",
+                words=SECOND_VERBAL_WORDS,
+                recorded_at=SECOND_VERBAL_RECORDED_AT,
+                conversation_date=SECOND_VERBAL_CONVERSATION_DATE,
+                dependency_count=0,
+            )
+
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with database.session_factory() as session:
+            receipts = session.execute(
+                text(
+                    "select receipt.legacy_statement_id, receipt.source_segment_id, "
+                    "       receipt.origin_id, receipt.project_id, "
+                    "       receipt.fact_count, receipt.migration_revision, "
+                    "       receipt.executed_by, "
+                    "       origin.recorded_by, origin.recorded_at, "
+                    "       origin.conversation_date, origin.exact_text, "
+                    "       origin.content_sha256, origin.corrects_origin_id, "
+                    "       mapping.statement_id as mapped_statement_id, "
+                    "       segment.recorded_verbal_origin_id as segment_origin_id "
+                    "  from recorded_verbal_origin_backfill_receipts receipt "
+                    "  join recorded_verbal_origins origin "
+                    "    on origin.id = receipt.origin_id "
+                    "  join recorded_verbal_origin_statements mapping "
+                    "    on mapping.origin_id = receipt.origin_id "
+                    "  join source_segments segment "
+                    "    on segment.id = receipt.source_segment_id "
+                    " order by receipt.legacy_statement_id"
+                )
+            ).all()
+
+            assert len(receipts) == 2
+            for receipt, seeded in zip(receipts, (first, second)):
+                assert receipt.legacy_statement_id == seeded["statement_id"]
+                assert receipt.source_segment_id == seeded["segment_id"]
+                assert receipt.mapped_statement_id == seeded["statement_id"]
+                assert receipt.segment_origin_id == receipt.origin_id
+                assert receipt.project_id == seeded["project_id"]
+                assert receipt.fact_count == 3
+                assert receipt.migration_revision == CURRENT_HEAD
+                assert receipt.executed_by == "migration:b2d5f8a1c4e7/512"
+                # The recorder attested; the migration only moved the row.
+                assert receipt.recorded_by == VERBAL_RECORDER
+                assert receipt.recorded_at == seeded["recorded_at"]
+                assert receipt.conversation_date == seeded["conversation_date"]
+                assert receipt.exact_text == seeded["words"]
+                assert receipt.content_sha256 == sha256(
+                    seeded["words"].encode("utf-8")
+                ).hexdigest()
+                assert receipt.corrects_origin_id is None
+
+            # One origin, one mapping, one receipt per verbal; nothing else.
+            counts = session.execute(
+                text(
+                    "select (select count(*) from recorded_verbal_origins) as origins, "
+                    "  (select count(*) from recorded_verbal_origin_statements) "
+                    "    as mappings, "
+                    "  (select count(*) from "
+                    "    recorded_verbal_origin_backfill_receipts) as receipts, "
+                    "  (select count(*) from recorded_verbal_origin_fact_digests) "
+                    "    as digests, "
+                    "  (select count(*) from source_segments "
+                    "    where kind = 'recorded_verbal_statement' "
+                    "      and recorded_verbal_origin_id is null) as unpointed"
+                )
+            ).one()
+            assert (
+                counts.origins,
+                counts.mappings,
+                counts.receipts,
+                counts.digests,
+                counts.unpointed,
+            ) == (2, 2, 2, 6, 0)
+
+            for receipt, seeded in zip(receipts, (first, second)):
+                after = _verbal_fact_digests(
+                    segment_id=seeded["segment_id"],
+                    project_id=seeded["project_id"],
+                    words=seeded["words"],
+                    subject_key=seeded["subject_key"],
+                    run_identity={"recorded_verbal_origin_id": receipt.origin_id},
+                    timings=seeded["timings"],
+                    dependency_ids=seeded["dependency_ids"],
+                )
+                for fact_type, fact_id in seeded["fact_ids"].items():
+                    stored = session.execute(
+                        text(
+                            "select fact.content_sha256 as digest, "
+                            "       change.prior_content_sha256 as prior, "
+                            "       change.content_sha256 as recorded, "
+                            "       change.receipt_id as receipt_id, "
+                            "       change.project_id as project_id "
+                            "  from facts fact "
+                            "  join recorded_verbal_origin_fact_digests change "
+                            "    on change.fact_id = fact.id "
+                            " where fact.id = :fact_id"
+                        ),
+                        {"fact_id": fact_id},
+                    ).one()
+                    assert stored.digest == after[fact_type]
+                    assert stored.recorded == after[fact_type]
+                    assert stored.prior == seeded["prior_digests"][fact_type]
+                    assert stored.project_id == seeded["project_id"]
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+
+        with database.session_factory() as session:
+            for seeded in (first, second):
+                restored = session.execute(
+                    text(
+                        "select statement_id, kind, exact_text "
+                        "  from source_segments where id = :segment_id"
+                    ),
+                    {"segment_id": seeded["segment_id"]},
+                ).one()
+                assert restored.statement_id == seeded["statement_id"]
+                assert restored.kind == "recorded_verbal_statement"
+                assert restored.exact_text == seeded["words"]
+                for fact_type, fact_id in seeded["fact_ids"].items():
+                    digest = session.scalar(
+                        text("select content_sha256 from facts where id = :fact_id"),
+                        {"fact_id": fact_id},
+                    )
+                    assert digest == seeded["prior_digests"][fact_type]
+            assert session.scalar(
+                text(
+                    "select count(*) from information_schema.tables "
+                    " where table_schema = 'public' "
+                    "   and table_name like 'recorded_verbal%'"
+                )
+            ) == 0
+
+
+def test_the_recorded_verbal_backfill_refuses_an_unreconcilable_fact(tmp_path):
+    """A Fact whose stored identity cannot be reproduced aborts the transition.
+
+    The backfill derives the replacement digest from the same reconstruction
+    that must first reproduce the stored one. A row it cannot reproduce is a
+    row it does not understand, so it refuses rather than writing a digest that
+    would silently redefine the Fact.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_verbal_bad_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            seeded = _seed_dual_written_verbal(
+                session,
+                slug="verbal-backfill-broken",
+                words=VERBAL_WORDS,
+                recorded_at=VERBAL_RECORDED_AT,
+                conversation_date=VERBAL_CONVERSATION_DATE,
+                dependency_count=1,
+                unreconcilable_fact_type="statement_wording",
+            )
+
+        completed = _alembic(database_url, "upgrade", "head")
+
+        assert completed.returncode != 0
+        assert "#512 backfill refuses" in completed.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        with database.session_factory() as session:
+            assert session.scalar(
+                text(
+                    "select statement_id from source_segments where id = :segment_id"
+                ),
+                {"segment_id": seeded["segment_id"]},
+            ) == seeded["statement_id"]
+            assert session.scalar(
+                text(
+                    "select count(*) from information_schema.tables "
+                    " where table_schema = 'public' "
+                    "   and table_name like 'recorded_verbal%'"
+                )
+            ) == 0

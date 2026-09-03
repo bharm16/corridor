@@ -284,7 +284,7 @@ def _segment(session, project, document, *, text, cell_range, ordinal):
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=[
             SegmentValues(
                 kind="spreadsheet_cell",

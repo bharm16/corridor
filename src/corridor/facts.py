@@ -466,13 +466,19 @@ _STATEMENT_SOURCE_KINDS = frozenset({"recorded_verbal_statement", "prose_span"})
 def _statement_source_run_identity(segment: SourceSegment) -> dict[str, object]:
     """A stable, reproducible identity for a document-less statement Fact digest.
 
-    A Recorded Verbal Statement identifies by its statement; a Meeting Notes
-    passage has no statement, so it identifies by the exact segment that carries
-    it.  Both are unique per statement and reproduce on replay.
+    A Recorded Verbal Statement identifies by the recorder's attestation — its
+    spine-native Recorded Verbal origin; a Meeting Notes passage has no
+    attestation, so it identifies by the exact segment that carries it.  Both
+    are unique per statement and reproduce on replay.
+
+    The verbal branch named the legacy ``dependency_events`` row until #512,
+    which put a legacy Project Record key inside the Fact identity hash.
+    ADR-0081 stage 1 replaced it, and the transition reconciled every digest it
+    changed against an attributable receipt (``recorded_verbal_origin_fact_digests``).
     """
 
     if segment.kind == "recorded_verbal_statement":
-        return {"statement_id": segment.statement_id}
+        return {"recorded_verbal_origin_id": segment.recorded_verbal_origin_id}
     return {"source_segment_id": segment.id}
 
 

@@ -447,7 +447,7 @@ def test_an_adopted_project_still_captures_source_facts_and_proposes_deltas(
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=[
             SegmentValues(
                 kind="spreadsheet_cell",
