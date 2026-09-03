@@ -80,6 +80,10 @@ ACCEPTED_TABLES = (
     "project_baseline_sources",
     "project_baseline_source_rows",
     "project_baseline_formats",
+    # What a registered mapping revision declares, stored beside the identity
+    # and digest that name it (#610): read by the application, written only by
+    # the record-decision role's command.
+    "project_baseline_format_manifests",
     # Resolving a Proposed Delta is what finally moves the accepted record
     # (#519), so its decision and the Support Assessments the decision cited
     # are accepted authority: read by the application, written only by the
@@ -272,6 +276,7 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
         "adopt_project_baseline",
         "adopt_project_record_baseline",
         "register_baseline_format",
+        "attach_baseline_format_manifest",
         # Accept, edit, reject, and defer are attributable human acts (#519).
         "open_delta_resolution_revision",
         "resolve_proposed_delta_decision",

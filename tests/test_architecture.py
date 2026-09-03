@@ -216,6 +216,10 @@ ACCEPTED_AUTHORITY_COMMANDS = {
     "adopt_project_baseline": "operating_mode.py",
     "adopt_project_record_baseline": "baseline_adoption.py",
     "register_baseline_format": "baseline_adoption.py",
+    # Storing what a registered mapping revision declares is part of the same
+    # attributable registration (#610); it writes no accepted value and is
+    # owned by the same role, so it holds the same seam.
+    "attach_baseline_format_manifest": "baseline_adoption.py",
     "open_delta_resolution_revision": "delta_resolution.py",
     "resolve_proposed_delta_decision": "delta_resolution.py",
     # ADR-0084 keeps the deferral receipt with the delta lifecycle (#518);
@@ -251,6 +255,7 @@ ACCEPTED_AUTHORITY_MODELS = frozenset(
         "BaselineSource",
         "BaselineSourceRow",
         "BaselineFormat",
+        "BaselineFormatManifest",
     }
 )
 

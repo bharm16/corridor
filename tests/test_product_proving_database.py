@@ -208,7 +208,7 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # coverage that makes each advance safe (#599) — and the spine-native
     # Recorded Verbal origin with its temporary legacy mapping and the two
     # receipt relations the #512 backfill reconciled through.
-    assert fingerprint.table_count == 178
+    assert fingerprint.table_count == 179
     assert fingerprint.sequence_count == 166
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64

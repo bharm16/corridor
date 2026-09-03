@@ -12,6 +12,7 @@ about a real customer form (ADR-0046).
 from __future__ import annotations
 
 import hashlib
+import json
 from uuid import uuid4
 
 import pytest
@@ -31,8 +32,10 @@ from corridor.baseline_adoption import (
     adopted_baseline_source,
     adopted_source_rows,
     effective_baseline_formats,
+    effective_field_mapping_manifest,
     preview_baseline_adoption,
     register_baseline_format,
+    stored_mapping_revision,
 )
 from corridor.baseline_workbook import (
     IMPORTER_IDENTITY,
@@ -45,11 +48,14 @@ from corridor.db import Session, engine
 from corridor.field_mapping_manifest import (
     DEMO_EXTERNAL_REFERENCES,
     MappingDeclaration,
+    MappingManifestRefused,
     declared_field_mapping,
+    manifest_from_declaration,
 )
 from corridor.models import (
     AuditLog,
     BaselineFormat,
+    BaselineFormatManifest,
     BaselineSource,
     BaselineSourceRow,
     Dependency,
@@ -1052,6 +1058,205 @@ def test_a_format_cannot_be_registered_before_the_data_baseline(
                 idempotency_key="register-early",
                 manifest=manifest,
             )
+
+
+# --- The stored mapping-revision declaration (#610) -------------------------
+
+
+def test_adopting_stores_what_the_registered_mapping_revision_declares(
+    session, project, tmp_path, store
+):
+    """The registration records the digest; this records what it digests.
+
+    Before #610 a registration named a mapping revision by identity, version
+    and digest, so Corridor could prove *that* a render used a revision and
+    not *what* that revision declared. The assertions below read the stored
+    bytes rather than a rebuilt object, because storing the declaration is
+    exactly the thing that would otherwise be assumed.
+    """
+
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+
+    _adopt(session, preview, tmp_path)
+
+    registration = effective_baseline_formats(session, project.id)["field_mapping"]
+    stored = session.get_one(BaselineFormatManifest, registration.id)
+    assert stored.content_sha256 == registration.content_sha256
+    assert stored.manifest_schema_version == "field-mapping-manifest-v1"
+    # The declaration itself, not a digest of it: the exact source column, the
+    # canonical field it carries, and the composition rule that says how many
+    # values it carries are all readable out of the stored bytes.
+    assert '"Start Station"' in stored.declaration
+    assert '"station_from"' in stored.declaration
+    assert '"one_value_per_column_v1"' in stored.declaration
+    assert stored.declaration == preview.field_mapping_manifest.declaration_json
+
+
+def test_the_stored_declaration_reads_back_as_the_mapping_revision_registered(
+    session, project, tmp_path, store
+):
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+    _adopt(session, preview, tmp_path)
+
+    read_back = effective_field_mapping_manifest(session, project.id)
+
+    # Two manifests are the same mapping revision when they declare the same
+    # thing, which is what the canonical declaration and its digest say; the
+    # rebuilt one holds its mappings in that canonical order rather than the
+    # order the importer happened to construct them in.
+    assert read_back.declaration_json == (
+        preview.field_mapping_manifest.declaration_json
+    )
+    assert read_back.content_sha256 == (
+        preview.field_mapping_manifest.content_sha256
+    )
+    assert read_back.mapping_for("station_from").source_columns == ("Start Station",)
+    assert read_back.mapping_for("station_from").delimiter == " - "
+    assert read_back.external_reference_headings == DEMO_HEADINGS
+
+
+def test_a_stored_declaration_is_retrievable_by_its_identity_and_digest(
+    session, project, tmp_path, store
+):
+    """And a digest nothing stored resolves to nothing, explicitly."""
+
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+    _adopt(session, preview, tmp_path)
+    manifest = preview.field_mapping_manifest
+
+    resolved = stored_mapping_revision(
+        session,
+        identity=manifest.identity,
+        version=manifest.version,
+        content_sha256=manifest.content_sha256,
+    )
+    assert resolved.declaration_json == manifest.declaration_json
+    assert stored_mapping_revision(
+        session,
+        identity=manifest.identity,
+        version=manifest.version,
+        content_sha256=hashlib.sha256(b"another revision").hexdigest(),
+    ) is None
+
+
+def test_a_declaration_that_is_not_the_registration_s_digest_is_refused(
+    session, project, tmp_path, store
+):
+    """A stored declaration disagreeing with its registration is unrepresentable."""
+
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+    _adopt(session, preview, tmp_path)
+    registration = effective_baseline_formats(session, project.id)["field_mapping"]
+    tampered = preview.field_mapping_manifest.declaration_json.replace(
+        "Start Station", "Beginning Station"
+    )
+    assert tampered != preview.field_mapping_manifest.declaration_json
+
+    with pytest.raises(DBAPIError, match="digests to"):
+        with session.begin_nested():
+            session.execute(
+                select(
+                    func.attach_baseline_format_manifest(
+                        project.id, registration.id, tampered
+                    )
+                )
+            )
+
+    assert (
+        session.get_one(BaselineFormatManifest, registration.id).declaration
+        == preview.field_mapping_manifest.declaration_json
+    )
+
+
+def test_stored_bytes_that_do_not_reconstruct_the_declaration_are_refused(
+    session, project, tmp_path, store
+):
+    """Stored bytes are read back and re-digested, never trusted for being stored."""
+
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+    canonical = preview.field_mapping_manifest.declaration_json
+    # The same declaration, written non-canonically: it parses to the same
+    # object and digests to something else, so it is not the revision the
+    # registration names.
+    padded = canonical.replace('","', '" , "', 1)
+    assert padded != canonical
+    assert json.loads(padded) == json.loads(canonical)
+
+    with pytest.raises(MappingManifestRefused, match="does not reconstruct"):
+        manifest_from_declaration(padded)
+
+
+@pytest.mark.parametrize(
+    "statement",
+    (
+        # Every one of these would satisfy the table's own constraints: the
+        # inserted row names a real registration and carries a declaration
+        # that digests to it, and neither the update nor the delete touches a
+        # constrained column. What refuses them is the trigger, and nothing
+        # else — a case the constraints could refuse anyway would prove
+        # nothing about who may write here.
+        "insert into project_baseline_format_manifests (format_id, project_id, "
+        "format_identity, format_version, content_sha256, "
+        "manifest_schema_version, declaration) values (:format_id, "
+        ":project_id, :identity, 'v2', :digest, 'field-mapping-manifest-v1', "
+        ":declaration)",
+        "update project_baseline_format_manifests "
+        "set manifest_schema_version = 'forged' where project_id = :project_id",
+        "delete from project_baseline_format_manifests "
+        "where project_id = :project_id",
+    ),
+)
+def test_a_stored_declaration_cannot_be_written_around_the_command(
+    session, project, tmp_path, store, statement
+):
+    staged = _stage(_workbook_bytes(tmp_path))
+    preview = _preview(session, project, staged)
+    _adopt(session, preview, tmp_path)
+    manifest = preview.field_mapping_manifest
+    registration = effective_baseline_formats(session, project.id)["field_mapping"]
+    # A second registration of the same declaration under another version, so
+    # the insert below has a registration to name and a free primary key.
+    second = session.scalar(
+        select(
+            func.register_baseline_format(
+                project.id,
+                "field_mapping",
+                manifest.identity,
+                "v2",
+                manifest.content_sha256,
+                PRINCIPAL.subject,
+                "register-a-second-version",
+            )
+        )
+    )
+
+    with pytest.raises(DBAPIError, match="registration command|immutable"):
+        with session.begin_nested():
+            session.execute(
+                text(statement),
+                {
+                    "project_id": project.id,
+                    "format_id": int(second["format_id"]),
+                    "identity": manifest.identity,
+                    "digest": manifest.content_sha256,
+                    "declaration": manifest.declaration_json,
+                },
+            )
+
+    session.expire_all()
+    assert session.scalar(
+        select(func.count())
+        .select_from(BaselineFormatManifest)
+        .where(BaselineFormatManifest.project_id == project.id)
+    ) == 1
+    stored = session.get_one(BaselineFormatManifest, registration.id)
+    assert stored.declaration == manifest.declaration_json
+    assert stored.manifest_schema_version == "field-mapping-manifest-v1"
 
 
 # --- The database holds the boundary ---------------------------------------

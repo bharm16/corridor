@@ -31,6 +31,7 @@ from corridor.baseline_adoption import (
     FormatIdentity,
     adopt_baseline,
     effective_baseline_formats,
+    effective_field_mapping_manifest,
     preview_baseline_adoption,
     register_baseline_format,
 )
@@ -52,6 +53,8 @@ from corridor.materializer import (
     materialize_typed_satellite,
 )
 from corridor.models import (
+    BaselineFormat,
+    BaselineFormatManifest,
     Document,
     FactDecision,
     Project,
@@ -850,6 +853,133 @@ def test_a_manifest_that_is_not_the_registered_mapping_revision_is_refused(
         UnapprovedFieldMapping, match="not the approved mapping revision"
     ):
         _render(session, project, adopted, field_mapping=manifest)
+
+
+# --- Reproducing a render from stored state alone (#610) --------------------
+
+
+def test_a_past_render_reproduces_without_the_caller_supplying_the_manifest(
+    session, project, adopted, tmp_path
+):
+    """The registration now resolves its own mapping revision.
+
+    #597 registered a revision by identity, version and digest, so reproducing
+    a render depended on whoever declared it still holding the declaration.
+    Omitting ``field_mapping`` here reproduces the same bytes from what the
+    database stores, which is the whole claim.
+    """
+
+    supplied = _render(session, project, adopted)
+
+    reproduced = render_project_record_workbook(
+        session,
+        project_id=project.id,
+        revision_id=adopted.revision_id,
+        template_bytes=adopted.body,
+    )
+
+    assert reproduced.output_sha256 == supplied.output_sha256
+    assert reproduced.content == supplied.content
+    assert reproduced.field_mapping_revision == supplied.field_mapping_revision
+    assert reproduced.field_mapping_sha256 == supplied.field_mapping_sha256
+
+
+def test_an_approved_successor_mapping_reproduces_the_render_it_was_approved_for(
+    session, project, adopted, tmp_path
+):
+    """Stored state follows the registration, not the manifest last handed in."""
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+    _register_mapping(
+        session, project, manifest, _coordinator(session, project), "register-v2"
+    )
+    _approve_template(session, project, combined)
+
+    reproduced = render_project_record_workbook(
+        session,
+        project_id=project.id,
+        revision_id=adopted.revision_id,
+        template_bytes=combined,
+    )
+
+    assert reproduced.field_mapping_sha256 == manifest.content_sha256
+    assert reproduced.output_sha256 == _render(
+        session,
+        project,
+        adopted,
+        template_bytes=combined,
+        field_mapping=manifest,
+    ).output_sha256
+
+
+def test_a_registration_that_stores_no_declaration_refuses_by_name(
+    session, project, adopted, tmp_path
+):
+    """The shape every registration had before #610, and what it can prove.
+
+    The command alone writes identity, version and digest — no declaration —
+    so this is exactly a registration made before the declaration was stored
+    beside it. The absence has to be stated, never read as an empty mapping.
+    """
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+    session.scalar(
+        select(
+            func.register_baseline_format(
+                project.id,
+                "field_mapping",
+                manifest.identity,
+                manifest.version,
+                manifest.content_sha256,
+                PRINCIPAL.subject,
+                "register-without-a-declaration",
+            )
+        )
+    )
+    session.expire_all()
+
+    assert effective_field_mapping_manifest(session, project.id) is None
+    with pytest.raises(WorkbookRenderRefused, match="stores no declaration"):
+        render_project_record_workbook(
+            session,
+            project_id=project.id,
+            revision_id=adopted.revision_id,
+            template_bytes=adopted.body,
+        )
+
+
+def test_an_identical_re_registration_stays_idempotent_and_stores_one_declaration(
+    session, project, adopted, tmp_path
+):
+    """Registering the same declaration again is not a semantic change (#597).
+
+    It needs no project-coordination designation, and it stores the same
+    declaration rather than a second copy of it.
+    """
+
+    manifest = adopted.manifest
+    registered = _register_mapping(
+        session, project, manifest, PRINCIPAL, "register-the-same-again"
+    )
+
+    assert registered.content_sha256 == manifest.content_sha256
+    assert effective_field_mapping_manifest(
+        session, project.id
+    ).declaration_json == manifest.declaration_json
+    assert session.scalar(
+        select(func.count())
+        .select_from(BaselineFormatManifest)
+        .where(BaselineFormatManifest.project_id == project.id)
+    ) == session.scalar(
+        select(func.count())
+        .select_from(BaselineFormat)
+        .where(
+            BaselineFormat.project_id == project.id,
+            BaselineFormat.format_kind == "field_mapping",
+        )
+    )
 
 
 # --- Fail closed on what cannot be preserved --------------------------------

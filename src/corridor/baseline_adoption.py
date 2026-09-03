@@ -72,12 +72,14 @@ from corridor.field_mapping_manifest import (
     MappingDeclaration,
     MappingManifestRefused,
     declared_field_mapping,
+    manifest_from_declaration,
     prove_manifest,
 )
 from corridor.materializer import materialize_segment_value
 from corridor.models import (
     BaselineAdoption,
     BaselineFormat,
+    BaselineFormatManifest,
     BaselineSource,
     BaselineSourceRow,
     Dependency,
@@ -457,6 +459,15 @@ def adopt_baseline(
         )
     )
     revision_id = int(outcome["revision_id"])
+    registered_mapping = effective_baseline_formats(session, project.id)[
+        "field_mapping"
+    ]
+    _store_declaration(
+        session,
+        project_id=project.id,
+        format_id=registered_mapping.id,
+        manifest=preview.field_mapping_manifest,
+    )
     adoption = adopt_project_baseline(
         session,
         project_id=project.id,
@@ -544,7 +555,41 @@ def register_baseline_format(
         )
     )
     session.expire_all()
-    return session.get_one(BaselineFormat, int(outcome["format_id"]))
+    registered = session.get_one(BaselineFormat, int(outcome["format_id"]))
+    if identity.kind == "field_mapping":
+        # `manifest` is not None here: `_refuse_unapproved_mapping_revision`
+        # refuses a field mapping registered without one.
+        _store_declaration(
+            session,
+            project_id=project_id,
+            format_id=registered.id,
+            manifest=manifest,
+        )
+    return registered
+
+
+def _store_declaration(
+    session: Session,
+    *,
+    project_id: int,
+    format_id: int,
+    manifest: FieldMappingManifest,
+) -> None:
+    """Record what this mapping revision declares, not only that it exists.
+
+    The command re-derives the digest over these exact bytes and refuses them
+    unless it is the digest the registration already records, so a receipt can
+    never name a revision whose stored declaration is a different one (#610).
+    """
+
+    session.scalar(
+        select(
+            func.attach_baseline_format_manifest(
+                project_id, format_id, manifest.declaration_json
+            )
+        )
+    )
+    session.expire_all()
 
 
 def _refuse_unapproved_mapping_revision(
@@ -632,6 +677,50 @@ def effective_baseline_formats(
             )
         ).all()
     }
+
+
+def stored_mapping_revision(
+    session: Session, *, identity: str, version: str, content_sha256: str
+) -> FieldMappingManifest | None:
+    """The full declaration one registered mapping revision records (#610).
+
+    ``None`` where nothing stored it — a registration written before this
+    storage existed names a revision Corridor cannot itself resolve, and
+    saying so is the point. It is never read as an empty manifest.
+    """
+
+    stored = session.scalar(
+        select(BaselineFormatManifest)
+        .where(
+            BaselineFormatManifest.format_identity == identity,
+            BaselineFormatManifest.format_version == version,
+            BaselineFormatManifest.content_sha256 == content_sha256,
+        )
+        .order_by(BaselineFormatManifest.format_id)
+        .limit(1)
+    )
+    if stored is None:
+        return None
+    return manifest_from_declaration(stored.declaration)
+
+
+def effective_field_mapping_manifest(
+    session: Session, project_id: int
+) -> FieldMappingManifest | None:
+    """The mapping revision in force, read back from stored state alone.
+
+    ``None`` both where no field mapping is registered and where the one that
+    is stores no declaration; the caller states which, because the two are
+    different facts about the same project.
+    """
+
+    registration = effective_baseline_formats(session, project_id).get("field_mapping")
+    if registration is None:
+        return None
+    stored = session.get(BaselineFormatManifest, registration.id)
+    if stored is None:
+        return None
+    return manifest_from_declaration(stored.declaration)
 
 
 # --- The coordinator reading ------------------------------------------------
