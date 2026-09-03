@@ -1712,6 +1712,39 @@ class ProjectRecordRevision(Base):
     )
 
 
+class BaselineAdoption(Base):
+    """The immutable receipt one project's operating mode is derived from (#520)."""
+
+    __tablename__ = "project_baseline_adoptions"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", name="uq_project_baseline_adoptions_project"
+        ),
+        CheckConstraint(
+            "baseline_source_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_baseline_adoptions_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(adopted_by_principal)) > 0",
+            name="ck_project_baseline_adoptions_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    adopted_by_principal: Mapped[str] = mapped_column(String(128))
+    baseline_source_sha256: Mapped[str] = mapped_column(String(64))
+    importer_identity: Mapped[str] = mapped_column(String(128))
+    importer_version: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    adopted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class FactDecision(Base):
     """One typed Record Inclusion decision whose effectiveness may be superseded."""
 

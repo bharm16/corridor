@@ -47,7 +47,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "72a4a1d613bfb46f7d4ec78f6b5cb671fa13d0447474b75bfe9f3da2fe1556a7"
+    "f43da1affaf0c17394b7333721e077a87f3edb9e9b59f365624b88ca26288bf3"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -170,12 +170,14 @@ def test_fresh_database_matches_the_released_schema_exactly():
 def test_the_supported_database_upgrades_to_the_current_head_and_back():
     """The one supported transition, proved on its exact transformed rows.
 
-    b2d5f8a1c4e7 transforms privileges and adds one relation, not data: it
+    b2d5f8a1c4e7 transforms privileges and adds relations, not data: it
     takes the raw source-table writes back from the runtime capabilities and
-    hands the source-append role its commands (#492), and it creates the
-    Support Assessment tables that only the fifth command writes (#530).  A
-    database standing at the supported revision must cross that transition
-    in both directions.
+    hands the source-append role its commands (#492), it creates the
+    Support Assessment tables that only the fifth command writes (#530), and
+    it establishes the baseline/delta operating mode with its immutable
+    adoption receipt and the guards that refuse a legacy accepted-value write
+    for an adopted project (#520).  A database standing at the supported
+    revision must cross that transition in both directions.
     """
 
     configured = make_url(settings.database_url)

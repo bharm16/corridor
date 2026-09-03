@@ -80,9 +80,11 @@ frozen against new capability**: no new feature may be implemented solely
 against `dependencies`, `dependency_events`, `work_decisions`,
 `operative_support`, or the dispute tables. New work writes the spine first and
 must not introduce another legacy-only write; a compatibility write may keep a
-legacy reader working during migration. Do not treat the current pipeline as
-the authority model for a customer pilot until the adopted-baseline operating
-mode exists (#520).
+legacy reader working during migration. They also run only for a **legacy
+project**: a project holding a baseline-adoption receipt is in
+`adopted_baseline` operating mode (`operating_mode.py`, #520), and PostgreSQL
+refuses every legacy accepted-value write for it. The Adopt Baseline importer
+that establishes that mode in production is still #509.
 
 Extractors only ever produce Extracted Proposals. Every module opens with a docstring
 saying why it exists and what was tried before — read it before changing one.
