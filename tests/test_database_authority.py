@@ -86,6 +86,17 @@ ACCEPTED_TABLES = (
     # record-decision role's command.
     "delta_record_decisions",
     "delta_decision_supports",
+    # One guided Review Packet act (#526): the receipt, the ordered child set
+    # with each child's retained identity, the Support Assessments the act
+    # used, the Follow-up Plan decisions Needs coordination recorded, and the
+    # compensating Undo. Read by the application, written only by the
+    # record-decision role's commands.
+    "delta_follow_up_plans",
+    "delta_follow_up_plan_evidence",
+    "delta_review_packet_receipts",
+    "delta_review_packet_children",
+    "delta_review_packet_supports",
+    "delta_review_packet_reversals",
 )
 LEGACY_ACCEPTED_TABLES = (
     "dependencies",
@@ -249,6 +260,11 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
         "open_delta_resolution_revision",
         "resolve_proposed_delta_decision",
         "defer_proposed_delta",
+        # Saving one Review Packet, recording a Follow-up Plan, and undoing
+        # the guided act are the same kind of attributable human act (#526).
+        "record_delta_follow_up_plan",
+        "record_review_packet_receipt",
+        "reverse_review_packet",
     ):
         granted = admin.execute(
             text(

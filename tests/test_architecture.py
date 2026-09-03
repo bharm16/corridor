@@ -220,6 +220,13 @@ ACCEPTED_AUTHORITY_COMMANDS = {
     # ADR-0084 keeps the deferral receipt with the delta lifecycle (#518);
     # `delta_resolution` decides whether the act is lawful and delegates.
     "defer_proposed_delta": "proposed_deltas.py",
+    # One guided Review Packet act, its Follow-up Plan decisions, and its
+    # compensating Undo (#526, ADR-0085). The packet reuses #519's validation
+    # and decision construction, so it adds no writer of a semantic decision;
+    # these three write the act's own receipt, plan, and compensation.
+    "record_delta_follow_up_plan": "review_packets.py",
+    "record_review_packet_receipt": "review_packets.py",
+    "reverse_review_packet": "review_packets.py",
 }
 
 # The accepted-authority tables no application module may construct a row of.
@@ -233,6 +240,12 @@ ACCEPTED_AUTHORITY_MODELS = frozenset(
         "DeltaRecordDecision",
         "DeltaDecisionSupport",
         "DeltaDeferral",
+        "DeltaFollowUpPlan",
+        "DeltaFollowUpPlanEvidence",
+        "DeltaReviewPacketReceipt",
+        "DeltaReviewPacketChild",
+        "DeltaReviewPacketSupport",
+        "DeltaReviewPacketReversal",
         "BaselineAdoption",
         "BaselineSource",
         "BaselineSourceRow",
