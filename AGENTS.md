@@ -27,17 +27,25 @@ and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
 - Normal PR CI runs `make check` on every pull request, and the same tests
-  `make test` and the non-migration `make test-slow` select, partitioned across
-  four runners each by `make test-shard` and `make test-slow-shard`, unless
-  every changed file is documentation (`**.md`, `docs/**`). No test is
-  deselected by path: the full suites stay required and parallelism keeps the
-  wall clock inside the feedback budget (ADR-0088).
-- **Do not raise the runner count to shorten a shard.** Ten concurrent test
-  jobs were measured and each shard was genuinely faster, but the account
-  would not serve that many package downloads at once: `uv sync` went from 2s
-  to as much as 588s and two jobs stalled for minutes *inside* pytest. The
-  ceiling is what the account schedules and serves concurrently, not what the
-  partition can divide.
+  `make test` and the non-migration `make test-slow` select, partitioned by
+  `make test-shard` across five runners and `make test-slow-shard` across
+  four, unless every changed file is documentation (`**.md`, `docs/**`). No
+  test is deselected by path: the full suites stay required and parallelism
+  keeps the wall clock inside the feedback budget (ADR-0088).
+- **Raise the runner count one step at a time, and measure it.** Ten test jobs
+  (six non-slow plus four slow, twelve counting `check` and `migration-test`)
+  saturated this account's package downloads: `uv sync --locked` went from 2s
+  to as much as 588s and two jobs stalled for *minutes inside pytest*, taking
+  the gate to 11m55s. Nine jobs measured healthy twice, every `uv sync` at
+  1-2s. The ceiling is what the account serves concurrently, not what the
+  partition can divide, and a shorter shard is worth nothing if a sibling job
+  stalls.
+- **Nothing may download packages inside a test.** `workers/render` is a
+  separate uv project whose `opencv-python-headless` is never in the root
+  lock, so the first page render used to build that environment over the
+  network, inside pytest, in four racing xdist workers, with its output
+  captured. Every job that runs tests now runs `uv sync --project
+  workers/render --frozen` first.
 - The partition comes from `tests/durations.json` and `tests/durations-slow.json`.
   Regenerate both after any change that moves the numbers — a file missing
   from them is weighted as *average*, not free, which unbalances the gate:
