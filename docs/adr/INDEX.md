@@ -106,7 +106,7 @@ for everything else.
 |---|---|---|---|---|---|---|---|
 | [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md) | External Coordination Report release seals one fixed PDF artifact | current product | — | — | [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | `export`, `models`, `report_publication`, `web.app` | — |
 | [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | The report baseline is the last released report | current product | — | — | [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | `changes`, `due_work`, `models`, `report_publication`, `web.app` | — |
-| [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | One authorized release package is the external issue unit | current product | — | [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md), [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | — | — | no ReleasePackage exists; preparation, the package receipt, and the authorization gate are unimplemented (#529, #533). |
+| [ADR-0086](0086-one-authorized-release-package-is-the-external-issue-unit.md) | One authorized release package is the external issue unit | current product | — | [ADR-0040](0040-external-report-release-seals-one-fixed-pdf-artifact.md), [ADR-0053](0053-the-report-baseline-is-the-last-released-report.md) | — | `analytics` | no ReleasePackage exists; preparation, the package receipt, and the authorization gate are unimplemented (#529, #533). |
 
 ### operations
 
