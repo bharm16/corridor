@@ -224,8 +224,10 @@ earlier.
    with #518, #519, #520, and #526.
 7. #494 shared query and exactly-once partition shell, #526 (#510D) atomic
    packet resolution, and #559 accessible packet and workflow primitives are
-   **done**; #527 source-revision packet as the first review screen and #528
-   cross-source coordination packet remain open (ADR-0085). External-system
+   **done**, and so is **#527**, the source-revision packet that is the first
+   coordinator review screen: one bounded item per authoritative revision, with
+   only the opened item carrying decision controls. #528 cross-source
+   coordination packet remains open (ADR-0085). External-system
    identifiers deep-link read-only from #509, #527, and #528; a map waits for
    partner data.
 8. #425 accepted-authority follow-up and chase list, addressed to a resolved
@@ -243,12 +245,16 @@ earlier.
    with no model, no Microsoft 365, and no partner mailbox.
 10. #495 UCM export and #534 change summary and weekly report are **done**,
     both from one frozen revision (ADR-0086). Three follow-ons remain:
-    **#597** refuses a template whose mapped column silently splits or
-    combines a material value, which no digest over the template's bytes can
-    catch; **#596** completes the accepted record's own check set under
-    ADR-0090, porting `MISSING_EVIDENCE` and `SUPERSEDED_CITATION`, dropping
-    the seven rules that ADR-0090 supersedes or retires, and advancing the
-    declared set to `accepted_record_checks_v2`; and #529 release candidate
+    **#597** and **#596** are **done** — #597 makes the registered mapping
+    revision the authority a template is read through, catching a column that
+    silently splits or combines a material value, which no digest over the
+    template's bytes can; #596 completed the accepted record's own check set
+    under ADR-0090, porting `MISSING_EVIDENCE` and `SUPERSEDED_CITATION`,
+    declaring the seven rules ADR-0090 supersedes or retires rather than
+    dropping them silently, and advancing the declared set to
+    `accepted_record_checks_v2`. #613 still owes the replacement
+    `MISSING_EVIDENCE` customer label a maintainer's approval. #529 release
+    candidate
     and #533 release authorization seal and authorize whichever artifacts the
     project is configured to issue (ADR-0091). Delivery to the partner's
     document system is #563, separate from authorization and
@@ -327,10 +333,14 @@ only to the change-control rule in the measurement contract when it touches a
 cohort surface.
 
 - **Reliability and performance** work anywhere in the pipeline, including
-  **#595**, which brings the required pull-request gate's median under
-  ADR-0087's three minutes without deselecting a test (ADR-0088). The p90 half
-  is met; the remaining 28 seconds are per-job setup and the acceptance
-  suite.
+  **#595**, which brought the required pull-request gate's median under
+  ADR-0087's three minutes without deselecting a test (ADR-0088). The cause was
+  not a bad partition: the gate's wall clock is a max over nine jobs, so every
+  run sampled the worst setup draw taken in it. Running setup concurrently and
+  taking PostgreSQL from the runner image rather than a `services:` container
+  put four measured runs at 2m22s–2m53s, a median of 2m34s against 3m14s
+  before. #595 stays open only until a fifth run completes its recorded
+  median.
 - **Additional connectors** beyond the partner's own: #497 Microsoft 365
   SharePoint, OneDrive, and shared project mailbox.
 - **Partner-triggered, `needs-triage` until named:** #562 project contact
