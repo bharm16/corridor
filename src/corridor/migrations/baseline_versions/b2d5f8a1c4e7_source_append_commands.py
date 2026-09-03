@@ -81,8 +81,19 @@ SUPPORT_TABLES = (
     "support_assessment_sources",
 )
 
+# The Proposed Delta relation (#518): created here, appended only through
+# its command, readable by the runtime capabilities.
+DELTA_TABLES = (
+    "delta_groups",
+    "proposed_deltas",
+    "delta_dispositions",
+    "delta_supersessions",
+    "delta_deferrals",
+)
+
 # Tables the commands read to prove a typed reference lies in scope.
 REFERENCED_TABLES = (
+    "projects",
     "documents",
     "dependency_events",
     "dependencies",
@@ -107,6 +118,9 @@ COMMANDS = {
         "(bigint, character varying, bigint, bigint, bigint[], character varying, "
         "character varying, character varying, character varying, "
         "character varying, timestamp with time zone, bigint)"
+    ),
+    "append_proposed_deltas": (
+        "(bigint, character varying, character varying, bigint, bigint, jsonb)"
     ),
 }
 
@@ -551,6 +565,124 @@ create function public.append_source_fact_receipt(
 """
 
 
+# --- The Proposed Delta relation (#518, ADR-0075, ADR-0083) -----------------
+
+PROPOSED_DELTA_SCHEMA = """
+create table public.delta_groups (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    source_family character varying(64) not null,
+    source_revision character varying(128) not null,
+    document_id bigint references public.documents (id),
+    statement_id bigint references public.dependency_events (id),
+    created_at timestamp with time zone not null default now(),
+    constraint uq_delta_groups_project_id unique (project_id, id)
+);
+create index ix_delta_groups_project_id on public.delta_groups (project_id);
+
+create table public.proposed_deltas (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    group_id bigint not null,
+    content_sha256 character varying(64) not null,
+    change_type character varying(32) not null,
+    target_type character varying(32) not null,
+    target_subject_identity character varying(128) not null,
+    target_field character varying(64),
+    accepted_value jsonb,
+    proposed_value jsonb,
+    source_family character varying(64) not null,
+    source_revision character varying(128) not null,
+    comparison_rule_version character varying(64) not null,
+    accepted_baseline_revision character varying(128),
+    created_at timestamp with time zone not null default now(),
+    constraint uq_proposed_deltas_project_id unique (project_id, id),
+    constraint uq_proposed_deltas_content unique (content_sha256),
+    constraint fk_proposed_deltas_group
+        foreign key (project_id, group_id)
+        references public.delta_groups (project_id, id),
+    constraint ck_proposed_deltas_change_type check (
+        change_type in ('add', 'modify', 'apparent_removal')
+    ),
+    constraint ck_proposed_deltas_target_type check (
+        target_type in ('existing_subject', 'proposed_subject')
+    ),
+    constraint ck_proposed_deltas_content_sha256 check (
+        content_sha256 ~ '^[0-9a-f]{64}$'
+    )
+);
+create index ix_proposed_deltas_project_id on public.proposed_deltas (project_id);
+create index ix_proposed_deltas_group_id on public.proposed_deltas (group_id);
+create index ix_proposed_deltas_target on public.proposed_deltas (project_id, target_subject_identity);
+
+create table public.delta_dispositions (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    delta_id bigint not null,
+    disposition character varying(32) not null,
+    decided_at timestamp with time zone not null,
+    decided_by_principal character varying(128),
+    decided_by_policy character varying(128),
+    rationale text,
+    effective_value jsonb,
+    recorded_at timestamp with time zone not null default now(),
+    constraint uq_delta_dispositions_delta unique (delta_id),
+    constraint fk_delta_dispositions_delta
+        foreign key (project_id, delta_id)
+        references public.proposed_deltas (project_id, id),
+    constraint ck_delta_dispositions_disposition check (
+        disposition in ('accept', 'edit', 'reject')
+    ),
+    constraint ck_delta_dispositions_authority_xor check (
+        (decided_by_principal is null) <> (decided_by_policy is null)
+    )
+);
+create index ix_delta_dispositions_delta_id on public.delta_dispositions (delta_id);
+
+create table public.delta_supersessions (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    prior_delta_id bigint not null,
+    superseding_delta_id bigint not null,
+    reason character varying(64) not null,
+    superseded_at timestamp with time zone not null default now(),
+    constraint uq_delta_supersessions_prior unique (prior_delta_id),
+    constraint fk_delta_supersessions_prior
+        foreign key (project_id, prior_delta_id)
+        references public.proposed_deltas (project_id, id),
+    constraint fk_delta_supersessions_superseding
+        foreign key (project_id, superseding_delta_id)
+        references public.proposed_deltas (project_id, id),
+    constraint ck_delta_supersessions_not_self check (prior_delta_id <> superseding_delta_id)
+);
+create index ix_delta_supersessions_prior on public.delta_supersessions (prior_delta_id);
+create index ix_delta_supersessions_superseding on public.delta_supersessions (superseding_delta_id);
+
+create table public.delta_deferrals (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    delta_id bigint not null,
+    deferred_at timestamp with time zone not null,
+    deferred_until timestamp with time zone,
+    wake_condition character varying(128),
+    scheduled_by_principal character varying(128) not null,
+    reason text,
+    recorded_at timestamp with time zone not null default now(),
+    constraint fk_delta_deferrals_delta
+        foreign key (project_id, delta_id)
+        references public.proposed_deltas (project_id, id)
+);
+create index ix_delta_deferrals_delta on public.delta_deferrals (delta_id);
+"""
+
+PROPOSED_DELTA_SCHEMA_DOWN = """
+drop table if exists public.delta_deferrals cascade;
+drop table if exists public.delta_supersessions cascade;
+drop table if exists public.delta_dispositions cascade;
+drop table if exists public.proposed_deltas cascade;
+drop table if exists public.delta_groups cascade;
+"""
+
 # --- The Support Assessment relation (#530, ADR-0082) ----------------------
 
 SUPPORT_ASSESSMENT_SCHEMA = f"""
@@ -570,6 +702,7 @@ create table public.support_assessments (
     proposition_kind character varying(32) not null,
     fact_id bigint,
     extracted_proposal_id bigint,
+    proposed_delta_id bigint,
     evidence_role character varying(32) not null,
     assessment character varying(32) not null,
     human_principal character varying(128),
@@ -596,15 +729,20 @@ create table public.support_assessments (
     constraint fk_support_assessments_proposal_project
         foreign key (project_id, extracted_proposal_id)
         references public.extracted_proposals (project_id, id),
+    constraint fk_support_assessments_delta_project
+        foreign key (project_id, proposed_delta_id)
+        references public.proposed_deltas (project_id, id),
     -- Exactly one typed proposition. A new proposition class (Proposed
     -- Delta, accepted field) adds a kind, a column, and a composite key
     -- here; it never becomes an unchecked object-type/object-id pair.
     constraint ck_support_assessments_proposition check (
         (proposition_kind = 'source_fact'
-         and fact_id is not null and extracted_proposal_id is null)
+         and fact_id is not null and extracted_proposal_id is null and proposed_delta_id is null)
         or (proposition_kind = 'extracted_proposal'
-         and extracted_proposal_id is not null and fact_id is null
+         and extracted_proposal_id is not null and fact_id is null and proposed_delta_id is null
          and document_id is not null)
+        or (proposition_kind = 'proposed_delta'
+         and proposed_delta_id is not null and fact_id is null and extracted_proposal_id is null)
     ),
     constraint ck_support_assessments_evidence_role check (
         evidence_role in ({EVIDENCE_ROLES_SQL})
@@ -636,6 +774,8 @@ create index ix_support_assessments_fact_id
     on public.support_assessments (fact_id);
 create index ix_support_assessments_extracted_proposal_id
     on public.support_assessments (extracted_proposal_id);
+create index ix_support_assessments_proposed_delta_id
+    on public.support_assessments (proposed_delta_id);
 -- One EFFECTIVE assessment per proposition and role; a correction
 -- supersedes it rather than sitting beside it.
 create unique index uq_support_assessments_effective_fact
@@ -644,6 +784,9 @@ create unique index uq_support_assessments_effective_fact
 create unique index uq_support_assessments_effective_proposal
     on public.support_assessments (extracted_proposal_id, evidence_role)
     where superseded_by is null and extracted_proposal_id is not null;
+create unique index uq_support_assessments_effective_delta
+    on public.support_assessments (proposed_delta_id, evidence_role)
+    where superseded_by is null and proposed_delta_id is not null;
 
 create table public.support_assessment_sources (
     id bigserial primary key,
@@ -698,6 +841,7 @@ create function public.enforce_support_assessment_write() returns trigger
                    or new.proposition_kind is distinct from old.proposition_kind
                    or new.fact_id is distinct from old.fact_id
                    or new.extracted_proposal_id is distinct from old.extracted_proposal_id
+                   or new.proposed_delta_id is distinct from old.proposed_delta_id
                    or new.evidence_role is distinct from old.evidence_role
                    or new.assessment is distinct from old.assessment
                    or new.human_principal is distinct from old.human_principal
@@ -743,18 +887,18 @@ create trigger trg_support_assessment_sources_no_truncate
 """
 
 SUPPORT_ASSESSMENT_SCHEMA_DOWN = """
-drop trigger trg_support_assessment_sources_no_truncate on public.support_assessment_sources;
-drop trigger trg_support_assessment_sources_guard on public.support_assessment_sources;
-drop trigger trg_support_assessments_no_truncate on public.support_assessments;
-drop trigger trg_support_assessments_guard on public.support_assessments;
-drop function public.enforce_support_assessment_sources_write();
-drop function public.enforce_support_assessment_write();
-drop table public.support_assessment_sources;
-drop table public.support_assessments;
-alter table public.extracted_proposals
-    drop constraint uq_extracted_proposals_document_scope_id;
-alter table public.extracted_proposals
-    drop constraint uq_extracted_proposals_project_id;
+drop trigger if exists trg_support_assessment_sources_no_truncate on public.support_assessment_sources;
+drop trigger if exists trg_support_assessment_sources_guard on public.support_assessment_sources;
+drop trigger if exists trg_support_assessments_no_truncate on public.support_assessments;
+drop trigger if exists trg_support_assessments_guard on public.support_assessments;
+drop function if exists public.enforce_support_assessment_sources_write();
+drop function if exists public.enforce_support_assessment_write();
+drop table if exists public.support_assessment_sources cascade;
+drop table if exists public.support_assessments cascade;
+alter table if exists public.extracted_proposals
+    drop constraint if exists uq_extracted_proposals_document_scope_id;
+alter table if exists public.extracted_proposals
+    drop constraint if exists uq_extracted_proposals_project_id;
 """
 
 
@@ -972,19 +1116,119 @@ create function public.append_support_assessment(
 """
 
 
+APPEND_PROPOSED_DELTAS = """
+create function public.append_proposed_deltas(
+    p_project_id bigint,
+    p_source_family character varying,
+    p_source_revision character varying,
+    p_document_id bigint,
+    p_statement_id bigint,
+    p_deltas jsonb
+) returns bigint[]
+    language plpgsql security definer
+    set search_path to 'public'
+    as $$
+        declare
+            v_group_id bigint;
+            item jsonb;
+            ch_type text;
+            tgt_type text;
+            tgt_id text;
+            tgt_field text;
+            acc_val jsonb;
+            prop_val jsonb;
+            comp_rule text;
+            acc_base text;
+            content_hash text;
+            delta_id bigint;
+            appended bigint[] := '{}';
+        begin
+            if not exists (select 1 from projects where id = p_project_id) then
+                raise exception 'project does not exist' using errcode = '23514';
+            end if;
+            if p_document_id is not null and not exists (
+                select 1 from documents where id = p_document_id and project_id = p_project_id
+            ) then
+                raise exception 'document is outside its project' using errcode = '23514';
+            end if;
+            if p_statement_id is not null and not exists (
+                select 1 from dependency_events where id = p_statement_id and project_id = p_project_id
+            ) then
+                raise exception 'statement is outside its project' using errcode = '23514';
+            end if;
+            if p_deltas is null or jsonb_typeof(p_deltas) <> 'array' or jsonb_array_length(p_deltas) = 0 then
+                raise exception 'deltas must be a non-empty list' using errcode = '23514';
+            end if;
+
+            insert into delta_groups (
+                project_id, source_family, source_revision, document_id, statement_id
+            ) values (
+                p_project_id, p_source_family, p_source_revision, p_document_id, p_statement_id
+            ) returning id into v_group_id;
+
+            for item in select value from jsonb_array_elements(p_deltas) loop
+                ch_type := item ->> 'change_type';
+                tgt_type := item ->> 'target_type';
+                tgt_id := item ->> 'target_subject_identity';
+                tgt_field := item ->> 'target_field';
+                acc_val := item -> 'accepted_value';
+                prop_val := item -> 'proposed_value';
+                comp_rule := coalesce(item ->> 'comparison_rule_version', 'v1');
+                acc_base := item ->> 'accepted_baseline_revision';
+
+                if ch_type not in ('add', 'modify', 'apparent_removal') then
+                    raise exception 'invalid change_type: %', ch_type using errcode = '23514';
+                end if;
+                if tgt_type not in ('existing_subject', 'proposed_subject') then
+                    raise exception 'invalid target_type: %', tgt_type using errcode = '23514';
+                end if;
+                if tgt_id is null or length(trim(tgt_id)) = 0 then
+                    raise exception 'target_subject_identity is required' using errcode = '23514';
+                end if;
+
+                content_hash := encode(sha256(convert_to(
+                    concat_ws(':', p_project_id, ch_type, tgt_type, tgt_id, coalesce(tgt_field, ''),
+                              coalesce(acc_val::text, ''), coalesce(prop_val::text, ''),
+                              p_source_family, p_source_revision, comp_rule),
+                    'UTF8'
+                )), 'hex');
+
+                select id into delta_id from proposed_deltas where content_sha256 = content_hash;
+                if delta_id is null then
+                    insert into proposed_deltas (
+                        project_id, group_id, content_sha256, change_type,
+                        target_type, target_subject_identity, target_field,
+                        accepted_value, proposed_value, source_family, source_revision,
+                        comparison_rule_version, accepted_baseline_revision
+                    ) values (
+                        p_project_id, v_group_id, content_hash, ch_type,
+                        tgt_type, tgt_id, tgt_field,
+                        acc_val, prop_val, p_source_family, p_source_revision,
+                        comp_rule, acc_base
+                    ) returning id into delta_id;
+                end if;
+                appended := array_append(appended, delta_id);
+            end loop;
+
+            return appended;
+        end; $$;
+"""
+
+
 def upgrade() -> None:
     """Create the append commands and take back the raw source-table writes."""
 
+    op.execute(PROPOSED_DELTA_SCHEMA)
     op.execute(SUPPORT_ASSESSMENT_SCHEMA)
     # A table created here carries no grants at all; the runtime
     # capabilities read the relation, and only the command writes it.
-    for table in SUPPORT_TABLES:
+    for table in SUPPORT_TABLES + DELTA_TABLES:
         op.execute(f"grant select on public.{table} to {RUNTIME_LOGINS}")
 
     op.execute(f"grant usage on schema public to {SOURCE_APPEND_ROLE}")
     for table in REFERENCED_TABLES:
         op.execute(f"grant select on public.{table} to {SOURCE_APPEND_ROLE}")
-    for table in SOURCE_TABLES + SUPPORT_TABLES:
+    for table in SOURCE_TABLES + SUPPORT_TABLES + DELTA_TABLES:
         op.execute(f"grant select, insert on public.{table} to {SOURCE_APPEND_ROLE}")
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
@@ -1003,6 +1247,7 @@ def upgrade() -> None:
         APPEND_EXTRACTED_PROPOSAL,
         APPEND_SOURCE_FACT_RECEIPT,
         APPEND_SUPPORT_ASSESSMENT,
+        APPEND_PROPOSED_DELTAS,
     ):
         op.execute(body)
     for name, signature in COMMANDS.items():
@@ -1017,7 +1262,7 @@ def upgrade() -> None:
             f"grant execute on function public.{name}{signature} to {RUNTIME_LOGINS}"
         )
 
-    for table in SOURCE_TABLES + SUPPORT_TABLES:
+    for table in SOURCE_TABLES + SUPPORT_TABLES + DELTA_TABLES:
         op.execute(
             f"revoke insert, update, delete, truncate on public.{table} "
             f"from {RUNTIME_LOGINS}"
@@ -1035,21 +1280,30 @@ def downgrade() -> None:
         op.execute(
             f"grant insert, update, delete on public.{table} to {RUNTIME_LOGINS}"
         )
-    for name, signature in COMMANDS.items():
-        op.execute(f"drop function public.{name}{signature}")
-    for table in SOURCE_TABLES + SUPPORT_TABLES:
+    for name in COMMANDS:
+        op.execute(f"drop function if exists public.{name}")
+    for table in SOURCE_TABLES:
         op.execute(
             f"revoke usage, select on sequence public.{table}_id_seq "
             f"from {SOURCE_APPEND_ROLE}"
         )
         op.execute(f"revoke select, insert on public.{table} from {SOURCE_APPEND_ROLE}")
     op.execute(
-        "revoke update (superseded_by) on public.support_assessments "
-        f"from {SOURCE_APPEND_ROLE}"
+        f"do $$ begin "
+        f"if exists (select 1 from pg_tables where schemaname = 'public' and tablename = 'support_assessments') then "
+        f"revoke update (superseded_by) on public.support_assessments from {SOURCE_APPEND_ROLE}; "
+        f"end if; end $$;"
     )
     for table in REFERENCED_TABLES:
         op.execute(f"revoke select on public.{table} from {SOURCE_APPEND_ROLE}")
     op.execute(f"revoke usage on schema public from {SOURCE_APPEND_ROLE}")
-    for table in SUPPORT_TABLES:
-        op.execute(f"revoke select on public.{table} from {RUNTIME_LOGINS}")
+    for table in SUPPORT_TABLES + DELTA_TABLES:
+        op.execute(
+            f"do $$ begin "
+            f"if exists (select 1 from pg_tables where schemaname = 'public' and tablename = '{table}') then "
+            f"revoke select on public.{table} from {RUNTIME_LOGINS}; "
+            f"end if; end $$;"
+        )
     op.execute(SUPPORT_ASSESSMENT_SCHEMA_DOWN)
+    op.execute(PROPOSED_DELTA_SCHEMA_DOWN)
+

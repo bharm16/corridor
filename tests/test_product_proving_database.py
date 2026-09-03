@@ -195,10 +195,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # evidence spine (#431-#435), the structured Fact satellites (#449), PDF
     # page Processing Failures (#440), the exact subject registry, attempts,
     # candidates, decisions, and rankings (#453), purpose-specific render
-    # (#442), and the Recorded Verbal Statement timing satellite (#451), and
-    # the Support Assessment relation (#530).
-    assert fingerprint.table_count == 153
-    assert fingerprint.sequence_count == 142
+    # (#442), and the Recorded Verbal Statement timing satellite (#451),
+    # the Support Assessment relation (#530), and the Proposed Delta
+    # relation (#518).
+    assert fingerprint.table_count == 158
+    assert fingerprint.sequence_count == 147
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
