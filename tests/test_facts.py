@@ -657,6 +657,7 @@ def test_applies_to_and_closure_satellites_round_trip_with_typed_foreign_keys(
         document_value_id=None,
         transformation="structured_reference_set_v1",
         recorded_by="extractor:sheet_native_v2",
+        content_sha256=sha256(b"satellite-applies-to").hexdigest(),
     )
     closure = Fact(
         project_id=project.id,
@@ -673,6 +674,7 @@ def test_applies_to_and_closure_satellites_round_trip_with_typed_foreign_keys(
         document_value_id=None,
         transformation="typed_closure_result_v1",
         recorded_by="human:closure-reviewer",
+        content_sha256=sha256(b"satellite-closure").hexdigest(),
     )
     session.add_all((applies_to, closure))
     session.flush()
@@ -1124,6 +1126,9 @@ def test_stationing_fact_type_requires_only_its_typed_text_value(
         document_value_id=None,
         transformation="trim_cell_text_v1",
         recorded_by="extractor:sheet_native_v2",
+        # The digest is supplied so the typed-value constraint is what
+        # refuses, not the Fact identity `not null` added by #457.
+        content_sha256=sha256(b"stationing-missing-text").hexdigest(),
     )
     session.add(fact)
 
