@@ -46,12 +46,14 @@ test-slow:
 # One balanced slice of the non-slow suite. CI runs the slices as a matrix so
 # each lands on its own runner: the gate is CPU-bound on a four-core runner,
 # so redistributing between workers on one machine cannot help and more
-# actual CPU can (#548).
+# actual CPU can (#548). `--durations` prints where a shard's time went, so a
+# slow CI run can be read from its own log.
 test-shard:
 	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
 	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
 	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD)); \
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" $$files; \
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
+	  --durations=25 --durations-min=1.0 $$files; \
 	status=$$?; \
 	if [ $$status -eq 5 ]; then \
 	  echo "shard $(SHARD) holds no matching tests"; exit 0; fi; \
@@ -63,7 +65,8 @@ test-slow-shard:
 	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
 	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
 	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD) --slow); \
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" $$files; \
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
+	  --durations=25 --durations-min=1.0 $$files; \
 	status=$$?; \
 	if [ $$status -eq 5 ]; then \
 	  echo "shard $(SHARD) holds no slow tests"; exit 0; fi; \

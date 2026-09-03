@@ -51,6 +51,12 @@ jobs:
           enable-cache: true
       - run: sudo apt-get update && sudo apt-get install -y tesseract-ocr
       - run: uv sync --locked
+      # `make boot` provisions this; CI never did, so the first page render
+      # inside a test built the worker's environment over the network, in
+      # four racing xdist workers, with its output captured and invisible.
+      # opencv-python-headless is locked only here, so it is never in the
+      # restored uv cache either (#548).
+      - run: uv sync --project workers/render --frozen
       - run: uv run alembic upgrade head
       - if: github.event_name == 'pull_request'
         run: make test-migrations
