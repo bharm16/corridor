@@ -2107,9 +2107,15 @@ def _observe_residual_candidates(
                 candidate_id=candidate.id,
                 actions={audit.MARK_STATEMENT_NOT_RELEVANT},
             )
-            after = action_receipt.after_json or {}
+            # Read through the one shape #604 gives every entry: this act
+            # now names its disposition, and older runs restated it. The
+            # proof is the same either way, and an unreadable reference
+            # fails it rather than passing on empty maps.
+            change = audit.recorded_change(session, action_receipt)
+            after = change.after
             if (
                 action_receipt.human_principal != start.principal
+                or not change.readable
                 or after.get("candidate_disposition_id") != disposition.id
                 or after.get("reason") != disposition.reason
                 or after.get("confirmed") is not True

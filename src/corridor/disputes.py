@@ -862,18 +862,19 @@ def settle_dispute(
     ):
         setattr(dependency, field_name, value)
 
+    # The settlement row already is the conclusion, with its field, its value
+    # and the claim it covers. Restating them here was a second copy free to
+    # drift from it, so the entry names the settlement and a reader derives
+    # the readable before/after from it (#604).
     audit.record(
         session,
         principal=settler,
         action=audit.SETTLE_DISPUTE,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency_id,
-        after={
-            "field_name": field_name,
-            "settled_value": value,
-            "covers_assertion_id": newest,
-            "dispute_settlement_id": settlement.id,
-        },
+        decided_by=audit.DecisionIdentity(
+            kind=audit.DISPUTE_SETTLEMENT, identity=settlement.id
+        ),
     )
     session.flush()
     _record_discrepancy_resolution_on_spine(

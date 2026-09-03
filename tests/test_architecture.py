@@ -915,3 +915,77 @@ def test_every_deduplicated_family_declares_its_identity_in_permanent_state():
             )
 
     assert findings == []
+
+
+def _audit_record_calls() -> tuple[tuple[str, ast.Call], ...]:
+    """Every `audit.record(...)` call in the source graph, with its module."""
+
+    calls = []
+    for path in _module_paths():
+        module = _module_name(path)
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            if (
+                isinstance(function, ast.Attribute)
+                and function.attr == "record"
+                and isinstance(function.value, ast.Name)
+                and function.value.id == "audit"
+            ):
+                calls.append((module, node))
+    return tuple(calls)
+
+
+def _named_audit_action(call: ast.Call) -> str | None:
+    """The `audit.<CONSTANT>` an `audit.record` call names as its action."""
+
+    for keyword in call.keywords:
+        if keyword.arg != "action":
+            continue
+        value = keyword.value
+        if (
+            isinstance(value, ast.Attribute)
+            and isinstance(value.value, ast.Name)
+            and value.value.id == "audit"
+        ):
+            return value.attr
+    return None
+
+
+def test_a_referenced_audit_action_is_never_written_as_a_field_map():
+    """An entry names the decision that produced it, or it copies it (#604).
+
+    `audit.REFERENCED_ACTIONS` is the list of acts whose readable before/after
+    is *derived* from the authoritative decision row. A writer that also
+    passes `before=` or `after=` for one of them puts a second copy of that
+    decision's own state into the trail, where it is free to disagree with it
+    and answerable to nothing — the defect this ticket removed. Historical
+    entries keep their field maps forever; this rule is about new writes.
+    """
+
+    from corridor import audit
+
+    referenced = {
+        name: value
+        for name, value in vars(audit).items()
+        if isinstance(value, str) and value in audit.REFERENCED_ACTIONS
+    }
+    findings = []
+    for module, call in _audit_record_calls():
+        action = _named_audit_action(call)
+        if action is None or action not in referenced:
+            continue
+        passed = {keyword.arg for keyword in call.keywords}
+        copied = sorted(passed & {"before", "after"})
+        if copied:
+            findings.append(
+                f"{module}:{call.lineno}: audit.{action} passes "
+                f"{', '.join(copied)}= instead of decided_by="
+            )
+        elif "decided_by" not in passed:
+            findings.append(
+                f"{module}:{call.lineno}: audit.{action} names no decision"
+            )
+
+    assert findings == []
