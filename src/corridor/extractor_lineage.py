@@ -38,6 +38,10 @@ _MATRIX_PROMPT_PATHS = (
 # list owns deterministic normalization, validation, mapping, and Candidate
 # construction.  Adding a semantic dependency here changes the digest without
 # pretending old receipts contained a fact they did not capture.
+# The deployed extractors that read a source deterministically and call no
+# model at all. They are the only ones a config may name without a model.
+NATIVE_EXTRACTORS = frozenset({"sheet", "baseline", "key_date_table"})
+
 _POSTPROCESSOR_SOURCES = {
     "matrix": (
         "src/corridor/extract_matrix.py",
@@ -102,6 +106,15 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/sheets.py",
         "src/corridor/source_segments.py",
         "src/corridor/vocabulary.py",
+        "src/corridor/materializer.py",
+        "src/corridor/models.py",
+    ),
+    # The Key Date table reader (#450). No model either: a schedule export's
+    # three declared columns arrive in coordination vocabulary, so nothing on
+    # this path chooses what a heading means.
+    "key_date_table": (
+        "src/corridor/key_date_table.py",
+        "src/corridor/source_segments.py",
         "src/corridor/materializer.py",
         "src/corridor/models.py",
     ),
@@ -243,6 +256,24 @@ def deployed_extractor_config(
             },
             request_controls={"provider": "native", "model_requests": 0},
         )
+    if extractor == "key_date_table":
+        from corridor import key_date_table
+
+        if client is not None:
+            raise ValueError("the Key Date table reader cannot have a model client")
+        return _deployed_config(
+            extractor=extractor,
+            prompt_version=key_date_table.READER_VERSION,
+            model=None,
+            schema_version=key_date_table.READER_VERSION,
+            prompt_bytes=b"Corridor Key Date table reader; no model prompt.\n",
+            schema={
+                "type": "key-date-table",
+                "schema_version": key_date_table.READER_VERSION,
+                "columns": list(key_date_table.DECLARED_COLUMNS),
+            },
+            request_controls={"provider": "native", "model_requests": 0},
+        )
     if extractor == "sheet":
         from corridor import extract_sheet
 
@@ -307,7 +338,7 @@ def _deployed_config(
     schema: Mapping[str, Any],
     request_controls: Mapping[str, Any],
 ) -> ExtractorConfig:
-    if extractor not in ("sheet", "baseline") and model is None:
+    if extractor not in NATIVE_EXTRACTORS and model is None:
         raise ValueError("a model-backed deployed extractor must name its model")
     return injected_extractor_config(
         extractor=extractor,
