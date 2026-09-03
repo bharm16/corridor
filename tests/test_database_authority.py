@@ -73,6 +73,12 @@ ACCEPTED_TABLES = (
     # The baseline-adoption receipt one project's operating mode is derived
     # from (#520): readable by the application, written only by the command.
     "project_baseline_adoptions",
+    # The adopted baseline itself (#509): the accepted data-baseline identity,
+    # source-row identity, and the output-template and field-mapping
+    # identities. Read by the application, written only by the command.
+    "project_baseline_sources",
+    "project_baseline_source_rows",
+    "project_baseline_formats",
 )
 LEGACY_ACCEPTED_TABLES = (
     "dependencies",
@@ -219,8 +225,12 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
     for command in (
         "record_human_fact_decision",
         "record_subject_alias_decision",
-        # Adopt Baseline is a bulk human command (#520, #509, ADR-0083).
+        # Adopt Baseline is a bulk human command (#520, #509, ADR-0083), and
+        # a later output-template or field-mapping registration is the same
+        # kind of attributable human act.
         "adopt_project_baseline",
+        "adopt_project_record_baseline",
+        "register_baseline_format",
     ):
         granted = admin.execute(
             text(

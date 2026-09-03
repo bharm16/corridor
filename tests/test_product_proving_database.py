@@ -198,9 +198,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # (#442), and the Recorded Verbal Statement timing satellite (#451),
     # the Support Assessment relation (#530), and the Proposed Delta
     # relation (#518), and the baseline-adoption receipt the operating mode
-    # is derived from (#520).
-    assert fingerprint.table_count == 159
-    assert fingerprint.sequence_count == 148
+    # is derived from (#520), and the adopted baseline itself (#509): the
+    # accepted data-baseline identity, source-row identity, and the
+    # separately registered output-template and field-mapping identities.
+    assert fingerprint.table_count == 162
+    assert fingerprint.sequence_count == 151
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
