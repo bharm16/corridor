@@ -6,6 +6,7 @@ amends:
   - ADR-0009
 amended_by:
   - ADR-0076
+  - ADR-0090
 ---
 
 # A Constraint Alert is a fact to filter, not a score to rank

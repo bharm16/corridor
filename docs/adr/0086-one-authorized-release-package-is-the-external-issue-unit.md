@@ -5,6 +5,8 @@ scope: current product
 amends:
   - ADR-0040
   - ADR-0053
+amended_by:
+  - ADR-0091
 migration: no ReleasePackage exists; preparation, the package receipt, and the authorization gate are unimplemented (#529, #533).
 ---
 

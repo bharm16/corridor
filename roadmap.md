@@ -1,6 +1,6 @@
 # Corridor roadmap
 
-**Effective 2026-09-02.** Replaces the Phase 1 roadmap, now historical at
+**Effective 2026-09-03.** Replaces the Phase 1 roadmap, now historical at
 [docs/history/phase-1-roadmap-2026-08.md](docs/history/phase-1-roadmap-2026-08.md).
 The product is [ADR-0075](docs/adr/0075-corridor-maintains-the-accepted-coordination-baseline-from-project-evidence.md)
 as corrected by [ADR-0083](docs/adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md);
@@ -8,7 +8,14 @@ the mechanism is [ADR-0076](docs/adr/0076-the-record-changes-by-captured-fact-ad
 with [ADR-0084](docs/adr/0084-deferral-is-scheduling-and-adopted-projects-read-the-spine-natively.md),
 [ADR-0085](docs/adr/0085-the-adopted-project-work-list-is-a-derived-reading-of-adaptive-review-packets.md),
 and [ADR-0086](docs/adr/0086-one-authorized-release-package-is-the-external-issue-unit.md)
-carrying the review and release shape. The competitive review of 2026-09-02
+carrying the review and release shape. Three decisions of 2026-09-03 amend
+that set: [ADR-0089](docs/adr/0089-a-delivery-is-persisted-once-whatever-transport-carried-it.md)
+persists one delivery family for pull and push alike,
+[ADR-0090](docs/adr/0090-the-accepted-record-has-its-own-alerts-not-the-legacy-task-systems.md)
+fixes which Constraint Alert rules the accepted record keeps, and
+[ADR-0091](docs/adr/0091-the-externally-issued-set-is-configured-per-project-and-only-the-ucm-is-mandatory.md)
+makes the externally issued artifact set per-project configuration with only
+the updated UCM mandatory. The competitive review of 2026-09-02
 ([docs/research/competitive-review-2026-09-02.md](docs/research/competitive-review-2026-09-02.md))
 positions Corridor as the reconciliation and weekly-close layer beside
 URMS, KURTS, UTrak, Delasoft, and document control, not a replacement for
@@ -18,7 +25,7 @@ The program issue is #459. The measurement contract is
 
 **Goal:** one paid vertical slice, measured with two design partners.
 
-> Import one customer UCM → adopt one exact baseline → observe one new source → produce one or more Proposed Deltas → resolve them → return the customer's updated UCM, change summary, chase list, and weekly report → measure net customer and Corridor operations time.
+> Import one customer UCM → adopt one exact baseline → observe one new source → produce one or more Proposed Deltas → resolve them → return the customer's updated UCM, plus whichever of the change summary, chase list and weekly report that project is configured to issue → measure net customer and Corridor operations time.
 
 ## Rules
 
@@ -65,11 +72,11 @@ this list without a recorded reason:
 | **Adopted-baseline operating mode** — no legacy path silently replaces an accepted value | #520, #509 |
 | **Adaptive review, packet resolution, and one linear workflow** — the coordinator can review and resolve real volume, and the week's work is one path | #518, #519, #494, #559, #526, #527, #528, #536, #537 |
 | **Accepted-authority follow-up** — chase work derives from accepted decisions, not free text | #425 |
-| **Complete customer release** — the configured artifact set of ADR-0086, sealed and authorized as one unit | #495, #534, #529, #533; the set itself is decided by #560 |
+| **Complete customer release** — the artifact set each project is configured to issue (ADR-0086 as amended by ADR-0091), sealed and authorized as one unit | #495 and #534 done; #596, #597, #529, #533 open |
 | **Live-data activation gates** — real customer data is admitted only behind them | #561, #564, #535 in that order, and the gates #535 owns |
 | **Measurement readiness** — instrumentation exists before the first measured week | #491, #558, #532 |
 
-Two consequences follow, and they are narrow on purpose:
+Three consequences follow, and they are narrow on purpose:
 
 - **#520 (adopted-baseline operating mode) is a hard pilot-entry safety
   requirement**, because a project whose legacy paths can still silently
@@ -86,13 +93,47 @@ Two consequences follow, and they are narrow on purpose:
   #535 is authoritative measured activation behind every gate. Pre-activation
   processing stays prohibited outside those two lanes. None of the three
   gates synthetic staging, development against fixtures, or parallel work.
-- **The release artifact set is ADR-0086's until #560 decides otherwise.**
-  #555 observes which artifacts each partner already issues; #560 records
-  whether the fixed four-artifact slice stays (and partners are selected for
-  it) or the UCM becomes mandatory with the rest a configured set. No ticket
-  or roadmap edit changes the set ahead of that decision and its successor
-  ADR. Corridor does not manufacture an artifact the partner did not issue
-  before adoption, whichever way it goes.
+- **The externally issued set is per-project configuration, and only the
+  updated UCM is mandatory.** #560 is decided and recorded as ADR-0091: the
+  change summary, chase list, weekly Coordination Report, and any sidecar are
+  issued when the project is configured to issue them, reflecting what that
+  partner already sends their own client. The set is fixed until an
+  attributable configuration change; the coordinator never assembles an issue
+  week by week, and a set change is a material change under the measurement
+  contract. Corridor does not manufacture an artifact the partner did not
+  issue before adoption, and cannot claim time saved on one. #555 still
+  determines each partner's actual configured set, templates, approval path,
+  and delivery destination.
+
+## Open human decisions
+
+The program map in #459 carries the same list, and these are the questions no
+agent can settle. Everything else on the board is buildable work.
+
+- **#428 — buyer, budget, sponsor, procurement, and pricing.** This is
+  evidence work, not a choice waiting to be made: interviews and a synthesis
+  in #486 decide whether there is a pilot to run and what may be claimed.
+- **#461 — PyMuPDF licensing.** The option is chosen: the commercial Artifex
+  licence, because PyMuPDF runs through ingest, page inventory, source
+  segmentation, geometry, verification, rendering, and the review surfaces,
+  and a hurried replacement would carry document-fidelity risk into the pilot.
+  What remains is **procurement** — written terms requested, then signed — so
+  the ticket closes on the signed licence, not on the choice. Until it is
+  held, no live customer PDF processing is enabled, and a first pilot may be
+  scoped to XLSX and other non-PDF sources; #606's later-UCM path is exactly
+  that shape. It gates #489 and #535.
+- **#601 — the nonproduction AWS account and GitHub deployment identity.**
+  Account creation, root MFA, a billing budget, and an OIDC role are acts only
+  the account owner can perform. #489 waits on it.
+- **#555 — each partner's actual configured issue set**, now that ADR-0091 has
+  fixed the architecture: which artifacts each partner already issues, their
+  templates, the approval path inside the partner's organization, and the
+  delivery destination.
+
+**Closed by decision, and no longer open questions:** #503 identity and
+authorization (settled, with #531 carrying the pilot half), #557
+model-provider processing posture (the approved posture is recorded), and
+#560 the release artifact contract (recorded as ADR-0091).
 
 ## Phase 0 — correct the constitution
 
@@ -109,6 +150,10 @@ Complete.
    late contract review's three corrections.
 4. #524 and #525 recorded the review and release decisions as ADR-0085 and
    ADR-0086.
+5. ADR-0087 and ADR-0088 fixed the migration window and the feedback budget as
+   enforced numbers and settled that the required gate runs the whole suite in
+   parallel. ADR-0089, ADR-0090, and ADR-0091 recorded the 2026-09-03
+   decisions on #599, #596, and #560.
 
 ## Phase 1 — secure the design partner and deploy the safe shell
 
@@ -119,33 +164,47 @@ Complete.
    prototype-tests real weekly closes before the production screens lock;
    #556 recorded the primary-source incumbent evidence in
    [docs/research/adr-0075-incumbent-evidence-2026-09-02.md](docs/research/adr-0075-incumbent-evidence-2026-09-02.md),
-   so #486's synthesis in Phase 3 waits only on the interview findings. #560 decides
-   the release artifact contract from #555's observations.
-2. #492 least-privileged database write authority — the first substantive code
-   PR. Separate deployment credentials, NOLOGIN function owners, no PUBLIC
-   execute, command-only appends; the database itself refuses application-role
-   writes to accepted authority.
-3. #487 storage interface and object storage; #491 (#491A) operational
-   telemetry; then #489 synthetic environment foundation. No customer data,
-   so #490 staged untrusted-intake hardening does not gate #489; it gates
-   #561, the first lane that receives partner bytes. #558 lands the analytics
-   event contract here so every later primitive emits its events as it ships.
-4. #496 PullConnector and normalized SourceEnvelope; #511 project-bound push
-   intake, built only for channels the partner needs.
-5. #488 pilot-critical Due Work handlers: connector polling, delta generation,
-   report preparation, retention sweep.
-6. Live-activation gates, all owned by #535: #461 PyMuPDF licensing, #522
-   customer authorization and data handling, #557 model-provider posture,
-   #503 → #531 identity, authorization, and deprovisioning, #514
-   customer-environment disposition.
+   so #486's synthesis in Phase 3 waits only on the interview findings. #560
+   is decided and recorded as ADR-0091; #555 now fills in each partner's
+   configured set rather than choosing the contract.
+2. #492 least-privileged database write authority — **done**. Separate
+   deployment credentials, NOLOGIN function owners, no PUBLIC execute,
+   command-only appends; the database itself refuses application-role writes
+   to accepted authority.
+3. #487 storage interface and object storage and #491 (#491A) operational
+   telemetry are **done**, and #558 landed the analytics event contract so
+   every later primitive emits its events as it ships. #490 staged
+   untrusted-intake hardening is **done**; it gates #561, the first lane that
+   receives partner bytes, and never gated #489. #489 synthetic environment
+   foundation is open and now waits on **#601**, the human ticket that
+   provisions the dedicated nonproduction AWS account, the billing budget and
+   alarms, the recorded region, and the GitHub OIDC deployment identity —
+   agents cannot create those.
+4. #496 PullConnector and normalized SourceEnvelope and #511 project-bound
+   push intake are **done** for the channels the partner needs. **#599** now
+   persists one `SourceDelivery` family for both transports under ADR-0089,
+   moves the connector cursor off the Due Work receipt into its own
+   append-only checkpoint relation, and records refused and quarantined
+   deliveries instead of losing them. It blocks #535 only where a pull
+   connector is selected; a manual-upload or push-only pilot is unaffected.
+5. #488 pilot-critical Due Work handlers — **done**: connector polling, delta
+   generation, report preparation, retention sweep. Its cursor-on-the-receipt
+   design is superseded by ADR-0089 and replaced in #599.
+6. Live-activation gates, all owned by #535: **#461** PyMuPDF commercial
+   licence procurement, #522 customer authorization and data handling, #514
+   customer-environment disposition, and #531 pilot identity, authorization,
+   and deprovisioning. #503 and #557 are **closed by decision** — the identity
+   scope is settled with #531 carrying the pilot half, and the approved
+   model-provider processing posture is recorded.
 7. #561 compatibility intake on the partner's real workbook, behind #522's
    customer-authorization half, #487, and #490 only. It does not wait for
    #489 or the accepted-record work.
 
 **Exit:** #489 synthetic environment with one customer database and one
-restored backup; intake hardened; #535's gates identified and tracked; one
-partner's connector registered; #561's compatibility report recorded for the
-partner's workbook family.
+restored backup, on the account #601 provisions; intake hardened; #535's gates
+identified and tracked; one partner's connector registered and its deliveries
+persisted (#599); #561's compatibility report recorded for the partner's
+workbook family.
 
 ## Phase 2 — build the paid vertical slice on the spine
 
@@ -153,31 +212,47 @@ partner's workbook family.
 shipped. Non-authoritative #509 parsing, preview, and fixtures may proceed
 earlier.
 
-1. #530 Support Assessment relation (ADR-0082), on #492.
-2. #446 replayable Source Fact materialization — a model literal never becomes
-   a Source Fact.
-3. #518 (#510A) Proposed Delta identity, groups, and lifecycle.
-4. #520 (#510C) adopted-baseline operating mode and database refusal, **before
-   #509**.
-5. #509 Adopt Baseline, invoking the #520 transition atomically.
-6. #519 (#510B) typed Resolve Delta commands. Accept, edit, and reject are
-   semantic; defer is Work List scheduling (ADR-0084).
-7. #494 shared query and exactly-once partition shell (no interim
-   one-card-per-delta inbox); #526 (#510D) atomic packet resolution; #559
-   accessible packet and workflow primitives; then #527 source-revision
-   packet as the first review screen and #528 cross-source coordination
-   packet (ADR-0085). External-system identifiers deep-link read-only from
-   #509, #527, and #528; a map waits for partner data.
+1. #530 Support Assessment relation (ADR-0082), on #492 — **done**.
+2. #446 replayable Source Fact materialization — **done**; a model literal
+   never becomes a Source Fact.
+3. #518 (#510A) Proposed Delta identity, groups, and lifecycle — **done**.
+4. #520 (#510C) adopted-baseline operating mode and database refusal —
+   **done**, and it landed before #509 as required.
+5. #509 Adopt Baseline — **done**, invoking the #520 transition atomically.
+6. #519 (#510B) typed Resolve Delta commands — **done**. Accept, edit, and
+   reject are semantic; defer is Work List scheduling (ADR-0084). #510 closes
+   with #518, #519, #520, and #526.
+7. #494 shared query and exactly-once partition shell, #526 (#510D) atomic
+   packet resolution, and #559 accessible packet and workflow primitives are
+   **done**; #527 source-revision packet as the first review screen and #528
+   cross-source coordination packet remain open (ADR-0085). External-system
+   identifiers deep-link read-only from #509, #527, and #528; a map waits for
+   partner data.
 8. #425 accepted-authority follow-up and chase list, addressed to a resolved
    contact where #562 supplies one and to the responsible role otherwise.
-   #562 is parallel unless the partner requires an exact address.
+   #562 is parallel unless the partner requires an exact address. Under
+   ADR-0090 #425 also owns the two superseded action-date alerts and the
+   source-backed no-response rule that replaces `STALE`; under ADR-0091 the
+   follow-up bundles and chase view are core internal behaviour whether or
+   not the chase list is externally issued.
 9. #564 shadow processing on the partner's captured sources once #561, #489,
    #509, #518, #446, and the partner's ingress and source class exist; it
-   feeds #499 with real inputs before authoritative activation.
-10. #495 UCM export, #534 change summary and weekly report, #529 release
-    candidate, #533 release authorization — all from one frozen revision
-    (ADR-0086). Delivery to the partner's document system is #563, separate
-    from authorization and partner-triggered.
+   feeds #499 with real inputs before authoritative activation. **#606** is
+   its first and least assumption-heavy source path: capture a later UCM
+   revision as Source Facts and Proposed Deltas against the adopted baseline,
+   with no model, no Microsoft 365, and no partner mailbox.
+10. #495 UCM export and #534 change summary and weekly report are **done**,
+    both from one frozen revision (ADR-0086). Three follow-ons remain:
+    **#597** refuses a template whose mapped column silently splits or
+    combines a material value, which no digest over the template's bytes can
+    catch; **#596** completes the accepted record's own check set under
+    ADR-0090, porting `MISSING_EVIDENCE` and `SUPERSEDED_CITATION`, dropping
+    the seven rules that ADR-0090 supersedes or retires, and advancing the
+    declared set to `accepted_record_checks_v2`; and #529 release candidate
+    and #533 release authorization seal and authorize whichever artifacts the
+    project is configured to issue (ADR-0091). Delivery to the partner's
+    document system is #563, separate from authorization and
+    partner-triggered.
 11. #536 linear project workflow; #537 derived weekly portfolio reading,
     required before the measured multi-project cohort, not before #535.
 12. #532 (#491B) product and pilot measurement, consuming the events each
@@ -190,9 +265,18 @@ earlier.
 **Exit:** the slice runs end to end on one partner project with the partner's
 own workbook and one connected source, and the adopted project runs in
 baseline/delta operating mode with no legacy automatic accepted-value update.
+The spine lifecycle itself — #509, #518, #519, #520, #526 — is already built;
+what remains is the coordinator-facing surface, the release package, and the
+first real source path.
 
-Recorded Verbal Statements are outside the gated pilot source population until
-#512 ships; they remain available as legacy-compatible context.
+Recorded Verbal Statements sat outside the gated pilot source population
+"until their spine-native source origin (#512) ships". **#512 has shipped**, so
+that condition is met and the exclusion no longer rests on an unbuilt
+dependency. Whether verbals enter a given partner's gated source population is
+now a per-partner scoping question for #555 and
+[docs/pilot-success-criteria.md](docs/pilot-success-criteria.md), whose source-class
+row still carries the old conditional wording. ADR-0084 keeps #512 mandatory
+before full cutover (ADR-0081 stages 4 through 6) either way.
 
 ## Phase 3 — run the measured pilot and reach the checkpoint
 
@@ -213,12 +297,25 @@ checkpoint outcome.
 **Parallel development permitted.** This is migration work on the legacy
 tables; it neither blocks the pilot nor is measured by it.
 
-1. #512 spine-native verbal and source origin (stage 1).
+1. #512 spine-native verbal and source origin (stage 1) — **done**. The
+   legacy statement key survives only as a compatibility mapping.
 2. #513 historical backfill preserving original authorship (stage 2).
-3. #457 permanent-state dedup.
+3. #457 permanent-state dedup — **done** on its write-side half: a duplicate
+   is now unrepresentable in PostgreSQL across the five permanent-state
+   families. **#598** carries the other half, referencing permanent state by
+   identity instead of copying it, through four children: **#602** binds
+   Report Runs and scheduled publications to a Project Record revision,
+   **#603** computes report diffing from revision references and proves it
+   semantically equivalent to the snapshot baseline, **#604** references
+   decision identities from audit instead of copying before/after field maps,
+   and **#605** stores extractor configuration once by digest and cites
+   Source Segments for evidence. ADR-0089 adds the delivery family that a
+   later constraint of the same kind applies to.
 4. Coverage-aware semantic-equivalence gate and reader switch (stages 3, 4).
 5. #458 writer switch, bounded shadow comparison, rollback decision, legacy
-   retirement (stages 5, 6).
+   retirement (stages 5, 6). ADR-0090 keeps the released legacy ruleset
+   computing all twelve Constraint Alert rules for legacy projects until this
+   completes stage 6.
 
 **Exit:** ADR-0074 marked superseded by ADR-0081.
 
@@ -229,7 +326,11 @@ pilot. It may run before, during, or after the measurement window, subject
 only to the change-control rule in the measurement contract when it touches a
 cohort surface.
 
-- **Reliability and performance** work anywhere in the pipeline.
+- **Reliability and performance** work anywhere in the pipeline, including
+  **#595**, which brings the required pull-request gate's median under
+  ADR-0087's three minutes without deselecting a test (ADR-0088). The p90 half
+  is met; the remaining 28 seconds are per-job setup and the acceptance
+  suite.
 - **Additional connectors** beyond the partner's own: #497 Microsoft 365
   SharePoint, OneDrive, and shared project mailbox.
 - **Partner-triggered, `needs-triage` until named:** #562 project contact
@@ -241,15 +342,20 @@ cohort surface.
 - **Accessibility** work on any surface.
 - **Deployment and observability** beyond #491A's pilot minimum.
 - **Backup, restore, and recovery** hardening.
-- **Migration** — all of Phase 4 (#512, #513, #457, #458).
-- **Optional output formats** beyond the four released artifacts, where a
-  customer configures them (ADR-0086 keeps participation configurable).
+- **Migration** — all of Phase 4. #512 and #457 are done; #513, #598 with its
+  children #602-#605, and #458 remain.
+- **Optional output formats** beyond the artifacts a project is configured to
+  issue (ADR-0086 as amended by ADR-0091 keeps participation configurable).
 - **Deeper Record views** behind the Work List (ADR-0085 keeps the full
   Project Record one step away).
 - **Future-feature prototypes behind boundaries** — flags, branches, or
   non-authoritative environments, provided no adopted project's accepted
   record is reachable.
-- #493 Source Passage Check presentation and locator validation (ADR-0082).
+- #493 Source Passage Check presentation and locator validation (ADR-0082) —
+  **done**; **#600** replaces its placeholder Passed / Failed / Not run
+  wording with "Found at cited location", "Not found at cited location", and
+  "No cited location recorded". Presentation only: no stored identifier,
+  authority rule, or lifecycle behaviour changes, so it needs no successor ADR.
 
 ## Pilot-informed: build behind a boundary, enable on evidence
 
@@ -262,13 +368,16 @@ their broad enablement uses pilot evidence:
 
 - the universal documentation-readiness system (ADR-0052, ADR-0056, ADR-0060);
 - the generalized task-management surface (ADR-0035, as amended by ADR-0085
-  for adopted projects);
+  for adopted projects; ADR-0090 retires the alerts that demanded an owner and
+  a task for every Utility Conflict, and Corridor does not recreate the legacy
+  task system);
 - phone and offline functionality;
 - broad notification and escalation machinery;
 - additional automatic Record Inclusion classes;
 - global content-inferred email routing;
 - new legacy-table capabilities (ADR-0081);
-- report formats beyond the customer's UCM and weekly artifact;
+- report formats beyond the customer's UCM and that project's configured
+  issue set;
 - the optional Statement Review Assistant display program;
 - the multi-engine PDF extraction platform; and
 - record-generated coordination paperwork.
@@ -282,8 +391,9 @@ connector are **not** in this list — ADR-0083 puts them in the slice.
 Needed only before a second cohort or general availability, and tracked when
 the checkpoint says to proceed:
 
-- #503's enterprise half — company single sign-on, org administration, and
-  role management beyond the pilot's identity needs (#531 covers the pilot).
+- The enterprise half of the identity decision recorded in #503 — company
+  single sign-on, org administration, and role management beyond the pilot's
+  identity needs (#531 covers the pilot).
 - Capacity and multi-tenant performance beyond two partners.
 - A formal security review of the customer-facing surface.
 - Connector breadth beyond the partners' own channels.
