@@ -19,7 +19,9 @@ What was missing is the vocabulary for the check's **outcome**, which #493 must 
 
 Pass/fail is ordinary vocabulary for a control point on a construction quality-control checklist, but it is a checklist convention rather than a defined term in either agency source, and neither source is about documentary citation checking. **There is no industry counterpart to adopt** (procedure step 6).
 
-## 3. Proposal
+## 3. Proposal, not accepted
+
+> The maintainer rejected these three words on 2026-09-03; the approved labels and the reasons are in [section 5](#5-open-item-for-the-maintainer-settled-2026-09-03). This section is kept as the record of what was proposed.
 
 Plain-language product wording, matching the words #493 itself uses for the three states, applied at the presentation boundary only:
 
@@ -39,6 +41,25 @@ Plain-language product wording, matching the words #493 itself uses for the thre
 - "Verified" leaves customer-facing displays except where it names the object ("quotation verified on page 4"). The column `evidence_links.verified` keeps its name for [ADR-0048](../adr/0048-complete-glossary-adoption-preserves-record-and-source-identity.md) compatibility as the projection `locator_validation_status == valid`; its removal is scheduled under #458.
 - A passed check is not Documentation Review, physical inspection, Completion Reported, or Contract Acceptance.
 
-## 5. Open item for the maintainer
+## 5. Open item for the maintainer, settled 2026-09-03
 
-Procedure step 6 asks for explicit user agreement where the sources give no counterpart. The three words below are the ones #493's own acceptance criteria use, so they are recorded as the product wording; a maintainer who wants different customer words should say so before the labels reach a customer artifact.
+Procedure step 6 asks for explicit user agreement where the sources give no counterpart. The three words in section 3 are the ones #493's own acceptance criteria use, so they were recorded as the product wording pending a maintainer who wanted different customer words.
+
+**The maintainer approved different words on 2026-09-03** ([#600](https://github.com/bharm16/corridor/issues/600)). Section 3's proposal is rejected and these are the customer labels:
+
+| Stored identifier (unchanged) | Approved customer label |
+|---|---|
+| `valid` | **Found at cited location** |
+| `invalid` | **Not found at cited location** |
+| `not_checked` | **No cited location recorded** |
+
+Full presentation: **Source Passage Check — Found at cited location**.
+
+Why the placeholder was rejected:
+
+- **Passed and Failed read as a verdict.** Each implies that the evidence supports the proposition, or that the value is correct, or that some underlying work passed an inspection. The check means none of those things: it dereferences a typed locator and reports whether the stored passage was there ([ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)). The approved words name a place and say whether the passage was at it, so there is no verdict left to misread.
+- **"Not run" misdescribes the mechanism.** The status is computed by replaying the locator at read time, not written by a job that could be skipped, so `not_checked` generally means there was no locator to evaluate — which is what "No cited location recorded" says and "Not run" did not.
+
+Section 2's finding stands: the primary sources still supply no counterpart, so these remain scoped plain-language product wording carrying explicit maintainer approval, not an adopted industry term. The concrete example in section 3 reads the same way with the approved words — the letter's passage is **Found at cited location** whether it supports the date, contradicts it, or merely mentions it.
+
+The correction is presentation only. The stored identifiers `valid`, `invalid`, and `not_checked` are unchanged, the check stays mechanical and replayable, and a found passage is still not a Support Assessment. No successor ADR is written: the procedure permits a wording correction once the missing-counterpart decision is explicitly approved, provided it alters neither authority nor lifecycle, and this alters neither. [ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md) and #493 stand as they are.

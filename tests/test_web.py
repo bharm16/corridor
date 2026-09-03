@@ -2421,8 +2421,8 @@ def test_a_constraint_page_names_the_source_passage_check_and_its_state(
 
     assert page.status_code == 200
     assert "Source passage check" in page.text
-    assert ">Passed</span>" in page.text
-    assert ">Failed</span>" in page.text
+    assert ">Found at cited location</span>" in page.text
+    assert ">Not found at cited location</span>" in page.text
     # The retired word is gone from the page, and so are the yes/no cells
     # that used to stand in for the check's state.
     assert "unverified" not in page.text
@@ -2463,7 +2463,7 @@ def test_documentation_review_labels_preserve_source_wording_and_current_mark(
     assert before.status_code == 200
     assert "Documents required for this condition" in before.text
     assert "Source passage check" in before.text
-    assert ">Passed</span>" in before.text
+    assert ">Found at cited location</span>" in before.text
     assert "Not confirmed" in before.text
     assert "Mark documents sufficient" in before.text
 
