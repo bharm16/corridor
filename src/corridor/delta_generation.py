@@ -120,7 +120,7 @@ def execute_delta_generation(
 
     with session_factory() as working:
         with working.begin():
-            accepted = _accepted_values(working, project_id)
+            accepted = accepted_values(working, project_id)
             accepted_subjects = {subject for subject, _ in accepted}
             baseline_revision = working.scalar(
                 select(func.max(ProjectRecordRevision.id)).where(
@@ -161,7 +161,7 @@ def execute_delta_generation(
                         )
                         continue
                     for fact in subject_facts:
-                        proposed_value = _fact_value(fact)
+                        proposed_value = fact_value(fact)
                         key = (subject_key, fact.fact_type)
                         if key in accepted:
                             if accepted[key] == proposed_value:
@@ -180,7 +180,7 @@ def execute_delta_generation(
                                 accepted_value=accepted.get(key),
                                 proposed_value=proposed_value,
                                 comparison_rule_version=COMPARISON_RULE_VERSION,
-                                accepted_baseline_revision=_revision_label(
+                                accepted_baseline_revision=revision_label(
                                     baseline_revision
                                 ),
                             )
@@ -229,7 +229,7 @@ def execute_delta_generation(
             else "delta_generation_attention_required"
         ),
         "operating_mode": operating_mode,
-        "accepted_baseline_revision": _revision_label(baseline_revision) or "",
+        "accepted_baseline_revision": revision_label(baseline_revision) or "",
         "facts_considered": considered,
         "facts_agreed": agreed,
         "groups_created": groups,
@@ -239,7 +239,7 @@ def execute_delta_generation(
     }
 
 
-def _accepted_values(session: Session, project_id: int) -> dict[tuple[str, str], Any]:
+def accepted_values(session: Session, project_id: int) -> dict[tuple[str, str], Any]:
     """The accepted record as one comparable scalar per subject and field.
 
     The projection is read through ``current_project_record``, the view
@@ -299,9 +299,9 @@ def _proposed_subject(
         target=ProposedSubjectTarget(
             subject_identity=subject_key, proposed_fields=fields
         ),
-        proposed_value={fact.fact_type: _fact_value(fact) for fact in facts},
+        proposed_value={fact.fact_type: fact_value(fact) for fact in facts},
         comparison_rule_version=COMPARISON_RULE_VERSION,
-        accepted_baseline_revision=_revision_label(baseline_revision),
+        accepted_baseline_revision=revision_label(baseline_revision),
     )
 
 
@@ -319,7 +319,7 @@ def _by_subject(facts: list[Fact]) -> list[tuple[str, list[Fact]]]:
     return sorted(grouped.items())
 
 
-def _fact_value(fact: Fact) -> Any:
+def fact_value(fact: Fact) -> Any:
     return _typed_value(
         fact.text_value,
         fact.date_value,
@@ -342,7 +342,7 @@ def _typed_value(
     return None
 
 
-def _revision_label(revision_id: int | None) -> str | None:
+def revision_label(revision_id: int | None) -> str | None:
     return f"revision:{revision_id}" if revision_id is not None else None
 
 

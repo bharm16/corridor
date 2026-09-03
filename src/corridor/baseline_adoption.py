@@ -328,7 +328,7 @@ def preview_baseline_adoption(
     if already is None:
         _refuse_nonempty_project_record(session, project)
 
-    rows = _assign_record_subjects(operations.rows)
+    rows = assign_record_subjects(operations.rows)
     questions = _coordinator_questions(
         operations, rows, customer=customer, source_identity=source_identity
     )
@@ -863,8 +863,12 @@ def _exclusion_detail(row: BaselineRow) -> str:
     )
 
 
-def _assign_record_subjects(rows: tuple[BaselineRow, ...]) -> tuple[PreviewRow, ...]:
+def assign_record_subjects(rows: tuple[BaselineRow, ...]) -> tuple[PreviewRow, ...]:
     """Give each adopted row its own Project Record subject identity.
+
+    Public because a later revision of the same workbook resolves its rows by
+    the same rule (`later_revision`, #606); two identity rules over one file
+    would let a value be adopted under one reading and compared under another.
 
     Source-row identity and record-subject identity stay distinct, and a
     repeated business identity never collapses two rows into one subject: the
