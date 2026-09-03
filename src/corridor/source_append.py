@@ -6,7 +6,10 @@ Each append is a ``SECURITY DEFINER`` command owned by ``corridor_source_append`
 that enforces project scope on every typed reference, the digest of every
 exact text it stores or cites, locator identity, and idempotent replay.  This
 module is the one place the application calls those commands; the appenders in
-``facts.py`` and ``source_segments.py`` shape the values and call here.
+``facts.py`` and ``source_segments.py`` shape the values and call here.  A Fact
+value arrives only as a ``MaterializedValue`` sealed by ``materializer.py``
+from a Source Segment's exact text (#446): this command has no parameter that
+takes a value literal.
 
 An ORM write to any of those tables, from any module, is refused by the
 database; the boundary is not a convention this module asks callers to keep
@@ -25,6 +28,7 @@ from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Session
 
+from corridor.materializer import MaterializedValue
 from corridor.models import (
     ExtractedProposal,
     Fact,
@@ -115,23 +119,19 @@ def append_fact(
     project_id: int,
     document_id: int | None,
     extraction_run_id: int | None,
-    fact_type: str,
     subject_kind: str,
     subject_key: str,
-    transformation: str,
     recorded_by: str,
     content_sha256: str,
-    sources: Sequence[tuple[str, int]],
-    text_value: str | None = None,
-    date_value: date | None = None,
-    external_org_value_id: int | None = None,
-    document_value_id: int | None = None,
+    value: MaterializedValue,
     applies_to: Sequence[int] | None = None,
     closure: ClosureValues | None = None,
     timings: Sequence[TimingValues] | None = None,
 ) -> Fact:
-    """Append one Fact with its role-tagged sources and typed satellites."""
+    """Append one materialized Fact with its role-tagged sources and typed satellites."""
 
+    if not isinstance(value, MaterializedValue):
+        raise TypeError("a Source Fact value must be materialized from a Source Segment")
     satellites: dict[str, object] = {}
     if applies_to is not None:
         satellites["applies_to"] = list(applies_to)
@@ -160,20 +160,20 @@ def append_fact(
                 project_id,
                 document_id,
                 extraction_run_id,
-                fact_type,
+                value.fact_type,
                 subject_kind,
                 subject_key,
-                text_value,
-                date_value,
-                external_org_value_id,
-                document_value_id,
-                transformation,
+                value.text_value,
+                value.date_value,
+                value.external_org_value_id,
+                value.document_value_id,
+                value.transformation,
                 recorded_by,
                 content_sha256,
                 _jsonb(
                     [
                         {"role": role, "source_segment_id": segment_id, "ordinal": 1}
-                        for role, segment_id in sources
+                        for role, segment_id in value.source_links
                     ]
                 ),
                 _jsonb(satellites),

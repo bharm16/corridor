@@ -150,7 +150,7 @@ def prepared(session, tmp_path):
     )
 
 
-def _output(prepared, *, value=STATEMENT, read_segment_ids=None, subject_id=None):
+def _output(prepared, *, read_segment_ids=None, subject_id=None):
     segment_id = prepared.statement_segment.id
     return {
         "read_segment_ids": list(
@@ -161,7 +161,6 @@ def _output(prepared, *, value=STATEMENT, read_segment_ids=None, subject_id=None
         "proposals": [
             {
                 "fact_type": "statement_wording",
-                "value": value,
                 "sources": [
                     {"segment_id": segment_id, "role": "value_source"},
                     {
@@ -263,14 +262,18 @@ def test_runtime_reports_omissions_and_keeps_prompt_injection_as_data(
 @pytest.mark.parametrize(
     ("overrides", "message"),
     (
-        ({"value": "A paraphrase."}, "does not replay"),
+        ({"value": "A paraphrase."}, "violates the strict contract"),
         ({"subject_id": 9_999_999}, "unknown subject candidate"),
     ),
 )
 def test_runtime_factual_validation_fails_before_any_write(
     session, prepared, overrides, message
 ):
-    client = StubClient(_output(prepared, **overrides))
+    output = _output(prepared, subject_id=overrides.get("subject_id"))
+    if "value" in overrides:
+        # The schema has no value field: a model literal is an undeclared key.
+        output["proposals"][0]["value"] = overrides["value"]
+    client = StubClient(output)
 
     with pytest.raises(TypedOutputValidationError, match=message):
         interpret_prose_document(

@@ -117,6 +117,141 @@ def test_source_module_dependencies_are_acyclic():
     assert cycles == []
 
 
+# The modules between a Source Segment and a Source Fact value, and the
+# record-decision boundary above them (#446). None may reach a model client,
+# directly or through anything it imports.
+FACT_PATH_MODULES = (
+    "materializer",
+    "facts",
+    "source_append",
+    "source_segments",
+    "fact_types",
+    "fact_decisions",
+)
+MODEL_CLIENT_MODULES = frozenset({"llm"})
+MODEL_CLIENT_PACKAGES = frozenset({"httpx", "openai"})
+
+
+def _internal_dependencies() -> dict[str, set[str]]:
+    paths = {_module_name(path): path for path in _module_paths()}
+    dependencies: dict[str, set[str]] = {name: set() for name in paths}
+    for name, path in paths.items():
+        for node in ast.walk(_tree(path)):
+            if isinstance(node, ast.ImportFrom) and node.module:
+                if node.module.startswith("corridor."):
+                    dependency = node.module.removeprefix("corridor.")
+                    if dependency in paths:
+                        dependencies[name].add(dependency)
+                elif node.module.split(".")[0] in MODEL_CLIENT_PACKAGES:
+                    dependencies[name].add(f"<{node.module.split('.')[0]}>")
+            elif isinstance(node, ast.Import):
+                for imported in node.names:
+                    if imported.name.startswith("corridor."):
+                        dependency = imported.name.removeprefix("corridor.")
+                        if dependency in paths:
+                            dependencies[name].add(dependency)
+                    elif imported.name.split(".")[0] in MODEL_CLIENT_PACKAGES:
+                        dependencies[name].add(f"<{imported.name.split('.')[0]}>")
+    return dependencies
+
+
+def test_fact_path_modules_cannot_reach_a_model_client():
+    """A model chooses a segment; it never supplies a value (#446).
+
+    The materializer, the fact appenders, the append commands, the segment
+    reader, the contracts, and the record-decision commands must not be able
+    to call a model even by accident, so the whole import closure of each is
+    checked, not only its own import lines.
+    """
+    dependencies = _internal_dependencies()
+    reached: dict[str, list[str]] = {}
+    for module in FACT_PATH_MODULES:
+        assert module in dependencies, f"{module} is not a source module"
+        closure: set[str] = set()
+        frontier = [module]
+        while frontier:
+            current = frontier.pop()
+            for dependency in dependencies.get(current, ()):
+                if dependency not in closure:
+                    closure.add(dependency)
+                    frontier.append(dependency)
+        offending = sorted(
+            name
+            for name in closure
+            if name in MODEL_CLIENT_MODULES or name.startswith("<")
+        )
+        if offending:
+            reached[module] = offending
+
+    assert reached == {}
+
+
+def test_only_the_materializer_constructs_a_materialized_value():
+    """The type boundary, statically: ``MaterializedValue(`` appears in one module."""
+    constructors = []
+    for path in _module_paths():
+        if path.name == "materializer.py":
+            continue
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "MaterializedValue"
+            ):
+                constructors.append(f"{path.name}:{node.lineno}")
+
+    assert constructors == []
+
+
+def test_model_output_schemas_carry_references_not_values():
+    """A strict model output holds ids, enumerations, and dispositions only (#446).
+
+    Free text and unbounded numbers are values; a schema that admitted one
+    would give a model literal a field to land in before the materializer.
+    """
+    import importlib
+    import typing
+
+    from corridor.typed_output import StrictOutputModel
+
+    for path in _module_paths():
+        if "StrictOutputModel" in path.read_text(encoding="utf-8"):
+            importlib.import_module(f"corridor.{_module_name(path)}")
+
+    def subclasses(model_type):
+        for child in model_type.__subclasses__():
+            yield child
+            yield from subclasses(child)
+
+    def admits_only_references(annotation) -> bool:
+        origin = typing.get_origin(annotation)
+        if origin is typing.Literal:
+            return True
+        if annotation in (int, bool):
+            return True
+        if isinstance(annotation, type) and issubclass(annotation, StrictOutputModel):
+            return True
+        if origin in (tuple, list, frozenset, set, typing.Union) or (
+            origin is not None and origin.__name__ == "UnionType"
+        ):
+            return all(
+                argument is Ellipsis or argument is type(None)
+                or admits_only_references(argument)
+                for argument in typing.get_args(annotation)
+            )
+        return False
+
+    values = []
+    for model_type in subclasses(StrictOutputModel):
+        if not model_type.__module__.startswith("corridor."):
+            continue
+        for name, info in model_type.model_fields.items():
+            if not admits_only_references(info.annotation):
+                values.append(f"{model_type.__name__}.{name}: {info.annotation}")
+
+    assert values == []
+
+
 def test_context_map_names_both_bounded_context_glossaries():
     context_map = (REPO_ROOT / "CONTEXT-MAP.md").read_text()
 
