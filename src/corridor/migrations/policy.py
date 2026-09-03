@@ -34,14 +34,15 @@ COMPATIBILITY_MARKER = None
 SUPPORTED_FROM_REVISION = SCHEMA_BUILDER
 
 # The single head the executable graph must have.
-CURRENT_HEAD = "a1c4e7b0d2f3"
+CURRENT_HEAD = "b2d5f8a1c4e7"
 
 # One supported transition after SUPPORTED_FROM_REVISION. This is the window
 # ADR-0065 decided and the shape the graph must return to.
 UNRELEASED_EDGE_TARGET = 1
 
-# What the graph carries today: nothing beyond the builder, after the
-# twenty-one unreleased transitions were consolidated into it (#548). It may
-# rise to UNRELEASED_EDGE_TARGET and no further. A second migration-bearing
-# change folds into the first one's transition rather than appending another.
-UNRELEASED_EDGES = 0
+# What the graph carries today: the one transition the window allows, the
+# source-append commands (#492), after the twenty-one unreleased transitions
+# before it were consolidated into the builder (#548). It is at
+# UNRELEASED_EDGE_TARGET and may rise no further. The next migration-bearing
+# change folds into b2d5f8a1c4e7 rather than appending another revision.
+UNRELEASED_EDGES = 1

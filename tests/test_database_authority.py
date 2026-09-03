@@ -8,6 +8,8 @@ that runs as the owner proves nothing: the owner can do everything.
 
 from __future__ import annotations
 
+from hashlib import sha256
+import json
 import os
 
 import pytest
@@ -18,7 +20,7 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
-from corridor.models import FactDecision
+from corridor.models import Document, FactDecision, Project, SourceSegment
 
 
 # The configured URL, never a private copy of it: AGENTS.md records that a
@@ -65,6 +67,26 @@ LEGACY_ACCEPTED_TABLES = (
     "operative_support",
     "dispute_history_resolutions",
     "dispute_settlements",
+)
+# The spine's source tables: appended only through the commands the
+# source-append role owns, never written raw by a runtime capability.
+SOURCE_TABLES = (
+    "source_segments",
+    "facts",
+    "fact_sources",
+    "fact_applies_to",
+    "fact_closure_results",
+    "fact_closure_sources",
+    "fact_statement_timings",
+    "extracted_proposals",
+    "extracted_proposal_facts",
+    "source_fact_append_receipts",
+)
+SOURCE_APPEND_COMMANDS = (
+    "append_source_segments",
+    "append_fact",
+    "append_extracted_proposal",
+    "append_source_fact_receipt",
 )
 
 
@@ -357,3 +379,172 @@ def test_the_legacy_development_login_writes_legacy_tables_and_nothing_accepted(
             text("select has_table_privilege(:role, :t, 'insert')"),
             {"role": LEGACY_DEV_ROLE, "t": table},
         ).scalar_one() is False, table
+
+
+# --- Source appends go through commands, not raw table grants -------------
+
+
+def test_source_append_commands_are_owned_by_the_source_append_role(admin):
+    rows = admin.execute(
+        text(
+            """
+            select p.proname, o.rolname as owner
+            from pg_proc p
+            join pg_namespace n on n.oid = p.pronamespace
+            join pg_roles o on o.oid = p.proowner
+            where n.nspname = 'public' and p.proname = any(:names)
+            """
+        ),
+        {"names": list(SOURCE_APPEND_COMMANDS)},
+    ).all()
+
+    assert {row.proname for row in rows} == set(SOURCE_APPEND_COMMANDS)
+    assert all(row.owner == "corridor_source_append" for row in rows), rows
+
+
+def test_source_append_commands_are_callable_by_both_runtime_capabilities_only(admin):
+    """Web appends verbal statements; the worker appends extractions.
+
+    Neither the legacy-development login nor anything else holds the command.
+    """
+
+    for command in SOURCE_APPEND_COMMANDS:
+        granted = admin.execute(
+            text(
+                """
+                select r.rolname
+                from pg_proc p
+                join pg_namespace n on n.oid = p.pronamespace
+                cross join unnest(cast(:logins as text[])) as r(rolname)
+                where n.nspname = 'public' and p.proname = :name
+                  and has_function_privilege(r.rolname, p.oid, 'execute')
+                order by r.rolname
+                """
+            ),
+            {"name": command, "logins": list(LOGIN_ROLES)},
+        ).scalars().all()
+
+        assert granted == ["corridor_web", "corridor_worker"], f"{command}: {granted}"
+
+
+@pytest.mark.parametrize("table", SOURCE_TABLES)
+def test_a_runtime_capability_cannot_write_a_source_table_directly(runtime, table):
+    _role, connection = runtime
+
+    with pytest.raises(ProgrammingError) as refused:
+        connection.execute(text(f"insert into {table} default values"))
+
+    assert "permission denied" in str(refused.value)
+
+
+def test_a_runtime_capability_cannot_append_a_source_segment_through_the_orm(runtime):
+    """The mapped class is how the appenders used to write; the database refuses it."""
+
+    _role, connection = runtime
+    with Session(bind=connection) as session:
+        session.add(
+            SourceSegment(
+                project_id=1,
+                document_id=1,
+                kind="spreadsheet_cell",
+                exact_text="probe",
+                content_sha256="0" * 64,
+                ordinal=1,
+                sheet_name="Sheet",
+                cell_range="A1",
+            )
+        )
+
+        with pytest.raises(ProgrammingError) as refused:
+            session.flush()
+
+    assert "permission denied for table source_segments" in str(refused.value)
+
+
+def test_a_runtime_capability_appends_source_segments_only_through_the_command(
+    runtime_database,
+):
+    """The positive half of the boundary, as the worker login on committed rows.
+
+    The refusals above prove the door is shut; this proves the command is the
+    door: the same login that cannot insert a row appends one through
+    ``append_source_segments`` and reads it back.
+    """
+
+    with runtime_database.session_factory.begin() as owner:
+        project = Project(slug="append-boundary", name="Append Boundary", is_synthetic=True)
+        owner.add(project)
+        owner.flush()
+        document = Document(
+            project_id=project.id,
+            sha256="1" * 64,
+            filename="boundary.xlsx",
+            doc_type="matrix",
+        )
+        owner.add(document)
+        owner.flush()
+        project_id, document_id = project.id, document.id
+
+    worker_url = (
+        make_url(ADMIN_URL)
+        .set(
+            database=runtime_database.name,
+            username="corridor_worker",
+            password=LOGIN_PASSWORDS["corridor_worker"],
+        )
+        .render_as_string(hide_password=False)
+    )
+    engine = create_engine(worker_url, poolclass=NullPool, future=True)
+    try:
+        with engine.begin() as worker:
+            appended = worker.execute(
+                text(
+                    "select append_source_segments(:project_id, :document_id, null, "
+                    "cast(:segments as jsonb))"
+                ),
+                {
+                    "project_id": project_id,
+                    "document_id": document_id,
+                    "segments": json.dumps(
+                        [
+                            {
+                                "kind": "spreadsheet_cell",
+                                "exact_text": "UC-1",
+                                "content_sha256": sha256(b"UC-1").hexdigest(),
+                                "ordinal": 1,
+                                "sheet_name": "Conflicts",
+                                "cell_range": "A2",
+                            }
+                        ]
+                    ),
+                },
+            ).scalar_one()
+            stored = worker.execute(
+                text(
+                    "select project_id, document_id, kind, exact_text, sheet_name, "
+                    "cell_range, ordinal from source_segments where id = :id"
+                ),
+                {"id": appended[0]},
+            ).one()
+            assert tuple(stored) == (
+                project_id, document_id, "spreadsheet_cell", "UC-1", "Conflicts", "A2", 1
+            )
+
+        with engine.connect() as worker:
+            with pytest.raises(ProgrammingError) as refused:
+                worker.execute(
+                    text(
+                        "insert into source_segments (project_id, document_id, kind, "
+                        "exact_text, content_sha256, ordinal, sheet_name, cell_range) "
+                        "values (:project_id, :document_id, 'spreadsheet_cell', 'UC-2', "
+                        ":digest, 2, 'Conflicts', 'A3')"
+                    ),
+                    {
+                        "project_id": project_id,
+                        "document_id": document_id,
+                        "digest": sha256(b"UC-2").hexdigest(),
+                    },
+                )
+            assert "permission denied for table source_segments" in str(refused.value)
+    finally:
+        engine.dispose()

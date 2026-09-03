@@ -44,9 +44,10 @@ HUMAN_DECISION_HEAD = "4a5b6c7d8e9f"
 VERBAL_SEGMENT_HEAD = "5b6c7d8e9f01"
 STATEMENT_TIMING_HEAD = "6c7d8e9f0a12"
 COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
-CURRENT_HEAD = "a1c4e7b0d2f3"
+SUPPORTED_HEAD = "a1c4e7b0d2f3"
+CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "c5adc7a1fd96bf1acc506329217c66917b4e4ec20a54aa047642fc2ca97f26fc"
+    "4de701fa5d5b50a1455c13ce634ee267141024d93cd9e83c2292c9e033181c54"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -141,9 +142,11 @@ def test_fresh_database_matches_the_released_schema_exactly():
         )
         fingerprint = fingerprint_database_url(database_url)
         security = _statement_retirement_security(database.session_factory)
+        source_append = _source_append_security(database.session_factory)
 
     assert database.migration_head == CURRENT_HEAD
     assert fingerprint.schema_sha256 == EXPECTED_SCHEMA_SHA256
+    assert source_append == SOURCE_APPEND_SECURED
     assert security == {
         "can_login": False,
         "inherits": False,
@@ -162,6 +165,38 @@ def test_fresh_database_matches_the_released_schema_exactly():
             "work_decisions": ("SELECT",),
         },
     }
+
+
+def test_the_supported_database_upgrades_to_the_current_head_and_back():
+    """The one supported transition, proved on its exact transformed rows.
+
+    b2d5f8a1c4e7 transforms privileges, not data: it takes the raw
+    source-table writes back from the runtime capabilities and hands the
+    source-append role its four commands (#492).  A database standing at the
+    supported revision must cross that transition in both directions.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_transition_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        assert database.migration_head == SUPPORTED_HEAD
+        assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
+
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+        assert _source_append_security(database.session_factory) == SOURCE_APPEND_SECURED
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
 
 
 def test_downgrade_across_the_consolidated_baseline_is_unsupported():
@@ -381,6 +416,91 @@ def _fact_rows(session_factory) -> list[tuple]:
                 )
             ).all()
         )
+
+
+SOURCE_TABLES = (
+    "source_segments",
+    "facts",
+    "fact_sources",
+    "fact_applies_to",
+    "fact_closure_results",
+    "fact_closure_sources",
+    "fact_statement_timings",
+    "extracted_proposals",
+    "extracted_proposal_facts",
+    "source_fact_append_receipts",
+)
+SOURCE_APPEND_COMMANDS = (
+    "append_source_segments",
+    "append_fact",
+    "append_extracted_proposal",
+    "append_source_fact_receipt",
+)
+# Before b2d5f8a1c4e7: the runtime capabilities write the source tables raw
+# and no append command exists.
+SOURCE_APPEND_OPEN = {
+    "runtime_insert": {table: ("corridor_web", "corridor_worker") for table in SOURCE_TABLES},
+    "commands": {},
+}
+# After it: nobody writes them raw, and every command is owned by the
+# source-append role, hidden from PUBLIC, and callable by both capabilities.
+SOURCE_APPEND_SECURED = {
+    "runtime_insert": {table: () for table in SOURCE_TABLES},
+    "commands": {
+        command: {
+            "owner": "corridor_source_append",
+            "public_execute": False,
+            "execute": ("corridor_web", "corridor_worker"),
+        }
+        for command in SOURCE_APPEND_COMMANDS
+    },
+}
+
+
+def _source_append_security(session_factory) -> dict:
+    with session_factory() as session:
+        runtime_insert = {
+            table: tuple(
+                session.scalars(
+                    text(
+                        "select r from unnest(array['corridor_web', 'corridor_worker']) as r "
+                        "where has_table_privilege(r, :table, 'insert') order by r"
+                    ),
+                    {"table": table},
+                ).all()
+            )
+            for table in SOURCE_TABLES
+        }
+        commands = {}
+        for name in SOURCE_APPEND_COMMANDS:
+            row = session.execute(
+                text(
+                    "select owner.rolname, "
+                    "has_function_privilege('public', function.oid, 'execute'), "
+                    "has_function_privilege('corridor_web', function.oid, 'execute'), "
+                    "has_function_privilege('corridor_worker', function.oid, 'execute') "
+                    "from pg_proc function "
+                    "join pg_namespace namespace on namespace.oid = function.pronamespace "
+                    "join pg_roles owner on owner.oid = function.proowner "
+                    "where namespace.nspname = 'public' and function.proname = :name"
+                ),
+                {"name": name},
+            ).first()
+            if row is None:
+                continue
+            commands[name] = {
+                "owner": str(row[0]),
+                "public_execute": bool(row[1]),
+                "execute": tuple(
+                    role
+                    for role, granted in (
+                        ("corridor_web", row[2]),
+                        ("corridor_worker", row[3]),
+                    )
+                    if granted
+                ),
+            }
+    return {"runtime_insert": runtime_insert, "commands": commands}
 
 
 def _statement_retirement_security(session_factory) -> dict:

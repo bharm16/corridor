@@ -53,8 +53,10 @@ SourceEnvelope (one normalized ingress record per delivery)
 Adopt Baseline is the one bulk human act that establishes the accepted record
 from the customer's own UCM workbook or system export. Accepted authority is
 written only through the record-decision role's `SECURITY DEFINER` commands
-(#492); the application runtime role reads and may append segments, facts,
-proposals, and support assessments, and cannot make anything effective.
+(#492); the application runtime role reads, appends segments, facts, and
+proposals only through the source-append role's commands (`source_append.py`),
+and cannot make anything effective. Support assessments join that matrix with
+#530.
 Implementation status is in [roadmap.md](roadmap.md): Adopt Baseline and
 Proposed Delta are **not yet implemented** (#509, #510).
 

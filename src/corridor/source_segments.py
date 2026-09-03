@@ -26,6 +26,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, SourceSegment
+from corridor.source_append import SegmentValues, append_source_segments
 
 SPREADSHEET_SUFFIXES = frozenset({".xlsx", ".xlsm"})
 
@@ -203,41 +204,70 @@ def append_ingested_source_segments(
         return existing
 
     if is_spreadsheet:
-        rows = tuple(
-            SourceSegment(
-                project_id=document.project_id,
-                document_id=document.id,
+        values = tuple(
+            SegmentValues(
                 kind="spreadsheet_cell",
                 exact_text=segment.exact_text,
                 content_sha256=segment.content_sha256,
                 ordinal=segment.ordinal,
                 sheet_name=segment.sheet_name,
                 cell_range=segment.cell_range,
-                page_no=None,
-                start_offset=None,
-                end_offset=None,
             )
             for segment in spreadsheet_segments(original)
         )
     else:
-        rows = tuple(
-            SourceSegment(
-                project_id=document.project_id,
-                document_id=document.id,
+        values = tuple(
+            SegmentValues(
                 kind="prose_span",
                 exact_text=segment.exact_text,
                 content_sha256=segment.content_sha256,
                 ordinal=segment.ordinal,
-                sheet_name=None,
-                cell_range=None,
                 page_no=segment.page_no,
                 start_offset=segment.start_offset,
                 end_offset=segment.end_offset,
             )
             for segment in pdf_prose_segments(original)
         )
-    session.add_all(rows)
-    return rows
+    return append_source_segments(
+        session,
+        project_id=document.project_id,
+        document_id=document.id,
+        statement_id=None,
+        segments=values,
+    )
+
+
+def append_source_segment(session: Session, segment: SourceSegment) -> SourceSegment:
+    """Append one built-but-unsaved segment through the command and return the row.
+
+    The application holds no ``INSERT`` on ``source_segments`` (#492), so a
+    segment built in memory (a Recorded Verbal Statement's exact words) reaches
+    the table only this way.  A segment that already has an identity is
+    returned as it is.
+    """
+
+    if segment.id is not None:
+        return segment
+    (row,) = append_source_segments(
+        session,
+        project_id=segment.project_id,
+        document_id=segment.document_id,
+        statement_id=segment.statement_id,
+        segments=(
+            SegmentValues(
+                kind=segment.kind,
+                exact_text=segment.exact_text,
+                content_sha256=segment.content_sha256,
+                ordinal=segment.ordinal,
+                sheet_name=segment.sheet_name,
+                cell_range=segment.cell_range,
+                page_no=segment.page_no,
+                start_offset=segment.start_offset,
+                end_offset=segment.end_offset,
+            ),
+        ),
+    )
+    return row
 
 
 def dereference_source_segment(

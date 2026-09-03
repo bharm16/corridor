@@ -8,6 +8,8 @@ import sys
 from collections import defaultdict
 from pathlib import Path
 
+from corridor.migrations import policy
+
 
 REPO_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = REPO_ROOT / "src" / "corridor"
@@ -303,7 +305,7 @@ def test_released_policy_sources_are_outside_executable_migration_history():
     executable = tuple(
         (SOURCE_ROOT / "migrations" / "baseline_versions").glob("*.py")
     )
-    assert len(executable) == 1, (
-        "the executable graph is one consolidated baseline; "
-        "src/corridor/migrations/policy.py records the window"
+    assert len(executable) == 1 + policy.UNRELEASED_EDGES, (
+        "the executable graph is one consolidated baseline plus the "
+        "transitions src/corridor/migrations/policy.py records"
     )
