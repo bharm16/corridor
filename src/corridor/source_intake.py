@@ -59,6 +59,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.analytics import (
+    default_binding,
+    emit_event,
+    source_arrival_event,
+    source_capture_event,
+)
 from corridor.config import settings
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.models import (
@@ -199,6 +205,9 @@ def validate_and_stage(
     filename: str,
     *,
     max_bytes: int | None = None,
+    customer_id: str | None = None,
+    project_id: int | str | None = None,
+    channel: str = "upload",
 ) -> StagedSource:
     """Enforce the bounded limits and stage exact bytes; refuse before model work.
 
@@ -237,7 +246,30 @@ def validate_and_stage(
         )
 
     sha256 = hashlib.sha256(body).hexdigest()
+    binding = default_binding()
+    emit_event(
+        source_arrival_event(
+            binding,
+            customer_id=customer_id,
+            project_id=project_id,
+            channel=channel,
+            filename=safe,
+            content_sha256=sha256,
+            byte_count=len(body),
+        )
+    )
     stored_path = store_bytes(body, sha256=sha256, suffix=suffix)
+    emit_event(
+        source_capture_event(
+            binding,
+            customer_id=customer_id,
+            project_id=project_id,
+            channel=channel,
+            storage_key=f"{sha256[:2]}/{sha256}{suffix}",
+            content_sha256=sha256,
+            byte_count=len(body),
+        )
+    )
     return StagedSource(
         sha256=sha256,
         size_bytes=len(body),
