@@ -11,7 +11,8 @@ amends:
   - ADR-0081
 amended_by:
   - ADR-0084
-migration: none of the corrected contracts (SourceEnvelope, PullConnector, PushIntake, run-kind provenance, customer-environment disposition, historical backfill) exists yet.
+  - ADR-0089
+migration: SourceEnvelope, PullConnector, and PushIntake exist (#496, #511), and a pushed delivery is persisted while a pulled one is not (#599); run-kind provenance, customer-environment disposition, and historical backfill do not exist.
 ---
 
 # Corrections to the consolidation set after the 2026-09-01 realignment review
