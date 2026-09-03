@@ -181,15 +181,15 @@ Complete.
    alarms, the recorded region, and the GitHub OIDC deployment identity —
    agents cannot create those.
 4. #496 PullConnector and normalized SourceEnvelope and #511 project-bound
-   push intake are **done** for the channels the partner needs. **#599** now
-   persists one `SourceDelivery` family for both transports under ADR-0089,
-   moves the connector cursor off the Due Work receipt into its own
-   append-only checkpoint relation, and records refused and quarantined
-   deliveries instead of losing them. It blocks #535 only where a pull
-   connector is selected; a manual-upload or push-only pilot is unaffected.
+   push intake are **done** for the channels the partner needs. #599 is
+   **done**: one `source_deliveries` family persists both transports under
+   ADR-0089, the connector cursor lives in its own append-only
+   `connector_checkpoint_advances` relation rather than on a Due Work receipt,
+   and a refused or failed delivery is recorded with its digest and its reason
+   instead of being lost. It no longer blocks #535 for a pull connector.
 5. #488 pilot-critical Due Work handlers — **done**: connector polling, delta
    generation, report preparation, retention sweep. Its cursor-on-the-receipt
-   design is superseded by ADR-0089 and replaced in #599.
+   design was superseded by ADR-0089 and replaced in #599.
 6. Live-activation gates, all owned by #535: **#461** PyMuPDF commercial
    licence procurement, #522 customer authorization and data handling, #514
    customer-environment disposition, and #531 pilot identity, authorization,
@@ -203,7 +203,7 @@ Complete.
 **Exit:** #489 synthetic environment with one customer database and one
 restored backup, on the account #601 provisions; intake hardened; #535's gates
 identified and tracked; one partner's connector registered and its deliveries
-persisted (#599); #561's compatibility report recorded for the partner's
+persisted (#599, done); #561's compatibility report recorded for the partner's
 workbook family.
 
 ## Phase 2 — build the paid vertical slice on the spine

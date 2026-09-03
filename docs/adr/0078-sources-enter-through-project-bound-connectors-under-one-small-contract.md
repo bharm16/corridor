@@ -11,7 +11,7 @@ amends:
 amended_by:
   - ADR-0083
   - ADR-0089
-migration: the PullConnector contract (#496) and project-bound push intake (#511) are implemented and the Box adapter runs under them; no inbound-mail provider is recorded, the schedule import remains the hand-typed CSV path, and a pull delivery is not yet persisted (#599).
+migration: the PullConnector contract (#496) and project-bound push intake (#511) are implemented, the Box adapter runs under them, and every delivery is persisted with its disposition (#599); no inbound-mail provider is recorded and the schedule import remains the hand-typed CSV path.
 ---
 
 # Sources enter through project-bound connectors under one small contract

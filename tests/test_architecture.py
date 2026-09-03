@@ -856,8 +856,9 @@ DEDUPLICATION_IDENTITIES = {
     # Project Record revisions: the command's idempotency key, per project.
     "project_record_revisions": "uq_project_record_revision_key",
     # Connector deliveries: ADR-0083's envelope identity, structurally, so
-    # dedup does not rest on the derived digest having been derived.
-    "push_deliveries": "uq_push_deliveries_envelope",
+    # dedup does not rest on the derived digest having been derived, for both
+    # transports and each outcome one delivery had (ADR-0089).
+    "source_deliveries": "uq_source_deliveries_observation",
 }
 
 

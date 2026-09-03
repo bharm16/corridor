@@ -5,7 +5,6 @@ scope: current product
 amends:
   - ADR-0078
   - ADR-0083
-migration: no unified SourceDelivery family and no ConnectorCheckpointAdvance relation exist; a pull delivery is still unpersisted and the connector cursor still lives on a completed Due Work receipt (#599).
 ---
 
 # A delivery is persisted once, whatever transport carried it

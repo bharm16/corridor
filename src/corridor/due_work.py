@@ -1474,10 +1474,12 @@ def _report_publication_effectful(context: EffectfulContext) -> dict[str, Any]:
 def _connector_polling_effectful(context: EffectfulContext) -> dict[str, Any]:
     """Take delivery of one connected location's changes for a claimed occurrence.
 
-    The pass stores every listed change in the content-addressed store before it
-    returns, and the token it reached is retained only when the runtime completes
-    the attempt, so the checkpoint can never advance past an unstored change
-    (ADR-0083). It reads no model and holds no runtime transaction while fetching.
+    The pass stores every listed change in the content-addressed store, records
+    each delivery in the shared ledger, and only then records the advance its
+    cursor reached, so the checkpoint can never advance past an unstored change
+    or a transient failure (ADR-0083 as extended by ADR-0089). It reads no model
+    and holds no runtime transaction while fetching. The attempt identity is the
+    run identity the ledger and the advance are attributed to.
     """
 
     from corridor.connector_polling import execute_connector_polling
@@ -1486,6 +1488,7 @@ def _connector_polling_effectful(context: EffectfulContext) -> dict[str, Any]:
         context.session_factory,
         schedule_id=context.claim.schedule_id,
         clock=context.clock,
+        run_identity=context.claim.attempt_id,
     )
 
 
@@ -4665,12 +4668,19 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
             "checkpoint_token",
             "advanced",
             "changes_taken",
+            "dispositions",
+            "blocked_by",
         }
         or result.get("health") not in {"healthy", "polling_attention_required"}
         or not isinstance(result.get("advanced"), bool)
-        # The retained token is this schedule's durable cursor, so a result
-        # that cannot state one is not a completed pass.
+        # The cursor is the connector configuration's own durable record since
+        # ADR-0089, and this is the pass reporting where it stands, so a result
+        # that cannot state a token is not a completed pass.
         or not isinstance(result.get("checkpoint_token"), str)
+        # What the pass took delivery of, by ADR-0089 disposition, and what
+        # held the cursor back.
+        or not isinstance(result.get("dispositions"), dict)
+        or not isinstance(result.get("blocked_by"), list)
     ):
         raise DueWorkRefusal("connector-polling handler result is invalid")
     if contract.key == HANDLER_DELTA_GENERATION and (

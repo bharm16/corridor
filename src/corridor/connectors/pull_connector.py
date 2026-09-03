@@ -14,12 +14,22 @@ connected intake is split into three layers:
    - ``checkpoint(token)`` (renamed from ``acknowledge`` in ADR-0083).
 3. ``PushIntake``: authenticated, pre-bound delivery for webhooks and uploads (#511).
 
-Crash-safe checkpoint semantics (ADR-0083):
+Crash-safe checkpoint semantics (ADR-0083, extended by ADR-0089):
 A checkpoint advances only after every change up to and including the exact
 token is durably stored in the content-addressed store with its digest. A crash
 between listing and storage re-lists without creating duplicate Documents or
 missing items. Replay after a crash is idempotent by delivery identity; a
 checkpoint never advances past an unstored change.
+
+ADR-0083's rule, read literally, had no answer for a change that will never be
+stored because the intake gate refused it: one poisoned object stalled a
+location forever. ADR-0089 states the rule in full. A delivery the gate refused
+permits an advance past it **only** once its digest and the refusal evidence
+are durably recorded in the delivery ledger, which is why ``sync_pull_connector``
+refuses to checkpoint past a refusal it could not record. A transient failure —
+a scanner that raised, an object store that rejected a write, a provider that
+returned an error — never permits one, because it says nothing about the
+delivery and advancing past it drops a source revision silently.
 
 Bytes are persisted through the storage interface (``corridor.object_storage``),
 never direct filesystem path writes.
@@ -33,6 +43,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Callable, Protocol, Sequence
 
+from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
 from corridor.object_storage import content_key, content_store, store_bytes
 
 
@@ -111,6 +122,64 @@ def build_idempotency_key(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+@dataclass(frozen=True)
+class DeliveryRecord:
+    """One item's outcome in a sync pass, and the ledger row that holds it.
+
+    ``delivery_id`` is the identity the ledger assigned; it is ``None`` when no
+    ledger was supplied, which is exactly the case in which a refusal has no
+    durable evidence and therefore cannot be advanced past.
+    """
+
+    item_id: str
+    version_id: str
+    disposition: str
+    content_digest: str
+    delivery_id: int | None = None
+    refusal_reason: str | None = None
+    envelope: SourceEnvelope | None = None
+
+
+@dataclass(frozen=True)
+class PullSyncResult:
+    """What one pass took delivery of, and whether its cursor could move."""
+
+    envelopes: tuple[SourceEnvelope, ...]
+    records: tuple[DeliveryRecord, ...]
+    checkpoint_token: str | None
+    advanced: bool
+    blocked_by: tuple[str, ...] = ()
+
+    def delivery_ids(self) -> tuple[int, ...]:
+        return tuple(
+            record.delivery_id
+            for record in self.records
+            if record.delivery_id is not None
+        )
+
+
+class DeliveryLedger(Protocol):
+    """Where a pass records what it took delivery of.
+
+    Deliberately not a fifth ``PullConnector`` method: the four methods are a
+    cursor protocol and a connector "does not read, classify, or route content"
+    (ADR-0078), so recording a delivery is the runtime's act on the envelope the
+    connector returned, not a connector responsibility (ADR-0089).
+    """
+
+    def record(
+        self,
+        item: ChangeItem,
+        *,
+        disposition: str,
+        content_digest: str,
+        bytes_reference: str,
+        refusal_reason: str | None,
+    ) -> int:
+        """Persist one delivery outcome and return its ledger identity."""
+        ...
+
+
 def sync_pull_connector(
     connector: PullConnector,
     *,
@@ -119,62 +188,130 @@ def sync_pull_connector(
     channel: str,
     cursor: str | None = None,
     on_envelope_stored: Callable[[SourceEnvelope], None] | None = None,
-) -> tuple[SourceEnvelope, ...]:
+    ledger: DeliveryLedger | None = None,
+) -> PullSyncResult:
     """Execute one crash-safe sync pass over a PullConnector.
 
-    Enforces ADR-0083 semantics:
+    Enforces ADR-0083 semantics as ADR-0089 extends them:
     - Lists changes since cursor.
-    - For every change: fetches bytes, verifies digest, and durably persists
-      to content store before creating the envelope.
-    - Checkpoint is invoked ONLY after all items up to the token are durably
-      stored. A crash before checkpoint advances causes the next pass to re-list,
-      where content-addressed storage makes re-storage an idempotent no-op.
+    - For every change: fetches bytes, runs the #490 byte gate on them, and
+      durably persists to the content store before creating the envelope.
+    - A gate refusal is a fact about the delivery: the pass records it with its
+      exact digest and its reason and carries on.
+    - A scanner or storage failure is a fact about one attempt: the pass records
+      it and refuses to advance the cursor at all.
+    - Checkpoint is invoked ONLY after every item up to the token is either
+      durably stored or durably recorded as refused. A crash before checkpoint
+      advances causes the next pass to re-list, where content-addressed storage
+      makes re-storage an idempotent no-op.
+
+    A provider that cannot serve the bytes at all raises out of this pass. The
+    attempt fails, nothing checkpoints, and the next pass re-lists from the
+    cursor that never moved.
     """
 
     items, next_token = connector.list_changes(cursor)
     envelopes: list[SourceEnvelope] = []
+    records: list[DeliveryRecord] = []
+    blocked: list[str] = []
 
     for item in items:
         body = connector.fetch_version(item.item_id, item.version_id)
         digest = hashlib.sha256(body).hexdigest()
 
-        # Persist through object storage interface
         suffix = ""
         if "." in item.name:
             suffix = "." + item.name.rsplit(".", 1)[1].lower()
-        storage_key = content_key(digest, suffix)
-        store_bytes(body, sha256=digest, suffix=suffix)
 
-        delivery_id = build_delivery_identity(
-            customer=customer,
-            project=project,
-            channel=channel,
-            external_identity=item.item_id,
-            external_version=item.version_id,
+        disposition = "stored"
+        refusal_reason: str | None = None
+        storage_key = ""
+        try:
+            inspect_byte_gate(body, item.name)
+        except HostileContentRefused as refused:
+            disposition = "terminally_refused"
+            refusal_reason = f"{refused.rule}: {refused.reason}"
+        except Exception as failure:
+            # The gate's own refusal above is a fact about the delivery; a gate
+            # that failed to reach a verdict — a scanner seam that raised — is
+            # a fact about one attempt, and says nothing about the bytes.
+            disposition = "transient_failure"
+            refusal_reason = f"scan_failed: {failure}"
+        else:
+            try:
+                # Persist through the object storage interface.
+                store_bytes(body, sha256=digest, suffix=suffix)
+            except Exception as failure:
+                # Any backend may fail, and none of them by failing tell us
+                # anything about the delivery.
+                disposition = "transient_failure"
+                refusal_reason = f"store_failed: {failure}"
+            else:
+                storage_key = content_key(digest, suffix)
+
+        delivery_id = None
+        if ledger is not None:
+            delivery_id = ledger.record(
+                item,
+                disposition=disposition,
+                content_digest=digest,
+                bytes_reference=storage_key,
+                refusal_reason=refusal_reason,
+            )
+
+        envelope = None
+        if disposition == "stored":
+            identity = build_delivery_identity(
+                customer=customer,
+                project=project,
+                channel=channel,
+                external_identity=item.item_id,
+                external_version=item.version_id,
+            )
+            envelope = SourceEnvelope(
+                customer=customer,
+                project=project,
+                channel=channel,
+                external_identity=item.item_id,
+                external_version=item.version_id,
+                original_timestamps=dict(item.original_timestamps),
+                content_digest=digest,
+                bytes_reference=storage_key,
+                metadata=dict(item.metadata),
+                delivery_identity=identity,
+                idempotency_key=build_idempotency_key(identity, digest),
+            )
+            if on_envelope_stored is not None:
+                on_envelope_stored(envelope)
+            envelopes.append(envelope)
+        elif disposition == "transient_failure":
+            blocked.append(item.item_id)
+        elif delivery_id is None:
+            # A refusal nobody recorded is a refusal nobody can answer for, so
+            # it does not permit an advance past itself (ADR-0089).
+            blocked.append(item.item_id)
+
+        records.append(
+            DeliveryRecord(
+                item_id=item.item_id,
+                version_id=item.version_id,
+                disposition=disposition,
+                content_digest=digest,
+                delivery_id=delivery_id,
+                refusal_reason=refusal_reason,
+                envelope=envelope,
+            )
         )
-        idem_key = build_idempotency_key(delivery_id, digest)
 
-        envelope = SourceEnvelope(
-            customer=customer,
-            project=project,
-            channel=channel,
-            external_identity=item.item_id,
-            external_version=item.version_id,
-            original_timestamps=dict(item.original_timestamps),
-            content_digest=digest,
-            bytes_reference=storage_key,
-            metadata=dict(item.metadata),
-            delivery_identity=delivery_id,
-            idempotency_key=idem_key,
-        )
-
-        if on_envelope_stored is not None:
-            on_envelope_stored(envelope)
-
-        envelopes.append(envelope)
-
-    # Durably advance checkpoint only after every item is stored
-    if next_token and next_token != cursor:
+    advanced = False
+    if not blocked and next_token and next_token != cursor:
         connector.checkpoint(next_token)
+        advanced = True
 
-    return tuple(envelopes)
+    return PullSyncResult(
+        envelopes=tuple(envelopes),
+        records=tuple(records),
+        checkpoint_token=next_token if advanced else cursor,
+        advanced=advanced,
+        blocked_by=tuple(blocked),
+    )

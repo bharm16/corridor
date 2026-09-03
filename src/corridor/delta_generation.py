@@ -29,7 +29,6 @@ runtime (#332) discovers, claims, and retries occurrences.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-import json
 from typing import Any
 
 from sqlalchemy import func, select, text
@@ -151,9 +150,6 @@ def execute_delta_generation(
                 if lineage is None:
                     continue
                 source_family, source_revision = lineage
-                already = _appended_signatures(
-                    working, project_id, source_family, source_revision
-                )
                 proposals: list[ProposedDeltaValues] = []
                 for subject_key, subject_facts in _by_subject(document_facts):
                     considered += len(subject_facts)
@@ -189,24 +185,31 @@ def execute_delta_generation(
                                 ),
                             )
                         )
-                fresh = [
-                    proposal
-                    for proposal in proposals
-                    if _signature(proposal) not in already
-                ]
-                existing += len(proposals) - len(fresh)
-                if not fresh:
+                if not proposals:
                     continue
+                # The Proposed Delta's identity is the database's since #457,
+                # so the append converges on the rows a replay already wrote
+                # and this pass reads back which of them it created. There is
+                # no second, weaker definition of that identity here: the one
+                # that lived in ``_appended_signatures`` ignored
+                # ``accepted_value`` while the delta digest includes it, and
+                # ADR-0089 removed it rather than let two definitions of one
+                # identity disagree.
+                before = working.scalar(select(func.max(ProposedDelta.id))) or 0
                 appended = create_proposed_delta_group(
                     working,
                     project_id=project_id,
                     source_family=source_family,
                     source_revision=source_revision,
                     document_id=document_id,
-                    deltas=fresh,
+                    deltas=proposals,
                 )
+                fresh = [row for row in appended if row.id > before]
+                existing += len(appended) - len(fresh)
+                if not fresh:
+                    continue
                 groups += 1
-                created += len(appended)
+                created += len(fresh)
             if facts:
                 # The whole batch is either compared or unusable (its document
                 # is gone), and the append is one all-or-nothing transaction,
@@ -283,62 +286,6 @@ def _lineage(
     family = (registry_id or f"document:{document_id}")[:64]
     return family, str(sha256)[:128]
 
-
-def _appended_signatures(
-    session: Session, project_id: int, source_family: str, source_revision: str
-) -> set[str]:
-    """What this source revision already proposed, so a replay appends nothing."""
-
-    rows = session.execute(
-        select(
-            ProposedDelta.change_type,
-            ProposedDelta.target_type,
-            ProposedDelta.target_subject_identity,
-            ProposedDelta.target_field,
-            ProposedDelta.proposed_value,
-        ).where(
-            ProposedDelta.project_id == project_id,
-            ProposedDelta.source_family == source_family,
-            ProposedDelta.source_revision == source_revision,
-        )
-    ).all()
-    return {
-        _signature_parts(change_type, target_type, subject, field, value)
-        for change_type, target_type, subject, field, value in rows
-    }
-
-
-def _signature(proposal: ProposedDeltaValues) -> str:
-    if isinstance(proposal.target, ExistingSubjectTarget):
-        return _signature_parts(
-            proposal.change_type,
-            "existing_subject",
-            proposal.target.subject_identity,
-            proposal.target.field,
-            proposal.proposed_value,
-        )
-    return _signature_parts(
-        proposal.change_type,
-        "proposed_subject",
-        proposal.target.subject_identity,
-        None,
-        proposal.proposed_value,
-    )
-
-
-def _signature_parts(
-    change_type: str,
-    target_type: str,
-    subject: str,
-    field: str | None,
-    value: Any,
-) -> str:
-    return json.dumps(
-        [change_type, target_type, subject, field or "", value],
-        sort_keys=True,
-        separators=(",", ":"),
-        default=str,
-    )
 
 
 def _proposed_subject(

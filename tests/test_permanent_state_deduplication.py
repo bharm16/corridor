@@ -37,7 +37,7 @@ from corridor.models import (
     Project,
     ProjectRecordRevision,
     ProposedDelta,
-    PushDelivery,
+    SourceDelivery,
     SourceSegment,
 )
 from corridor.proposed_deltas import (
@@ -528,15 +528,19 @@ def _payload(body: bytes = b"%PDF-1.7\nrelocation exhibit\n%%EOF"):
     )
 
 
-def _delivery_count(session, project) -> int:
-    return session.scalar(
-        select(func.count())
-        .select_from(PushDelivery)
-        .where(PushDelivery.project_id == project.id)
+def _delivery_dispositions(session, project) -> list[str]:
+    return list(
+        session.scalars(
+            select(SourceDelivery.disposition)
+            .where(SourceDelivery.project_id == project.id)
+            .order_by(SourceDelivery.id)
+        ).all()
     )
 
 
 def test_a_replayed_delivery_returns_the_envelope_already_taken(session, project):
+    """One delivery, taken once, and the replay recorded as its own outcome."""
+
     binding = _binding(session, project)
     first = push_intake.accept_delivery(session, binding, _payload())
     replayed = push_intake.accept_delivery(session, binding, _payload())
@@ -544,18 +548,19 @@ def test_a_replayed_delivery_returns_the_envelope_already_taken(session, project
     assert replayed.delivery_id == first.delivery_id
     assert replayed.replayed is True
     assert replayed.envelope.idempotency_key == first.envelope.idempotency_key
-    assert _delivery_count(session, project) == 1
+    assert _delivery_dispositions(session, project) == ["stored", "duplicate"]
 
 
 def test_a_second_delivery_of_one_envelope_is_refused(session, project):
     """The structural key stands even where the derived key would not.
 
-    ADR-0083's idempotency key is a digest of this triple, so a row that
-    carries the right key collides on the key and a row that carries a wrong
-    one is refused by the identity trigger first. The envelope constraint is
-    what is left when neither of those holds: the trigger is disabled here on
-    purpose, because the point of a structural key is that it does not depend
-    on the derivation being performed.
+    ADR-0083's idempotency key is a digest of this triple, and a row that
+    carries a wrong one is refused by the identity trigger first. The envelope
+    constraint is what is left when the derivation is not performed at all: the
+    trigger is disabled here on purpose, because the point of a structural key
+    is that it does not depend on anybody deriving anything. ADR-0089 widened
+    the key by the disposition, so this insert repeats an outcome of a delivery
+    the ledger already holds.
     """
 
     binding = _binding(session, project)
@@ -564,22 +569,25 @@ def test_a_second_delivery_of_one_envelope_is_refused(session, project):
     project_id = project.id
     session.execute(
         text(
-            "alter table push_deliveries disable trigger "
-            "trg_push_deliveries_identity"
+            "alter table source_deliveries disable trigger "
+            "trg_source_deliveries_identity"
         )
     )
 
-    with pytest.raises(IntegrityError, match="uq_push_deliveries_envelope"):
+    with pytest.raises(IntegrityError, match="uq_source_deliveries_observation"):
         session.execute(
             text(
-                "insert into push_deliveries (credential_id, customer, project_id, "
-                "  channel, external_identity, external_version, "
-                "  original_timestamps_json, content_sha256, bytes_reference, "
-                "  metadata_json, delivery_identity, idempotency_key) "
-                "select credential_id, customer, project_id, channel, "
+                "insert into source_deliveries (credential_id, customer, "
+                "  project_id, transport, channel, configuration_identity, "
                 "  external_identity, external_version, original_timestamps_json, "
                 "  content_sha256, bytes_reference, metadata_json, "
-                "  delivery_identity, :key from push_deliveries "
+                "  delivery_identity, idempotency_key, service_identity, "
+                "  run_identity, disposition) "
+                "select credential_id, customer, project_id, transport, channel, "
+                "  configuration_identity, external_identity, external_version, "
+                "  original_timestamps_json, content_sha256, bytes_reference, "
+                "  metadata_json, delivery_identity, :key, service_identity, "
+                "  'a second run', disposition from source_deliveries "
                 " where project_id = :project_id"
             ),
             {
@@ -604,17 +612,20 @@ def test_a_delivery_whose_identity_is_not_its_own_is_refused(session, project):
     session.flush()
     project_id = project.id
 
-    with pytest.raises(IntegrityError, match="push_intake:delivery_identity"):
+    with pytest.raises(IntegrityError, match="source_delivery:delivery_identity"):
         session.execute(
             text(
-                "insert into push_deliveries (credential_id, customer, project_id, "
-                "  channel, external_identity, external_version, "
-                "  original_timestamps_json, content_sha256, bytes_reference, "
-                "  metadata_json, delivery_identity, idempotency_key) "
-                "select credential_id, customer, project_id, channel, "
-                "  'transport-0002', external_version, original_timestamps_json, "
+                "insert into source_deliveries (credential_id, customer, "
+                "  project_id, transport, channel, configuration_identity, "
+                "  external_identity, external_version, original_timestamps_json, "
                 "  content_sha256, bytes_reference, metadata_json, "
-                "  delivery_identity, :key from push_deliveries "
+                "  delivery_identity, idempotency_key, service_identity, "
+                "  run_identity, disposition) "
+                "select credential_id, customer, project_id, transport, channel, "
+                "  configuration_identity, 'transport-0002', external_version, "
+                "  original_timestamps_json, content_sha256, bytes_reference, "
+                "  metadata_json, delivery_identity, :key, service_identity, "
+                "  run_identity, disposition from source_deliveries "
                 " where project_id = :project_id"
             ),
             {
