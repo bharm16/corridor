@@ -95,6 +95,12 @@ SOURCE_TABLES = (
     # The Support Assessment relation joins the same matrix (#530).
     "support_assessments",
     "support_assessment_sources",
+    # The Proposed Delta relation joins the same matrix (#518).
+    "delta_groups",
+    "proposed_deltas",
+    "delta_dispositions",
+    "delta_supersessions",
+    "delta_deferrals",
 )
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",
@@ -102,6 +108,7 @@ SOURCE_APPEND_COMMANDS = (
     "append_extracted_proposal",
     "append_source_fact_receipt",
     "append_support_assessment",
+    "append_proposed_deltas",
 )
 
 

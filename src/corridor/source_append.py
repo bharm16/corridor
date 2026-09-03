@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
 import json
+from typing import Any
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -287,9 +288,40 @@ def append_support_assessment(
     return session.get_one(SupportAssessment, int(assessment_id))
 
 
+def append_proposed_deltas(
+    session: Session,
+    *,
+    project_id: int,
+    source_family: str,
+    source_revision: str,
+    document_id: int | None = None,
+    statement_id: int | None = None,
+    deltas: Sequence[dict[str, Any]],
+) -> tuple[int, ...]:
+    """Append one atomic delta group through the source-append command (#518)."""
+
+    if not deltas:
+        return ()
+
+    appended = session.scalar(
+        select(
+            func.append_proposed_deltas(
+                project_id,
+                source_family,
+                source_revision,
+                document_id,
+                statement_id,
+                _jsonb(deltas),
+            )
+        )
+    )
+    return tuple(appended) if appended else ()
+
+
 def _jsonb(value: object):
     return cast(bindparam(None, json.dumps(value)), JSONB)
 
 
 def _iso(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
+

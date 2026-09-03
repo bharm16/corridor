@@ -16,6 +16,7 @@ wrong, so they are called out here as well as in the ADRs:
 from copy import deepcopy
 from datetime import date, datetime
 from hashlib import sha256
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
@@ -1295,6 +1296,168 @@ _SUPPORT_ASSESSMENT_OUTCOMES_SQL = ", ".join(
 )
 
 
+DELTA_CHANGE_TYPES = ("add", "modify", "apparent_removal")
+DELTA_TARGET_TYPES = ("existing_subject", "proposed_subject")
+DELTA_DISPOSITIONS = ("accept", "edit", "reject")
+
+
+class DeltaGroup(Base):
+    """One atomic source change binding proposed deltas for source lineage (#518)."""
+
+    __tablename__ = "delta_groups"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_delta_groups_project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    source_family: Mapped[str] = mapped_column(String(64))
+    source_revision: Mapped[str] = mapped_column(String(128))
+    document_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
+    statement_id: Mapped[int | None] = mapped_column(ForeignKey("dependency_events.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ProposedDelta(Base):
+    """One immutable occurrence of a proposed delta against accepted record (#518)."""
+
+    __tablename__ = "proposed_deltas"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_proposed_deltas_project_id"),
+        UniqueConstraint("content_sha256", name="uq_proposed_deltas_content"),
+        ForeignKeyConstraint(
+            ["project_id", "group_id"],
+            ["delta_groups.project_id", "delta_groups.id"],
+            name="fk_proposed_deltas_group",
+        ),
+        CheckConstraint(
+            "change_type in ('add', 'modify', 'apparent_removal')",
+            name="ck_proposed_deltas_change_type",
+        ),
+        CheckConstraint(
+            "target_type in ('existing_subject', 'proposed_subject')",
+            name="ck_proposed_deltas_target_type",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_proposed_deltas_content_sha256",
+        ),
+        Index("ix_proposed_deltas_target", "project_id", "target_subject_identity"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    group_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    change_type: Mapped[str] = mapped_column(String(32))
+    target_type: Mapped[str] = mapped_column(String(32))
+    target_subject_identity: Mapped[str] = mapped_column(String(128))
+    target_field: Mapped[str | None] = mapped_column(String(64))
+    accepted_value: Mapped[Any | None] = mapped_column(JSONB)
+    proposed_value: Mapped[Any | None] = mapped_column(JSONB)
+    source_family: Mapped[str] = mapped_column(String(64))
+    source_revision: Mapped[str] = mapped_column(String(128))
+    comparison_rule_version: Mapped[str] = mapped_column(String(64))
+    accepted_baseline_revision: Mapped[str | None] = mapped_column(String(128))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaDisposition(Base):
+    """Semantic resolution (accept, edit, reject) of a proposed delta (#518)."""
+
+    __tablename__ = "delta_dispositions"
+    __table_args__ = (
+        UniqueConstraint("delta_id", name="uq_delta_dispositions_delta"),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_dispositions_delta",
+        ),
+        CheckConstraint(
+            "disposition in ('accept', 'edit', 'reject')",
+            name="ck_delta_dispositions_disposition",
+        ),
+        CheckConstraint(
+            "(decided_by_principal is null) <> (decided_by_policy is null)",
+            name="ck_delta_dispositions_authority_xor",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    disposition: Mapped[str] = mapped_column(String(32))
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    decided_by_principal: Mapped[str | None] = mapped_column(String(128))
+    decided_by_policy: Mapped[str | None] = mapped_column(String(128))
+    rationale: Mapped[str | None] = mapped_column(Text)
+    effective_value: Mapped[Any | None] = mapped_column(JSONB)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaSupersession(Base):
+    """Lineage link when a newer source revision supersedes a prior delta (#518)."""
+
+    __tablename__ = "delta_supersessions"
+    __table_args__ = (
+        UniqueConstraint("prior_delta_id", name="uq_delta_supersessions_prior"),
+        ForeignKeyConstraint(
+            ["project_id", "prior_delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_supersessions_prior",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "superseding_delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_supersessions_superseding",
+        ),
+        CheckConstraint(
+            "prior_delta_id <> superseding_delta_id",
+            name="ck_delta_supersessions_not_self",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    prior_delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    superseding_delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    reason: Mapped[str] = mapped_column(String(64))
+    superseded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaDeferral(Base):
+    """Attributable Work List scheduling leaving delta open (#518, ADR-0035)."""
+
+    __tablename__ = "delta_deferrals"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_deferrals_delta",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    deferred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    deferred_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    wake_condition: Mapped[str | None] = mapped_column(String(128))
+    scheduled_by_principal: Mapped[str] = mapped_column(String(128))
+    reason: Mapped[str | None] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class SupportAssessment(Base):
     """One attributable judgment that Source Segments support a proposition.
 
@@ -1348,12 +1511,20 @@ class SupportAssessment(Base):
             ["extracted_proposals.project_id", "extracted_proposals.id"],
             name="fk_support_assessments_proposal_project",
         ),
+        ForeignKeyConstraint(
+            ["project_id", "proposed_delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_support_assessments_delta_project",
+        ),
         CheckConstraint(
             "(proposition_kind = 'source_fact' and fact_id is not null "
-            "and extracted_proposal_id is null) or "
+            "and extracted_proposal_id is null and proposed_delta_id is null) or "
             "(proposition_kind = 'extracted_proposal' "
             "and extracted_proposal_id is not null and fact_id is null "
-            "and document_id is not null)",
+            "and proposed_delta_id is null and document_id is not null) or "
+            "(proposition_kind = 'proposed_delta' "
+            "and proposed_delta_id is not null and fact_id is null "
+            "and extracted_proposal_id is null)",
             name="ck_support_assessments_proposition",
         ),
         CheckConstraint(
@@ -1402,6 +1573,15 @@ class SupportAssessment(Base):
                 "superseded_by is null and extracted_proposal_id is not null"
             ),
         ),
+        Index(
+            "uq_support_assessments_effective_delta",
+            "proposed_delta_id",
+            "evidence_role",
+            unique=True,
+            postgresql_where=text(
+                "superseded_by is null and proposed_delta_id is not null"
+            ),
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1411,6 +1591,7 @@ class SupportAssessment(Base):
     proposition_kind: Mapped[str] = mapped_column(String(32))
     fact_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     extracted_proposal_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    proposed_delta_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     evidence_role: Mapped[str] = mapped_column(String(32))
     assessment: Mapped[str] = mapped_column(String(32))
     human_principal: Mapped[str | None] = mapped_column(String(128))
