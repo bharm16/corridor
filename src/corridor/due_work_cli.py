@@ -18,13 +18,17 @@ from sqlalchemy import select
 
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
+    ConnectorPollingDeclaration,
+    DeltaGenerationDeclaration,
     DocumentNotificationDeclaration,
     DueWorkRefusal,
     EventAdmissionReproofDeclaration,
     LocationDiscoveryDeclaration,
     ProcessingHealthDeclaration,
     ProjectProcessingDeclaration,
+    ReportPreparationDeclaration,
     ReportPublicationDeclaration,
+    RetentionSweepDeclaration,
     configure_due_work,
     due_work_status,
     enqueue_due_work,
@@ -117,6 +121,34 @@ def _publication_declaration(args, project_id: int):
         provenance_mode=args.provenance_mode,
         prepare_external_pdf=args.prepare_external_pdf,
         comparison_window_policy=args.comparison_window_policy,
+    )
+
+
+def _connector_polling_declaration(args, project_id: int):
+    return ConnectorPollingDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        customer=args.customer,
+        channel=args.channel,
+        connector_identity=args.connector_identity,
+        source_url=args.source_url,
+    )
+
+
+def _delta_generation_declaration(args, project_id: int):
+    return DeltaGenerationDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        comparison_rule_version=args.comparison_rule_version,
+    )
+
+
+def _report_preparation_declaration(args, project_id: int):
+    return ReportPreparationDeclaration(**_common_declaration_kwargs(args, project_id))
+
+
+def _retention_sweep_declaration(args, project_id: int):
+    return RetentionSweepDeclaration(
+        **_common_declaration_kwargs(args, project_id),
+        authorized_by=args.authorized_by,
     )
 
 
@@ -217,6 +249,34 @@ def _parser() -> argparse.ArgumentParser:
     publication.add_argument("--comparison-window-policy", required=True)
     _add_schedule_arguments(publication)
     publication.set_defaults(declaration_builder=_publication_declaration)
+
+    polling = commands.add_parser("configure-connector-polling")
+    polling.add_argument("--customer", required=True)
+    polling.add_argument("--channel", required=True)
+    polling.add_argument("--connector-identity", required=True)
+    polling.add_argument("--source-url", required=True)
+    _add_schedule_arguments(polling)
+    polling.set_defaults(
+        declaration_builder=_connector_polling_declaration,
+        payload_extra=lambda args: {
+            "channel": args.channel,
+            "connector_identity": args.connector_identity,
+        },
+    )
+
+    delta_generation = commands.add_parser("configure-delta-generation")
+    delta_generation.add_argument("--comparison-rule-version", required=True)
+    _add_schedule_arguments(delta_generation)
+    delta_generation.set_defaults(declaration_builder=_delta_generation_declaration)
+
+    preparation = commands.add_parser("configure-report-preparation")
+    _add_schedule_arguments(preparation)
+    preparation.set_defaults(declaration_builder=_report_preparation_declaration)
+
+    sweep = commands.add_parser("configure-retention-sweep")
+    sweep.add_argument("--authorized-by", required=True)
+    _add_schedule_arguments(sweep)
+    sweep.set_defaults(declaration_builder=_retention_sweep_declaration)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):

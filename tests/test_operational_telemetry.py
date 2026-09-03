@@ -26,12 +26,24 @@ from corridor import telemetry
 from corridor.analytics import HighCardinalityMetricError
 from corridor.db import Session, engine
 from corridor.due_work import (
+    HANDLER_CONNECTOR_POLLING,
+    HANDLER_DELTA_GENERATION,
     HANDLER_PROCESSING_HEALTH,
     HANDLER_REGISTRY,
+    HANDLER_REPORT_PREPARATION,
+    HANDLER_RETENTION_SWEEP,
+    ConnectorPollingDeclaration,
+    DeltaGenerationDeclaration,
     ProcessingHealthDeclaration,
+    ReportPreparationDeclaration,
+    RetentionSweepDeclaration,
     claim_due_work,
     complete_due_work,
+    configure_connector_polling,
+    configure_delta_generation,
     configure_processing_health,
+    configure_report_preparation,
+    configure_retention_sweep,
     enqueue_due_work,
     fail_due_work,
     run_due_work_once,
@@ -359,6 +371,118 @@ def test_signals_report_backlog_lag_retries_failures_and_last_success_age(sessio
     assert signals[("corridor_due_work_last_success_age_seconds", queue)] == (
         now - (ten + timedelta(minutes=21))
     ).total_seconds()
+
+
+def _pilot_schedules(session, project, *, now: datetime) -> None:
+    """The four recurring declarations a live pilot deployment stands up (#488)."""
+
+    configure_connector_polling(
+        session,
+        ConnectorPollingDeclaration.released_hourly(
+            project_id=project.id,
+            configuration_version="connector-polling-v1",
+            customer="acme-utilities",
+            channel="shared-files",
+            connector_identity="txdot-rid-box-v1",
+            source_url="https://example.test/shared/index",
+            starts_at=now,
+        ),
+        now=now,
+    )
+    configure_delta_generation(
+        session,
+        DeltaGenerationDeclaration.released_hourly(
+            project_id=project.id,
+            configuration_version="delta-generation-v1",
+            comparison_rule_version="structured-cell-value-comparison-v1",
+            starts_at=now,
+        ),
+        now=now,
+    )
+    configure_report_preparation(
+        session,
+        ReportPreparationDeclaration.released_weekly(
+            project_id=project.id,
+            configuration_version="report-preparation-v1",
+            starts_at=now,
+        ),
+        now=now,
+    )
+    configure_retention_sweep(
+        session,
+        RetentionSweepDeclaration.released_weekly(
+            project_id=project.id,
+            configuration_version="retention-sweep-v1",
+            authorized_by="local:retention-operator",
+            starts_at=now,
+        ),
+        now=now,
+    )
+
+
+def test_the_pilot_handlers_report_through_the_same_queue_signals(session):
+    """#488's handlers add queues to #491A's readings, not a second set of them."""
+
+    now = datetime(2026, 9, 3, 13, 0, tzinfo=timezone.utc)
+    project = _project(session, "telemetry-pilot")
+    _pilot_schedules(session, project, now=now)
+
+    enqueue_due_work(session, now=now)
+    later = now + timedelta(minutes=30)
+    signals = {
+        (item.name, tuple(sorted(item.labels.items()))): item.value
+        for item in due_work_signals(session, now=later)
+    }
+
+    for handler in (
+        HANDLER_CONNECTOR_POLLING,
+        HANDLER_DELTA_GENERATION,
+        HANDLER_REPORT_PREPARATION,
+        HANDLER_RETENTION_SWEEP,
+    ):
+        queue = (("queue", handler),)
+        assert signals[("corridor_processing_backlog", queue)] == 1
+        assert signals[("corridor_due_work_queue_lag_seconds", queue)] == 1800
+    # The hourly declarations are the tightest cadence, so they, not the weekly
+    # ones, set the window the worker's freshness is judged against.
+    assert check_worker_heartbeat(session, now=later).detail == "beating"
+
+
+def test_a_pilot_handler_attempt_logs_the_same_structured_line(
+    runtime_database, logs
+):
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 13, 0, tzinfo=timezone.utc)
+    with factory() as setup:
+        project = _project(setup, "telemetry-sweep")
+        configure_retention_sweep(
+            setup,
+            RetentionSweepDeclaration.released_weekly(
+                project_id=project.id,
+                configuration_version="retention-sweep-v1",
+                authorized_by="local:retention-operator",
+                starts_at=now,
+            ),
+            now=now,
+        )
+        project_id = project.id
+        setup.commit()
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    result = run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:telemetry-sweep"
+    )
+
+    assert result is not None
+    [record] = [item for item in _records(logs) if item["event"] == "due_work_attempt"]
+    assert record["handler"] == HANDLER_RETENTION_SWEEP
+    assert record["project_id"] == project_id
+    assert record["job_id"] == result.occurrence_public_id
+    assert record["attempt_id"] == result.attempt_id
+    assert record["execution_outcome"] == "completed"
+    assert record["role"] == telemetry.ROLE_WORKER
 
 
 # Low-cardinality labels only.
