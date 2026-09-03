@@ -69,7 +69,9 @@ from corridor.models import (
     ExtractionRun,
     Project,
 )
+from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.storage import staged_file
 
 # One uploaded file per request is the count bound; a batch caller (email) loops
 # this module per attachment. 64 MiB holds a large utility-conflict matrix PDF or
@@ -235,10 +237,7 @@ def validate_and_stage(
         )
 
     sha256 = hashlib.sha256(body).hexdigest()
-    stored_path = _staged_path(sha256, suffix)
-    if not stored_path.exists():
-        stored_path.parent.mkdir(parents=True, exist_ok=True)
-        stored_path.write_bytes(body)
+    stored_path = store_bytes(body, sha256=sha256, suffix=suffix)
     return StagedSource(
         sha256=sha256,
         size_bytes=len(body),
@@ -576,14 +575,8 @@ def _format_label(suffix: str) -> str:
     return suffix
 
 
-def _staged_path(sha256: str, suffix: str) -> Path:
-    store = Path(settings.corpus_store)
-    return store / sha256[:2] / f"{sha256}{suffix}"
-
-
 def _resolve_staged(sha256: str) -> Path | None:
-    shard = Path(settings.corpus_store) / sha256[:2]
-    return next(iter(sorted(shard.glob(f"{sha256}.*"))), None)
+    return staged_file(sha256)
 
 
 def _images_dir() -> Path:

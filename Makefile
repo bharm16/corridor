@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -193,6 +193,16 @@ gold:
 # development database has no retained Report Run or Report Approved for Release.
 storage-baseline:
 	uv run python -m corridor.storage_baseline_cli $(ARGS)
+
+# Operate the content-addressed store (ADR-0079). `migrate` puts every local
+# file under its own digest into the configured backend, idempotently and
+# digest-verified; `reconcile` compares the PostgreSQL manifests with the store
+# and reports orphans in both directions. Repairs are opt-in:
+#   make storage ARGS="migrate"
+#   make storage ARGS="reconcile --repair"
+#   make storage ARGS="reconcile --remove-unreferenced"
+storage:
+	uv run python -m corridor.storage_cli $(ARGS)
 
 # Plan first; execute requires the exact manifest digest. Holds and lifts are
 # separate attributable commands through CORRIDOR_HUMAN_PRINCIPAL.

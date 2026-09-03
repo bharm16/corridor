@@ -253,6 +253,7 @@ from corridor.source_intake_draft import (
     intake_draft_state_token,
     request_intake_draft,
 )
+from corridor.render_profiles import render_path_for_page
 from corridor.storage import staged_file
 from corridor.presentation import (
     documentation_review_label,
@@ -5841,9 +5842,18 @@ def page_image(
             DocPage.document_id == document_id, DocPage.page_no == page_no
         )
     ).first()
-    if page is None or not page.image_path or not Path(page.image_path).exists():
+    if page is None or not page.image_path:
         raise HTTPException(404, "no rendered image for that page")
-    return FileResponse(page.image_path, media_type="image/png")
+    path = render_path_for_page(
+        session,
+        document_id=document_id,
+        page_number=page_no,
+        purpose="review",
+        legacy_image_path=page.image_path,
+    )
+    if path is None or not Path(path).exists():
+        raise HTTPException(404, "no rendered image for that page")
+    return FileResponse(path, media_type="image/png")
 
 
 @app.post("/candidates/{candidate_id}/keep-unresolved")

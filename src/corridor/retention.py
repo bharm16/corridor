@@ -7,6 +7,11 @@ assistant receipt families, emits an exact digest manifest first, rechecks holds
 and reachability at execution, and leaves receipt identity plus digests behind.
 Project Record tables are absent from the catalog, so no caller can ask this
 module to delete them.
+
+File-backed artifacts live in the content-addressed store (ADR-0079). This
+module is the only issuer of the ``DeletionPermit`` the store's
+``delete_under_policy`` requires, and it issues one only after the hold check,
+so a held object cannot be deleted on either backend (ADR-0080).
 """
 
 from __future__ import annotations
@@ -27,6 +32,13 @@ from corridor.models import (
     RetentionManifest,
     RetentionManifestItem,
     RetentionReference,
+)
+from corridor.object_storage import (
+    DeletionPermit,
+    StorageError,
+    content_key,
+    content_store,
+    digest_file,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 
@@ -103,11 +115,17 @@ def register_processing_artifact(
     derivative twice, returns the existing classification rather than colliding
     on the unique path. A registration that names a live path with a different
     project, kind, or content digest is drift and is refused.
+
+    `path` is the locally staged file the producer wrote. The bytes are
+    persisted to the content-addressed store before the row exists, so a crash
+    between the two leaves an unreferenced object for reconciliation rather
+    than a manifest row without its bytes.
     """
 
     source = Path(path)
     storage_path = str(source)
-    digest = sha256(source.read_bytes()).hexdigest()
+    digest = digest_file(source)
+    content_store().put_file(artifact_key(digest, storage_path), source, sha256=digest)
     existing = session.scalar(
         select(ProcessingArtifact).where(
             ProcessingArtifact.storage_path == storage_path
@@ -135,6 +153,43 @@ def register_processing_artifact(
     session.add(artifact)
     session.flush()
     return artifact
+
+
+def artifact_key(content_sha256: str, storage_path: str) -> str:
+    """The store key of a registered artifact: its digest with its staged suffix."""
+
+    return content_key(content_sha256, Path(storage_path).suffix)
+
+
+def permit_deletion(
+    session: Session, *, project_id: int, key: str, sha256: str, issued_by: str
+) -> DeletionPermit:
+    """Issue the one permit the store accepts, after the hold check.
+
+    A hold suspends every deletion path (ADR-0080), and the store cannot see
+    holds; this is the seam that joins the two, so both backends refuse a held
+    object identically.
+    """
+
+    if _active_hold(session, project_id):
+        raise RetentionRefused("active retention hold suspends every deletion path")
+    return DeletionPermit(key=key, sha256=sha256, issued_by=issued_by)
+
+
+def permit_unreferenced_deletion(
+    session: Session, *, key: str, sha256: str, issued_by: str
+) -> DeletionPermit:
+    """Permit removing an object no manifest row references (reconciliation).
+
+    An unreferenced object cannot be attributed to a project, so any active
+    hold anywhere refuses it: the object might be the held project's.
+    """
+
+    if session.scalar(
+        select(RetentionHold.id).where(RetentionHold.lifted_at.is_(None)).limit(1)
+    ) is not None:
+        raise RetentionRefused("an active retention hold suspends unreferenced cleanup")
+    return DeletionPermit(key=key, sha256=sha256, issued_by=issued_by)
 
 
 def place_hold(
@@ -314,6 +369,7 @@ def execute_retention(
     if manifest.content_sha256 != expected_sha256:
         raise RetentionRefused("retention manifest digest does not match")
     when = executed_at or datetime.now(timezone.utc)
+    store = content_store()
     items = session.scalars(
         select(RetentionManifestItem)
         .where(RetentionManifestItem.manifest_id == manifest.id)
@@ -329,11 +385,14 @@ def execute_retention(
             if artifact is None or artifact.deleted_at is not None:
                 raise RetentionRefused("processing artifact disappeared after dry-run")
             try:
-                digest = sha256(Path(artifact.storage_path).read_bytes()).hexdigest()
-            except OSError as exc:
-                raise RetentionRefused("processing artifact is unreadable") from exc
-            if digest != item.content_sha256:
-                raise RetentionRefused("processing artifact changed after dry-run")
+                store.get(
+                    artifact_key(item.content_sha256, artifact.storage_path),
+                    sha256=item.content_sha256,
+                )
+            except StorageError as exc:
+                raise RetentionRefused(
+                    "processing artifact is unreadable or changed after dry-run"
+                ) from exc
         else:
             spec = _BY_FAMILY[item.family]
             row = _one_row(session, spec, item.source_row_id)
@@ -348,7 +407,22 @@ def execute_retention(
         if item.family == "processing_artifact":
             artifact = session.get(ProcessingArtifact, item.source_row_id)
             assert artifact is not None
-            Path(artifact.storage_path).unlink()
+            key = artifact_key(item.content_sha256, artifact.storage_path)
+            permit = permit_deletion(
+                session,
+                project_id=item.project_id,
+                key=key,
+                sha256=item.content_sha256,
+                issued_by=f"retention_manifest:{manifest.id}",
+            )
+            try:
+                store.delete_under_policy(key, permit=permit)
+            except StorageError as exc:
+                raise RetentionRefused(
+                    "processing artifact could not be deleted under policy"
+                ) from exc
+            # The staged local copy is not the object of record; it goes too.
+            Path(artifact.storage_path).unlink(missing_ok=True)
             artifact.deleted_at = when
             continue
         spec = _BY_FAMILY[item.family]

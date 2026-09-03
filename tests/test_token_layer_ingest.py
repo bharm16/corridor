@@ -26,6 +26,7 @@ from corridor.models import (
     SourceSegment,
     TokenLayerManifest,
 )
+from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
 from corridor.source_segments import dereference_source_segment
@@ -125,10 +126,7 @@ def test_geometry_gates_on_the_native_token_layer_not_the_page_verdict(
 
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
     # Register the document in the content store so stored_pdf resolves it.
-    store = Path("corpus/files") / digest[:2]
-    store.mkdir(parents=True, exist_ok=True)
-    stored = store / f"{digest}.pdf"
-    stored.write_bytes(pdf.read_bytes())
+    stored = store_bytes(pdf.read_bytes(), sha256=digest, suffix=".pdf")
     try:
         document = Document(
             project_id=project.id,

@@ -4,8 +4,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from corridor.config import settings
 from corridor.models import Document
+from corridor.object_storage import content_store, local_staging_path
 
 
 def stored_file(document: Document | None) -> Path | None:
@@ -14,12 +14,13 @@ def stored_file(document: Document | None) -> Path | None:
     Found by hash rather than by extension: the store preserves whatever
     suffix the source had so it stays browsable, and since ADR-0005 that is
     no longer always `.pdf`. One hash, one file — the name is the hash, so
-    a glob cannot match two different documents.
+    a glob cannot match two different documents. The path returned is the
+    locally staged copy; with the object-store backend the store fills it
+    on first use (ADR-0079).
     """
     if not document or not document.sha256:
         return None
-    shard = Path(settings.corpus_store) / document.sha256[:2]
-    return next(iter(sorted(shard.glob(f"{document.sha256}.*"))), None)
+    return staged_file(document.sha256)
 
 
 def staged_file(sha256: str | None) -> Path | None:
@@ -32,8 +33,11 @@ def staged_file(sha256: str | None) -> Path | None:
     """
     if not sha256:
         return None
-    shard = Path(settings.corpus_store) / sha256[:2]
-    return next(iter(sorted(shard.glob(f"{sha256}.*"))), None)
+    store = content_store()
+    key = store.resolve(sha256)
+    if key is None:
+        return None
+    return store.stage(key, local_staging_path(key), sha256=sha256)
 
 
 def stored_pdf(document: Document | None) -> Path | None:

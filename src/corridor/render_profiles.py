@@ -12,6 +12,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 import json
+import os
 from pathlib import Path
 import subprocess
 from typing import Literal
@@ -22,7 +23,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, PageRenderDerivative
-from corridor.retention import register_processing_artifact
+from corridor.object_storage import content_store
+from corridor.retention import artifact_key, register_processing_artifact
 
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -276,6 +278,7 @@ def render_page_derivative(
                 str(manifest_path),
             ],
             cwd=ROOT,
+            env=worker_environment(),
             capture_output=True,
             text=True,
             check=False,
@@ -288,6 +291,29 @@ def render_page_derivative(
     finally:
         request_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)
+
+
+_DENIED_WORKER_VARIABLES = ("DATABASE_URL", "WEB_DATABASE_URL", "WORKER_DATABASE_URL")
+_DENIED_WORKER_PREFIXES = ("CORRIDOR_", "AWS_", "PG")
+
+
+def worker_environment(environment: dict[str, str] | None = None) -> dict[str, str]:
+    """The render subprocess's environment: no database, no storage credentials.
+
+    The worker reads locally staged bytes and writes to a local staging
+    directory (ADR-0079 as amended by ADR-0083). Scrubbing the inherited
+    environment is what makes that true rather than merely intended: the
+    database URLs and capability passwords, every Corridor setting, the AWS
+    credential chain, and libpq's own connection variables never reach it.
+    """
+
+    source = os.environ if environment is None else environment
+    return {
+        name: value
+        for name, value in source.items()
+        if name not in _DENIED_WORKER_VARIABLES
+        and not name.startswith(_DENIED_WORKER_PREFIXES)
+    }
 
 
 def _derivative_key(document_id: int, derivative: RenderDerivative) -> str:
@@ -420,12 +446,29 @@ def render_path_for_page(
             PageRenderDerivative.profile_name == profile_name,
         )
     )
-    if stored is not None and Path(stored.artifact_path).is_file():
-        return stored.artifact_path
+    if stored is not None:
+        staged = staged_derivative_path(stored)
+        if staged is not None:
+            return str(staged)
     # Only human review may read the legacy reviewer rendition. Machine
     # purposes must generate their own profile or refuse; sharing the review
     # image here would keep the superseded production path alive.
     return legacy_image_path if purpose == "review" else None
+
+
+def staged_derivative_path(stored: PageRenderDerivative) -> Path | None:
+    """The retained render as a local file, fetched from the store when the
+    staged copy is gone; ``None`` when the store no longer holds it (retention
+    deleted it, or it predates the store and was never migrated)."""
+
+    destination = Path(stored.artifact_path)
+    if destination.is_file():
+        return destination
+    store = content_store()
+    key = artifact_key(stored.artifact_sha256, stored.artifact_path)
+    if not store.exists(key):
+        return None
+    return store.stage(key, destination, sha256=stored.artifact_sha256)
 
 
 def ensure_render_derivative(

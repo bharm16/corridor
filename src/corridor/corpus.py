@@ -34,6 +34,7 @@ import httpx
 import yaml
 
 from corridor.models import DOC_TYPES, NUMBERING_SCHEMES
+from corridor.object_storage import content_key, content_store
 from corridor.supersession import SupersessionDeclaration
 
 ROLES = ("spine", "stream", "schedule", "evidence")
@@ -680,20 +681,16 @@ def _store_and_record(
     sha = hashlib.sha256(body).hexdigest()
 
     if prior and prior.get("sha256") == sha:
-        # Unchanged bytes never rewrite the lock — but the store file the
-        # record points at must exist. If it was wiped, put the bytes we
-        # just fetched back where the record says they live.
-        prior_path = Path(prior.get("local_path") or _store_path(store, sha, name))
-        if not prior_path.exists():
-            prior_path.parent.mkdir(parents=True, exist_ok=True)
-            prior_path.write_bytes(body)
+        # Unchanged bytes never rewrite the lock — but the store object and
+        # the local file the record points at must exist. If either was
+        # wiped, put the bytes we just fetched back where the record says
+        # they live.
+        recorded = Path(prior["local_path"]) if prior.get("local_path") else None
+        _store_bytes(store, sha, name, body, recorded)
         summary.skipped.append(key)
         return
 
-    path = _store_path(store, sha, name)
-    if not path.exists():
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(body)
+    path = _store_bytes(store, sha, name, body)
 
     history = list(prior.get("history", [])) if prior else []
     drifted = bool(prior and prior.get("sha256") and prior["sha256"] != sha)
@@ -840,13 +837,19 @@ def _failure(
     return record
 
 
-def _store_path(store: Path, sha: str, name: str) -> Path:
+def _store_bytes(
+    store: Path, sha: str, name: str, body: bytes, local_path: Path | None = None
+) -> Path:
     # Sharded by the first two hex chars, extension preserved so the store
     # stays browsable by a human looking for a PDF. `name` is a URL for a
     # plain document and a member path for an archive member; urlparse
-    # handles both.
+    # handles both. The durable object is written first, then the local
+    # copy under `store` that the lockfile records and the parser reads.
     suffix = Path(urlparse(name).path).suffix
-    return store / sha[:2] / f"{sha}{suffix}"
+    key = content_key(sha, suffix)
+    content = content_store()
+    content.put(key, body, sha256=sha)
+    return content.stage(key, local_path or store / key, sha256=sha)
 
 
 def _source_key(source: Source) -> str:

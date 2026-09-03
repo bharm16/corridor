@@ -115,6 +115,22 @@ def pytest_unconfigure(config) -> None:
     os.environ.pop(TEMPLATE_ENV, None)
 
 
+@pytest.fixture(autouse=True)
+def isolated_content_store(tmp_path, monkeypatch):
+    """Every test writes its content-addressed objects under its own tmp_path.
+
+    Renders, token layers, and raw-OCR receipts are persisted through the
+    store (#487), so without this a database test would put its artifacts
+    into the developer's real `corpus/files`. A test that sets
+    `settings.corpus_store` itself still wins: its own fixture runs later.
+    """
+
+    from corridor.config import settings
+
+    monkeypatch.setattr(settings, "storage_backend", "filesystem")
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "content-store"))
+
+
 @pytest.fixture(scope="session")
 def shared_source_database_url() -> str:
     """Configured shared state for the few explicitly live-state tests."""

@@ -31,7 +31,23 @@ class Settings(BaseSettings):
     # Content-addressed store written by `make corpus`. The queue resolves a
     # Document back to its PDF from here to compute quote highlights, and product
     # intake stages an uploaded file's exact bytes here before confirmation.
+    # With the filesystem backend this directory is the store itself; with the
+    # s3 backend it is the local staging directory the store fills on demand
+    # (`corridor.object_storage`, ADR-0079).
     corpus_store: str = "corpus/files"
+    # Which backend holds every content-addressed artifact: "filesystem" or
+    # "s3". Object-store credentials come from the standard AWS environment,
+    # never from these settings, so a subprocess can be denied them by
+    # scrubbing its environment.
+    storage_backend: str = Field(
+        default="filesystem", validation_alias="CORRIDOR_STORAGE_BACKEND"
+    )
+    storage_s3_bucket: str = Field(default="", validation_alias="CORRIDOR_S3_BUCKET")
+    storage_s3_prefix: str = Field(default="", validation_alias="CORRIDOR_S3_PREFIX")
+    storage_s3_endpoint_url: str = Field(
+        default="", validation_alias="CORRIDOR_S3_ENDPOINT_URL"
+    )
+    storage_s3_region: str = Field(default="", validation_alias="CORRIDOR_S3_REGION")
     # Where page renders land when a document is parsed. Explicit deployment-
     # resolved storage behavior, so an intake adapter renders to the same place
     # the rest of the pipeline reads (`corridor.ingest`).
