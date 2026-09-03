@@ -67,6 +67,11 @@ from corridor.analytics import (
 )
 from corridor.config import settings
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
+from corridor.intake_hardening import (
+    HostileContentRefused,
+    inspect_byte_gate,
+    inspect_sandboxed_structure,
+)
 from corridor.models import (
     DOC_TYPES,
     AuditLog,
@@ -244,6 +249,12 @@ def validate_and_stage(
             f"{safe!r} does not contain {suffix} data. Its contents do not match "
             f"its name, so it cannot be read as that kind of file.",
         )
+
+    try:
+        inspect_byte_gate(body, safe, max_bytes=limit)
+        inspect_sandboxed_structure(body, safe)
+    except HostileContentRefused as exc:
+        raise IntakeRefused(exc.rule, exc.reason) from exc
 
     sha256 = hashlib.sha256(body).hexdigest()
     binding = default_binding()
