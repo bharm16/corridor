@@ -41,6 +41,7 @@ from corridor.later_revision import (
 from corridor.models import (
     AuditLog,
     Document,
+    Fact,
     FactDecision,
     ProjectRecordRevision,
     Project,
@@ -677,6 +678,74 @@ def test_capturing_the_same_revision_twice_creates_nothing_new(
     assert second.fact_ids == first.fact_ids
     assert second.document_id == first.document_id
     assert len(_deltas(session, project)) == len(first.delta_ids)
+
+
+def test_a_second_later_revision_restating_a_value_is_captured(
+    session, project, tmp_path, store
+):
+    """The third delivery is the ordinary case, and it used to fail.
+
+    A Source Fact is what *one source* says, so two revisions restating the
+    same value are two Facts.  The Fact digest omitted the rendition while
+    ``SourceSegment.content_sha256`` is ``sha256(exact_text)`` and carries no
+    document either, so the second revision to leave a value alone produced a
+    digest the first revision already owned; ``append_fact`` handed back the
+    earlier revision's Fact and supporting it with this revision's segment was
+    refused by ``ck_support_assessment_rendition``.
+
+    Nearly every real second revision leaves some value alone, so this was the
+    main path rather than a corner of it.
+    """
+
+    _, manifest = adopt(
+        session, project, workbook_bytes(tmp_path / "base.xlsx", BASELINE_ROWS), tmp_path
+    )
+    first = _changed(BASELINE_ROWS, 0, "Size", '8"')
+    second = _changed(first, 1, "Size", '10"')
+
+    _capture(
+        session,
+        project,
+        manifest,
+        workbook_bytes(tmp_path / "r1.xlsx", first),
+        tmp_path,
+    )
+    session.flush()
+    staged, envelope = deliver(
+        session,
+        project,
+        workbook_bytes(tmp_path / "r2.xlsx", second),
+        filename="r2.xlsx",
+        external_identity="UCM workbook revision E",
+        material=f"second-{project.slug}",
+    )
+    capture_later_revision(
+        session,
+        project=project,
+        staged=staged,
+        envelope=envelope,
+        manifest=manifest,
+        principal=PRINCIPAL,
+        images_dir=tmp_path / "images",
+    )
+
+    facts = session.scalars(
+        select(Fact).where(Fact.project_id == project.id)
+    ).all()
+    renditions = {fact.document_id for fact in facts if fact.document_id is not None}
+    # Three documents captured facts: the adopted baseline and both revisions.
+    assert len(renditions) == 3
+    # The value revision two left alone is captured by revision two as its own
+    # Fact rather than resolving to revision one's.
+    by_document: dict[int, set[tuple[str, str]]] = {}
+    for fact in facts:
+        if fact.document_id is None:
+            continue
+        by_document.setdefault(fact.document_id, set()).add(
+            (fact.subject_key, fact.fact_type)
+        )
+    captured = [keys for keys in by_document.values() if (UC1, "size") in keys]
+    assert len(captured) == 3
 
 
 def test_the_proposed_delta_creation_event_is_emitted(
