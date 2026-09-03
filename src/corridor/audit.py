@@ -148,6 +148,15 @@ FLAG_INCORRECT_ASSIGNMENT = "flag_incorrect_assignment"
 # table so the confirmation shares the exact transaction and write-set as the
 # Document registration it authorizes, and a rolled-back confirm records nothing.
 CONFIRM_SOURCE_INTAKE = "confirm_source_intake"
+# One later revision of an adopted source was captured as Source Facts and
+# Proposed Deltas (#606). The entry carries the complete row accounting: every
+# populated row of the revision, the accepted subject it resolved to, and every
+# unknown column and untypeable value the file carried. It is an AuditLog entry
+# rather than a column on the Extraction Run because that receipt's accounting
+# is defined against legacy Candidate counts, which this path deliberately does
+# not produce, and rather than a new table because it is a receipt of one
+# attributable act and nothing reads it as authority.
+CAPTURE_LATER_SOURCE_REVISION = "capture_later_source_revision"
 # A person authorized one discovered reference for processing, declaring the
 # document kind the observed bytes cannot state (#350). Discovery only proposes;
 # this attributable act is what lets the fetch pass register the reference.
@@ -223,6 +232,7 @@ ACTIONS = frozenset(
         PRODUCT_PROVING_FRONTEND_REQUEST,
         ENROLL_PROJECT_MEMBER,
         CONFIRM_SOURCE_INTAKE,
+        CAPTURE_LATER_SOURCE_REVISION,
         AUTHORIZE_DISCOVERED_REFERENCE,
         RECOVER_DOCUMENT_PARSE,
         AUTHORIZE_DEPENDENCY_ADMISSION,

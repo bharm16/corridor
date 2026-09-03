@@ -56,6 +56,7 @@ from corridor.analytics import (
     AnalyticsBinding,
     AnalyticsEvent,
     EventFamily,
+    emit_event,
 )
 from corridor.models import (
     DeltaDeferral,
@@ -214,18 +215,21 @@ def create_proposed_delta_group(
         .order_by(ProposedDelta.id)
     ).all()
 
-    # Emit versioned analytics event if binding provided
+    # Emit versioned analytics event if binding provided.  The event used to be
+    # constructed here and dropped on the floor, which measured nothing (#606).
     if analytics_binding is not None:
-        AnalyticsEvent(
-            family=EventFamily.PROPOSED_DELTA_CREATION,
-            binding=analytics_binding,
-            payload={
-                "project_id": project_id,
-                "source_family": source_family,
-                "source_revision": source_revision,
-                "delta_count": len(rows),
-                "delta_ids": [r.id for r in rows],
-            },
+        emit_event(
+            AnalyticsEvent(
+                family=EventFamily.PROPOSED_DELTA_CREATION,
+                binding=analytics_binding,
+                payload={
+                    "project_id": project_id,
+                    "source_family": source_family,
+                    "source_revision": source_revision,
+                    "delta_count": len(rows),
+                    "delta_ids": [r.id for r in rows],
+                },
+            )
         )
 
     return tuple(rows)
