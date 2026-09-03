@@ -203,6 +203,80 @@ def test_only_the_materializer_constructs_a_materialized_value():
     assert constructors == []
 
 
+# The accepted Project Record is written by these ``SECURITY DEFINER``
+# commands and by nothing else, and each is called from exactly one module.
+# ADR-0076 requires this test; ADR-0083 makes it defense in depth behind the
+# database roles that hold the same boundary (#492, #519).  Adding a writer is
+# a deliberate edit here, reviewed as one.
+ACCEPTED_AUTHORITY_COMMANDS = {
+    "record_human_fact_decision": "fact_decisions.py",
+    "include_structured_cell_fact_decision": "fact_decisions.py",
+    "record_subject_alias_decision": "subject_resolution.py",
+    "adopt_project_baseline": "operating_mode.py",
+    "adopt_project_record_baseline": "baseline_adoption.py",
+    "register_baseline_format": "baseline_adoption.py",
+    "open_delta_resolution_revision": "delta_resolution.py",
+    "resolve_proposed_delta_decision": "delta_resolution.py",
+    # ADR-0084 keeps the deferral receipt with the delta lifecycle (#518);
+    # `delta_resolution` decides whether the act is lawful and delegates.
+    "defer_proposed_delta": "proposed_deltas.py",
+}
+
+# The accepted-authority tables no application module may construct a row of.
+# ``ProjectRecordRevision`` and ``FactDecision`` are read everywhere and
+# written only inside the commands above.
+ACCEPTED_AUTHORITY_MODELS = frozenset(
+    {
+        "ProjectRecordRevision",
+        "FactDecision",
+        "DeltaDisposition",
+        "DeltaRecordDecision",
+        "DeltaDecisionSupport",
+        "DeltaDeferral",
+        "BaselineAdoption",
+        "BaselineSource",
+        "BaselineSourceRow",
+        "BaselineFormat",
+    }
+)
+
+
+def test_only_the_declared_seam_calls_an_accepted_authority_command():
+    callers: dict[str, set[str]] = defaultdict(set)
+    for path in _module_paths():
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "func"
+                and node.attr in ACCEPTED_AUTHORITY_COMMANDS
+            ):
+                callers[node.attr].add(path.name)
+
+    assert {name: sorted(modules) for name, modules in sorted(callers.items())} == {
+        name: [module]
+        for name, module in sorted(ACCEPTED_AUTHORITY_COMMANDS.items())
+    }
+
+
+def test_no_application_module_constructs_an_accepted_authority_row():
+    """The ORM cannot route around the commands: nothing constructs the row."""
+
+    constructors = []
+    for path in _module_paths():
+        if path.name == "models.py":
+            continue
+        for node in ast.walk(_tree(path)):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id in ACCEPTED_AUTHORITY_MODELS
+            ):
+                constructors.append(f"{path.name}:{node.lineno} {node.func.id}")
+
+    assert constructors == []
+
+
 def test_model_output_schemas_carry_references_not_values():
     """A strict model output holds ids, enumerations, and dispositions only (#446).
 

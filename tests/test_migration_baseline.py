@@ -47,7 +47,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "23029acfdd318841d31cf8d41f9681cde590914cda94d9cf2a2f6c2a7f07d03a"
+    "dbfe484dc0e62213f34c4109f2dc9dcc2120a13b0eb6f7033fe53075028cb83f"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -176,8 +176,10 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back():
     Support Assessment tables that only the fifth command writes (#530), and
     it establishes the baseline/delta operating mode with its immutable
     adoption receipt and the guards that refuse a legacy accepted-value write
-    for an adopted project (#520).  A database standing at the supported
-    revision must cross that transition in both directions.
+    for an adopted project (#520), and it moves the delta disposition and the
+    Work List scheduling receipt behind the record-decision role's Resolve
+    Delta commands (#519).  A database standing at the supported revision must
+    cross that transition in both directions.
     """
 
     configured = make_url(settings.database_url)

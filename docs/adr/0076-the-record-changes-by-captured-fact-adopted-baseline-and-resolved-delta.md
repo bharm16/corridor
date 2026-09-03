@@ -20,7 +20,7 @@ amends:
 amended_by:
   - ADR-0083
   - ADR-0084
-migration: Adopt Baseline, Propose Delta, and Resolve Delta commands do not exist yet; the record-write boundary is not yet an enforced architecture test.
+migration: Adopt Baseline (#509), Propose Delta (#518), and Resolve Delta (#519) exist as commands and the record-write boundary is an enforced architecture test; the atomic packet transaction (#526) and the released class-specific projection policies do not exist.
 ---
 
 # The record changes by captured source fact, adopted baseline, proposed delta, and resolved delta

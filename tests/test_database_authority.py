@@ -23,6 +23,7 @@ from sqlalchemy.pool import NullPool
 from corridor.config import settings
 from corridor.models import (
     ActiveExtractionRun,
+    DeltaRecordDecision,
     Document,
     ExtractionRun,
     Fact,
@@ -79,6 +80,12 @@ ACCEPTED_TABLES = (
     "project_baseline_sources",
     "project_baseline_source_rows",
     "project_baseline_formats",
+    # Resolving a Proposed Delta is what finally moves the accepted record
+    # (#519), so its decision and the Support Assessments the decision cited
+    # are accepted authority: read by the application, written only by the
+    # record-decision role's command.
+    "delta_record_decisions",
+    "delta_decision_supports",
 )
 LEGACY_ACCEPTED_TABLES = (
     "dependencies",
@@ -238,6 +245,10 @@ def test_human_decision_commands_are_callable_only_by_the_web_capability(admin):
         "adopt_project_baseline",
         "adopt_project_record_baseline",
         "register_baseline_format",
+        # Accept, edit, reject, and defer are attributable human acts (#519).
+        "open_delta_resolution_revision",
+        "resolve_proposed_delta_decision",
+        "defer_proposed_delta",
     ):
         granted = admin.execute(
             text(
@@ -374,6 +385,44 @@ def test_a_runtime_capability_cannot_write_accepted_authority_through_the_orm(
             session.flush()
 
     assert "permission denied for table fact_decisions" in str(refused.value)
+
+
+def test_a_runtime_capability_cannot_write_a_delta_decision_through_the_orm(
+    runtime,
+):
+    """A resolved delta's authority row is the command's to write, not the app's."""
+
+    _role, connection = runtime
+    with Session(bind=connection) as session:
+        session.add(
+            DeltaRecordDecision(
+                project_id=1,
+                delta_id=1,
+                disposition_id=1,
+                revision_id=1,
+                disposition="accept",
+                effect_kind="changed_field",
+                decided_by_principal="local:probe",
+                idempotency_key="authority-probe",
+                decided_at=datetime(2026, 9, 3, tzinfo=timezone.utc),
+            )
+        )
+
+        with pytest.raises(ProgrammingError) as refused:
+            session.flush()
+
+    assert "permission denied for table delta_record_decisions" in str(refused.value)
+
+
+def test_a_runtime_capability_cannot_write_a_delta_disposition_or_deferral(runtime):
+    """The lifecycle marker and the scheduling receipt moved with the decision."""
+
+    _role, connection = runtime
+    for table in ("delta_dispositions", "delta_deferrals"):
+        with pytest.raises(ProgrammingError) as refused:
+            connection.execute(text(f"insert into {table} default values"))
+        connection.rollback()
+        assert "permission denied" in str(refused.value)
 
 
 def test_a_runtime_capability_cannot_set_role_into_a_command_owner(runtime):

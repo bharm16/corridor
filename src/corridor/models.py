@@ -1416,6 +1416,20 @@ _SUPPORT_ASSESSMENT_OUTCOMES_SQL = ", ".join(
 DELTA_CHANGE_TYPES = ("add", "modify", "apparent_removal")
 DELTA_TARGET_TYPES = ("existing_subject", "proposed_subject")
 DELTA_DISPOSITIONS = ("accept", "edit", "reject")
+# The typed effect one resolved delta has on the accepted record (#519,
+# ADR-0076 as amended by ADR-0083 and ADR-0084).
+DELTA_EFFECT_KINDS = (
+    "new_subject",
+    "changed_field",
+    "timing",
+    "organization",
+    "apparent_removal",
+    "contradiction",
+    "schedule_key_date",
+    "closure",
+)
+DELTA_ORGANIZATION_CHANGE_KINDS = ("correction", "changed_ownership")
+_DELTA_EFFECT_KINDS_SQL = ", ".join(f"'{value}'" for value in DELTA_EFFECT_KINDS)
 
 
 class DeltaGroup(Base):
@@ -1573,6 +1587,122 @@ class DeltaDeferral(Base):
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class DeltaRecordDecision(Base):
+    """The authority binding of one resolved Proposed Delta (#519).
+
+    ``DeltaDisposition`` says the delta resolved; this row says by whose
+    authority, in which Project Record revision, with which typed effect, and
+    — for an edit — on which constrained basis the edited value is still
+    source-backed.  Written only by ``resolve_proposed_delta_decision``; a
+    wrong decision is corrected by a later attributable decision, never by an
+    update (ADR-0076, ADR-0084).
+    """
+
+    __tablename__ = "delta_record_decisions"
+    __table_args__ = (
+        UniqueConstraint(
+            "disposition_id", name="uq_delta_record_decisions_disposition"
+        ),
+        UniqueConstraint("delta_id", name="uq_delta_record_decisions_delta"),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_delta_record_decisions_key"
+        ),
+        UniqueConstraint(
+            "project_id", "id", name="uq_delta_record_decisions_project_id"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_record_decisions_delta",
+        ),
+        CheckConstraint(
+            "disposition in ('accept', 'edit', 'reject')",
+            name="ck_delta_record_decisions_disposition",
+        ),
+        CheckConstraint(
+            f"effect_kind in ({_DELTA_EFFECT_KINDS_SQL})",
+            name="ck_delta_record_decisions_effect_kind",
+        ),
+        CheckConstraint(
+            "(effect_kind = 'organization' and organization_change_kind in "
+            "('correction', 'changed_ownership')) or "
+            "(effect_kind <> 'organization' and organization_change_kind is null)",
+            name="ck_delta_record_decisions_organization",
+        ),
+        CheckConstraint(
+            "(disposition = 'edit') = (edit_basis is not null)",
+            name="ck_delta_record_decisions_edit_basis",
+        ),
+        CheckConstraint(
+            "length(btrim(decided_by_principal)) > 0",
+            name="ck_delta_record_decisions_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    delta_id: Mapped[int] = mapped_column(BigInteger)
+    disposition_id: Mapped[int] = mapped_column(
+        ForeignKey("delta_dispositions.id")
+    )
+    revision_id: Mapped[int] = mapped_column(
+        ForeignKey("project_record_revisions.id"), index=True
+    )
+    disposition: Mapped[str] = mapped_column(String(32))
+    effect_kind: Mapped[str] = mapped_column(String(32))
+    organization_change_kind: Mapped[str | None] = mapped_column(String(32))
+    decided_by_principal: Mapped[str] = mapped_column(String(128))
+    observed_accepted_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    edit_basis: Mapped[Any | None] = mapped_column(JSONB)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaDecisionSupport(Base):
+    """One effective Support Assessment a delta decision relied on (#519, #530).
+
+    The decision names its support; a passed Source Passage Check is never
+    read here and can never stand in for it (ADR-0082).
+    """
+
+    __tablename__ = "delta_decision_supports"
+    __table_args__ = (
+        UniqueConstraint(
+            "decision_id",
+            "support_assessment_id",
+            name="uq_delta_decision_supports_member",
+        ),
+        UniqueConstraint(
+            "decision_id", "ordinal", name="uq_delta_decision_supports_ordinal"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "decision_id"],
+            [
+                "delta_record_decisions.project_id",
+                "delta_record_decisions.id",
+            ],
+            name="fk_delta_decision_supports_decision",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "support_assessment_id"],
+            ["support_assessments.project_id", "support_assessments.id"],
+            name="fk_delta_decision_supports_assessment",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_delta_decision_supports_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    decision_id: Mapped[int] = mapped_column(BigInteger)
+    support_assessment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
 
 
 class SupportAssessment(Base):

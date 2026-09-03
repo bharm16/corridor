@@ -6,7 +6,7 @@ amends:
   - ADR-0076
   - ADR-0081
   - ADR-0083
-migration: none of the deferral receipt, spine-native adopted-project readers, or the #512 sequencing rule is implemented.
+migration: the deferral receipt and the constrained-edit rules are implemented (#518, #519); the spine-native adopted-project readers and the #512 sequencing rule are not.
 ---
 
 # Deferral is Work List scheduling, and adopted-baseline projects read the spine natively
