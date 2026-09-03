@@ -676,7 +676,7 @@ def test_unverified_candidates_sink_but_are_never_hidden(
     assert next_candidate(session, project.id).id == bad.id
 
     r = client.get(f"/queue/{project.slug}")
-    assert "Source passage check failed" in r.text
+    assert "Source passage check: not found at cited location" in r.text
 
 
 def test_editing_a_whole_row_candidate_updates_queue_counts_and_order(
@@ -750,13 +750,13 @@ def test_only_an_unverified_citation_is_announced(client, session, project, docu
     make_candidate(session, project, document)
     r = client.get(f"/queue/{project.slug}?mode=review")
     assert "Citation verified" not in r.text
-    assert "Source passage check failed" not in r.text
+    assert "Source passage check: not found at cited location" not in r.text
 
     unverified = make_candidate(
         session, project, document, uid="FOC2-2", verified=False
     )
     r = client.get(f"/queue/{project.slug}?mode=review&candidate_id={unverified.id}")
-    assert "Source passage check failed" in r.text
+    assert "Source passage check: not found at cited location" in r.text
 
 
 def test_merge_is_unavailable_when_there_is_nothing_to_merge_into(
@@ -5036,7 +5036,7 @@ def test_an_unverifiable_row_is_offered_rather_than_withheld(
 
     page = client.get(f"/queue/{project.slug}").text
     assert "BAD-1" in page
-    assert "Source passage check failed" in page
+    assert "Source passage check: not found at cited location" in page
 
 
 def test_a_row_with_no_identifier_is_offered_with_its_reason(
