@@ -93,14 +93,20 @@ def source_passage_check_label(status: str) -> str:
 
     The stored identifiers stay the machine words ADR-0082 fixed (``valid``,
     ``invalid``, ``not_checked``); these are the customer words for the same
-    three states.  A passed check says the cited passage is present in its
-    source, never that the source supports the value beside it — that is a
-    Support Assessment, and it is displayed separately.
+    three states.  Each says only where the cited passage was looked for and
+    whether it was there, never that the source supports the value beside it —
+    that is a Support Assessment, and it is displayed separately.
+
+    Passed, Failed, and Not run were the first wording and were rejected
+    (#600): each reads as a verdict on the value, or on work that passed an
+    inspection, which the check never is.  "Not run" also misdescribed the
+    mechanism, because the status is computed by replaying the locator when it
+    is read; ``not_checked`` means there was no cited location to replay.
     """
     return {
-        "valid": "Passed",
-        "invalid": "Failed",
-        "not_checked": "Not run",
+        "valid": "Found at cited location",
+        "invalid": "Not found at cited location",
+        "not_checked": "No cited location recorded",
     }[status]
 
 

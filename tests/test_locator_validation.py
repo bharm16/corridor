@@ -453,11 +453,18 @@ def test_no_customer_surface_shows_the_flag_as_verified():
 
 
 def test_the_flag_is_presented_as_the_source_passage_check_with_its_state():
+    """The state names where the passage was looked for, not a verdict (#600).
+
+    Passed, Failed, and Not run each read as a judgment on the value or on
+    inspected work, and "Not run" also implied a scheduled check that was
+    skipped rather than a locator there was never anything to replay.
+    """
+
     assert label("source_passage_check") == "Source passage check"
     assert [source_passage_check_label(s) for s in (VALID, INVALID, NOT_CHECKED)] == [
-        "Passed",
-        "Failed",
-        "Not run",
+        "Found at cited location",
+        "Not found at cited location",
+        "No cited location recorded",
     ]
 
 
