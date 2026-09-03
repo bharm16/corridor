@@ -104,7 +104,12 @@ class CheckpointRecorder:
 
 
 def last_checkpoint_token(session: Session, schedule_id: int) -> str | None:
-    """The token this schedule's newest completed attempt durably reached."""
+    """The token this schedule's newest completed attempt durably reached.
+
+    Ordered by receipt identity rather than ``finished_at``: the identifier is
+    monotonic in insertion order no matter what any clock said, and "newest"
+    here must mean the last one retained.
+    """
 
     result = session.scalars(
         select(DueWorkReceipt.handler_result_json)
@@ -117,7 +122,7 @@ def last_checkpoint_token(session: Session, schedule_id: int) -> str | None:
             DueWorkReceipt.handler_key == HANDLER_KEY,
             DueWorkReceipt.execution_outcome == "completed",
         )
-        .order_by(DueWorkReceipt.finished_at.desc(), DueWorkReceipt.id.desc())
+        .order_by(DueWorkReceipt.id.desc())
         .limit(1)
     ).first()
     token = (result or {}).get("checkpoint_token") or None

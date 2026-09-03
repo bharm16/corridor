@@ -4704,6 +4704,8 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
             "observed_at",
             "health",
             "window_start",
+            "through_delta_id",
+            "through_disposition_id",
             "accepted_revision_id",
             "resolved_accepted",
             "resolved_edited",

@@ -3,8 +3,14 @@
 The change summary and the weekly report are rendered from one reading of what
 changed since the last weekly artifact. These tests prove the reading is
 produced on a weekly schedule, that consecutive readings tile without counting
-a resolution twice, and that ADR-0084 holds: a deferred delta is neither
-resolved nor mixed into the actionable open work.
+a change twice, and that ADR-0084 holds: a deferred delta is neither resolved
+nor mixed into the actionable open work.
+
+They also pin the fix for a defect that passed by coincidence: the window used
+to be ``created_at > previous observed_at``, which compares PostgreSQL's
+insertion clock against the runtime's logical one. The reading now covers a
+range of append-only identifiers, and one test takes the same reading under
+absurd observation times to prove no clock can change its counts.
 """
 
 from __future__ import annotations
@@ -25,7 +31,7 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
-from corridor.models import Project
+from corridor.models import DueWorkSchedule, Project
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
     ProposedDeltaValues,
@@ -33,6 +39,7 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
     record_delta_disposition,
 )
+from corridor.report_preparation import execute_report_preparation
 
 
 class ControlledClock:
@@ -157,6 +164,8 @@ def test_the_first_reading_separates_resolved_deferred_and_open(runtime_database
     assert body["schema_version"] == "report-preparation-result-v1"
     assert body["health"] == "healthy"
     assert body["window_start"] == ""
+    assert body["through_delta_id"] > 0
+    assert body["through_disposition_id"] > 0
     assert body["accepted_revision_id"] == revision
     assert body["proposed_new"] == 3
     assert body["resolved_accepted"] == 1
@@ -204,12 +213,73 @@ def test_the_next_weekly_reading_covers_only_the_week_since_the_last(
 
     assert second.execution_outcome == "completed"
     body = second.handler_result
+    # `window_start` is the sentence the summary prints, not the filter.
     assert body["window_start"] == opening.handler_result["observed_at"]
     # The delta itself was proposed in the previous window, so only its
-    # resolution belongs to this one.
+    # resolution belongs to this one. The boundary is the retained watermark.
+    assert body["through_delta_id"] == opening.handler_result["through_delta_id"]
+    assert (
+        body["through_disposition_id"]
+        > opening.handler_result["through_disposition_id"]
+    )
     assert body["proposed_new"] == 0
     assert body["resolved_rejected"] == 1
     assert body["open_actionable"] == 0
+
+
+def test_the_window_is_a_watermark_and_not_a_clock_comparison(runtime_database):
+    """The same reading, taken under absurd clocks, counts the same things.
+
+    `ProposedDelta.created_at` is assigned by PostgreSQL's `now()` while the
+    handler's `observed_at` comes from the runtime's clock. Bounding the week
+    with one against the other was only ever right while the two happened to
+    agree, so this takes the second reading a decade early and a decade late
+    and requires both to agree with each other.
+    """
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
+    project_id, schedule_id, revision = _seed_project(factory, now)
+    with factory() as writing:
+        first = _delta(writing, project_id, "UC-1", "1200+00", revision)
+        writing.commit()
+        first_id = first.id
+
+    opening = _run(factory, now)
+    assert opening.handler_result["proposed_new"] == 1
+
+    # One more proposal and one resolution land after that retained reading.
+    with factory() as writing:
+        _delta(writing, project_id, "UC-2", "1300+00", revision)
+        record_delta_disposition(
+            writing,
+            project_id=project_id,
+            delta_id=first_id,
+            disposition="accept",
+            decided_at=now + timedelta(days=3),
+            decided_by_principal="local:coordinator",
+        )
+        writing.commit()
+
+    readings = []
+    for observed_at in (
+        datetime(2016, 1, 1, tzinfo=timezone.utc),
+        datetime(2036, 1, 1, tzinfo=timezone.utc),
+    ):
+        with factory() as reading:
+            schedule = reading.get(DueWorkSchedule, schedule_id)
+            readings.append(
+                execute_report_preparation(reading, schedule, observed_at)
+            )
+
+    long_past, far_future = readings
+    assert long_past["proposed_new"] == 1
+    assert long_past["resolved_accepted"] == 1
+    assert long_past["open_actionable"] == 1
+    # Only the observation stamp itself may differ between the two.
+    assert {
+        key: value for key, value in long_past.items() if key != "observed_at"
+    } == {key: value for key, value in far_future.items() if key != "observed_at"}
 
 
 def test_a_project_with_no_accepted_revision_asks_for_a_baseline(runtime_database):

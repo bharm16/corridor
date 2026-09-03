@@ -81,7 +81,12 @@ class DeltaGenerationRefusal(ValueError):
 
 
 def last_considered_fact_id(session: Session, schedule_id: int) -> int:
-    """The highest Source Fact this schedule's newest completed attempt saw."""
+    """The highest Source Fact this schedule's newest completed attempt saw.
+
+    Ordered by receipt identity rather than ``finished_at``: the identifier is
+    monotonic in insertion order no matter what any clock said, and "newest"
+    here must mean the last one retained.
+    """
 
     result = session.scalars(
         select(DueWorkReceipt.handler_result_json)
@@ -94,7 +99,7 @@ def last_considered_fact_id(session: Session, schedule_id: int) -> int:
             DueWorkReceipt.handler_key == HANDLER_KEY,
             DueWorkReceipt.execution_outcome == "completed",
         )
-        .order_by(DueWorkReceipt.finished_at.desc(), DueWorkReceipt.id.desc())
+        .order_by(DueWorkReceipt.id.desc())
         .limit(1)
     ).first()
     return int((result or {}).get("through_fact_id") or 0)
