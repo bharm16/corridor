@@ -1,0 +1,169 @@
+{% import "_primitives.html" as ui -%}
+{#
+  One adopted project's week, in the order it runs (#536): decide the record
+  changes sources proposed, chase the answers the project already recorded a
+  plan for, then approve what goes back to the customer.
+
+  The page holds no decision control of its own. Every proposed change is
+  actionable in exactly one item on the review screen (ADR-0085), so this page
+  links to that screen and offers nothing that resolves, defers, or plans; a
+  Follow-up Plan is printed in the words it recorded, with no control, because
+  nothing acts on a spine Follow-up Plan yet (#425).
+
+  ADR-0085's three visible consequence levels are deliberately absent. They are
+  a projection onto the next issue's declared content inventory, and ADR-0091
+  records that the per-project configured issue set is not modelled, so a level
+  printed here would be a guess wearing a heading. Every Attention Reason stays
+  where #527 and #528 already print it.
+
+  `Review Packet` and `Release Package` are internal names and appear nowhere.
+  The sections are named from adopted glossary terms; no new label is coined.
+
+  There is no script. The landing section is the first one still holding work,
+  and it is the one element carrying `autofocus`, so a keyboard user and a
+  screen reader both start where the work is.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>Work — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:56rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h3 { font-size:1rem; margin:1.1rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .region { border:1px solid var(--line); border-radius:7px;
+            padding:.9rem 1.1rem; margin:1rem 0; }
+  .region > h2 { font-size:1.15rem; margin:0 0 .35rem; }
+  .region dl.facts { display:grid; grid-template-columns:auto 1fr;
+                     gap:.15rem .8rem; margin:.4rem 0 .6rem; }
+  .region dl.facts dt { color:var(--muted); }
+  .region dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  ol.steps { list-style:none; margin:0 0 1rem; padding:0; }
+  ol.steps li { display:inline; }
+  ol.steps li + li::before { content:" \2192 "; color:var(--muted); }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/projects/{{ project.slug }}/sources">Source history &rarr;</a></span>
+</header>
+
+<main>
+  <h1>Work — {{ project.name }}</h1>
+  <p class="lead">
+    Everything this project needs before its next issue, in the order it
+    happens. Sources captured up to {{ cutoff }} are included.
+    Moving between sections records nothing.
+  </p>
+
+  <nav aria-label="Sections of this project's work">
+    <ol class="steps">
+      {%- for section in workflow.sections %}
+      <li><a href="#{{ section.name }}-heading">{{ section.heading }}</a></li>
+      {%- endfor %}
+    </ol>
+  </nav>
+
+  {%- if not landing.waiting %}
+  <p>Nothing in this project needs attention at this cutoff.</p>
+  {%- endif %}
+
+  {%- for section in workflow.sections %}
+  {% call ui.region(section.name, section.heading, focus) %}
+    <p>{{ section.summary }}</p>
+    {{ ui.fact_list(section.counts) }}
+
+    {%- if section.name == "review" %}
+      {%- if workflow.undecided %}
+      {% call ui.record_table(
+           "Every question waiting, each offering its own proposed changes",
+           ["What is in question", "Proposed changes", "Why it needs attention"]) %}
+        {%- for item in workflow.undecided %}
+        <tr>
+          <th scope="row">{{ item.headline }}</th>
+          <td>{{ item.child_count }}</td>
+          <td>{{ item.attention_sentences|join("; ") }}</td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      <p class="quiet">
+        Listed here so the week's shape is visible. Every decision is made on
+        the review screen, where each proposed change is offered exactly once.
+      </p>
+      <p><a href="/review/{{ project.slug }}">Review these source changes</a></p>
+      {%- elif workflow.review.items %}
+      <p><a href="/review/{{ project.slug }}">Open the review screen anyway</a></p>
+      {%- endif %}
+
+    {%- elif section.name == "follow_up" %}
+      {%- if workflow.follow_up %}
+      {% call ui.record_table(
+           "What each recorded Follow-up Plan is waiting for",
+           ["What is in question", "Field", "The question the plan recorded",
+            "Who owes the answer", "Returns"]) %}
+        {%- for need in workflow.follow_up %}
+        <tr>
+          <th scope="row">{{ need.subject_name }}</th>
+          <td>{{ need.field_name }}</td>
+          <td>{{ need.open_question }}</td>
+          <td>{{ need.responsible if need.responsible else not_recorded }}</td>
+          <td>
+            {{ need.return_date if need.return_date else not_recorded }}
+            {%- if need.overdue(today=today) %}
+            {{ ui.state(state_label("attention", "past the date this plan named")) }}
+            {%- endif %}
+          </td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      <p class="quiet">
+        Each of these was recorded as a Follow-up Plan when a proposed change
+        was answered Needs coordination. Contacting anyone from here is not
+        built yet, so nothing on this page sends, closes, or reassigns one.
+      </p>
+      {%- endif %}
+
+    {%- else %}
+      {%- if workflow.readiness %}
+      <h3>What must be put right first</h3>
+      <ul>
+        {%- for problem in workflow.readiness %}
+        <li>{{ ui.state(state_label("attention", problem.sentence)) }}</li>
+        {%- endfor %}
+      </ul>
+      <p class="quiet">
+        These are problems with reading sources and producing the customer's
+        own files. None of them is a decision about the project record, so none
+        is offered as one.
+      </p>
+      {%- endif %}
+      <p class="quiet">
+        Preparing this project's issue and approving it for sharing are not
+        built yet, so neither can be done from here.
+      </p>
+    {%- endif %}
+  {% endcall %}
+  {%- endfor %}
+
+  <h2>Look something up</h2>
+  <p class="quiet">
+    Secondary investigation. Nothing here decides anything; the decisions stay
+    on the review screen.
+  </p>
+  <ul>
+    <li><a href="/projects/{{ project.slug }}/sources">Source history — every document delivered to this project</a></li>
+  </ul>
+  <p class="quiet">
+    One screen over the whole accepted record, its decisions, and its audit
+    history is not built yet for an adopted project, so it is not linked from
+    here rather than linked to a legacy view that would not show it.
+  </p>
+</main>

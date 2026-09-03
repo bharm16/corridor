@@ -407,6 +407,8 @@ from corridor.packet_review import (
     read_review_items,
     select_children,
 )
+from corridor.operating_mode import is_adopted_baseline
+from corridor.project_workflow import read_project_workflow
 from corridor.review_packet_reading import SHARED_COMMITMENT
 from corridor.review_packets import (
     APPLY,
@@ -4479,6 +4481,72 @@ def assignment_delivery_operations(
     return response
 
 
+def get_review_clock():
+    """The instant one review request is read and decided at.
+
+    A seam rather than a call to ``datetime.now`` inside the handlers: the
+    reading's cutoff, a deferral's return date, and the decision time all come
+    from here, so a test states the moment instead of racing the wall clock
+    (ADR-0084 and #488's rule that no logical time is taken from a clock a
+    caller cannot supply).
+    """
+
+    def now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    return now
+
+
+# --- The adopted project's ordered week (#536) -----------------------------
+#
+# Review, accepted follow-up, and the customer issue, in the order they happen,
+# with the landing section derived rather than stored. The page carries no
+# decision control of its own: `read_project_workflow` re-derives nothing about
+# which deltas are decided together, and every act stays on the one surface
+# that already owns it, so no Proposed Delta grows a second control
+# (ADR-0085's exactly-once rule).
+
+
+def _project_workflow_response(
+    request: Request,
+    project: Project,
+    principal: HumanPrincipal,
+    session: Session,
+    *,
+    now: datetime,
+) -> Response:
+    """Render one adopted project's week and record the read, writing nothing else."""
+
+    workflow = read_project_workflow(session, project_id=project.id, as_of=now)
+    landing = workflow.section(workflow.landing)
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "project_workflow.html",
+        {
+            "project": project,
+            "workflow": workflow,
+            "landing": landing,
+            # Exactly one element carries `autofocus`: the section the
+            # coordinator's work actually starts in.
+            "focus": workflow.landing,
+            "cutoff": workflow.cutoff.date().isoformat(),
+            "today": now.date(),
+        },
+    )
+    record_frontend_request(
+        session,
+        principal=principal,
+        route_name="coordinator_home",
+        route_template="/work/{slug}",
+        method="GET",
+        response=response,
+        subject=FrontendRequestSubject(project_id=project.id),
+        request_fields=request.query_params,
+    )
+    session.commit()
+    return response
+
+
 @app.get("/work/{slug}", response_class=HTMLResponse)
 def coordinator_home(
     request: Request,
@@ -4489,9 +4557,19 @@ def coordinator_home(
     statement_page: int = 1,
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
 ):
-    """The coordinator's short, project-language entry point."""
+    """The coordinator's short, project-language entry point.
+
+    An adopted-baseline project opens on its own ordered week instead (#536).
+    ADR-0085 amends only the adopted-project presentation, so a legacy project
+    keeps ADR-0035's item-per-record Work List below, unchanged.
+    """
     project = _project(session, slug, principal)
+    if is_adopted_baseline(session, project.id):
+        return _project_workflow_response(
+            request, project, principal, session, now=clock()
+        )
     work_list = build_work_list(
         session,
         project.id,
@@ -4566,22 +4644,6 @@ def coordinator_home(
     )
     session.commit()
     return response
-
-
-def get_review_clock():
-    """The instant one review request is read and decided at.
-
-    A seam rather than a call to ``datetime.now`` inside the handlers: the
-    reading's cutoff, a deferral's return date, and the decision time all come
-    from here, so a test states the moment instead of racing the wall clock
-    (ADR-0084 and #488's rule that no logical time is taken from a clock a
-    caller cannot supply).
-    """
-
-    def now() -> datetime:
-        return datetime.now(timezone.utc)
-
-    return now
 
 
 # --- The source-revision review screen (#527) -----------------------------
