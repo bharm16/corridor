@@ -84,7 +84,7 @@ from corridor.analytics import (
 from corridor.baseline_adoption import effective_baseline_formats
 from corridor.baseline_workbook import BASELINE_FACT_FIELDS
 from corridor.delta_generation import COMPARABLE_FACT_TYPES
-from corridor.delta_resolution import RecordEffect
+from corridor.delta_resolution import CapturedSupport, RecordEffect
 from corridor.models import (
     BaselineSourceRow,
     DeltaGroup,
@@ -105,10 +105,15 @@ from corridor.review_packet_reading import (
     STALE,
     SUPERSEDED,
     HELD_OUT_APPARENT_REMOVAL,
+    HELD_OUT_DIFFERENT_ACTION,
     HELD_OUT_OWNER_MISMATCH,
     HELD_OUT_POSSIBLE_NEW_CONFLICT,
     HELD_OUT_UNCERTAIN_SCOPE,
+    IDENTITY_FIELDS,
+    KEY_CONTRADICTED_IDENTITY,
+    KEY_REASONS,
     PARTITION_RULE_VERSION,
+    SHARED_COMMITMENT,
     SOURCE_REVISION,
     ActionableItem,
     DeltaReading,
@@ -119,7 +124,10 @@ from corridor.review_packet_reading import (
 from corridor.review_packets import (
     APPLY,
     DEFER,
+    EDIT_AND_APPLY,
     KEEP_CURRENT,
+    NEEDS_COORDINATION,
+    CoordinationRequest,
     DeferralRequest,
     PacketChildRequest,
     ReviewPacketRequest,
@@ -161,6 +169,10 @@ HELD_OUT_WORDS = {
         "which Constraints this applies to is not settled by an exact cell "
         "comparison"
     ),
+    HELD_OUT_DIFFERENT_ACTION: (
+        "another source proposes a different kind of change to the same value, "
+        "so answering this one would not answer that one"
+    ),
 }
 CONTRADICTED_ELSEWHERE = (
     "two retained sources answer this differently, so it is decided as its own "
@@ -181,17 +193,76 @@ NOT_READY_NO_SUPPORT = (
     "no effective Support Assessment records that the source supports this value"
 )
 
-# The batch outcomes this screen offers.  Edit and apply and Needs coordination
-# are per-child answers rather than batch ones, so they belong to the focused
-# item and to #528, not here.
+# The batch outcomes the source-revision screen offers.  Edit and apply and
+# Needs coordination are per-child answers rather than batch ones, so they
+# belong to the focused item below (#528) and never to a batch.
 BATCH_OUTCOMES = (APPLY, KEEP_CURRENT, DEFER)
+
+# The focused item's outcomes: ADR-0085's four primary decisions in project
+# language, plus the secondary dated Defer.  A child a coordinator has not
+# answered is simply left open, which is why "leave open" is the absence of a
+# decision rather than a sixth one.
+LEAVE_OPEN = "leave_open"
+FOCUSED_OUTCOMES = (
+    APPLY,
+    KEEP_CURRENT,
+    EDIT_AND_APPLY,
+    NEEDS_COORDINATION,
+    DEFER,
+)
+
+# Why one focused answer could not be built, in the same voice as the rest of
+# the screen's refusals.  Each is a shape a person can correct without losing
+# what they had already chosen.
+NEEDS_QUESTION = (
+    "Needs coordination records the exact question that must be answered "
+    "before this value can be accepted."
+)
+NEEDS_OWNER = "Needs coordination records who owes the answer."
+NEEDS_RETURN_DATE = "Defer records the date this comes back."
+NEEDS_CHOSEN_SOURCE = (
+    "Edit and apply records which captured source value becomes the accepted "
+    "one; it can never be free text for an external fact (ADR-0084)."
+)
+RIVAL_ANSWERS = (
+    "Only one of these sources can become the accepted value for a field. "
+    "Choose one to apply and answer the others."
+)
 
 # Only a link a browser can follow read-only is rendered as a link.
 _LINKABLE_SCHEMES = frozenset({"http", "https"})
 
+# What a source row says when the incoming value carries no cited location.
+NOT_CITED = "no cited location recorded"
+
 
 class ReviewScreenRefused(ValueError):
-    """The caller cannot build or act on this coordinator reading."""
+    """The caller cannot build or act on this coordinator reading.
+
+    A refusal about one child's own answer carries which child and which
+    control, so the screen can link the message to the input that holds it
+    without deciding anything a second time.  The rule lives here; the screen
+    only renders what it said.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        delta_id: int | None = None,
+        control: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.delta_id = delta_id
+        self.control = control
+
+
+# The per-child controls a focused answer can be refused against.
+CONTROL_OUTCOME = "outcome"
+CONTROL_SOURCE = "source"
+CONTROL_QUESTION = "question"
+CONTROL_RESPONSIBLE = "responsible"
+CONTROL_RETURN = "return"
 
 
 # --- what one child shows --------------------------------------------------
@@ -240,6 +311,71 @@ class SourceReference:
         if self.page_no is not None:
             return f"page {self.page_no}"
         return "no cited location recorded"
+
+
+@dataclass(frozen=True, slots=True)
+class AcceptedPosition:
+    """What the accepted record says today about one subject and field.
+
+    The focused item shows this beside every source that disagrees with it, so
+    the coordinator is answering "which of these is right" against the record
+    rather than against the newest arrival.
+    """
+
+    subject_identity: str
+    subject_name: str
+    field: str | None
+    field_name: str
+    value: str | None
+    revision_id: int | None
+
+    @property
+    def text(self) -> str:
+        return self.value if self.value is not None else "not recorded"
+
+
+@dataclass(frozen=True, slots=True)
+class SourceAnswer:
+    """What one retained source says, kept whole beside the others.
+
+    ADR-0085 forbids collapsing two retained sources into one incoming value,
+    so a focused item carries one of these per child rather than a merged row.
+    """
+
+    delta_id: int
+    subject_name: str
+    field_name: str
+    source: str
+    document_filename: str
+    location: str
+    quote: str | None
+    value: str | None
+    external_links: tuple[ExternalRecordLink, ...]
+    not_ready_reason: str | None
+
+    @property
+    def ready(self) -> bool:
+        return self.not_ready_reason is None
+
+
+@dataclass(frozen=True, slots=True)
+class CommitmentScopeRow:
+    """One Utility Conflict inside a commitment's Applies To scope.
+
+    A conflict a later contradiction or a hold-out took to its own item stays
+    listed here, naming that item, so the commitment's accounting is complete
+    on the screen that decides it.
+    """
+
+    subject_identity: str
+    subject_name: str
+    fields: tuple[str, ...]
+    held_out_reason: str | None = None
+    held_out_item_key: str | None = None
+
+    @property
+    def decided_here(self) -> bool:
+        return self.held_out_reason is None
 
 
 @dataclass(frozen=True, slots=True)
@@ -365,16 +501,166 @@ class ItemReading:
         return len(self.held_out_children)
 
     @property
-    def decidable(self) -> bool:
-        """Whether this screen offers the batch act for this item.
+    def batched(self) -> bool:
+        """Whether one outcome answers every selected child at once (#527).
 
-        A cross-source coordination question is answered per child against two
-        disagreeing sources, which is #528's screen.  It is still counted,
-        still named, and still reachable here — it simply grows no decision
-        control on this screen, so no delta ever carries two.
+        Only a source revision's own changes are alike enough for that: they
+        arrived together, they fail the same way, and Apply means the same
+        thing for each.
         """
 
         return self.grouping_key_kind == SOURCE_REVISION
+
+    @property
+    def focused(self) -> bool:
+        """Whether each child carries its own answer (#528).
+
+        A cross-source coordination question and a shared commitment are both
+        answered child by child — one source's value may become the accepted
+        one while another's is kept out, and that is one act, not two.
+        """
+
+        return self.grouping_key_kind in (COORDINATION_QUESTION, SHARED_COMMITMENT)
+
+    @property
+    def decidable(self) -> bool:
+        """Whether this item carries decision controls at all.
+
+        Every item does now; ADR-0085's exactly-once rule is kept by opening
+        exactly one item at a time rather than by leaving a kind of item
+        undecidable.
+        """
+
+        return self.batched or self.focused
+
+    @property
+    def commitment(self) -> bool:
+        """Whether this item is one attributable commitment's own scope."""
+
+        return self.grouping_key_kind == SHARED_COMMITMENT
+
+    @property
+    def identity_question(self) -> bool:
+        """Whether the sources disagree about which utility this row is."""
+
+        return self.key_reason == KEY_CONTRADICTED_IDENTITY
+
+    @property
+    def key_reason(self) -> str:
+        return self.actionable.key_reason
+
+    @property
+    def key_words(self) -> str:
+        """Why the rule keyed this item this way, in one sentence."""
+
+        return KEY_REASONS[self.key_reason]
+
+    @property
+    def accepted_positions(self) -> tuple[AcceptedPosition, ...]:
+        """What the record says today, once per subject and field this touches.
+
+        A cross-source question has one: the accepted value the disagreeing
+        sources are both arguing about.  A shared commitment has one per
+        Utility Conflict inside its scope.
+        """
+
+        seen: dict[tuple[str, str | None], AcceptedPosition] = {}
+        for child in self.children:
+            key = (child.subject_identity, child.field)
+            if key in seen:
+                continue
+            seen[key] = AcceptedPosition(
+                subject_identity=child.subject_identity,
+                subject_name=child.subject_name,
+                field=child.field,
+                field_name=child.field_name,
+                value=child.accepted_value,
+                revision_id=child.accepted_revision_id,
+            )
+        return tuple(seen.values())
+
+    @property
+    def source_answers(self) -> tuple[SourceAnswer, ...]:
+        """Each source's own answer, side by side and never merged into one."""
+
+        return tuple(
+            SourceAnswer(
+                delta_id=child.delta_id,
+                subject_name=child.subject_name,
+                field_name=child.field_name,
+                source=f"{child.source_family} {child.source_revision}",
+                document_filename=(
+                    child.source.document_filename
+                    if child.source is not None
+                    else NOT_CITED
+                ),
+                location=(
+                    child.source.location if child.source is not None else NOT_CITED
+                ),
+                quote=child.source.exact_text if child.source is not None else None,
+                value=child.incoming_value,
+                external_links=child.external_links,
+                not_ready_reason=child.not_ready_reason,
+            )
+            for child in self.children
+        )
+
+    @property
+    def scope_subjects(self) -> tuple[CommitmentScopeRow, ...]:
+        """The Utility Conflicts this item's own decision reaches, enumerated.
+
+        For a shared commitment this is the Applies To scope the coordinator is
+        answering over: every conflict the statement moved that is still
+        offered here, and every one that left for its own item.
+        """
+
+        fields: dict[str, list[str]] = {}
+        names: dict[str, str] = {}
+        left: dict[str, ChildReading] = {}
+        for child in (*self.children, *self.held_out_children):
+            names.setdefault(child.subject_identity, child.subject_name)
+            seen = fields.setdefault(child.subject_identity, [])
+            if child.field_name not in seen:
+                seen.append(child.field_name)
+            if child.held_out_reason is not None:
+                left.setdefault(child.subject_identity, child)
+        return tuple(
+            CommitmentScopeRow(
+                subject_identity=identity,
+                subject_name=names[identity],
+                fields=tuple(fields[identity]),
+                held_out_reason=(
+                    left[identity].held_out_reason if identity in left else None
+                ),
+                held_out_item_key=(
+                    left[identity].held_out_item_key if identity in left else None
+                ),
+            )
+            for identity in fields
+        )
+
+    def alternatives_for(self, delta_id: int) -> tuple[ChildReading, ...]:
+        """The other captured source values this child's field could take.
+
+        ADR-0084 forbids settling an external fact with typed words, so an
+        Edit and apply here is never free text: it is one of the *other*
+        sources on this very item, chosen explicitly and applied with that
+        source's own captured Source Fact as its basis.
+        """
+
+        this = next(
+            (child for child in self.children if child.delta_id == delta_id), None
+        )
+        if this is None:
+            return ()
+        return tuple(
+            child
+            for child in self.children
+            if child.delta_id != delta_id
+            and child.subject_identity == this.subject_identity
+            and child.field == this.field
+            and child.incoming_fact_id is not None
+        )
 
     @property
     def selected_count(self) -> int:
@@ -559,6 +845,14 @@ def read_review_items(
     by_lineage: dict[str, list[ActionableItem]] = defaultdict(list)
     for item in reading.items:
         by_lineage[item.grouping_key].append(item)
+    commitment_of = {
+        standing.delta_id: standing.commitment_key
+        for standing in reading.standings
+        if standing.commitment_key is not None
+    }
+    item_of = {
+        delta_id: item for item in reading.items for delta_id in item.delta_ids
+    }
 
     # Each actionable delta is read once, whichever item names it.
     readings = {
@@ -590,6 +884,36 @@ def read_review_items(
                 if other.item_key != item.item_key
                 for delta_id in other.delta_ids
             )
+        elif item.grouping_key_kind == COORDINATION_QUESTION:
+            # Everything else bearing on this very subject and field, listed
+            # read-only: a source split out for proposing a materially
+            # different action still belongs in front of the person answering
+            # the question, because "every passage together" is the whole
+            # point of consolidating them.
+            asked = {
+                (child.subject_identity, child.field) for child in children
+            }
+            siblings = tuple(
+                _held_out_sibling(readings[delta_id], item_of[delta_id])
+                for delta_id in reading.actionable_delta_ids
+                if item_of[delta_id].item_key != item.item_key
+                and (
+                    readings[delta_id].subject_identity,
+                    readings[delta_id].field,
+                )
+                in asked
+            )
+        elif item.grouping_key_kind == SHARED_COMMITMENT:
+            # A commitment names every Utility Conflict its own statement
+            # moved, including the ones a later contradiction or a hold-out
+            # took to their own items, so its Applies To scope is complete on
+            # the screen that decides it.
+            siblings = tuple(
+                _held_out_sibling(readings[delta_id], item_of[delta_id])
+                for delta_id, commitment in sorted(commitment_of.items())
+                if commitment == item.grouping_key
+                and item_of[delta_id].item_key != item.item_key
+            )
         family, _, revision = item.grouping_key.partition("@")
         items.append(
             ItemReading(
@@ -620,9 +944,20 @@ def _headline(item: ActionableItem, children: Sequence[ChildReading]) -> str:
     """Name the item's own subject, never its packet type (ADR-0085)."""
 
     family, _, revision = item.grouping_key.partition("@")
+    if item.grouping_key_kind == SHARED_COMMITMENT:
+        names = []
+        for child in children:
+            if child.subject_name not in names:
+                names.append(child.subject_name)
+        listed = ", ".join(names[:3])
+        if len(names) > 3:
+            listed = f"{listed} and {len(names) - 3} more"
+        return f"One commitment covering {listed}"
     if item.grouping_key_kind == COORDINATION_QUESTION:
         subject = children[0].subject_name if children else item.grouping_key
         field = children[0].field_name if children else "a recorded value"
+        if item.key_reason == KEY_CONTRADICTED_IDENTITY:
+            return f"{subject} — sources disagree about which utility this is"
         return f"{subject} — sources disagree about {field}"
     if item.held_out_reason is not None and children:
         child = children[0]
@@ -1016,7 +1351,7 @@ def packet_request(
         raise ReviewScreenRefused(
             f"{outcome!r} is not one of this screen's batch decisions"
         )
-    if not item.decidable:
+    if not item.batched:
         raise ReviewScreenRefused(
             "a cross-source coordination question is decided per child against "
             "both sources, not as a batch"
@@ -1070,6 +1405,272 @@ def packet_request(
         decided_at=decided_at,
         children=children,
     )
+
+
+# --- the focused act: one question, one answer per source (#528) -----------
+
+
+@dataclass(frozen=True, slots=True)
+class FocusedAnswer:
+    """One coordinator answer to one child of a focused item.
+
+    A child with no answer is simply left open, so the absence of a
+    ``FocusedAnswer`` is the "decide this later" case and there is no sixth
+    outcome meaning nothing.
+    """
+
+    delta_id: int
+    outcome: str
+    question: str | None = None
+    responsible_principal: str | None = None
+    responsible_organization: str | None = None
+    return_date: datetime | None = None
+    # Edit and apply only: which *other* source on this item carries the
+    # captured value that becomes the accepted one.
+    apply_fact_from_delta_id: int | None = None
+    reason: str | None = None
+
+
+def focused_request(
+    reading: ReviewReading,
+    item: ItemReading,
+    *,
+    principal: HumanPrincipal,
+    decided_at: datetime,
+    answers: Sequence[FocusedAnswer],
+) -> ReviewPacketRequest:
+    """Build the one #526 act that answers a cross-source item child by child.
+
+    A coordination question is not a batch: one source's value may become the
+    accepted one while the other's is kept out, and both halves of that are the
+    same decision.  So the act carries a per-child outcome and commits as one
+    Project Record revision, exactly as ADR-0085 requires and exactly as #526
+    already supports.
+
+    Everything refused here is refused *before* anything is read for writing,
+    and every refusal names a shape the coordinator can correct without losing
+    the answers they already gave.
+    """
+
+    if not item.focused:
+        raise ReviewScreenRefused(
+            "a source revision's changes are decided as one batch, not child "
+            "by child"
+        )
+    offered = {child.delta_id: child for child in item.children}
+    answered = [answer for answer in answers if answer.outcome != LEAVE_OPEN]
+    if not answered:
+        raise ReviewScreenRefused("answer at least one of these before saving")
+    seen: set[int] = set()
+    for answer in answered:
+        if answer.outcome not in FOCUSED_OUTCOMES:
+            raise ReviewScreenRefused(
+                f"{answer.outcome!r} is not one of this screen's decisions",
+                delta_id=answer.delta_id,
+                control=CONTROL_OUTCOME,
+            )
+        if answer.delta_id not in offered:
+            raise ReviewScreenRefused(
+                f"proposed change {answer.delta_id} is not offered by this item; "
+                "a change is actionable in exactly one item"
+            )
+        if answer.delta_id in seen:
+            raise ReviewScreenRefused(
+                f"proposed change {answer.delta_id} was answered twice"
+            )
+        seen.add(answer.delta_id)
+
+    _require_one_answer_per_field(item, answered, offered)
+    children = tuple(
+        _focused_child(item, answer, offered[answer.delta_id])
+        for answer in answered
+    )
+    return bind_packet_request(
+        reading.reading,
+        item.actionable,
+        principal=principal,
+        idempotency_key=focused_idempotency_key(
+            item,
+            principal=principal,
+            answers=answered,
+            observed_accepted_revision_id=reading.accepted_revision_id,
+        ),
+        decided_at=decided_at,
+        children=children,
+    )
+
+
+def _require_one_answer_per_field(
+    item: ItemReading,
+    answered: Sequence[FocusedAnswer],
+    offered: Mapping[int, ChildReading],
+) -> None:
+    """Two sources cannot both become the accepted value for one field.
+
+    #526 refuses this too, and must, because both screens build acts through
+    it.  Refusing here as well means the coordinator is told before anything is
+    read for writing, and their other answers survive untouched.
+    """
+
+    claimed: set[tuple[str, str | None]] = set()
+    for answer in answered:
+        if answer.outcome not in (APPLY, EDIT_AND_APPLY):
+            continue
+        child = offered[answer.delta_id]
+        key = (child.subject_identity, child.field)
+        if key in claimed:
+            raise ReviewScreenRefused(
+                RIVAL_ANSWERS, delta_id=answer.delta_id, control=CONTROL_OUTCOME
+            )
+        claimed.add(key)
+
+
+def _focused_child(
+    item: ItemReading, answer: FocusedAnswer, child: ChildReading
+) -> PacketChildRequest:
+    """One answered child, as the exact request #526 validates and commits."""
+
+    if answer.outcome == APPLY:
+        if child.not_ready_reason is not None:
+            raise ReviewScreenRefused(
+                f"{child.subject_name} — {child.field_name}: "
+                f"{child.not_ready_reason}",
+                delta_id=child.delta_id,
+                control=CONTROL_OUTCOME,
+            )
+        return PacketChildRequest(
+            delta_id=child.delta_id,
+            outcome=APPLY,
+            observed_source_revision=child.source_revision,
+            record_effects=_apply_effects(child),
+            support_assessment_ids=child.support_assessment_ids,
+            contradiction=item.grouping_key_kind == COORDINATION_QUESTION,
+        )
+
+    if answer.outcome == EDIT_AND_APPLY:
+        chosen = next(
+            (
+                other
+                for other in item.alternatives_for(child.delta_id)
+                if other.delta_id == answer.apply_fact_from_delta_id
+            ),
+            None,
+        )
+        if chosen is None or chosen.incoming_fact_id is None:
+            raise ReviewScreenRefused(
+                NEEDS_CHOSEN_SOURCE,
+                delta_id=child.delta_id,
+                control=CONTROL_SOURCE,
+            )
+        if chosen.not_ready_reason is not None:
+            raise ReviewScreenRefused(
+                f"{chosen.subject_name} — {chosen.field_name}: "
+                f"{chosen.not_ready_reason}",
+                delta_id=child.delta_id,
+                control=CONTROL_SOURCE,
+            )
+        return PacketChildRequest(
+            delta_id=child.delta_id,
+            outcome=EDIT_AND_APPLY,
+            observed_source_revision=child.source_revision,
+            edit_basis=CapturedSupport(fact_id=chosen.incoming_fact_id),
+            support_assessment_ids=chosen.support_assessment_ids,
+            effective_value=chosen.incoming_value,
+            rationale=answer.reason,
+            contradiction=item.grouping_key_kind == COORDINATION_QUESTION,
+        )
+
+    if answer.outcome == NEEDS_COORDINATION:
+        question = (answer.question or "").strip()
+        if not question:
+            raise ReviewScreenRefused(
+                NEEDS_QUESTION, delta_id=child.delta_id, control=CONTROL_QUESTION
+            )
+        responsible = (answer.responsible_principal or "").strip() or (
+            answer.responsible_organization or ""
+        ).strip()
+        if not responsible:
+            raise ReviewScreenRefused(
+                NEEDS_OWNER, delta_id=child.delta_id, control=CONTROL_RESPONSIBLE
+            )
+        return PacketChildRequest(
+            delta_id=child.delta_id,
+            outcome=NEEDS_COORDINATION,
+            observed_source_revision=child.source_revision,
+            coordination=CoordinationRequest(
+                question=question,
+                responsible_principal=(answer.responsible_principal or "").strip()
+                or None,
+                responsible_organization=(
+                    answer.responsible_organization or ""
+                ).strip()
+                or None,
+                return_date=answer.return_date,
+                affected_scope={
+                    "subject_identity": child.subject_identity,
+                    "field": child.field,
+                },
+                evidence_support_assessment_ids=child.support_assessment_ids,
+            ),
+        )
+
+    if answer.outcome == DEFER:
+        if answer.return_date is None:
+            raise ReviewScreenRefused(
+                NEEDS_RETURN_DATE, delta_id=child.delta_id, control=CONTROL_RETURN
+            )
+        return PacketChildRequest(
+            delta_id=child.delta_id,
+            outcome=DEFER,
+            observed_source_revision=child.source_revision,
+            deferral=DeferralRequest(
+                deferred_until=answer.return_date, reason=answer.reason
+            ),
+        )
+
+    return PacketChildRequest(
+        delta_id=child.delta_id,
+        outcome=KEEP_CURRENT,
+        observed_source_revision=child.source_revision,
+        contradiction=item.grouping_key_kind == COORDINATION_QUESTION,
+    )
+
+
+def focused_idempotency_key(
+    item: ItemReading,
+    *,
+    principal: HumanPrincipal,
+    answers: Sequence[FocusedAnswer],
+    observed_accepted_revision_id: int | None,
+) -> str:
+    """One key per distinct focused act, so a resubmitted form replays.
+
+    Every child's own outcome is in the key, because two acts over the same
+    item that answer its children differently are two different acts (#457).
+    """
+
+    material = "\x00".join(
+        [
+            item.item_key,
+            principal.subject,
+            str(observed_accepted_revision_id or 0),
+            *(
+                "|".join(
+                    [
+                        str(answer.delta_id),
+                        answer.outcome,
+                        str(answer.apply_fact_from_delta_id or ""),
+                        answer.return_date.isoformat()
+                        if answer.return_date is not None
+                        else "",
+                        (answer.question or "").strip(),
+                    ]
+                )
+                for answer in sorted(answers, key=lambda row: row.delta_id)
+            ),
+        ]
+    )
+    return f"focused-packet:{sha256(material.encode('utf-8')).hexdigest()[:32]}"
 
 
 def _apply_effects(child: ChildReading) -> tuple[RecordEffect, ...]:

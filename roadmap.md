@@ -226,10 +226,13 @@ earlier.
    packet resolution, and #559 accessible packet and workflow primitives are
    **done**, and so is **#527**, the source-revision packet that is the first
    coordinator review screen: one bounded item per authoritative revision, with
-   only the opened item carrying decision controls. #528 cross-source
-   coordination packet remains open (ADR-0085). External-system
-   identifiers deep-link read-only from #509, #527, and #528; a map waits for
-   partner data.
+   only the opened item carrying decision controls. **#528** is **done** too:
+   `delta-partition-v2` produces all three of ADR-0085's packet keys, splits a
+   candidate question whose sources propose materially different actions, and
+   names an identity contradiction as the question it is; the focused screen
+   answers a cross-source question and a shared commitment child by child,
+   committing one act through #526. External-system identifiers deep-link
+   read-only from #509, #527, and #528; a map waits for partner data.
 8. #425 accepted-authority follow-up and chase list, addressed to a resolved
    contact where #562 supplies one and to the responsible role otherwise.
    #562 is parallel unless the partner requires an exact address. Under

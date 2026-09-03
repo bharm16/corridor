@@ -66,6 +66,34 @@ questions.  ADR-0085 settled that the key is selected per packet, so the rule
 here selects it and records which key it chose.  Storing the partition was
 rejected by ADR-0085 as well: it would be a second authoritative record,
 stale the moment a source arrived mid-review.
+
+**What ``delta-partition-v2`` added (#528).**  Three things, each a split or a
+join the earlier rule could not express:
+
+*The shared commitment.*  ADR-0085's third key kind.  One attributable
+External Party Statement that moves several Utility Conflicts is one decision,
+not one per conflict, and the link is the spine's own ``delta_groups``
+``statement_id`` rather than any resemblance between values.  A statement whose
+Applies To is *not yet known* is not keyed this way at all: unknown scope is
+current record state, never a confirmation question (ADR-0035, ADR-0039), and a
+scope nobody settled cannot bound a decision.
+
+*The materially different action.*  Two sources bearing on the same subject and
+field do not always ask one question.  One that edits the value and one that
+says the row is gone ask two, and answering either leaves the other open, so
+they stop being one item.  Each still appears on the other's item as read-only
+context, because "all the passages together" is the point of consolidating and
+a split is not a reason to hide one.
+
+*The identity question.*  Sources disagreeing about which utility a row **is**
+are not offering two candidate values; they are asking a question that has to
+be settled before any value recorded against that row means anything.  It stays
+one coordination question and says so, so a screen names it as an identity
+question rather than as a value question.
+
+The rule version is now checked rather than merely recorded.  It used to be a
+label a caller could set to anything while v1's body ran regardless, which
+produced a receipt claiming a rule that never ran.
 """
 
 from __future__ import annotations
@@ -90,9 +118,11 @@ from corridor.delta_resolution import (
 from corridor.models import (
     DeltaDeferral,
     DeltaDisposition,
+    DeltaGroup,
     DeltaReviewPacketChild,
     DeltaReviewPacketReversal,
     DeltaSupersession,
+    ExternalPartyStatement,
     FactDecision,
     ProjectRecordRevision,
     ProposedDelta,
@@ -104,7 +134,17 @@ from corridor.review_packets import PacketChildRequest, ReviewPacketRequest
 # The rule this reading partitions under.  It is recorded on every item and on
 # every packet act built from one, so a later change to the rule is visible in
 # the receipt rather than retroactive.
-PARTITION_RULE_VERSION = "delta-partition-v1"
+#
+# ``v2`` adds #528's cross-source consolidation: the shared-commitment key, the
+# split of a candidate question whose sources propose materially different
+# actions, and the identity question that has to be settled before any value
+# question about the same row can be.
+PARTITION_RULE_VERSION = "delta-partition-v2"
+
+# Only a rule this module actually implements may be recorded on an item.  The
+# version was previously a label a caller could set to anything while v1's body
+# ran regardless, which is a receipt saying a rule was applied that never was.
+SUPPORTED_RULE_VERSIONS = frozenset({PARTITION_RULE_VERSION})
 
 # Standings.  ``resolved``, ``deferred``, and ``stale`` keep #519's spelling so
 # one word never means two things across the seam.
@@ -112,18 +152,38 @@ ACTIONABLE = "actionable"
 SUPERSEDED = "superseded"
 STANDINGS = (ACTIONABLE, DEFERRED, STALE, SUPERSEDED, RESOLVED)
 
-# ADR-0085's packet keys.  ``shared_commitment`` is a released key kind that
-# this rule version does not yet produce; #528 extends the rule to it, and
-# until then a commitment's deltas reach a coordination question or their own
-# focused item, never nothing.
+# ADR-0085's packet keys, all three of which this rule version produces.
 SOURCE_REVISION = "source_revision"
 COORDINATION_QUESTION = "coordination_question"
-PRODUCED_KEY_KINDS = (SOURCE_REVISION, COORDINATION_QUESTION)
+SHARED_COMMITMENT = "shared_commitment"
+PRODUCED_KEY_KINDS = (SOURCE_REVISION, COORDINATION_QUESTION, SHARED_COMMITMENT)
 
 # Scope lives in its own satellite and a scope change is never an exact cell
 # comparison, so it is decided on its own item.
 SCOPE_FIELDS = frozenset({"applies_to"})
 DATE_FIELDS = frozenset(TIMING_FIELDS | SCHEDULE_KEY_DATE_FIELDS)
+
+# The fields that say *which* real utility a row is, rather than what is true
+# of it.  Two sources disagreeing here is not a value question with two
+# candidate answers: until the coordinator knows which utility the row is, no
+# answer about its dates or its owner means anything.  ADR-0085 allows a
+# coordination question to be keyed by the real question, and this is one.
+IDENTITY_FIELDS = frozenset({"utility_id"})
+
+# The statement scope modes that say a commitment's Applies To is settled *and*
+# enumerable.  ``unknown`` is current Project Record state rather than a
+# question to ask (ADR-0035, ADR-0039), so a statement whose scope is not
+# settled is never presented as one bounded decision over several Utility
+# Conflicts; its deltas fall through to the ordinary passes and keep their own
+# items.
+#
+# ``all_active`` and ``carried_forward`` are deliberately excluded even though
+# they are settled modes.  #528 requires the item to enumerate the *complete*
+# scope, and those two name a population rather than a list — an item keyed by
+# one of them would print "these are the conflicts inside it" over a set nobody
+# wrote down.  A commitment at one of those modes keeps its ordinary items
+# until that population can be enumerated from the record.
+EXPLICIT_SCOPE_MODES = frozenset({"selected"})
 
 # Consequence bands, in presentation order.  Each names the ADR-0035 group it
 # projects, or ``None`` where ADR-0083 gave it a band of its own.
@@ -203,6 +263,43 @@ HELD_OUT_APPARENT_REMOVAL = "apparent_removal"
 HELD_OUT_POSSIBLE_NEW_CONFLICT = "possible_new_conflict"
 HELD_OUT_OWNER_MISMATCH = "owner_mismatch"
 HELD_OUT_UNCERTAIN_SCOPE = "uncertain_scope"
+# Two sources bear on the same subject and field but do not propose the same
+# *kind* of change — one edits the value while the other says the row is gone.
+# ADR-0085's packet is the smallest set that can be decided at once, and these
+# cannot: answering one does not answer the other.
+HELD_OUT_DIFFERENT_ACTION = "different_action"
+
+# Why this item is keyed the way it is.  ADR-0085 requires the selected key to
+# be shown, and #528 requires the grouping rule to be explainable from stored
+# identities; a token plus its own sentence is that explanation, recorded on
+# the item rather than reconstructed by a screen.
+KEY_SOURCE_REVISION_BATCH = "source_revision_batch"
+KEY_HELD_OUT_OF_BATCH = "held_out_of_batch"
+KEY_CONTRADICTED_VALUE = "contradicted_value"
+KEY_CONTRADICTED_IDENTITY = "contradicted_identity"
+KEY_SHARED_COMMITMENT_SCOPE = "shared_commitment_scope"
+KEY_REASONS: Mapping[str, str] = {
+    KEY_SOURCE_REVISION_BATCH: (
+        "one authoritative source revision proposed these changes together and "
+        "they fail the same way, so they are decided together"
+    ),
+    KEY_HELD_OUT_OF_BATCH: (
+        "this change cannot be decided with the rest of its source revision, so "
+        "it keeps its own item"
+    ),
+    KEY_CONTRADICTED_VALUE: (
+        "two retained sources answer the same field differently, so the "
+        "disagreement is the decision"
+    ),
+    KEY_CONTRADICTED_IDENTITY: (
+        "two retained sources disagree about which utility this row is, which "
+        "has to be settled before any value recorded against it means anything"
+    ),
+    KEY_SHARED_COMMITMENT_SCOPE: (
+        "one attributable commitment states its own Applies To scope, and these "
+        "are the Utility Conflicts inside it"
+    ),
+}
 
 
 class ReviewPacketReadingRefused(ValueError):
@@ -226,6 +323,12 @@ class DeltaStanding:
     superseded_by_delta_id: int | None = None
     baseline_revision: int | None = None
     current_accepted_revision_id: int | None = None
+    # The attributable commitment this delta came from, where its statement
+    # declared its own Applies To scope.  Recorded on the standing so a
+    # presentation can name a commitment's whole scope — including the
+    # conflicts that left it for their own item — without asking the partition
+    # a second time.
+    commitment_key: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -241,6 +344,13 @@ class ActionableItem:
     attention_reasons: tuple[str, ...]
     delta_ids: tuple[int, ...]
     held_out_reason: str | None = None
+    key_reason: str = KEY_SOURCE_REVISION_BATCH
+
+    @property
+    def key_sentence(self) -> str:
+        """Why the rule keyed this item this way, in one sentence."""
+
+        return KEY_REASONS[self.key_reason]
 
 
 @dataclass(frozen=True, slots=True)
@@ -450,6 +560,11 @@ def read_open_deltas(
         raise ReviewPacketReadingRefused(
             "a reading is bound to an aware cutoff its caller declared"
         )
+    if rule_version not in SUPPORTED_RULE_VERSIONS:
+        raise ReviewPacketReadingRefused(
+            f"{rule_version!r} is not a partition rule this reading implements; "
+            f"one of {', '.join(sorted(SUPPORTED_RULE_VERSIONS))}"
+        )
 
     deltas = tuple(
         session.scalars(
@@ -503,11 +618,13 @@ def read_open_deltas(
 
     actionable = [delta for delta in live_rows if delta.id not in held]
     contradicted = _contradicted_keys(actionable)
+    commitments = _explicitly_scoped_commitments(session, project_id, actionable)
 
     items = _partition(
         actionable,
         as_of=as_of,
         contradicted=contradicted,
+        commitments=commitments,
         rule_version=rule_version,
     )
     item_of = {
@@ -567,6 +684,7 @@ def read_open_deltas(
                     band=reasons[0],
                     attention_reasons=reasons,
                     item_key=item_of[delta.id],
+                    commitment_key=commitments.get(delta.id),
                 )
             )
 
@@ -640,21 +758,41 @@ def bind_packet_request(
 # --- the partition rule ---------------------------------------------------
 
 
+@dataclass(frozen=True, slots=True)
+class _Draft:
+    """One item before its band, its reasons, and its ordinal are worked out."""
+
+    item_key: str
+    grouping_key_kind: str
+    grouping_key: str
+    key_reason: str
+    children: list[ProposedDelta]
+    held_out_reason: str | None = None
+
+
 def _partition(
     actionable: Sequence[ProposedDelta],
     *,
     as_of: datetime,
     contradicted: frozenset[tuple[str, str | None]],
+    commitments: Mapping[int, str],
     rule_version: str,
 ) -> tuple[ActionableItem, ...]:
-    """Claim every actionable delta exactly once, in three declared passes."""
+    """Claim every actionable delta exactly once, in four declared passes.
+
+    A pass claims deltas; it does not always produce one item per claim.  The
+    first pass in particular splits a candidate question that cannot honestly
+    be one, so some of what it claims leaves as its own focused item.
+    """
 
     claimed: set[int] = set()
-    drafts: list[tuple[str, str, str, str | None, list[ProposedDelta]]] = []
+    drafts: list[_Draft] = []
 
     # 1. One cross-source coordination question per contradicted subject and
     #    field.  These are decided together or not at all, so they are claimed
-    #    before any batch can take one of them.
+    #    before any batch or commitment can take one of them — a commitment one
+    #    of whose Utility Conflicts a later source contradicts is no longer one
+    #    bounded decision, and the contradicted child leaves it.
     questions: dict[tuple[str, str | None], list[ProposedDelta]] = defaultdict(list)
     for delta in actionable:
         key = (delta.target_subject_identity, delta.target_field)
@@ -664,10 +802,7 @@ def _partition(
     for (subject, field_name), children in sorted(
         questions.items(), key=lambda entry: min(row.id for row in entry[1])
     ):
-        key = f"{subject}#{field_name or '*'}"
-        drafts.append(
-            (f"{COORDINATION_QUESTION}:{key}", COORDINATION_QUESTION, key, None, children)
-        )
+        drafts.extend(_question_drafts(subject, field_name, children))
 
     # 2. Anything that cannot safely join a batch keeps its own focused item.
     for delta in actionable:
@@ -677,18 +812,35 @@ def _partition(
         if reason is None:
             continue
         claimed.add(delta.id)
-        key = _lineage_key(delta)
+        drafts.append(_held_out_draft(delta, reason))
+
+    # 3. One attributable commitment whose own Applies To scope is settled and
+    #    which moves several Utility Conflicts stays one item, with the whole
+    #    scope enumerated.  A commitment reaching one subject is an ordinary
+    #    batch, and a commitment whose scope is not settled never gets here.
+    shared: dict[str, list[ProposedDelta]] = defaultdict(list)
+    for delta in actionable:
+        if delta.id in claimed or delta.id not in commitments:
+            continue
+        shared[commitments[delta.id]].append(delta)
+    for commitment, children in sorted(
+        shared.items(), key=lambda entry: min(row.id for row in entry[1])
+    ):
+        if len({row.target_subject_identity for row in children}) < 2:
+            continue
+        for child in children:
+            claimed.add(child.id)
         drafts.append(
-            (
-                f"{SOURCE_REVISION}:{key}:delta:{delta.id}",
-                SOURCE_REVISION,
-                key,
-                reason,
-                [delta],
+            _Draft(
+                item_key=f"{SHARED_COMMITMENT}:{commitment}",
+                grouping_key_kind=SHARED_COMMITMENT,
+                grouping_key=commitment,
+                key_reason=KEY_SHARED_COMMITMENT_SCOPE,
+                children=children,
             )
         )
 
-    # 3. What remains batches by source revision and consequence band, so a
+    # 4. What remains batches by source revision and consequence band, so a
     #    burst of routine changes is one item and a timing change inside the
     #    same revision is not buried under it.
     batches: dict[tuple[str, str], list[ProposedDelta]] = defaultdict(list)
@@ -702,11 +854,18 @@ def _partition(
         batches.items(), key=lambda entry: min(row.id for row in entry[1])
     ):
         drafts.append(
-            (f"{SOURCE_REVISION}:{key}:{band}", SOURCE_REVISION, key, None, children)
+            _Draft(
+                item_key=f"{SOURCE_REVISION}:{key}:{band}",
+                grouping_key_kind=SOURCE_REVISION,
+                grouping_key=key,
+                key_reason=KEY_SOURCE_REVISION_BATCH,
+                children=children,
+            )
         )
 
     items: list[ActionableItem] = []
-    for item_key, kind, key, reason, children in drafts:
+    for draft in drafts:
+        children = draft.children
         reasons: list[str] = []
         for child in children:
             for name in attention_reasons(
@@ -721,14 +880,15 @@ def _partition(
         items.append(
             ActionableItem(
                 ordinal=0,
-                item_key=item_key,
-                grouping_key_kind=kind,
-                grouping_key=key,
+                item_key=draft.item_key,
+                grouping_key_kind=draft.grouping_key_kind,
+                grouping_key=draft.grouping_key,
                 grouping_rule_version=rule_version,
                 band=reasons[0],
                 attention_reasons=tuple(reasons),
                 delta_ids=tuple(sorted(child.id for child in children)),
-                held_out_reason=reason,
+                held_out_reason=draft.held_out_reason,
+                key_reason=draft.key_reason,
             )
         )
 
@@ -737,6 +897,122 @@ def _partition(
         replace(item, ordinal=ordinal)
         for ordinal, item in enumerate(items, start=1)
     )
+
+
+def _question_drafts(
+    subject: str, field_name: str | None, children: Sequence[ProposedDelta]
+) -> list[_Draft]:
+    """One contradicted subject and field, as the items it can honestly become.
+
+    Sources that disagree about a value pose one question.  Sources that
+    propose *materially different actions* — one edits the value while another
+    says the row is gone — pose two, and answering either leaves the other
+    unanswered, so ADR-0085's "smallest set decidable at once" splits them.
+    """
+
+    key = f"{subject}#{field_name or '*'}"
+    # Disagreeing about which utility a row *is* is not a value question with
+    # two candidate answers; it has to be settled before any value recorded
+    # against the row means anything.
+    reason = (
+        KEY_CONTRADICTED_IDENTITY
+        if field_name in IDENTITY_FIELDS
+        else KEY_CONTRADICTED_VALUE
+    )
+    kinds = sorted({child.change_type for child in children})
+    if len(kinds) == 1:
+        return [
+            _Draft(
+                item_key=f"{COORDINATION_QUESTION}:{key}",
+                grouping_key_kind=COORDINATION_QUESTION,
+                grouping_key=key,
+                key_reason=reason,
+                children=list(children),
+            )
+        ]
+
+    drafts: list[_Draft] = []
+    for kind in kinds:
+        matching = [child for child in children if child.change_type == kind]
+        lineages = {
+            (child.source_family, child.source_revision) for child in matching
+        }
+        if len(lineages) > 1:
+            # Still a genuine disagreement, now between sources that at least
+            # propose the same kind of change.
+            drafts.append(
+                _Draft(
+                    item_key=f"{COORDINATION_QUESTION}:{key}#{kind}",
+                    grouping_key_kind=COORDINATION_QUESTION,
+                    grouping_key=f"{key}#{kind}",
+                    key_reason=reason,
+                    children=matching,
+                )
+            )
+            continue
+        for child in matching:
+            drafts.append(_held_out_draft(child, HELD_OUT_DIFFERENT_ACTION))
+    return drafts
+
+
+def _held_out_draft(delta: ProposedDelta, reason: str) -> _Draft:
+    """One delta that cannot be decided with anything else, as its own item."""
+
+    key = _lineage_key(delta)
+    return _Draft(
+        item_key=f"{SOURCE_REVISION}:{key}:delta:{delta.id}",
+        grouping_key_kind=SOURCE_REVISION,
+        grouping_key=key,
+        key_reason=KEY_HELD_OUT_OF_BATCH,
+        children=[delta],
+        held_out_reason=reason,
+    )
+
+
+def _explicitly_scoped_commitments(
+    session: Session, project_id: int, actionable: Sequence[ProposedDelta]
+) -> dict[int, str]:
+    """Each actionable delta's commitment key, where its statement declared one.
+
+    The link is the spine's own: ``delta_groups.statement_id`` names the one
+    attributable External Party Statement a delta group came from.  The
+    statement's ``scope_mode`` is read to tell a settled Applies To from
+    ``not yet known``, which is record state and never a question to ask
+    (ADR-0035, ADR-0039); an unsettled one simply produces no commitment key,
+    so its deltas keep their own items instead of being decided as one.
+
+    **What this does not read, and why.**  The declared Commitment Scope lives
+    in ``dependency_event_scopes``, whose members are legacy ``dependencies``
+    rows, while a Proposed Delta targets a spine subject identity.  No mapping
+    between those two identity spaces exists, and inventing one here would be
+    a guess about which Utility Conflict a scope link means.  So the scope this
+    reading can enumerate is the commitment's *delta* scope — the conflicts its
+    own Proposed Deltas reach — and a conflict inside the declared scope that
+    produced no delta is not named.  That is why only ``selected`` qualifies:
+    it is the mode whose deltas are the enumeration.
+    """
+
+    group_ids = {int(delta.group_id) for delta in actionable}
+    if not group_ids:
+        return {}
+    rows = session.execute(
+        select(DeltaGroup.id, ExternalPartyStatement.id)
+        .join(
+            ExternalPartyStatement,
+            ExternalPartyStatement.id == DeltaGroup.statement_id,
+        )
+        .where(
+            DeltaGroup.project_id == project_id,
+            DeltaGroup.id.in_(sorted(group_ids)),
+            ExternalPartyStatement.scope_mode.in_(sorted(EXPLICIT_SCOPE_MODES)),
+        )
+    ).all()
+    statements = {int(group_id): int(statement_id) for group_id, statement_id in rows}
+    return {
+        delta.id: f"statement:{statements[int(delta.group_id)]}"
+        for delta in actionable
+        if int(delta.group_id) in statements
+    }
 
 
 def _contradicted_keys(

@@ -25,6 +25,7 @@ from corridor.models import (
     BaselineSource,
     BaselineSourceRow,
     Document,
+    ExternalPartyStatement,
     ExtractionRun,
     Fact,
     FactSource,
@@ -329,13 +330,14 @@ def append_deltas(
     *,
     source_revision: str,
     values: list[ProposedDeltaValues],
+    source_family: str = SOURCE_FAMILY,
     is_complete_enumerative_source: bool = True,
     row_accounting_sealed: bool = True,
 ) -> tuple[ProposedDelta, ...]:
     return create_proposed_delta_group(
         session,
         project_id=project.id,
-        source_family=SOURCE_FAMILY,
+        source_family=source_family,
         source_revision=source_revision,
         document_id=rendition.document.id,
         deltas=values,
@@ -438,3 +440,50 @@ def move_accepted_value(
     session.execute(text("reset role"))
     session.expire_all()
     return int(revision_id)
+
+
+def record_statement(
+    session: Session,
+    project: Project,
+    *,
+    scope_mode: str = "selected",
+    description: str = "the utility committed to the whole block",
+) -> ExternalPartyStatement:
+    """One attributable External Party Statement at a declared scope mode.
+
+    ``selected`` is a settled Applies To; ``unknown`` is the `not yet known`
+    record state that is never a bounded decision (ADR-0035, ADR-0039).
+    """
+
+    row = ExternalPartyStatement(
+        event_type="commitment",
+        project_id=project.id,
+        scope_mode=scope_mode,
+        source_kind="cited",
+        description=description,
+        created_by="local:recorder",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def append_statement_deltas(
+    session: Session,
+    project: Project,
+    statement: ExternalPartyStatement,
+    *,
+    source_revision: str,
+    values: list[ProposedDeltaValues],
+    source_family: str = "recorded-statement",
+) -> tuple[ProposedDelta, ...]:
+    """One statement-bound delta group: the spine's own commitment link."""
+
+    return create_proposed_delta_group(
+        session,
+        project_id=project.id,
+        source_family=source_family,
+        source_revision=source_revision,
+        statement_id=statement.id,
+        deltas=values,
+    )

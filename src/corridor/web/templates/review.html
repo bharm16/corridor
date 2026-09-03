@@ -6,14 +6,24 @@
   only the opened one carries decision controls, so no Proposed Delta ever grows
   a second control (ADR-0085).
 
+  A cross-source coordination question and a shared commitment are answered
+  child by child instead (#528): every source keeps its own row and its own
+  value, and each gets its own answer, because one source's value may become
+  the accepted one while another's is kept out and both halves are one act.
+
   `Review Packet` is an internal name and never appears here: an item is named
-  by the source revision it came from, or by the question two sources raised.
+  by the source revision it came from, by the question two sources raised, or
+  by the commitment it covers.
 
   Everything visible is rendered by `_primitives.html` or is ordinary prose, and
   no class on this page paints a state. There is no script: the selection is
-  native checkboxes, the actions are submit buttons, and the keyboard shortcuts
-  are real `accesskey` attributes rather than hints for behaviour that is not
-  there.
+  native checkboxes, the focused answers are native selects and text inputs,
+  the actions are submit buttons, and the keyboard shortcuts are real
+  `accesskey` attributes rather than hints for behaviour that is not there.
+
+  The focused form sends one value per control per child, in parallel lists
+  aligned with a hidden child identity, so every control has a static name and
+  a child is never silently dropped by a browser that omits an empty input.
 #}
 <!doctype html>
 <meta charset="utf-8">
@@ -104,6 +114,89 @@
       {%- endif %}
     </ul>
 
+    {%- if view.item.focused %}
+
+    <h3>What the record says today</h3>
+    {% call ui.record_table(
+         "The accepted value each source is answering",
+         ["Utility Conflict", "Field", "Accepted value", "Accepted revision"]) %}
+      {%- for position in view.item.accepted_positions %}
+      <tr>
+        <th scope="row">{{ position.subject_name }}</th>
+        <td>{{ position.field_name }}</td>
+        <td>{{ position.value if position.value else not_recorded }}</td>
+        <td>{{ position.revision_id if position.revision_id else not_recorded }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+
+    <h3>What each source says</h3>
+    <p class="quiet">
+      Each source keeps its own row and its own value. Nothing here is merged
+      into a single incoming value.
+    </p>
+    {% call ui.record_table(
+         "Every source that bears on this, side by side",
+         ["Source", "Utility Conflict", "Field", "Value it gives", "Where it was read", "Cited text", "External record"]) %}
+      {%- for row in view.item.source_answers %}
+      <tr>
+        <th scope="row">{{ row.source }}</th>
+        <td>{{ row.subject_name }}</td>
+        <td>{{ row.field_name }}</td>
+        <td>{{ row.value if row.value else not_recorded }}</td>
+        <td>{{ row.document_filename }}, {{ row.location }}</td>
+        <td>{{ row.quote if row.quote else not_recorded }}</td>
+        <td>
+          {%- if row.external_links %}
+            {%- for link in row.external_links %}
+              {%- if link.href %}<a href="{{ link.href }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
+              {%- else %}{{ link.text }}{% endif %}{% if not loop.last %}<br>{% endif %}
+            {%- endfor %}
+          {%- else %}{{ not_recorded }}{% endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+
+    {%- if not view.item.commitment and view.item.held_out_children %}
+    <h3>Also bearing on this, decided elsewhere</h3>
+    {% call ui.record_table(
+         "Sources on the same value that are answered on their own item",
+         ["Source", "Value it gives", "Why it is not answered here"]) %}
+      {%- for child in view.item.held_out_children %}
+      <tr>
+        <th scope="row">{{ child.source_family }} {{ child.source_revision }}</th>
+        <td>{{ child.incoming_value if child.incoming_value else not_recorded }}</td>
+        <td>{{ child.held_out_reason }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    <p class="quiet">
+      These are shown so the whole disagreement is visible. They carry no
+      control here: each is decided on its own item.
+    </p>
+    {%- endif %}
+
+    {%- if view.item.commitment %}
+    <h3>Which Utility Conflicts this commitment covers</h3>
+    {% call ui.record_table(
+         "The commitment's own Applies To scope",
+         ["Utility Conflict", "Fields", "Decided here"]) %}
+      {%- for row in view.item.scope_subjects %}
+      <tr>
+        <th scope="row">{{ row.subject_name }}</th>
+        <td>{{ row.fields|join(", ") }}</td>
+        <td>
+          {%- if row.decided_here %}Yes
+          {%- else %}No — {{ row.held_out_reason }}{% endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- endif %}
+
+    {%- else %}
+
     <h3>What each change would do</h3>
     {{ ui.before_after(
          "Proposed changes from " ~ view.item.source_family ~ " " ~ view.item.source_revision,
@@ -135,6 +228,8 @@
       {%- endfor %}
     {% endcall %}
 
+    {%- endif %}
+
     <h3>What would change for the customer</h3>
     <ul>
       {%- for artifact in view.item.customer_artifacts %}
@@ -143,7 +238,101 @@
     </ul>
     <p class="quiet">Worked out by rule {{ view.item.artifact_rule_version }}.</p>
 
-    {%- if view.item.decidable %}
+    {%- if view.item.focused %}
+    <form method="post" action="/review/{{ project.slug }}/answers">
+      {{ csrf_field() }}
+      <input type="hidden" name="item_key" value="{{ view.item.item_key }}">
+
+      <h3>Your answer for each source</h3>
+      <p class="quiet" id="{{ view.id }}-answers">
+        Each source is answered on its own. A source you leave open stays open
+        and is decided later. Only one source can become the accepted value for
+        a field, so answer the others with Keep current, Needs coordination, or
+        Defer.
+      </p>
+
+      {%- for child in view.item.children %}
+      {%- set answer = view.answers.get(child.delta_id) %}
+      <fieldset class="answer" aria-describedby="{{ view.id }}-answers">
+        <legend>
+          {{ child.subject_name }} — {{ child.field_name }},
+          {{ child.source_family }} {{ child.source_revision }}:
+          {{ child.incoming_value if child.incoming_value else not_recorded }}
+        </legend>
+        <input type="hidden" name="answer_delta" value="{{ child.delta_id }}">
+
+        {%- if not child.ready %}
+        <p>{{ ui.state(state_label("attention", child.not_ready_reason)) }}</p>
+        {%- endif %}
+
+        {% call ui.field(
+             "answer-outcome-" ~ child.delta_id,
+             "What should happen to this source's value?",
+             "Leave open records nothing for this source.") %}
+        <select id="answer-outcome-{{ child.delta_id }}" name="answer_outcome"
+                aria-describedby="answer-outcome-{{ child.delta_id }}-hint">
+          {%- for token, text in focused_outcomes %}
+          <option value="{{ token }}"
+            {%- if answer and answer.outcome == token %} selected
+            {%- elif not answer and token == leave_open %} selected{% endif %}>{{ text }}</option>
+          {%- endfor %}
+        </select>
+        {% endcall %}
+
+        {% call ui.field(
+             "answer-source-" ~ child.delta_id,
+             "If applying another source's value instead, which one?",
+             "An edited value is never typed words for an external fact: it is another source's captured value.") %}
+        <select id="answer-source-{{ child.delta_id }}" name="answer_source"
+                aria-describedby="answer-source-{{ child.delta_id }}-hint">
+          <option value="">No other source chosen</option>
+          {%- for other in view.item.alternatives_for(child.delta_id) %}
+          <option value="{{ other.delta_id }}"
+            {%- if answer and answer.source == other.delta_id|string %} selected{% endif %}>
+            {{ other.source_family }} {{ other.source_revision }}:
+            {{ other.incoming_value if other.incoming_value else not_recorded }}
+          </option>
+          {%- endfor %}
+        </select>
+        {% endcall %}
+
+        {% call ui.field(
+             "answer-question-" ~ child.delta_id,
+             "If it needs coordination, what exactly must be answered?") %}
+        <input type="text" id="answer-question-{{ child.delta_id }}" name="answer_question"
+               value="{{ answer.question if answer else '' }}">
+        {% endcall %}
+
+        {% call ui.field(
+             "answer-responsible-" ~ child.delta_id,
+             "Who owes that answer? Name the person") %}
+        <input type="text" id="answer-responsible-{{ child.delta_id }}" name="answer_person"
+               value="{{ answer.person if answer else '' }}">
+        {% endcall %}
+
+        {% call ui.field(
+             "answer-organization-" ~ child.delta_id,
+             "Or the organization that owes it") %}
+        <input type="text" id="answer-organization-{{ child.delta_id }}" name="answer_organization"
+               value="{{ answer.organization if answer else '' }}">
+        {% endcall %}
+
+        {% call ui.field(
+             "answer-return-" ~ child.delta_id,
+             "Return date, for Defer or for a coordination answer that is due") %}
+        <input type="date" id="answer-return-{{ child.delta_id }}" name="answer_return"
+               value="{{ answer.return_date if answer else '' }}">
+        {% endcall %}
+      </fieldset>
+      {%- endfor %}
+
+      {% call ui.sticky_actions("Answers for " ~ view.item.headline) %}
+        <button type="submit" accesskey="s">
+          {{ ui.shortcut("s", "Save the answers for these " ~ view.item.child_count ~ " sources") }}
+        </button>
+      {% endcall %}
+    </form>
+    {%- elif view.item.batched %}
     <form method="post" action="/review/{{ project.slug }}">
       {{ csrf_field() }}
       <input type="hidden" name="item_key" value="{{ view.item.item_key }}">
@@ -184,12 +373,6 @@
         </button>
       {% endcall %}
     </form>
-    {%- else %}
-    <p>
-      Two retained sources answer this differently, so it is settled as its own
-      coordination question rather than as part of a source revision's batch.
-      Nothing here decides it.
-    </p>
     {%- endif %}
 
     {%- else %}

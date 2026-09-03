@@ -397,14 +397,25 @@ from corridor.statement_scope_match import (
 from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.statement_suggestions import read_statement_suggestions
 from corridor.packet_review import (
+    LEAVE_OPEN,
+    FocusedAnswer,
     ReviewScreenRefused,
     emit_packet_opening,
     emit_packet_surfacing,
+    focused_request,
     packet_request,
     read_review_items,
     select_children,
 )
-from corridor.review_packets import resolve_review_packet
+from corridor.review_packet_reading import SHARED_COMMITMENT
+from corridor.review_packets import (
+    APPLY,
+    DEFER,
+    EDIT_AND_APPLY,
+    KEEP_CURRENT,
+    NEEDS_COORDINATION,
+    resolve_review_packet,
+)
 from corridor.work_list import build_work_list
 from corridor.web.statement_forms import (
     CANDIDATE_EVIDENCE_UNAVAILABLE,
@@ -4591,6 +4602,7 @@ def _review_context(
     now: datetime,
     opened_key: str,
     selected: list[int] | None = None,
+    answers: dict | None = None,
     saved: dict | None = None,
     refusal: dict | None = None,
     errors: tuple = (),
@@ -4616,6 +4628,7 @@ def _review_context(
                 ),
                 "guidance": _review_guidance(item),
                 "counts": _review_counts(shown),
+                "answers": (answers or {}) if is_open else {},
                 "open_url": (
                     f"/review/{project.slug}?item={quote(item.item_key, safe='')}"
                 ),
@@ -4631,6 +4644,8 @@ def _review_context(
         "saved": saved,
         "refusal": refusal,
         "defer_until": "",
+        "focused_outcomes": _FOCUSED_OUTCOME_LABELS,
+        "leave_open": LEAVE_OPEN,
     }
 
 
@@ -4643,15 +4658,53 @@ def _review_guidance(item) -> str:
             f"it is held out of its source revision's batch because "
             f"{item.held_out_words}"
         )
+    else:
+        # A focused item is not held out of anything; what it needs said is why
+        # the rule keyed it the way it did (#528, ADR-0085).
+        sentences.append(item.key_words)
     if not sentences:
         return ""
     joined = "; ".join(sentences)
     return f"{joined[0].upper()}{joined[1:]}."
 
 
+# ADR-0085's four primary decisions and its secondary dated Defer, in the
+# coordinator's own words. The tokens are #526's own constants rather than
+# literals spelled again here, so there is no second vocabulary to drift from
+# the command's.
+_FOCUSED_OUTCOME_LABELS: tuple[tuple[str, str], ...] = (
+    (LEAVE_OPEN, "Leave open — decide this later"),
+    (APPLY, "Apply this source's value"),
+    (KEEP_CURRENT, "Keep current — the accepted value stands"),
+    (EDIT_AND_APPLY, "Apply another source's value instead"),
+    (NEEDS_COORDINATION, "Needs coordination — someone owes an answer"),
+    (DEFER, "Defer until a date"),
+)
+
+
 def _review_counts(item) -> tuple[tuple[str, object], ...]:
     """The item's own accounting, as terms and values a screen reader reads."""
 
+    if item.grouping_key_kind == SHARED_COMMITMENT:
+        return (
+            ("Utility Conflicts in this commitment", len(item.scope_subjects)),
+            ("Changes to answer here", item.child_count),
+            ("Changes ready to apply", item.ready_count),
+            ("Answered on their own item", item.held_out_count),
+            ("Fields affected", ", ".join(item.field_names) or "none"),
+        )
+    if item.focused:
+        position = item.accepted_positions[0] if item.accepted_positions else None
+        return (
+            ("Utility Conflict", position.subject_name if position else "not recorded"),
+            ("Field in question", position.field_name if position else "not recorded"),
+            (
+                "What the record says today",
+                position.text if position else "not recorded",
+            ),
+            ("Sources that answer it differently", item.child_count),
+            ("Sources whose value could be applied now", item.ready_count),
+        )
     return (
         ("Source revision", f"{item.source_family} {item.source_revision}"),
         ("Values this revision left unchanged", item.unchanged_count),
@@ -4865,6 +4918,215 @@ def save_source_changes(
     )
 
 
+# --- The focused cross-source screen (#528) --------------------------------
+#
+# A coordination question and a shared commitment are answered child by child:
+# one source's value may become the accepted one while another's is kept out,
+# and both halves are the same act. The form carries one answer per child in
+# parallel lists, positionally aligned with the hidden child identity, so every
+# control has a static name and nothing about the shape depends on script.
+# Everything it can refuse is refused by `focused_request` before a single row
+# is read for writing, and each refusal names the control that holds it.
+
+
+@app.post("/review/{slug}/answers", response_class=HTMLResponse)
+def save_focused_answers(
+    request: Request,
+    slug: str,
+    item_key: str = Form(...),
+    answer_delta: list[str] = Form(default=[]),
+    answer_outcome: list[str] = Form(default=[]),
+    answer_source: list[str] = Form(default=[]),
+    answer_question: list[str] = Form(default=[]),
+    answer_person: list[str] = Form(default=[]),
+    answer_organization: list[str] = Form(default=[]),
+    answer_return: list[str] = Form(default=[]),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Answer one cross-source item child by child, completely or not at all."""
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    now = clock()
+    lists = (
+        answer_outcome,
+        answer_source,
+        answer_question,
+        answer_person,
+        answer_organization,
+        answer_return,
+    )
+    if any(len(column) != len(answer_delta) for column in lists):
+        # Every child renders every control, so the columns arrive the same
+        # length or the submission is not one this screen produced.
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": (
+                    "The answers did not arrive as this screen sends them, so "
+                    "nothing was written. Open the item again and answer it."
+                ),
+                "rows": (),
+            },
+            status_code=400,
+        )
+
+    answers = []
+    typed: dict[int, dict] = {}
+    for index, raw in enumerate(answer_delta):
+        if not raw.strip().isdigit():
+            continue
+        delta_id = int(raw)
+        chosen = answer_source[index].strip()
+        typed[delta_id] = {
+            "outcome": answer_outcome[index],
+            "source": chosen,
+            "question": answer_question[index],
+            "person": answer_person[index],
+            "organization": answer_organization[index],
+            "return_date": answer_return[index],
+        }
+        return_date = _optional_form_date(answer_return[index])
+        answers.append(
+            FocusedAnswer(
+                delta_id=delta_id,
+                outcome=answer_outcome[index],
+                question=answer_question[index],
+                responsible_principal=answer_person[index],
+                responsible_organization=answer_organization[index],
+                return_date=(
+                    datetime.combine(return_date, time(0, 0), tzinfo=timezone.utc)
+                    if return_date is not None
+                    else None
+                ),
+                apply_fact_from_delta_id=int(chosen) if chosen.isdigit() else None,
+            )
+        )
+
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    item = reading.item(item_key)
+    if item is None:
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key="",
+            answers=typed,
+            refusal={
+                "heading": "This item is no longer part of the reading",
+                "detail": (
+                    "A newer source or an earlier decision changed what is open, "
+                    "so nothing was saved. Open the item again from the list below."
+                ),
+                "rows": (),
+            },
+            status_code=409,
+        )
+
+    try:
+        act = focused_request(
+            reading,
+            item,
+            principal=principal,
+            decided_at=now,
+            answers=answers,
+        )
+    except ReviewScreenRefused as exc:
+        if exc.delta_id is not None and exc.control is not None:
+            return _review_render(
+                request,
+                session,
+                project,
+                now=now,
+                opened_key=item_key,
+                answers=typed,
+                errors=(
+                    ui_primitives.FieldError(
+                        field_id=f"answer-{exc.control}-{exc.delta_id}",
+                        message=str(exc),
+                    ),
+                ),
+                status_code=400,
+            )
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            answers=typed,
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": str(exc),
+                "rows": (),
+            },
+            status_code=409,
+        )
+
+    result = resolve_review_packet(session, act)
+    if result.status != "saved":
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            answers=typed,
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": (
+                    "One of the changes you answered moved under this reading, so "
+                    "the whole save was refused and the project record is "
+                    "unchanged."
+                ),
+                "rows": tuple(
+                    {
+                        "subject": (
+                            f"{refused.subject_identity or 'a proposed change'}"
+                            f" — {refused.field or 'the whole row'}"
+                        ),
+                        "detail": refused.detail,
+                    }
+                    for refused in result.refusals
+                ),
+            },
+            status_code=409,
+        )
+
+    session.commit()
+    answered = len(act.children)
+    return _review_render(
+        request,
+        session,
+        project,
+        now=now,
+        opened_key="",
+        saved={
+            "heading": (
+                f"Answered {answered} "
+                f"{'change' if answered == 1 else 'changes'}"
+            ),
+            "detail": (
+                "Project record revision "
+                f"{result.revision_id} records each decision separately."
+                if result.revision_id is not None
+                else (
+                    "This is Work List scheduling: the proposed changes stay open "
+                    "and the accepted record is unchanged."
+                )
+            ),
+        },
+        status_code=200,
+    )
+
+
 def _review_saved_heading(outcome: str, count: int) -> str:
     noun = "change" if count == 1 else "changes"
     return {
@@ -4882,6 +5144,7 @@ def _review_render(
     now: datetime,
     opened_key: str,
     selected: list[int] | None = None,
+    answers: dict | None = None,
     saved: dict | None = None,
     refusal: dict | None = None,
     errors: tuple = (),
@@ -4895,6 +5158,7 @@ def _review_render(
         now=now,
         opened_key=opened_key,
         selected=selected,
+        answers=answers,
         saved=saved,
         refusal=refusal,
         errors=errors,
