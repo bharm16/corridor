@@ -954,7 +954,7 @@ def _capture_facts(
                 subject_key=item.subject_identity,
                 recorded_by=f"importer:{IMPORTER_VERSION}",
                 content_sha256=_revision_fact_digest(
-                    reading, item.subject_identity, value.field, segment
+                    reading, document_id, item.subject_identity, value.field, segment
                 ),
                 value=materialize_segment_value(session, value.field, segment),
             )
@@ -991,12 +991,34 @@ def _capture_instant(session: Session, document_id: int) -> datetime:
 
 
 def _revision_fact_digest(
-    reading: OperationsReading, subject_identity: str, field: str, segment: SourceSegment
+    reading: OperationsReading,
+    document_id: int,
+    subject_identity: str,
+    field: str,
+    segment: SourceSegment,
 ) -> str:
+    """One Fact identity per rendition, not one per value.
+
+    The rendition is part of the identity because a Source Fact is *what one
+    source says*, and two revisions restating the same value are two sources
+    saying it.  Leaving the document out made the digest a function of the text
+    alone — ``SourceSegment.content_sha256`` is ``sha256(exact_text)`` and
+    carries no document — so the second revision to restate an unchanged value
+    produced a digest the first revision already owned.  ``uq_facts_content_sha256``
+    is global and ``append_fact`` returns the row that already carries the
+    digest, so the capture got back the *earlier* revision's Fact and then tried
+    to support it with this revision's segment, which
+    ``ck_support_assessment_rendition`` refuses outright.
+
+    That made a third delivery fail on the ordinary case — any workbook whose
+    second later revision leaves one value alone, which is nearly all of them.
+    """
+
     return sha256(
         json.dumps(
             {
                 "importer_version": reading.importer_version,
+                "document_id": int(document_id),
                 "subject_identity": subject_identity,
                 "field": field,
                 "segment": segment.content_sha256,
