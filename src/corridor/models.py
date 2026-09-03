@@ -2656,6 +2656,12 @@ class ProjectRecordRevision(Base):
             "length(btrim(idempotency_key)) > 0",
             name="ck_project_record_revisions_idempotency_key",
         ),
+        # The key a report reading's composite binding resolves against, so a
+        # Report Run bound to another project's revision is unrepresentable
+        # rather than merely unlikely (#602).
+        UniqueConstraint(
+            "id", "project_id", name="uq_project_record_revisions_project_revision"
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -4527,17 +4533,41 @@ class ReportRun(Base):
     or a *data* change, and those call for opposite responses. Tightening
     STALE from 14 days to 10 looks identical to a project falling behind
     unless the report remembers which ruleset produced each number.
+
+    `revision_id` is the accepted Project Record revision the reading was
+    taken against (#602). It is the run's authority: `snapshot_json` beside it
+    is a copy of derivable state, and a copy with nothing to derive it from is
+    a second source of truth that can only be compared with itself.
     """
 
     __tablename__ = "report_runs"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_report_runs_revision",
+        ),
+        Index("ix_report_runs_revision_id", "revision_id"),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    # The accepted revision this reading was taken against.  Nullable only
+    # because rows written before #602 are not rewritten, and because a
+    # project with no accepted revision at all has no identity to name; a
+    # trigger refuses a new row that omits one when the project has any.
+    revision_id: Mapped[int | None] = mapped_column(BigInteger)
     ts: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
     ruleset_version: Mapped[str] = mapped_column(String(32))
     # One entry per dependency: the state the report was published against.
+    # A rebuildable compatibility cache since #602 — `revision_id` above is
+    # what the reading is bound to.  It is retained, and still read by the
+    # legacy diff, until #603 proves what rebuilds it.
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     output_path: Mapped[str | None] = mapped_column(Text)
     # Document-only reports are a separate comparison lineage: comparing one
@@ -5614,6 +5644,15 @@ class ScheduledReportPublication(Base):
             "jsonb_typeof(thresholds_json) = 'object'",
             name="ck_scheduled_report_publication_thresholds_object",
         ),
+        ForeignKeyConstraint(
+            ["revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_scheduled_report_publications_revision",
+        ),
+        Index("ix_scheduled_report_publications_revision_id", "revision_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -5631,11 +5670,20 @@ class ScheduledReportPublication(Base):
     # immutable and never removed, so a dangling reference cannot arise.
     predecessor_release_id: Mapped[int | None] = mapped_column(BigInteger)
     prepared_artifact_id: Mapped[int | None] = mapped_column(BigInteger)
+    # The accepted revision this reading was taken against (#602), under the
+    # same rule and the same trigger as ``ReportRun.revision_id``.  Unlike the
+    # two reference ids above it does carry a foreign key, a composite one to
+    # ``(id, project_id)``: what has to be unrepresentable here is not a
+    # dangling row but a reading bound to some other project's revision, and
+    # only a key can say that.
+    revision_id: Mapped[int | None] = mapped_column(BigInteger)
     evaluated_on: Mapped[date] = mapped_column(Date)
     window_start: Mapped[date | None] = mapped_column(Date)
     comparison_window_days: Mapped[int | None] = mapped_column(Integer)
     ruleset_version: Mapped[str] = mapped_column(String(64))
     thresholds_json: Mapped[dict] = mapped_column(JSONB)
+    # A rebuildable compatibility cache since #602, exactly as on ``ReportRun``:
+    # retained until #603 proves what rebuilds it, never the authority.
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

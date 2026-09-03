@@ -4645,6 +4645,9 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
             "evaluated_on",
             "outcome",
             "snapshot_public_id",
+            # The accepted Project Record revision the retained reading was
+            # produced against (#602), added with the result schema's v2.
+            "accepted_revision_id",
             "prepared",
             "prepared_artifact_id",
             "has_prior_release",

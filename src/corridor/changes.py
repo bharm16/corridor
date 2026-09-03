@@ -17,6 +17,14 @@ Committed Date Change, a record becoming Ready, a strategy escalation — stay
 reported across it.  A historical snapshot that never recorded its thresholds
 is treated as an unknown boundary rather than being backfilled from the
 current default (ADR-0044).
+
+Since #602 a run also names the accepted Project Record revision it was taken
+against, and that reference — not the snapshot — is what the run is bound to.
+The snapshot stays as a **rebuildable compatibility cache**: this module's diff
+still reads it, and it is retained until #603 proves that rebuilding a reading
+from its revision produces the same answer. Nothing here may treat the copy as
+authority; the two must never be allowed to disagree, and only the reference
+can settle which one is right.
 """
 
 from __future__ import annotations
@@ -25,7 +33,7 @@ from dataclasses import dataclass, field
 from collections.abc import Mapping
 from datetime import date, datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.exceptions import RULESET_VERSION, Evaluation
@@ -34,6 +42,7 @@ from corridor.models import (
     DependencyDismissal,
     ExternalReportRelease,
     LegacyLedgerArchive,
+    ProjectRecordRevision,
     ReportRun,
     is_critical,
 )
@@ -389,6 +398,30 @@ def last_released_report(
     ).first()
 
 
+def accepted_revision_id(session: Session, project_id: int) -> int | None:
+    """The accepted Project Record revision a reading taken now is against.
+
+    The newest revision of the project, read once, in the caller's own
+    transaction — the same watermark ``report_preparation`` states its weekly
+    counts against and ``issue_rendering`` freezes an issue on, so a report and
+    a change summary taken together name one revision instead of each asking
+    the database a moment apart.
+
+    ``None`` means the project has no accepted revision at all, which is an
+    answer rather than a missing value: a legacy project whose accepted record
+    is not on the spine has no revision identity to name, and naming one it was
+    not produced against would be the false reference #602 exists to prevent.
+    The database refuses an unbound new row for every project that does have
+    one.
+    """
+
+    return session.scalar(
+        select(func.max(ProjectRecordRevision.id)).where(
+            ProjectRecordRevision.project_id == project_id
+        )
+    )
+
+
 def record_run(
     session: Session,
     project_id: int,
@@ -398,9 +431,15 @@ def record_run(
     committed_dates: Mapping[int, date | None] | None = None,
     document_only: bool = False,
 ) -> ReportRun:
-    """Store the state this report was published against."""
+    """Store the state this report was published against.
+
+    The binding is resolved here rather than accepted from the caller: a run
+    records the revision standing at the moment it is written, in this same
+    transaction, and no caller can hand it one taken from an earlier read.
+    """
     run = ReportRun(
         project_id=project_id,
+        revision_id=accepted_revision_id(session, project_id),
         # The evaluation's own version, not the module constant: the
         # snapshot inside this same row already records the former, and
         # a run that disagrees with its own snapshot is unreadable.

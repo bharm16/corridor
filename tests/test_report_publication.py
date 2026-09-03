@@ -13,13 +13,14 @@ failure, reviewed-byte preservation, and human-only release.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from access_support import seed_membership
 from corridor.changes import last_released_report
@@ -42,6 +43,7 @@ from corridor.models import (
     ExternalReportArtifact,
     ExternalReportRelease,
     Project,
+    ProjectRecordRevision,
     ReportRun,
     ScheduledReportPublication,
 )
@@ -604,3 +606,214 @@ def test_report_controls_surface_states_and_enforce_project_access(session, proj
             assert client.get(f"/reports/{other.slug}").status_code == 404
     finally:
         app.dependency_overrides.clear()
+
+
+# --- The accepted revision a retained reading is bound to (#602) ------------
+
+
+def _seed_accepted_revision(session, project_id: int, key: str) -> int:
+    """One accepted revision, written as the role that owns the family.
+
+    A revision is written only by the record-decision role's own commands, and
+    reaching one here would mean adopting a whole baseline to prove a property
+    of the publication binding rather than of the adoption.
+    """
+
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    revision = ProjectRecordRevision(
+        project_id=project_id,
+        command_type="record_verbal_statement",
+        human_principal="local:publication-reviewer",
+        idempotency_key=key,
+    )
+    session.add(revision)
+    session.flush()
+    session.execute(text("reset role"))
+    return revision.id
+
+
+def test_a_retained_reading_names_the_accepted_revision_it_stands_on(
+    runtime_database,
+):
+    """The reference #602 adds, read back from the retained row and the receipt.
+
+    ``snapshot_json`` beside it is a rebuildable compatibility cache; this is
+    what the reading is actually bound to, and it is resolved in the same
+    writing transaction as the snapshot so the two can never name states taken
+    a moment apart.
+    """
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 31, 7, 5, tzinfo=timezone.utc)
+    project_id, _ = _scheduled_project(factory, now)
+    with factory() as setup:
+        revision_id = _seed_accepted_revision(
+            setup, project_id, "publication:bound-reading"
+        )
+        setup.commit()
+
+    result = _run(factory, now)
+
+    assert result.handler_result["accepted_revision_id"] == revision_id
+    with factory() as verify:
+        publication = verify.scalars(
+            select(ScheduledReportPublication).where(
+                ScheduledReportPublication.project_id == project_id
+            )
+        ).one()
+        assert publication.revision_id == revision_id
+        # The cache is still written, and is still only a cache.
+        assert publication.snapshot_json["dependencies"] is not None
+        history = project_publication_history(verify, project_id)
+        assert history.retained[0].revision_id == revision_id
+
+
+def test_a_project_with_no_accepted_revision_retains_an_explicit_absence(
+    runtime_database,
+):
+    """A project whose accepted record is not on the spine names no revision."""
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 31, 7, 5, tzinfo=timezone.utc)
+    project_id, _ = _scheduled_project(factory, now)
+
+    result = _run(factory, now)
+
+    assert result.handler_result["accepted_revision_id"] is None
+    with factory() as verify:
+        publication = verify.scalars(
+            select(ScheduledReportPublication).where(
+                ScheduledReportPublication.project_id == project_id
+            )
+        ).one()
+        assert publication.revision_id is None
+
+
+def test_the_database_refuses_a_retained_reading_that_names_no_revision(
+    runtime_database,
+):
+    """The rule is enforced on this relation too, not only on ``report_runs``.
+
+    The insert goes straight into the relation, past ``execute_report_publication``
+    which resolves the binding itself.  It names a fresh pending occurrence, so
+    the append-only and one-row-per-occurrence guards have nothing to say about
+    it and the refusal can only be the binding's own.
+    """
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 31, 7, 5, tzinfo=timezone.utc)
+    project_id, schedule_id = _scheduled_project(factory, now)
+    with factory() as setup:
+        revision_id = _seed_accepted_revision(
+            setup, project_id, "publication:refusal"
+        )
+        setup.commit()
+    _run(factory, now)
+
+    later = now + timedelta(days=7)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=later)
+        ticking.commit()
+
+    with factory() as writing:
+        occurrence_id = writing.scalar(
+            select(DueWorkOccurrence.id)
+            .where(
+                DueWorkOccurrence.scheduled_job_id == schedule_id,
+                DueWorkOccurrence.state == "pending",
+            )
+            .order_by(DueWorkOccurrence.id.desc())
+            .limit(1)
+        )
+        assert occurrence_id is not None
+        statement = text(
+            "insert into scheduled_report_publications ("
+            "public_id, occurrence_id, schedule_id, project_id, "
+            "configuration_version, provenance_mode, revision_id, evaluated_on, "
+            "ruleset_version, thresholds_json, snapshot_json, observed_at"
+            ") values ("
+            ":public_id, :occurrence_id, :schedule_id, :project_id, "
+            "'report-publication-v1', 'all-supported-sources', :revision_id, "
+            "date '2026-09-07', 'v0.4', '{}'::jsonb, '{}'::jsonb, "
+            "timestamptz '2026-09-07 07:05:00+00')"
+        )
+        parameters = {
+            "public_id": f"report-pub:{uuid4().hex}",
+            "occurrence_id": occurrence_id,
+            "schedule_id": schedule_id,
+            "project_id": project_id,
+        }
+
+        with pytest.raises(DBAPIError) as refusal:
+            writing.execute(statement, {**parameters, "revision_id": None})
+        assert "names the accepted Project Record revision" in str(refusal.value)
+        writing.rollback()
+
+        # The same statement, bound, is accepted: the refusal above is the
+        # binding's and nothing else in the row.
+        writing.execute(statement, {**parameters, "revision_id": revision_id})
+        writing.commit()
+
+    with factory() as verify:
+        assert verify.scalar(
+            select(func.count())
+            .select_from(ScheduledReportPublication)
+            .where(ScheduledReportPublication.occurrence_id == occurrence_id)
+        ) == 1
+
+
+def test_the_database_refuses_a_reading_bound_to_another_projects_revision(
+    runtime_database,
+):
+    """The composite key, proved on its own: a foreign binding is unrepresentable."""
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 8, 31, 7, 5, tzinfo=timezone.utc)
+    project_id, schedule_id = _scheduled_project(factory, now)
+    with factory() as setup:
+        other_id = _seed_project(setup, slug=f"pub-{uuid4().hex}")
+        foreign_revision_id = _seed_accepted_revision(
+            setup, other_id, "publication:foreign"
+        )
+        setup.commit()
+    _run(factory, now)
+
+    later = now + timedelta(days=7)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=later)
+        ticking.commit()
+
+    with factory() as writing:
+        occurrence_id = writing.scalar(
+            select(DueWorkOccurrence.id)
+            .where(
+                DueWorkOccurrence.scheduled_job_id == schedule_id,
+                DueWorkOccurrence.state == "pending",
+            )
+            .order_by(DueWorkOccurrence.id.desc())
+            .limit(1)
+        )
+        with pytest.raises(IntegrityError) as refusal:
+            writing.execute(
+                text(
+                    "insert into scheduled_report_publications ("
+                    "public_id, occurrence_id, schedule_id, project_id, "
+                    "configuration_version, provenance_mode, revision_id, "
+                    "evaluated_on, ruleset_version, thresholds_json, "
+                    "snapshot_json, observed_at"
+                    ") values ("
+                    ":public_id, :occurrence_id, :schedule_id, :project_id, "
+                    "'report-publication-v1', 'all-supported-sources', "
+                    ":revision_id, date '2026-09-07', 'v0.4', '{}'::jsonb, "
+                    "'{}'::jsonb, timestamptz '2026-09-07 07:05:00+00')"
+                ),
+                {
+                    "public_id": f"report-pub:{uuid4().hex}",
+                    "occurrence_id": occurrence_id,
+                    "schedule_id": schedule_id,
+                    "project_id": project_id,
+                    "revision_id": foreign_revision_id,
+                },
+            )
+        assert "fk_scheduled_report_publications_revision" in str(refusal.value)

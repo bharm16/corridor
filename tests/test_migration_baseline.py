@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "c8c20487c3bc624d0e4bdc73659d52c752f876222954e9b344df828d44d7801c"
+    "3fa9645b31e824f032a3a20a1b0f7ac2e391e9a0d37710c5b37abce016effc9d"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -1682,6 +1682,118 @@ def test_the_stored_mapping_revision_refuses_a_downgrade_that_would_lose_it():
                     " where format_id = :format_id"
                 ),
                 {"format_id": seeded["format_id"]},
+            )
+            session.execute(text("set local session_replication_role = origin"))
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+
+
+def _seed_bound_report_reading(session, *, slug: str) -> dict:
+    """One Report Run naming the accepted revision it was produced against.
+
+    Written with the append-only guards lifted, the way the committed-scenario
+    cleanups do: a Project Record revision is written only by the
+    record-decision role's commands, and reaching one would mean adopting a
+    whole baseline to prove a property of the transition rather than of the
+    adoption.
+    """
+
+    project_id = session.scalar(
+        text(
+            "insert into projects (slug, name, is_synthetic) "
+            "values (:slug, 'Bound Report Reading', true) returning id"
+        ),
+        {"slug": slug},
+    )
+    session.execute(text("set local session_replication_role = replica"))
+    revision_id = session.scalar(
+        text(
+            "insert into project_record_revisions ("
+            "project_id, command_type, human_principal, idempotency_key"
+            ") values ("
+            ":project_id, 'record_verbal_statement', 'local:coordinator', "
+            "'seed-bound-report-reading'"
+            ") returning id"
+        ),
+        {"project_id": project_id},
+    )
+    run_id = session.scalar(
+        text(
+            "insert into report_runs ("
+            "project_id, revision_id, ruleset_version, snapshot_json, "
+            "document_only"
+            ") values ("
+            ":project_id, :revision_id, 'v0.4', "
+            "'{\"dependencies\": {}}'::jsonb, false"
+            ") returning id"
+        ),
+        {"project_id": project_id, "revision_id": revision_id},
+    )
+    session.execute(text("set local session_replication_role = origin"))
+    return {
+        "project_id": project_id,
+        "revision_id": revision_id,
+        "run_id": run_id,
+    }
+
+
+def test_the_report_revision_binding_refuses_a_downgrade_that_would_lose_it():
+    """#602, proved on the exact row the snapshot-only shape cannot hold.
+
+    The shape this downgrade restores is a ``snapshot_json`` copy and nothing
+    saying which accepted revision it was taken against, which is the
+    unreferenced copy #602 removes. Dropping the column to get back there would
+    recreate it silently, for every reading already bound, so the transition
+    counts what it cannot carry, names it, and leaves the row exactly as it
+    was.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_binding_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with database.session_factory.begin() as session:
+            seeded = _seed_bound_report_reading(session, slug="bound-report-reading")
+
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+
+        assert refused.returncode != 0
+        assert "#602 downgrade refuses" in refused.stderr
+        assert "1 report reading(s)" in refused.stderr
+        assert "Nothing is dropped here" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+        with database.session_factory() as session:
+            row = session.execute(
+                text(
+                    "select project_id, revision_id, ruleset_version, "
+                    "       snapshot_json, document_only "
+                    "  from report_runs where id = :run_id"
+                ),
+                {"run_id": seeded["run_id"]},
+            ).one()
+            assert row.project_id == seeded["project_id"]
+            assert row.revision_id == seeded["revision_id"]
+            assert row.ruleset_version == "v0.4"
+            assert row.snapshot_json == {"dependencies": {}}
+            assert row.document_only is False
+
+        # A reading that names no revision loses nothing, so the transition
+        # crosses back.
+        with database.session_factory.begin() as session:
+            session.execute(text("set local session_replication_role = replica"))
+            session.execute(
+                text("update report_runs set revision_id = null where id = :run_id"),
+                {"run_id": seeded["run_id"]},
             )
             session.execute(text("set local session_replication_role = origin"))
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
