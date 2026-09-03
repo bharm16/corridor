@@ -4,7 +4,6 @@ domain: project-record
 scope: current product
 amends:
   - ADR-0010
-migration: the two ported rules are unimplemented and an adopted-baseline project's weekly report still declares accepted_record_date_checks v1 (#596).
 ---
 
 # The accepted record's alerts are its own, not the legacy task system's

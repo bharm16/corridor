@@ -30,7 +30,12 @@ from corridor.delta_resolution import (
     resolve_delta,
 )
 from corridor.issue_rendering import (
+    ACCEPTED_RECORD_CHECK_RULES,
+    ACCEPTED_RECORD_CHECK_SET,
+    CHECKS_NOT_RUN,
+    CHECKS_RAISED_ELSEWHERE,
     CURRENT_STATE_SUMMARY,
+    FIRST_ACCEPTED_RECORD_CHECK_SET,
     NO_PRIOR_COMPARISON_STATEMENT,
     SECTION_COMMITMENTS,
     SECTION_CONSTRAINT_ALERTS,
@@ -50,6 +55,7 @@ from corridor.issue_rendering import (
 )
 from corridor.models import (
     ActiveExtractionRun,
+    DocPage,
     Document,
     ExtractionRun,
     Fact,
@@ -57,6 +63,7 @@ from corridor.models import (
     Project,
     SourceSegment,
 )
+from corridor.presentation import accepted_record_exception_name, exception_name
 from corridor.operating_mode import adopt_project_baseline
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -134,15 +141,14 @@ class _Source:
         )
         self._ordinal = 0
 
-    def capture(
-        self,
-        *,
-        fact_type: str,
-        value: str,
-        subject_key: str = SUBJECT,
-        date_value: date | None = None,
-        supported: bool = True,
-    ) -> Fact:
+    def segment(self, value: str) -> SourceSegment:
+        """One addressable piece of this document, with no Fact captured from it.
+
+        A replacement revision carries the same passage at a new locator, so
+        a test that clears the replacement check needs a segment in the
+        successor without capturing a second Source Fact from it.
+        """
+
         self._ordinal += 1
         segment = SourceSegment(
             project_id=self.project.id,
@@ -158,6 +164,18 @@ class _Source:
         )
         self.session.add(segment)
         self.session.flush()
+        return segment
+
+    def capture(
+        self,
+        *,
+        fact_type: str,
+        value: str,
+        subject_key: str = SUBJECT,
+        date_value: date | None = None,
+        supported: bool = True,
+    ) -> Fact:
+        segment = self.segment(value)
         fact = Fact(
             project_id=self.project.id,
             document_id=self.document.id,
@@ -200,6 +218,55 @@ class _Source:
                 assessed_at=ASSESSED_AT,
             )
         return fact
+
+
+def _segment_of(session: Session, fact: Fact) -> int:
+    """The Source Segment one captured Fact was read from."""
+
+    return int(
+        session.scalar(
+            text("select source_segment_id from fact_sources where fact_id = :fact"),
+            {"fact": fact.id},
+        )
+    )
+
+
+def _supersede(session: Session, replaced: "_Source", successor: "_Source", *, on: date):
+    """Register that one Document Revision replaced another (ADR-0015, ADR-0016).
+
+    The registry requires the authority's own replacement date and the page
+    it is stated on, so both are supplied; nothing here substitutes a
+    document, retrieval, or ingestion date for the replacement date.
+    """
+
+    session.add(
+        DocPage(
+            document_id=successor.document.id,
+            page_no=1,
+            text="This revision replaces the previous one.",
+        )
+    )
+    session.flush()
+    # The registry refuses an edge whose successor is not itself registered,
+    # so both identifiers are in the database before the edge is written.
+    replaced.document.registry_id = f"reg-{replaced.document.id}"
+    successor.document.registry_id = f"reg-{successor.document.id}"
+    session.flush()
+    replaced.document.superseded_by = successor.document.id
+    replaced.document.superseded_on = on
+    replaced.document.supersession_source_document_id = successor.document.id
+    replaced.document.supersession_source_page = 1
+    session.flush()
+
+
+def _alerts(artifacts):
+    """Every Constraint Alert line in the weekly report, in the order read."""
+
+    return [
+        line
+        for line in artifacts.weekly_report.lines
+        if line.section_key == SECTION_CONSTRAINT_ALERTS
+    ]
 
 
 def _adopt(session: Session, project: Project, facts, key: str) -> int:
@@ -992,6 +1059,438 @@ def test_an_overdue_promised_date_is_named_by_its_released_check(session, projec
     assert "Promised timing passed" in render_weekly_report(
         artifacts.weekly_report
     ).text
+
+
+# --- The two ported support checks (#596, ADR-0090) ------------------------
+
+
+def test_an_accepted_value_with_no_supporting_documentation_raises_the_check(
+    session, project
+):
+    """The ported ``MISSING_EVIDENCE``, read from the Support Assessment relation."""
+
+    source = _Source(session, project, "ucm-support.xlsx")
+    supported = source.capture(fact_type="external_org", value="City Water")
+    unsupported = source.capture(
+        fact_type="resolution_strategy", value="relocate", supported=False
+    )
+    unsupported_id = unsupported.id
+    revision = _adopt(session, project, (supported, unsupported), "support-baseline")
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+
+    (alert,) = _alerts(artifacts)
+    assert alert.rule == "MISSING_EVIDENCE"
+    assert alert.subject_identity == SUBJECT
+    # It fires for the one accepted value that stands on nothing, and names
+    # it: the value beside it has support and raises nothing.
+    assert alert.provenance.input_record_ids == (unsupported_id,)
+    assert alert.provenance.rule_identity == "accepted_record_checks"
+    assert alert.provenance.rule_version == "v2"
+    assert alert.provenance.evaluated_as_of == CUTOFF.date()
+    assert alert.provenance.complete
+    assert "Resolution method" in alert.statement
+
+
+def test_the_ported_evidence_check_no_longer_names_the_source_passage_check(
+    session, project
+):
+    """ADR-0082: a locatable passage is not support, so the label cannot say it."""
+
+    source = _Source(session, project, "ucm-relabelled.xlsx")
+    unsupported = source.capture(
+        fact_type="external_org", value="City Water", supported=False
+    )
+    revision = _adopt(session, project, (unsupported,), "relabelled-baseline")
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+
+    body = render_weekly_report(artifacts.weekly_report).text
+    assert "No supporting document in use for this value" in body
+    assert "source passage check" not in body.lower()
+    # The released legacy ruleset keeps computing the Source Passage Check
+    # predicate over a legacy project until ADR-0081 stage 6, so its label is
+    # untouched: a label that stopped describing the predicate under it would
+    # make the legacy report lie.
+    assert exception_name("MISSING_EVIDENCE") == (
+        "No supporting document passed the source passage check"
+    )
+    # Every other released label is carried over verbatim.
+    for rule in ACCEPTED_RECORD_CHECK_RULES:
+        if rule != "MISSING_EVIDENCE":
+            assert accepted_record_exception_name(rule) == exception_name(rule)
+
+
+def test_an_assessment_that_contradicts_the_value_is_not_supporting_documentation(
+    session, project
+):
+    """A named person's adverse reading is a reading, and it is not support."""
+
+    source = _Source(session, project, "ucm-contradicted.xlsx")
+    fact = source.capture(
+        fact_type="external_org", value="City Water", supported=False
+    )
+    record_support_assessment(
+        session,
+        project_id=project.id,
+        proposition=FactProposition(fact.id),
+        source_segment_ids=[_segment_of(session, fact)],
+        evidence_role="value_support",
+        assessment="contradicted",
+        authority=ALICE,
+        assessed_at=ASSESSED_AT,
+    )
+    revision = _adopt(session, project, (fact,), "contradicted-baseline")
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+
+    assert [alert.rule for alert in _alerts(artifacts)] == ["MISSING_EVIDENCE"]
+
+
+def test_support_resting_only_on_a_replaced_revision_raises_the_replacement_check(
+    session, project
+):
+    """ADR-0016's predicate, carried over: the value still depends on it."""
+
+    replaced = _Source(session, project, "relocation-letter-rev-a.xlsx")
+    successor = _Source(session, project, "relocation-letter-rev-b.xlsx")
+    fact = replaced.capture(fact_type="external_org", value="City Water")
+    _supersede(session, replaced, successor, on=date(2026, 8, 15))
+    revision = _adopt(session, project, (fact,), "replaced-baseline")
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+
+    (alert,) = _alerts(artifacts)
+    assert alert.rule == "SUPERSEDED_CITATION"
+    # The quantity is measured from the authority's own replacement date to
+    # the declared source cutoff. No clock takes part.
+    assert alert.quantity_days == (CUTOFF.date() - date(2026, 8, 15)).days
+    assert alert.provenance.rule_version == "v2"
+    assert "Supporting document replaced" in render_weekly_report(
+        artifacts.weekly_report
+    ).text
+
+
+def test_a_replaced_revision_goes_quiet_once_the_record_stands_on_the_successor(
+    session, project
+):
+    """Never "a document has a successor" — only "nothing current replaced it".
+
+    The alert has to be able to clear, and it has to clear the right way.
+    ADR-0016 refused the blanket reading because an alert on it could only be
+    silenced by deleting provenance, which is pressure to erase exactly what
+    makes the record checkable. Here the replaced revision, its Source Fact
+    and its Support Assessment all stay in the project; what changes is that
+    the accepted record now stands on the successor's own statement.
+    """
+
+    replaced = _Source(session, project, "letter-rev-a.xlsx")
+    successor = _Source(session, project, "letter-rev-b.xlsx")
+    promised = replaced.capture(
+        fact_type="committed_date", value="2026-11-01", date_value=date(2026, 11, 1)
+    )
+    baseline = _adopt(session, project, (promised,), "replacement-baseline")
+    _supersede(session, replaced, successor, on=date(2026, 8, 15))
+
+    before = read_issue_artifacts(session, _bind(session, project, baseline))
+    assert [alert.rule for alert in _alerts(before)] == ["SUPERSEDED_CITATION"]
+
+    delta = _delta(
+        session,
+        project,
+        field="committed_date",
+        accepted_value="2026-11-01",
+        proposed_value="2026-12-15",
+        baseline_revision=baseline,
+    )
+    moved = successor.capture(
+        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
+    )
+    accepted = _accept(
+        session,
+        project,
+        delta,
+        moved,
+        at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        observed=baseline,
+    )
+
+    after = read_issue_artifacts(
+        session, _bind(session, project, accepted.revision_id)
+    )
+    assert _alerts(after) == []
+    # The replaced revision is still registered and still carries the earlier
+    # Support Assessment; nothing was deleted to silence the check.
+    assert replaced.document.superseded_by == successor.document.id
+
+
+def test_the_two_support_checks_never_both_fire_on_one_value(session, project):
+    """A value that stands on nothing cannot also depend on a replaced revision."""
+
+    replaced = _Source(session, project, "orphan-rev-a.xlsx")
+    successor = _Source(session, project, "orphan-rev-b.xlsx")
+    fact = replaced.capture(
+        fact_type="external_org", value="City Water", supported=False
+    )
+    _supersede(session, replaced, successor, on=date(2026, 8, 15))
+    revision = _adopt(session, project, (fact,), "exclusive-baseline")
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+
+    assert [alert.rule for alert in _alerts(artifacts)] == ["MISSING_EVIDENCE"]
+
+
+def test_the_ported_checks_do_not_move_under_an_absurd_clock(session, project):
+    """Three defects of exactly this shape were found in this area (#534)."""
+
+    replaced = _Source(session, project, "clock-rev-a.xlsx")
+    successor = _Source(session, project, "clock-rev-b.xlsx")
+    dated = replaced.capture(fact_type="external_org", value="City Water")
+    bare = replaced.capture(
+        fact_type="resolution_strategy", value="relocate", supported=False
+    )
+    _supersede(session, replaced, successor, on=date(2026, 8, 15))
+    revision = _adopt(session, project, (dated, bare), "clock-baseline")
+
+    rendered = []
+    for prepared_at in (
+        datetime(2016, 1, 1, tzinfo=timezone.utc),
+        datetime(2036, 1, 1, tzinfo=timezone.utc),
+    ):
+        reading = _bind(session, project, revision, prepared_at=prepared_at)
+        artifacts = read_issue_artifacts(session, reading)
+        rendered.append(
+            (
+                render_weekly_report(artifacts.weekly_report).body,
+                tuple(
+                    (alert.rule, alert.quantity_days) for alert in _alerts(artifacts)
+                ),
+            )
+        )
+
+    early, late = rendered
+    assert early == late
+    assert set(dict(early[1])) == {"MISSING_EVIDENCE", "SUPERSEDED_CITATION"}
+
+
+# --- The declared check set, and what it deliberately does not run ---------
+
+
+def test_the_report_declares_its_check_set_and_the_checks_it_does_not_run(
+    session, project
+):
+    """ADR-0090: the difference from a legacy project's alerts is declared."""
+
+    from corridor.exceptions import RULES as RELEASED_RULES
+
+    run = set(ACCEPTED_RECORD_CHECK_RULES)
+    elsewhere = {rule for rule, _ in CHECKS_RAISED_ELSEWHERE}
+    retired = {rule for rule, _ in CHECKS_NOT_RUN}
+    # Every released rule is inventoried exactly once: keep 3, port 2,
+    # supersede 3, retire 4.
+    assert run | elsewhere | retired == set(RELEASED_RULES)
+    assert len(run) + len(elsewhere) + len(retired) == len(RELEASED_RULES) == 12
+    assert run == {
+        "OVERDUE",
+        "DUE_SOON",
+        "MISSING_DATE",
+        "MISSING_EVIDENCE",
+        "SUPERSEDED_CITATION",
+    }
+
+    _, revision = _baseline(session, project)
+    reading = _bind(session, project, revision)
+    artifacts = read_issue_artifacts(session, reading)
+    coverage = artifacts.weekly_report.check_coverage
+    assert coverage.check_set == ACCEPTED_RECORD_CHECK_SET == "accepted_record_checks_v2"
+
+    body = render_weekly_report(artifacts.weekly_report).text
+    assert "accepted_record_checks_v2" in body
+    # Every rule this set does not run is named, with the reason, so a
+    # customer is never left to notice that findings stopped appearing.
+    for rule, why in CHECKS_RAISED_ELSEWHERE + CHECKS_NOT_RUN:
+        assert accepted_record_exception_name(rule).lower() in body.lower(), rule
+        assert why in body, rule
+    # And none of them is ever rendered as an alert.
+    assert not {line.rule for line in artifacts.weekly_report.lines} & (
+        elsewhere | retired
+    )
+
+
+# --- A ruleset change is a rules change, never project movement (#534) ----
+
+
+def _moved_promise(session, project):
+    """One project with a real accepted change, and the revisions either side."""
+
+    source, baseline = _baseline(session, project)
+    delta = _delta(
+        session,
+        project,
+        field="committed_date",
+        accepted_value="2026-11-01",
+        proposed_value="2026-12-15",
+        baseline_revision=baseline,
+    )
+    moved = source.capture(
+        fact_type="committed_date", value="2026-12-15", date_value=date(2026, 12, 15)
+    )
+    accepted = _accept(
+        session,
+        project,
+        delta,
+        moved,
+        at=datetime(2026, 9, 2, tzinfo=timezone.utc),
+        observed=baseline,
+    )
+    return baseline, accepted.revision_id
+
+
+def _previous_issue(revision_id: int, check_set: str | None):
+    return PreviousApprovedIssue(
+        issue_identity="2026-W35",
+        accepted_revision_id=revision_id,
+        approved_at=datetime(2026, 8, 27, tzinfo=timezone.utc),
+        check_set=check_set,
+    )
+
+
+def test_a_check_set_change_is_reported_as_a_rules_change_not_project_movement(
+    session, project
+):
+    """The distinction ``changes`` draws for the legacy path, on the spine.
+
+    An alert that moved because the checks changed and an alert that moved
+    because the project changed look identical in a count and call for
+    opposite responses. #534 could not test this because there was only one
+    released accepted-record check set; ADR-0090's v1 to v2 advance supplies
+    the second.
+    """
+
+    baseline, current = _moved_promise(session, project)
+    reading = _bind(
+        session,
+        project,
+        current,
+        previous_issue=_previous_issue(baseline, FIRST_ACCEPTED_RECORD_CHECK_SET),
+    )
+    artifacts = read_issue_artifacts(session, reading)
+
+    change = artifacts.change_summary.check_set_change
+    assert change.changed is True
+    assert change.unknown is False
+    assert change.previous == "accepted_record_date_checks_v1"
+    assert change.current == "accepted_record_checks_v2"
+
+    body = render_change_summary(artifacts.change_summary).text
+    assert "accepted_record_date_checks_v1" in body
+    assert "accepted_record_checks_v2" in body
+    assert "change in the checks and not a change in your project" in body
+
+    # And it stays out of the accepted-change section entirely: every change
+    # named there is a Human Record Decision on the project record.
+    assert [one.field for one in artifacts.change_summary.changes] == [
+        "committed_date"
+    ]
+    assert all(one.decision_id for one in artifacts.change_summary.changes)
+    assert all(
+        one.disposition in ("accept", "edit")
+        for one in artifacts.change_summary.changes
+    )
+
+
+def test_a_previous_issue_under_the_same_check_set_is_not_a_rules_change(
+    session, project
+):
+    baseline, current = _moved_promise(session, project)
+    reading = _bind(
+        session,
+        project,
+        current,
+        previous_issue=_previous_issue(baseline, ACCEPTED_RECORD_CHECK_SET),
+    )
+    artifacts = read_issue_artifacts(session, reading)
+
+    change = artifacts.change_summary.check_set_change
+    assert change.changed is False
+    assert change.unknown is False
+    body = render_change_summary(artifacts.change_summary).text
+    assert "Both issues were built under the same set of checks" in body
+
+
+def test_a_previous_issue_that_recorded_no_check_set_is_an_unknown_boundary(
+    session, project
+):
+    """ADR-0044: an unrecorded set is unknown, never the current one."""
+
+    baseline, current = _moved_promise(session, project)
+    reading = _bind(
+        session, project, current, previous_issue=_previous_issue(baseline, None)
+    )
+    artifacts = read_issue_artifacts(session, reading)
+
+    change = artifacts.change_summary.check_set_change
+    assert change.unknown is True
+    assert change.changed is False
+    body = render_change_summary(artifacts.change_summary).text
+    assert "did not record which set of checks it was built under" in body
+    assert "will not assume it was this one" in body
+
+
+def test_a_previous_issue_naming_an_unreleased_check_set_is_refused(
+    session, project
+):
+    """A name nobody released cannot be reported to a customer as a rules change."""
+
+    baseline, current = _moved_promise(session, project)
+
+    with pytest.raises(MixedIssueInputs):
+        _bind(
+            session,
+            project,
+            current,
+            previous_issue=_previous_issue(baseline, "accepted_record_checks_v9"),
+        )
+
+
+def test_the_check_set_a_predecessor_recorded_is_part_of_the_reading_identity(
+    session, project
+):
+    baseline, current = _moved_promise(session, project)
+    first = _bind(
+        session,
+        project,
+        current,
+        previous_issue=_previous_issue(baseline, FIRST_ACCEPTED_RECORD_CHECK_SET),
+    )
+    second = _bind(
+        session,
+        project,
+        current,
+        previous_issue=_previous_issue(baseline, ACCEPTED_RECORD_CHECK_SET),
+    )
+
+    assert first.reading_identity != second.reading_identity
+
+
+def test_the_ported_checks_touch_no_frozen_legacy_table():
+    """ADR-0081 freezes them; ADR-0084 section 3 forbids extending them."""
+
+    from pathlib import Path
+
+    module = Path("src/corridor/issue_rendering.py").read_text(encoding="utf-8")
+    for frozen in (
+        "dependencies",
+        "operative_support",
+        "work_decisions",
+        "dependency_events",
+        "OperativeSupport",
+        "WorkDecision",
+        "contradicted_fields",
+    ):
+        assert frozen not in module, frozen
+    for write in ("session.add", "session.merge", "session.delete", "insert(", "update("):
+        assert write not in module, write
 
 
 def test_the_pending_question_is_neutral_and_states_the_accepted_position(

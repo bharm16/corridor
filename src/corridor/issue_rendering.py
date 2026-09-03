@@ -62,6 +62,25 @@ cell.  Support is always read from the assessment relation: this module never
 reads locator validation, because a passed Source Passage Check says a
 quotation is where it was cited and never that the source supports the value.
 
+**The accepted record's checks are its own** (ADR-0090).  The weekly report
+runs a declared check set, ``accepted_record_checks_v2``, and says so.  Five
+of the twelve released Constraint Alert rules are in it: the three date
+checks derivable from accepted values, plus ``MISSING_EVIDENCE`` re-based on
+the Support Assessment relation rather than the Source Passage Check it used
+to mean, and ``SUPERSEDED_CITATION`` with ADR-0016's predicate carried over —
+the accepted value still depends on a superseded revision and nothing current
+has replaced it, never "some document has a successor".  Three of the
+remaining seven are raised where a coordinator can act on them (a
+contradiction is a Proposed Delta and a focused question; due and overdue
+follow-up is the Follow-up section), and four are not checked at all because
+they only ever said an administrative field was empty.  An adopted-baseline
+project's alerts therefore do **not** match a legacy project's, and the
+report declares the difference instead of leaving a customer to notice that
+findings stopped appearing.  A check set change is a change in the rules and
+never a change in the project, which is the distinction ``changes`` draws for
+the legacy path; the change summary states which set each issue was built
+under and no set change ever reaches an accepted-change section.
+
 **Adopted projects only.**  ADR-0084 §3 names the change summary and weekly
 report as spine-native surfaces for adopted-baseline projects, reading the
 current and as-of projections.  A legacy project keeps ``corridor.report``,
@@ -95,14 +114,17 @@ from corridor.models import (
     DeltaDisposition,
     DeltaRecordDecision,
     DeltaSupersession,
+    Document,
     FactDecision,
     FactSource,
     ProjectRecordRevision,
     ProposedDelta,
     SourceSegment,
+    SupportAssessment,
+    SupportAssessmentSource,
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
-from corridor.presentation import exception_name, field_label
+from corridor.presentation import accepted_record_exception_name, field_label
 from corridor.review_packet_reading import is_stale
 from corridor.support_assessments import FactProposition, current_support_assessments
 
@@ -169,8 +191,97 @@ CHANGE_SUMMARY_RULE = "change_summary_from_accepted_revisions"
 CHANGE_SUMMARY_RULE_VERSION = "v1"
 WEEKLY_REPORT_RULE = "weekly_coordination_report_from_accepted_revision"
 WEEKLY_REPORT_RULE_VERSION = "v1"
-ACCEPTED_RECORD_CHECK_RULE = "accepted_record_date_checks"
-ACCEPTED_RECORD_CHECK_VERSION = "v1"
+ACCEPTED_RECORD_CHECK_RULE = "accepted_record_checks"
+ACCEPTED_RECORD_CHECK_VERSION = "v2"
+# The declared name of the check set, as one string, because that is the unit
+# a previous approved issue records and this one compares against.  ADR-0090
+# advances it from ``accepted_record_date_checks_v1``: the set is no longer
+# only date checks once the two support rules join it, so the name loses
+# "date" as well as taking a new version.
+ACCEPTED_RECORD_CHECK_SET = (
+    f"{ACCEPTED_RECORD_CHECK_RULE}_{ACCEPTED_RECORD_CHECK_VERSION}"
+)
+FIRST_ACCEPTED_RECORD_CHECK_SET = "accepted_record_date_checks_v1"
+# Every released set, oldest first.  A previous approved issue that names one
+# of these is comparable; one that names nothing is an unknown boundary, and
+# ADR-0044's discipline applies — an unrecorded set is never backfilled from
+# the current one.
+RELEASED_ACCEPTED_RECORD_CHECK_SETS = (
+    FIRST_ACCEPTED_RECORD_CHECK_SET,
+    ACCEPTED_RECORD_CHECK_SET,
+)
+
+# The five released rules this set runs on the accepted Project Record, and
+# the seven it does not.  ADR-0090 dispositioned all twelve: keep three, port
+# two, supersede three, retire four.  Both halves are stated as data because
+# the report declares its own coverage — an adopted-baseline project's alerts
+# differ from a legacy project's, and #596 opened on that difference being
+# silent.
+ACCEPTED_RECORD_CHECK_RULES = (
+    "OVERDUE",
+    "DUE_SOON",
+    "MISSING_DATE",
+    "MISSING_EVIDENCE",
+    "SUPERSEDED_CITATION",
+)
+
+# Three findings that still reach the coordinator, once, in the surface that
+# can act on them.  A second alert saying the same thing would give one
+# question two action surfaces, and no rule for which one wins.
+CHECKS_RAISED_ELSEWHERE = (
+    (
+        "CONTRADICTION",
+        "a source that disagrees with the accepted record is incoming "
+        "evidence rather than a second accepted fact, so it is raised as a "
+        "proposed change with a question about that one value",
+    ),
+    (
+        "ACTION_DUE_SOON",
+        "a next action that is coming due is stated in the follow-up "
+        "section, from the accepted follow-up plan that carries it",
+    ),
+    (
+        "ACTION_OVERDUE",
+        "a next action that is past its date is stated in the follow-up "
+        "section, from the accepted follow-up plan that carries it",
+    ),
+)
+
+# Four rules the accepted record does not check at all.  Each of them says
+# only that an administrative field is empty, and firing on that asserts that
+# every constraint on the project ought to have an internal owner, a task, a
+# recent document and a key date link.  Most legitimately have none of those,
+# and a project with three thousand records would produce three thousand
+# identical findings that mean "nobody typed anything here" (ADR-0010,
+# ADR-0090).
+CHECKS_NOT_RUN = (
+    (
+        "MISSING_OWNER",
+        "many constraints correctly have no internal owner, so an empty "
+        "owner is not a problem to report",
+    ),
+    (
+        "MISSING_ACTION",
+        "a constraint whose next move belongs to the utility owner needs no "
+        "task of ours, so an empty next action is not a problem to report",
+    ),
+    (
+        "STALE",
+        "nobody sending a document is not evidence that anybody failed to "
+        "answer; a missing answer is recorded against a request that was "
+        "actually sent, and it is reported there",
+    ),
+    (
+        "ORPHAN",
+        "whether a constraint needs a key date linked to it is each "
+        "project's own decision, not a defect Corridor can assert",
+    ),
+)
+
+# The Support Assessment outcomes that make a Source Segment Supporting
+# Documentation.  "Contradicted", "unclear" and "not assessed" are readings
+# too, and none of them is support (ADR-0082).
+SUPPORTING_OUTCOMES = ("supported", "partially_supported")
 
 # The horizon the near-date check uses, in days.  It is the same thirty days
 # the released ruleset gives the Required By lane; it is stated here because
@@ -200,11 +311,21 @@ class PreviousApprovedIssue:
     A prepared candidate, an internal snapshot, and the newest render of any
     kind are all excluded by construction: nothing but an approved issue can
     be put here.
+
+    ``check_set`` is the accepted-record check set that issue was rendered
+    under.  It is here rather than derived because the comparison it enables
+    is exactly the one ``changes`` makes for the legacy path: a finding that
+    moved because the rules changed is not the project moving, and the only
+    way to tell is to know which rules the predecessor ran.  ``None`` is the
+    honest answer for an issue approved before any set was recorded, and it
+    is read as unknown rather than backfilled from the current set
+    (ADR-0044).
     """
 
     issue_identity: str
     accepted_revision_id: int
     approved_at: datetime
+    check_set: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -421,6 +542,7 @@ class ChangeSummaryReading:
     unaccepted_deltas: tuple[UnacceptedDelta, ...]
     current_state: tuple[AcceptedValueLine, ...]
     count_provenance: ValueProvenance
+    check_set_change: CheckSetChange
 
     @property
     def reading_identity(self) -> str:
@@ -454,6 +576,58 @@ class ChangeSummaryReading:
         return self.bound.templates.mapping_identity
 
 
+# --- What the checks cover, and whether they changed -----------------------
+
+
+@dataclass(frozen=True, slots=True)
+class CheckCoverage:
+    """Which released checks this set runs on the accepted record, and which not.
+
+    ADR-0090 settled that an adopted-baseline project's alerts will **not**
+    match a legacy project's, because four rules are retired and three are
+    raised somewhere a coordinator can act on them.  The difference is not a
+    gap to close; it is a decision, and a decision a customer reads alert
+    counts under has to be able to see.  So the report declares it rather
+    than leaving the reader to notice that some findings stopped appearing.
+    """
+
+    check_set: str
+    rules_run: tuple[str, ...]
+    rules_raised_elsewhere: tuple[tuple[str, str], ...]
+    rules_not_run: tuple[tuple[str, str], ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CheckSetChange:
+    """Whether the checks themselves changed across this issue's window.
+
+    ``changes`` draws exactly this line for the legacy path: an alert count
+    that moved because the ruleset or a threshold moved is a change in the
+    calculation, and reporting it as project movement tells a customer their
+    project did something it did not do.  The same distinction has to survive
+    here, so the change summary states which set each issue was built under
+    and never lets a set change reach an accepted-change section.
+    """
+
+    current: str
+    previous: str | None
+    has_previous_issue: bool
+
+    @property
+    def changed(self) -> bool:
+        return (
+            self.has_previous_issue
+            and self.previous is not None
+            and self.previous != self.current
+        )
+
+    @property
+    def unknown(self) -> bool:
+        """The predecessor recorded no set, so no comparison can be made."""
+
+        return self.has_previous_issue and self.previous is None
+
+
 # --- The weekly report reading --------------------------------------------
 
 
@@ -476,6 +650,7 @@ class WeeklyReportReading:
     bound: BoundIssueReading
     lines: tuple[ReportLine, ...]
     standing_provenance: ValueProvenance
+    check_coverage: CheckCoverage
 
     @property
     def reading_identity(self) -> str:
@@ -637,6 +812,18 @@ def bind_issue_reading(
                 "the previous approved issue names a revision this project "
                 "never had"
             )
+        if (
+            previous_issue.check_set is not None
+            and previous_issue.check_set not in RELEASED_ACCEPTED_RECORD_CHECK_SETS
+        ):
+            # An unrecognized name would be reported to a customer as "the
+            # checks changed", which is a claim about why their alert counts
+            # moved.  Not recording a set at all is a different and honest
+            # answer, and it is the one that stays available.
+            raise MixedIssueInputs(
+                "the previous approved issue names a check set that was "
+                f"never released: {previous_issue.check_set}"
+            )
 
     accepted_values = tuple(
         sorted(
@@ -766,8 +953,15 @@ def _reading_identity(**parts: Any) -> str:
                 "identity": previous.issue_identity,
                 "accepted_revision_id": previous.accepted_revision_id,
                 "approved_at": previous.approved_at.isoformat(),
+                "check_set": previous.check_set,
             }
         ),
+        # The set of checks the accepted record is read under is part of what
+        # this reading says, not part of when it was taken: the same revision
+        # read under a different set is a different reading, and two artifacts
+        # that disagree about which checks ran are exactly what one identity
+        # exists to prevent.
+        "check_set": ACCEPTED_RECORD_CHECK_SET,
         "source_cutoff": parts["source_cutoff"].isoformat(),
         "coverage": [
             [line.source_name, line.requirement, line.state, line.detail]
@@ -843,6 +1037,15 @@ def read_change_summary(
         changes=changes,
         unaccepted_deltas=_unaccepted_deltas(session, reading),
         current_state=current_state,
+        check_set_change=CheckSetChange(
+            current=ACCEPTED_RECORD_CHECK_SET,
+            previous=(
+                None
+                if reading.previous_issue is None
+                else reading.previous_issue.check_set
+            ),
+            has_previous_issue=reading.previous_issue is not None,
+        ),
         count_provenance=ValueProvenance(
             value_class=DERIVATION,
             rule_identity=CHANGE_SUMMARY_RULE,
@@ -1017,7 +1220,7 @@ def _accepted_value_provenance(
         for assessment in current_support_assessments(
             session, reading.project_id, FactProposition(value.fact_id)
         )
-        if assessment.assessment in ("supported", "partially_supported")
+        if assessment.assessment in SUPPORTING_OUTCOMES
     )
     decided_by, decided_at = authorities.get(value.revision_id, (None, None))
     value_class = (
@@ -1158,7 +1361,7 @@ def read_weekly_report(
     lines: list[ReportLine] = []
     for section in reading.templates.sections:
         if section.key == SECTION_CONSTRAINT_ALERTS:
-            lines.extend(_alert_lines(reading))
+            lines.extend(_alert_lines(session, reading))
         elif section.key == SECTION_COMMITMENTS:
             lines.extend(
                 _value_lines(session, reading, "committed_date", section.key, authorities)
@@ -1174,6 +1377,12 @@ def read_weekly_report(
     return WeeklyReportReading(
         bound=reading,
         lines=tuple(lines),
+        check_coverage=CheckCoverage(
+            check_set=ACCEPTED_RECORD_CHECK_SET,
+            rules_run=ACCEPTED_RECORD_CHECK_RULES,
+            rules_raised_elsewhere=CHECKS_RAISED_ELSEWHERE,
+            rules_not_run=CHECKS_NOT_RUN,
+        ),
         standing_provenance=ValueProvenance(
             value_class=DERIVATION,
             rule_identity=WEEKLY_REPORT_RULE,
@@ -1220,14 +1429,127 @@ def _value_lines(
     return lines
 
 
-def _alert_lines(reading: BoundIssueReading) -> list[ReportLine]:
-    """The date checks this surface can run over accepted values alone.
+@dataclass(frozen=True, slots=True)
+class _SupportInUse:
+    """What one accepted value's Supporting Documentation in Use rests on.
+
+    ``stands_on_current`` is true as soon as one segment in use sits in a
+    Document Revision that has not been replaced.  A Recorded Verbal
+    Statement is not a Document Revision at all, so it can never be
+    superseded and counts here.  ``replaced_on`` is the authority's own
+    replacement date for the earliest superseded revision in use, and is
+    ``None`` when none is in use — or, for a pre-constraint row, when the
+    registry never recorded one; a document, retrieval, or ingestion date is
+    never substituted for it (ADR-0016).
+    """
+
+    assessment_ids: tuple[int, ...]
+    stands_on_current: bool
+    replaced_on: date | None
+
+    @property
+    def depends_on_superseded(self) -> bool:
+        return not self.stands_on_current
+
+
+def _support_in_use(
+    session: Session, reading: BoundIssueReading
+) -> dict[int, _SupportInUse]:
+    """The Supporting Documentation in Use for every accepted value, once.
+
+    ADR-0017 requires one resolver for "what does this record stand on", and
+    both support checks below read this and nothing else.  Support is the
+    Support Assessment relation: an effective assessment whose outcome is
+    supported or partially supported.  A passed Source Passage Check is never
+    consulted, because a passage being where it was cited says nothing about
+    whether it supports the value beside it (ADR-0082).
+
+    An accepted value with no entry here has no Supporting Documentation in
+    use at all, which is the ported ``MISSING_EVIDENCE``.  That is why the
+    absence is expressed by the key being missing rather than by an empty
+    record: the two checks below then cannot both fire on one value.
+
+    ``stands_on_current`` is a real question even though today's database
+    answers it one way.  ``append_support_assessment`` requires every named
+    segment to sit in the proposition's own rendition, so one accepted value's
+    support cannot currently span a replaced revision and its successor at
+    once, and the record moves onto the successor by accepting that revision's
+    own statement instead.  The predicate is written as ADR-0090 states it —
+    a superseded revision in use **and** no current support beside it —
+    rather than as "this value's document was replaced", because the second
+    would become the wrong rule the moment a proposition may name more than
+    one rendition.
+    """
+
+    fact_ids = tuple({value.fact_id for value in reading.accepted_values})
+    if not fact_ids:
+        return {}
+    rows = session.execute(
+        select(
+            SupportAssessment.fact_id,
+            SupportAssessment.id,
+            Document.superseded_by,
+            Document.superseded_on,
+        )
+        .join(
+            SupportAssessmentSource,
+            SupportAssessmentSource.support_assessment_id == SupportAssessment.id,
+        )
+        .join(
+            SourceSegment,
+            SourceSegment.id == SupportAssessmentSource.source_segment_id,
+        )
+        .outerjoin(Document, Document.id == SourceSegment.document_id)
+        .where(
+            SupportAssessment.project_id == reading.project_id,
+            SupportAssessment.proposition_kind == "source_fact",
+            SupportAssessment.fact_id.in_(fact_ids),
+            SupportAssessment.superseded_by.is_(None),
+            SupportAssessment.assessment.in_(SUPPORTING_OUTCOMES),
+        )
+    ).all()
+
+    assessments: dict[int, set[int]] = {}
+    current: set[int] = set()
+    replaced: dict[int, date] = {}
+    for fact_id, assessment_id, superseded_by, superseded_on in rows:
+        assessments.setdefault(fact_id, set()).add(assessment_id)
+        if superseded_by is None:
+            current.add(fact_id)
+        elif superseded_on is not None:
+            held = replaced.get(fact_id)
+            if held is None or superseded_on < held:
+                replaced[fact_id] = superseded_on
+    return {
+        fact_id: _SupportInUse(
+            assessment_ids=tuple(sorted(found)),
+            stands_on_current=fact_id in current,
+            replaced_on=replaced.get(fact_id),
+        )
+        for fact_id, found in assessments.items()
+    }
+
+
+def _alert_lines(session: Session, reading: BoundIssueReading) -> list[ReportLine]:
+    """The accepted record's own check set, ``accepted_record_checks_v2``.
 
     The rule names and their customer labels are the released ones, so an
     alert here reads exactly as the same finding reads everywhere else.  The
     version is this module's own because the inputs are accepted spine values
     rather than the legacy Dependency rows, and a shared version string would
     hide that difference the next time a count moves.
+
+    Five of the twelve released rules run here (ADR-0090).  Three are the
+    date checks derivable from accepted values alone.  The other two are the
+    ones that say whether the accepted record stands on anything, and they
+    read the Support Assessment relation: ``MISSING_EVIDENCE`` re-based off
+    the Source Passage Check it used to mean, and ``SUPERSEDED_CITATION``
+    with ADR-0016's predicate carried over exactly — never "a document has a
+    successor", only "the accepted value still depends on the superseded
+    revision and nothing current has replaced it".  The other seven are
+    raised where they can be acted on, or are not Corridor's to assert; the
+    report declares which, so the difference from a legacy project's alerts
+    is stated rather than silent.
     """
 
     cutoff = reading.cutoff_date
@@ -1259,6 +1581,63 @@ def _alert_lines(reading: BoundIssueReading) -> list[ReportLine]:
                 lines.append(
                     _alert(reading, subject, "DUE_SOON", remaining, (need.fact_id,))
                 )
+
+    lines.extend(_support_alert_lines(session, reading))
+    return lines
+
+
+def _support_alert_lines(
+    session: Session, reading: BoundIssueReading
+) -> list[ReportLine]:
+    """The two ported rules, one accepted value at a time (ADR-0090).
+
+    They are evaluated per accepted proposition rather than per subject
+    because that is the unit a Support Assessment is recorded against, and
+    because "this promised date stands on nothing" is a different finding
+    from "this required-by date stands on nothing".  Each line therefore
+    names the field it is about, so no two of them are the identical row
+    ADR-0010 found unreadable.
+
+    The two are mutually exclusive by construction.  A value with no
+    Supporting Documentation in Use cannot also be depending on a superseded
+    revision, so a coordinator never reads two alerts about one absence.
+    """
+
+    standing = _support_in_use(session, reading)
+    lines: list[ReportLine] = []
+    for value in reading.accepted_values:
+        in_use = standing.get(value.fact_id)
+        if in_use is None:
+            lines.append(
+                _alert(
+                    reading,
+                    value.subject_key,
+                    "MISSING_EVIDENCE",
+                    None,
+                    (value.fact_id,),
+                    field=value.fact_type,
+                )
+            )
+            continue
+        if not in_use.depends_on_superseded:
+            # A current revision is in use for this value, so an older one
+            # beside it is history doing no work.  ADR-0016 refused the "any
+            # old link exists" reading precisely here: an alert on it could
+            # never clear without deleting provenance, which is pressure to
+            # erase exactly what makes the record checkable.
+            continue
+        lines.append(
+            _alert(
+                reading,
+                value.subject_key,
+                "SUPERSEDED_CITATION",
+                None
+                if in_use.replaced_on is None
+                else (reading.cutoff_date - in_use.replaced_on).days,
+                in_use.assessment_ids,
+                field=value.fact_type,
+            )
+        )
     return lines
 
 
@@ -1268,12 +1647,16 @@ def _alert(
     rule: str,
     quantity_days: int | None,
     input_record_ids: tuple[int, ...],
+    field: str | None = None,
 ) -> ReportLine:
     days = "" if quantity_days is None else f" ({quantity_days} days)"
+    about = "" if field is None else f" — {field_label(field)}"
     return ReportLine(
         section_key=SECTION_CONSTRAINT_ALERTS,
         subject_identity=subject,
-        statement=f"{subject}: {exception_name(rule)}{days}.",
+        statement=(
+            f"{subject}{about}: {accepted_record_exception_name(rule)}{days}."
+        ),
         provenance=ValueProvenance(
             value_class=DERIVATION,
             rule_identity=ACCEPTED_RECORD_CHECK_RULE,
@@ -1417,6 +1800,7 @@ def render_change_summary(reading: ChangeSummaryReading) -> RenderedArtifact:
             )
 
     paragraphs.append(_unaccepted_paragraph(reading))
+    paragraphs.append(_check_set_paragraph(reading.check_set_change))
     paragraphs.extend(_coverage_paragraphs(bound))
     return RenderedArtifact(
         kind="change_summary",
@@ -1424,6 +1808,51 @@ def render_change_summary(reading: ChangeSummaryReading) -> RenderedArtifact:
         accepted_revision_id=bound.accepted_revision_id,
         container=_container(bound, "What changed since the last issue"),
         body="\n\n".join(paragraphs),
+    )
+
+
+def _check_set_paragraph(change: CheckSetChange) -> str:
+    """Say whether the checks moved, so a moved alert is not read as movement.
+
+    ``changes`` makes this distinction for the legacy path and states why: a
+    report's most-read section is the one saying what moved, and it is only
+    trustworthy if a reader can tell the project changing from the rules
+    changing, because those call for opposite responses.  Nothing about a
+    check set ever enters an accepted-change section here — a change to the
+    accepted record is a Human Record Decision, and a check set is not one.
+    """
+
+    if not change.has_previous_issue:
+        return (
+            "The checks Corridor runs on your accepted project record are "
+            f"the set called {change.current}. This is the first issue, so "
+            "there is no earlier set to compare them with."
+        )
+    if change.unknown:
+        return (
+            "Your last approved issue did not record which set of checks it "
+            "was built under, and Corridor will not assume it was this one. "
+            f"This issue was built under {change.current}. Because the "
+            "earlier set is unknown, an alert that is present in one issue "
+            "and absent in the other cannot be attributed either to your "
+            "project or to a change in the checks."
+        )
+    if change.changed:
+        return (
+            "The set of checks Corridor runs on your accepted project "
+            "record changed between the two issues: your last one was "
+            f"built under {change.previous} and this one is built under "
+            f"{change.current}. An alert that appears or disappears for that "
+            "reason is a change in the checks and not a change in your "
+            "project, so nothing above describes it as something that "
+            "happened on the project. The report lists the checks this set "
+            "runs and the ones it deliberately does not."
+        )
+    return (
+        "Both issues were built under the same set of checks, "
+        f"{change.current}, so an alert that appeared or disappeared "
+        "between them reflects your project rather than a change in what "
+        "Corridor checks."
     )
 
 
@@ -1513,17 +1942,20 @@ def render_weekly_report(reading: WeeklyReportReading) -> RenderedArtifact:
         f"{bound.templates.template_identity} version "
         f"{bound.templates.template_version} and the field mapping "
         f"{bound.templates.mapping_identity} version "
-        f"{bound.templates.mapping_version}. {_cutoff_sentence(bound)}"
+        f"{bound.templates.mapping_version}. The checks below are the set "
+        f"called {reading.check_coverage.check_set}. {_cutoff_sentence(bound)}"
     ]
     for section in bound.templates.sections:
         lines = reading.of_section(section.key)
         paragraphs.append(section.heading)
         if not lines:
             paragraphs.append(_empty_section_sentence(section.key))
-            continue
-        for line in lines:
-            _require_provenance(line.provenance, line.subject_identity)
-            paragraphs.append(f"{line.statement} {line.provenance.sentence()}")
+        else:
+            for line in lines:
+                _require_provenance(line.provenance, line.subject_identity)
+                paragraphs.append(f"{line.statement} {line.provenance.sentence()}")
+        if section.key == SECTION_CONSTRAINT_ALERTS:
+            paragraphs.extend(_check_coverage_paragraphs(reading.check_coverage))
 
     paragraphs.append(
         f"{_open_work_paragraph(reading)} "
@@ -1537,6 +1969,52 @@ def render_weekly_report(reading: WeeklyReportReading) -> RenderedArtifact:
         container=_container(bound, "Constraint status report"),
         body="\n\n".join(paragraphs),
     )
+
+
+def _check_coverage_paragraphs(coverage: CheckCoverage) -> list[str]:
+    """State which released checks ran here, and which did not, and why.
+
+    An adopted-baseline project's alerts are not the same as a legacy
+    project's and are not going to become the same: four of the twelve
+    released rules are retired and three are raised where they can be acted
+    on (ADR-0090).  A customer comparing two projects, or one project across
+    the change, has to be told that in the report rather than left to notice
+    that findings stopped appearing.  So the difference is declared here, in
+    the same words the decision was made in.
+    """
+
+    ran = _join(
+        [accepted_record_exception_name(rule) for rule in coverage.rules_run]
+    )
+    paragraphs = [
+        f"These are the checks Corridor ran on your accepted project record, "
+        f"as the set called {coverage.check_set}: {ran}. Each finding above "
+        "names the check it came from and the accepted records it was "
+        "computed from."
+    ]
+    if coverage.rules_raised_elsewhere:
+        elsewhere = " ".join(
+            f'"{accepted_record_exception_name(rule)}" is not repeated here, '
+            f"because {why}."
+            for rule, why in coverage.rules_raised_elsewhere
+        )
+        paragraphs.append(
+            "Three things Corridor used to report as alerts now reach you "
+            "somewhere you can act on them, and are deliberately not shown "
+            f"twice. {elsewhere}"
+        )
+    if coverage.rules_not_run:
+        retired = " ".join(
+            f'It does not report "{accepted_record_exception_name(rule)}", '
+            f"because {why}."
+            for rule, why in coverage.rules_not_run
+        )
+        paragraphs.append(
+            "Corridor also stopped making four checks that only said an "
+            "administrative field was empty, because a list where every row "
+            f"means the same thing is a list nobody can read. {retired}"
+        )
+    return paragraphs
 
 
 def _empty_section_sentence(section_key: str) -> str:
