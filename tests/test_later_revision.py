@@ -611,6 +611,87 @@ def test_a_later_revision_is_processed_only_under_the_registered_mapping(
         )
 
 
+def test_the_registered_mapping_is_resolved_from_stored_state(
+    session, project, tmp_path, store
+):
+    """A caller no longer reconstructs the approved declaration to be believed (#622).
+
+    The declaration is stored beside its registration (#610), so omitting the
+    manifest reads back the same mapping revision the project registered. The
+    proof is equivalence rather than a digest alone: the same delivery captured
+    with the manifest supplied produces the very same Facts and Proposed Deltas,
+    which it can only do if the resolved declaration is the registered one.
+    """
+
+    _revision, manifest = adopt(
+        session, project, workbook_bytes(tmp_path / "a.xlsx", BASELINE_ROWS), tmp_path
+    )
+    body = workbook_bytes(tmp_path / "b.xlsx", _changed(BASELINE_ROWS, 0, "Size", "18 in"))
+    staged, envelope = deliver(session, project, body)
+    arguments = {
+        "project": project,
+        "staged": staged,
+        "envelope": envelope,
+        "principal": PRINCIPAL,
+        "images_dir": tmp_path / "images",
+    }
+
+    resolved = capture_later_revision(session, **arguments)
+    supplied = capture_later_revision(session, manifest=manifest, **arguments)
+
+    assert resolved.delta_ids
+    assert resolved.field_mapping.content_sha256 == manifest.content_sha256
+    assert supplied.delta_ids == resolved.delta_ids
+    assert supplied.fact_ids == resolved.fact_ids
+
+
+def test_a_registration_that_stores_no_declaration_refuses_by_name(
+    session, project, tmp_path, store
+):
+    """The shape every registration had before #610, and what it can prove.
+
+    The command alone writes identity, version and digest — no declaration — so
+    a registration made through it is exactly one made before the declaration
+    was stored beside it. The absence is stated by name; it is never read as an
+    empty mapping, and never quietly replaced by one rebuilt from the delivered
+    file. The registered revision is unchanged, so a caller that still holds the
+    declaration is served by the same registration the resolution could not.
+    """
+
+    _revision, manifest = adopt(
+        session, project, workbook_bytes(tmp_path / "a.xlsx", BASELINE_ROWS), tmp_path
+    )
+    session.scalar(
+        select(
+            func.register_baseline_format(
+                project.id,
+                "field_mapping",
+                manifest.identity,
+                manifest.version,
+                manifest.content_sha256,
+                PRINCIPAL.subject,
+                "register-without-a-declaration",
+            )
+        )
+    )
+    session.expire_all()
+    body = workbook_bytes(tmp_path / "b.xlsx", _changed(BASELINE_ROWS, 0, "Size", "18 in"))
+    staged, envelope = deliver(session, project, body)
+    arguments = {
+        "project": project,
+        "staged": staged,
+        "envelope": envelope,
+        "principal": PRINCIPAL,
+        "images_dir": tmp_path / "images",
+    }
+
+    with pytest.raises(LaterRevisionRefused, match="stores no declaration"):
+        capture_later_revision(session, **arguments)
+
+    supplied = capture_later_revision(session, manifest=manifest, **arguments)
+    assert supplied.delta_ids
+
+
 def test_a_revision_whose_columns_left_the_mapping_is_refused(
     session, project, tmp_path, store
 ):
