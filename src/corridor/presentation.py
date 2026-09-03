@@ -200,6 +200,42 @@ def exception_name(rule: str) -> str:
     }.get(rule, rule)
 
 
+# The accepted record runs its own check set (``accepted_record_checks_v2``,
+# ADR-0090), and two of its rules do not mean what the released legacy
+# ruleset's rules of the same name mean.  Only a rule whose predicate actually
+# changed appears here; every other rule keeps the label above, verbatim, so
+# one finding reads the same way wherever it is shown.
+#
+# ``MISSING_EVIDENCE`` is the one that changed.  The legacy rule fires when no
+# supporting document on a Constraint had its cited passage found in its
+# source, and its label says exactly that.  ADR-0082 decided that a locatable
+# passage is not support, so the accepted record's rule instead fires when no
+# Supporting Documentation is in use for the accepted proposition — read from
+# the Support Assessment relation and never from the Source Passage Check.
+# Carrying the old label onto the new predicate would tell a customer that a
+# quotation could not be located, which the check no longer looks at.  The
+# replacement wording is researched in
+# docs/research/missing-evidence-alert-label-2026-09-03.md; it deliberately
+# avoids the Source Passage Check state labels (#600) so the two can never be
+# read as the same finding.
+_ACCEPTED_RECORD_LABELS = {
+    "MISSING_EVIDENCE": "No supporting document in use for this value",
+}
+
+
+def accepted_record_exception_name(rule: str) -> str:
+    """Name a check of the accepted record's own set (ADR-0090).
+
+    The legacy ruleset keeps computing all twelve rules over a legacy
+    project until ADR-0081 stage 6 retires those tables, and its labels stay
+    exactly as they are: a label that stopped describing the predicate under
+    it would make the legacy report lie.  The two sets are allowed to differ
+    and the report declares the set it ran, so this is the one place the
+    difference is expressed.
+    """
+    return _ACCEPTED_RECORD_LABELS.get(rule) or exception_name(rule)
+
+
 class _ExceptionFact(Protocol):
     rule: str
     quantity_days: int | None
