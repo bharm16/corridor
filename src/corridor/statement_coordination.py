@@ -1704,19 +1704,20 @@ def mark_statement_not_relevant(
             session.flush([disposition])
             candidate.state = "rejected"
             candidate.adjudicated_at = datetime.now(timezone.utc)
+            # The disposition row carries the reason, and Not Relevant is
+            # only recordable from `pending` with explicit confirmation, so
+            # the transition and the confirmation are properties of the act
+            # rather than facts to copy. The entry names the disposition and
+            # a reader derives the same before/after from it (#604).
             audit.record(
                 session,
                 principal=recorder,
                 action=audit.MARK_STATEMENT_NOT_RELEVANT,
                 entity_type=audit.CANDIDATE,
                 entity_id=candidate.id,
-                before={"candidate_state": "pending"},
-                after={
-                    "candidate_state": "rejected",
-                    "candidate_disposition_id": disposition.id,
-                    "reason": reason,
-                    "confirmed": True,
-                },
+                decided_by=audit.DecisionIdentity(
+                    kind=audit.CANDIDATE_DISPOSITION, identity=disposition.id
+                ),
             )
             record_do_not_add_case(
                 session,

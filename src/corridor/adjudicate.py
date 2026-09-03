@@ -1191,13 +1191,17 @@ def dismiss_dependency(
     session.flush([dismissal])
     dependency.dismissed_at = dismissal.dismissed_at
 
+    # The dismissal row holds the reason and the name; the entry names the
+    # dismissal rather than repeating it (#604).
     audit.record(
         session,
         principal=dismisser,
         action=audit.DISMISS_DEPENDENCY,
         entity_type=audit.DEPENDENCY,
         entity_id=dependency.id,
-        after={"reason": reason, "dependency_dismissal_id": dismissal.id},
+        decided_by=audit.DecisionIdentity(
+            kind=audit.DEPENDENCY_DISMISSAL, identity=dismissal.id
+        ),
     )
     session.flush()
     return dependency

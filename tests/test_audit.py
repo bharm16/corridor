@@ -6,10 +6,15 @@ claim was unfalsifiable — there was no interface to walk.
 """
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from corridor import audit
-from corridor.adjudicate import accept_candidate, merge_candidate, set_resolution_strategy
+from corridor.adjudicate import (
+    accept_candidate,
+    dismiss_dependency,
+    merge_candidate,
+    set_resolution_strategy,
+)
 from corridor.db import Session, engine
 from corridor.extraction_runs import (
     declare_active_run,
@@ -20,7 +25,10 @@ from corridor.milestones import link_dependency
 from corridor.models import (
     AuditLog,
     Candidate,
+    CandidateDisposition,
     Dependency,
+    DependencyDismissal,
+    DisputeSettlement,
     DocPage,
     Document,
     EvidenceLink,
@@ -433,3 +441,406 @@ def test_a_demo_reset_does_not_delete_another_entity_s_history(session, document
             )
         ).all()
     ) == 1
+
+
+# --- Referenced decision identities (#604) ---------------------------------
+#
+# An entry that spelled out the fields a decision changed was a second copy of
+# that decision's own state.  These walk the write, the derivation, and the one
+# shape a reader gets whichever way an entry is stored.
+
+COMPARED_CHANGE_FIELDS = (
+    "action",
+    "entity_type",
+    "entity_id",
+    "actor",
+    "human_principal",
+    "before",
+    "after",
+    "readable",
+)
+
+
+def _dismissed(session, document, *, utility_id, reason="duplicate"):
+    """One real dismissal, with the entry `dismiss_dependency` wrote for it."""
+
+    dependency = accept_candidate(
+        session,
+        make_candidate(session, document, utility_id=utility_id),
+        principal=TEST_PRINCIPAL,
+    )
+    dismiss_dependency(session, dependency, reason, principal=TEST_PRINCIPAL)
+    dismissal = session.scalars(
+        select(DependencyDismissal).where(
+            DependencyDismissal.dependency_id == dependency.id
+        )
+    ).one()
+    entry = session.scalars(
+        select(AuditLog).where(
+            AuditLog.entity_type == audit.DEPENDENCY,
+            AuditLog.entity_id == dependency.id,
+            AuditLog.action == audit.DISMISS_DEPENDENCY,
+        )
+    ).one()
+    return dependency, dismissal, entry
+
+
+def test_a_dismissal_entry_names_its_decision_and_copies_nothing(session, document):
+    """The stored row holds one identity, not the fields the decision holds."""
+
+    _, dismissal, entry = _dismissed(session, document, utility_id="FOC1-1")
+
+    assert entry.before_json is None
+    assert entry.after_json == {
+        "decision_reference": {
+            "kind": audit.DEPENDENCY_DISMISSAL,
+            "id": dismissal.id,
+        }
+    }
+    assert audit.decision_reference(entry) == audit.DecisionIdentity(
+        kind=audit.DEPENDENCY_DISMISSAL, identity=dismissal.id
+    )
+
+
+def test_an_old_field_map_and_a_new_reference_read_as_the_same_change(
+    session, document
+):
+    """The criterion the whole change rests on.
+
+    Both rows below describe the *same* dismissal: one as the bytes
+    `dismiss_dependency` wrote before #604, one as the reference it writes
+    now.  A reader must not be able to tell them apart from the change they
+    report — only from `derived`, which is about storage and not about what
+    happened.
+    """
+
+    dependency, dismissal, referencing = _dismissed(
+        session, document, utility_id="FOC1-1"
+    )
+    legacy = AuditLog(
+        actor=TEST_PRINCIPAL.subject,
+        human_principal=TEST_PRINCIPAL.subject,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        before_json=None,
+        # The exact payload the pre-#604 writer produced for this dismissal.
+        after_json={"reason": "duplicate", "dependency_dismissal_id": dismissal.id},
+    )
+    session.add(legacy)
+    session.flush()
+
+    old, new = audit.recorded_changes(session, (legacy, referencing))
+
+    assert [getattr(old, name) for name in COMPARED_CHANGE_FIELDS] == [
+        getattr(new, name) for name in COMPARED_CHANGE_FIELDS
+    ]
+    assert old.after == {
+        "reason": "duplicate",
+        "dependency_dismissal_id": dismissal.id,
+    }
+    assert old.before == new.before == {}
+    assert (old.derived, new.derived) == (False, True)
+    assert old.decision_identity is None
+    assert new.decision_identity == audit.DecisionIdentity(
+        kind=audit.DEPENDENCY_DISMISSAL, identity=dismissal.id
+    )
+
+
+def test_deriving_a_change_never_rewrites_the_entry_that_carried_it(
+    session, document
+):
+    """Historical rows keep what they recorded; reading is not a migration."""
+
+    dependency, dismissal, _ = _dismissed(session, document, utility_id="FOC1-1")
+    stored = {"reason": "duplicate", "dependency_dismissal_id": dismissal.id}
+    legacy = AuditLog(
+        actor=TEST_PRINCIPAL.subject,
+        human_principal=TEST_PRINCIPAL.subject,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after_json=dict(stored),
+    )
+    session.add(legacy)
+    session.flush()
+
+    change = audit.recorded_change(session, legacy)
+    change.after["reason"] = "wrong"
+    change.after.pop("dependency_dismissal_id")
+
+    # The reader hands back its own maps, so the entry a caller is holding is
+    # still what was recorded...
+    assert legacy.after_json == stored
+    session.flush()
+    session.expire_all()
+    # ...and so is the row itself.
+    assert session.get(AuditLog, legacy.id).after_json == stored
+
+
+def test_a_reference_to_a_decision_that_is_not_there_is_unreadable(
+    session, document
+):
+    """Fail closed. An absent decision is corruption, not an empty change."""
+
+    dependency = accept_candidate(
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
+    )
+    missing = session.scalar(select(func.max(DependencyDismissal.id))) or 0
+    entry = audit.record(
+        session,
+        principal=TEST_PRINCIPAL,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        decided_by=audit.DecisionIdentity(
+            kind=audit.DEPENDENCY_DISMISSAL, identity=missing + 1
+        ),
+    )
+
+    change = audit.recorded_change(session, entry)
+
+    assert change.readable is False
+    assert change.derived is True
+    assert (change.before, change.after) == ({}, {})
+
+
+def test_a_reference_to_another_record_s_decision_is_unreadable(session, document):
+    """The named decision must be about the entity the entry names."""
+
+    _, dismissal, _ = _dismissed(session, document, utility_id="FOC1-1")
+    other = accept_candidate(
+        session,
+        make_candidate(session, document, utility_id="FOC1-2"),
+        principal=TEST_PRINCIPAL,
+    )
+    entry = audit.record(
+        session,
+        principal=TEST_PRINCIPAL,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=other.id,
+        decided_by=audit.DecisionIdentity(
+            kind=audit.DEPENDENCY_DISMISSAL, identity=dismissal.id
+        ),
+    )
+
+    assert audit.recorded_change(session, entry).readable is False
+
+
+def test_a_malformed_reference_is_never_read_as_a_stated_field_map(
+    session, document
+):
+    """The envelope must not come back to a reader as though it were the change."""
+
+    dependency = accept_candidate(
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
+    )
+    entry = AuditLog(
+        actor=TEST_PRINCIPAL.subject,
+        human_principal=TEST_PRINCIPAL.subject,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after_json={"decision_reference": {"kind": "dependency_dismissal"}},
+    )
+    session.add(entry)
+    session.flush()
+
+    change = audit.recorded_change(session, entry)
+
+    assert audit.names_a_decision(entry) is True
+    assert audit.decision_reference(entry) is None
+    assert change.readable is False
+    assert change.after == {}
+
+
+def test_a_reference_whose_kind_contradicts_its_action_is_refused(session, document):
+    """One action references one kind, at the write and at the read."""
+
+    dependency, _, _ = _dismissed(session, document, utility_id="FOC1-1")
+    settlement = DisputeSettlement(
+        dependency_id=dependency.id,
+        field_name="station_to",
+        settled_value="1105+00",
+        settled_by=TEST_PRINCIPAL.subject,
+        covers_assertion_id=1,
+    )
+    session.add(settlement)
+    session.flush()
+
+    with pytest.raises(ValueError, match="does not reference"):
+        audit.record(
+            session,
+            principal=TEST_PRINCIPAL,
+            action=audit.DISMISS_DEPENDENCY,
+            entity_type=audit.DEPENDENCY,
+            entity_id=dependency.id,
+            decided_by=audit.DecisionIdentity(
+                kind=audit.DISPUTE_SETTLEMENT, identity=settlement.id
+            ),
+        )
+
+    mismatched = AuditLog(
+        actor=TEST_PRINCIPAL.subject,
+        human_principal=TEST_PRINCIPAL.subject,
+        action=audit.DISMISS_DEPENDENCY,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        after_json={
+            "decision_reference": {
+                "kind": audit.DISPUTE_SETTLEMENT,
+                "id": settlement.id,
+            }
+        },
+    )
+    session.add(mismatched)
+    session.flush()
+
+    assert audit.recorded_change(session, mismatched).readable is False
+
+
+def test_a_named_decision_is_written_instead_of_a_field_map_never_beside_one(
+    session, document
+):
+    """Two statements of one change is the defect; the write refuses it."""
+
+    dependency, dismissal, _ = _dismissed(session, document, utility_id="FOC1-1")
+
+    with pytest.raises(ValueError, match="replaces the field map"):
+        audit.record(
+            session,
+            principal=TEST_PRINCIPAL,
+            action=audit.DISMISS_DEPENDENCY,
+            entity_type=audit.DEPENDENCY,
+            entity_id=dependency.id,
+            after={"reason": "duplicate"},
+            decided_by=audit.DecisionIdentity(
+                kind=audit.DEPENDENCY_DISMISSAL, identity=dismissal.id
+            ),
+        )
+
+
+def test_a_settlement_entry_derives_the_conclusion_the_settlement_holds(
+    session, document
+):
+    """Every field the old entry copied comes back out of the settlement row."""
+
+    dependency = accept_candidate(
+        session, make_candidate(session, document), principal=TEST_PRINCIPAL
+    )
+    settlement = DisputeSettlement(
+        dependency_id=dependency.id,
+        field_name="station_to",
+        settled_value=None,
+        settled_by=TEST_PRINCIPAL.subject,
+        covers_assertion_id=4321,
+    )
+    session.add(settlement)
+    session.flush()
+    entry = audit.record(
+        session,
+        principal=TEST_PRINCIPAL,
+        action=audit.SETTLE_DISPUTE,
+        entity_type=audit.DEPENDENCY,
+        entity_id=dependency.id,
+        decided_by=audit.DecisionIdentity(
+            kind=audit.DISPUTE_SETTLEMENT, identity=settlement.id
+        ),
+    )
+
+    change = audit.recorded_change(session, entry)
+
+    assert change.readable is True
+    assert change.before == {}
+    # The exact map `settle_dispute` stored before #604, settled-as-nothing
+    # included: a null conclusion is a conclusion, not a missing key.
+    assert change.after == {
+        "field_name": "station_to",
+        "settled_value": None,
+        "covers_assertion_id": 4321,
+        "dispute_settlement_id": settlement.id,
+    }
+
+
+def test_a_not_relevant_entry_derives_the_disposition_it_names(session, document):
+    """The transition and the confirmation belong to the act, not to storage."""
+
+    candidate = make_candidate(session, document)
+    disposition = CandidateDisposition(
+        candidate_id=candidate.id,
+        disposition="not_relevant",
+        reason="duplicate-statement",
+        recorded_by=REVIEWER_PRINCIPAL.subject,
+    )
+    session.add(disposition)
+    session.flush()
+    entry = audit.record(
+        session,
+        principal=REVIEWER_PRINCIPAL,
+        action=audit.MARK_STATEMENT_NOT_RELEVANT,
+        entity_type=audit.CANDIDATE,
+        entity_id=candidate.id,
+        decided_by=audit.DecisionIdentity(
+            kind=audit.CANDIDATE_DISPOSITION, identity=disposition.id
+        ),
+    )
+
+    change = audit.recorded_change(session, entry)
+
+    assert change.before == {"candidate_state": "pending"}
+    assert change.after == {
+        "candidate_state": "rejected",
+        "candidate_disposition_id": disposition.id,
+        "reason": "duplicate-statement",
+        "confirmed": True,
+    }
+
+
+def test_a_disposition_that_is_not_not_relevant_is_unreadable(session, document):
+    """An accepted disposition under this action is corrupt, not a variant."""
+
+    candidate = make_candidate(session, document)
+    disposition = CandidateDisposition(
+        candidate_id=candidate.id,
+        disposition="accepted",
+        reason=None,
+        recorded_by=REVIEWER_PRINCIPAL.subject,
+    )
+    session.add(disposition)
+    session.flush()
+    entry = audit.record(
+        session,
+        principal=REVIEWER_PRINCIPAL,
+        action=audit.MARK_STATEMENT_NOT_RELEVANT,
+        entity_type=audit.CANDIDATE,
+        entity_id=candidate.id,
+        decided_by=audit.DecisionIdentity(
+            kind=audit.CANDIDATE_DISPOSITION, identity=disposition.id
+        ),
+    )
+
+    assert audit.recorded_change(session, entry).readable is False
+
+
+def test_a_named_decision_still_blocks_a_compensating_undo(session, document):
+    """The Undo guard reads a reference through the key it used to be spelled as.
+
+    Without the translation the envelope's bare `id` would match any typed key
+    a caller happened to pass, and the typed key it actually stands for would
+    match nothing — the guard would refuse the wrong reversals and permit the
+    dangerous ones.
+    """
+
+    _, dismissal, entry = _dismissed(session, document, utility_id="FOC1-1")
+
+    assert audit.references_typed_ids(
+        entry.after_json, {"dependency_dismissal_id": {dismissal.id}}
+    )
+    assert not audit.references_typed_ids(
+        entry.after_json, {"dependency_dismissal_id": {dismissal.id + 1}}
+    )
+    assert not audit.references_typed_ids(entry.after_json, {"id": {dismissal.id}})
+    assert not audit.references_typed_ids(
+        entry.after_json, {"dispute_settlement_id": {dismissal.id}}
+    )

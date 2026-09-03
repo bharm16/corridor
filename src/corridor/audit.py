@@ -18,6 +18,20 @@ flushes so an entry is readable the moment it is written. What is *not*
 enforced here, and is worth stating rather than implying: nothing can make
 an arbitrary function call `record`. `tests/test_audit.py` walks the
 mutating entry points and is still the thing that notices a new one.
+
+**An entry names the decision; it does not copy it (#604, #598).** The third
+thing that had drifted was the payload. An entry that spelled out the changed
+fields was a second copy of state the settlement, dismissal or disposition row
+already held, free to disagree with it and answerable to nothing — the same
+defect as `delta_generation._appended_signatures` (#599) and the Python-side
+delta content hash (#518). A referenced action now writes one `decided_by=`
+identity and no field map, and `recorded_change` *derives* the readable
+before/after from the row that identity names. Entries written before this are
+not touched and never will be: the trail is append-only, so the reader is what
+absorbs the two storage forms, and `RecordedChange` is the one shape both come
+back in. Deriving also fails closed — a reference whose row is missing, whose
+kind contradicts the action, or whose subject is not the entry's own entity
+comes back `readable=False` with empty maps, never a plausible-looking guess.
 """
 
 from __future__ import annotations
@@ -32,9 +46,12 @@ from sqlalchemy.orm import Session
 
 from corridor.models import (
     AuditLog,
+    CandidateDisposition,
     PolicyApproval,
     AutomaticCarryForwardReceipt,
     DependencyAdmissionOutcome,
+    DependencyDismissal,
+    DisputeSettlement,
     ReconfirmationReceipt,
     RevisionComparisonFinding,
 )
@@ -217,6 +234,262 @@ ACTIONS = frozenset(
 )
 
 
+# --- Referenced decision identities (#604) --------------------------------
+#
+# The kinds of authoritative row an entry may defer its content to. Each is a
+# durable, append-only decision that already holds everything the entry used
+# to copy, so the copy is what goes and the identity is what stays.
+DISPUTE_SETTLEMENT = "dispute_settlement"
+DEPENDENCY_DISMISSAL = "dependency_dismissal"
+CANDIDATE_DISPOSITION = "candidate_disposition"
+
+DECISION_IDENTITY_KINDS = frozenset(
+    {DISPUTE_SETTLEMENT, DEPENDENCY_DISMISSAL, CANDIDATE_DISPOSITION}
+)
+
+# One action references exactly one kind. A `dispute_settlement` reference
+# under `dismiss_dependency` is corrupt, not a variant, and both the write and
+# the read refuse it rather than deriving something that reads plausibly.
+REFERENCED_ACTIONS: dict[str, str] = {
+    SETTLE_DISPUTE: DISPUTE_SETTLEMENT,
+    DISMISS_DEPENDENCY: DEPENDENCY_DISMISSAL,
+    MARK_STATEMENT_NOT_RELEVANT: CANDIDATE_DISPOSITION,
+}
+
+# The typed key each kind was spelled as while entries copied their fields.
+# `references_typed_ids` translates a reference back through this, so a
+# compensating command refuses an Undo over a new entry for exactly the
+# reasons it refused one over an old entry.
+DECISION_IDENTITY_KEYS: dict[str, str] = {
+    DISPUTE_SETTLEMENT: "dispute_settlement_id",
+    DEPENDENCY_DISMISSAL: "dependency_dismissal_id",
+    CANDIDATE_DISPOSITION: "candidate_disposition_id",
+}
+
+# The one JSON key that marks an entry as naming its decision instead of
+# restating it. No entry written before #604 carries it, which is what lets
+# one reader serve both storage forms without a schema change or a backfill.
+DECISION_REFERENCE_KEY = "decision_reference"
+
+
+@dataclass(frozen=True)
+class DecisionIdentity:
+    """The one authoritative row an audit entry defers its content to."""
+
+    kind: str
+    identity: int
+
+    def __post_init__(self) -> None:
+        if self.kind not in DECISION_IDENTITY_KINDS:
+            raise ValueError(f"unknown decision identity kind {self.kind!r}")
+        if _positive_id(self.identity) is None:
+            raise ValueError("decision identity must be a positive integer")
+
+
+@dataclass(frozen=True)
+class RecordedChange:
+    """What one entry says changed — one shape, whichever way it is stored.
+
+    ``derived`` says the maps were read out of the decision the entry names;
+    ``readable`` says they could be produced at all. A reader that cares only
+    what changed reads ``before`` and ``after`` and never learns which.
+    """
+
+    audit_id: int
+    action: str
+    entity_type: str
+    entity_id: int
+    actor: str
+    human_principal: str | None
+    before: dict[str, Any]
+    after: dict[str, Any]
+    decision_identity: DecisionIdentity | None
+    derived: bool
+    readable: bool
+
+
+def names_a_decision(entry: AuditLog) -> bool:
+    """Whether this entry defers its content to a decision it names.
+
+    Asked separately from reading the identity on purpose. "States its own
+    fields" and "names a decision nobody can read" are different answers, and
+    an entry that carried a malformed envelope must never be read as the first
+    — that would hand a reader the envelope itself as though it were the
+    change.
+    """
+
+    after = entry.after_json
+    return isinstance(after, dict) and DECISION_REFERENCE_KEY in after
+
+
+def decision_reference(entry: AuditLog) -> DecisionIdentity | None:
+    """The identity this entry names; ``None`` when there is none to read.
+
+    ``None`` means either that the entry states its own fields or that its
+    envelope is malformed. ``names_a_decision`` separates the two.
+    """
+
+    if not names_a_decision(entry):
+        return None
+    raw = entry.after_json.get(DECISION_REFERENCE_KEY)
+    if not isinstance(raw, dict) or set(raw) != {"kind", "id"}:
+        return None
+    try:
+        return DecisionIdentity(kind=raw["kind"], identity=raw["id"])
+    except (TypeError, ValueError):
+        return None
+
+
+def recorded_change(session: Session, entry: AuditLog) -> RecordedChange:
+    """Read one entry's change, deriving it when the entry names a decision."""
+
+    return recorded_changes(session, (entry,))[0]
+
+
+def recorded_changes(
+    session: Session, entries: Iterable[AuditLog]
+) -> tuple[RecordedChange, ...]:
+    """Read many entries' changes, loading each referenced kind in one query."""
+
+    ordered = tuple(entries)
+    referencing = {entry.id: names_a_decision(entry) for entry in ordered}
+    references = {
+        entry.id: (decision_reference(entry) if referencing[entry.id] else None)
+        for entry in ordered
+    }
+    wanted: dict[str, set[int]] = {}
+    for reference in references.values():
+        if reference is not None:
+            wanted.setdefault(reference.kind, set()).add(reference.identity)
+    loaded: dict[str, dict[int, Any]] = {}
+    for kind, identities in wanted.items():
+        model, _ = _DECISION_DERIVATIONS[kind]
+        loaded[kind] = {
+            row.id: row
+            for row in session.scalars(
+                select(model).where(model.id.in_(sorted(identities)))
+            ).all()
+        }
+    return tuple(
+        _recorded_change(
+            entry,
+            referencing[entry.id],
+            references[entry.id],
+            loaded,
+        )
+        for entry in ordered
+    )
+
+
+def _recorded_change(
+    entry: AuditLog,
+    referencing: bool,
+    reference: DecisionIdentity | None,
+    loaded: Mapping[str, Mapping[int, Any]],
+) -> RecordedChange:
+    if not referencing:
+        before = entry.before_json if isinstance(entry.before_json, dict) else {}
+        after = entry.after_json if isinstance(entry.after_json, dict) else {}
+        return RecordedChange(
+            audit_id=entry.id,
+            action=entry.action,
+            entity_type=entry.entity_type,
+            entity_id=entry.entity_id,
+            actor=entry.actor,
+            human_principal=entry.human_principal,
+            before=deepcopy(before),
+            after=deepcopy(after),
+            decision_identity=None,
+            derived=False,
+            readable=True,
+        )
+    unreadable = RecordedChange(
+        audit_id=entry.id,
+        action=entry.action,
+        entity_type=entry.entity_type,
+        entity_id=entry.entity_id,
+        actor=entry.actor,
+        human_principal=entry.human_principal,
+        before={},
+        after={},
+        decision_identity=reference,
+        derived=True,
+        readable=False,
+    )
+    if reference is None:
+        return unreadable
+    if REFERENCED_ACTIONS.get(entry.action) != reference.kind:
+        return unreadable
+    row = loaded.get(reference.kind, {}).get(reference.identity)
+    if row is None:
+        return unreadable
+    _, derive = _DECISION_DERIVATIONS[reference.kind]
+    derived = derive(entry, row)
+    if derived is None:
+        return unreadable
+    before, after = derived
+    return RecordedChange(
+        audit_id=entry.id,
+        action=entry.action,
+        entity_type=entry.entity_type,
+        entity_id=entry.entity_id,
+        actor=entry.actor,
+        human_principal=entry.human_principal,
+        before=before,
+        after=after,
+        decision_identity=reference,
+        derived=True,
+        readable=True,
+    )
+
+
+def _dispute_settlement_change(
+    entry: AuditLog, row: DisputeSettlement
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if entry.entity_type != DEPENDENCY or entry.entity_id != row.dependency_id:
+        return None
+    return {}, {
+        "field_name": row.field_name,
+        "settled_value": row.settled_value,
+        "covers_assertion_id": row.covers_assertion_id,
+        "dispute_settlement_id": row.id,
+    }
+
+
+def _dependency_dismissal_change(
+    entry: AuditLog, row: DependencyDismissal
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    if entry.entity_type != DEPENDENCY or entry.entity_id != row.dependency_id:
+        return None
+    return {}, {"reason": row.reason, "dependency_dismissal_id": row.id}
+
+
+def _candidate_disposition_change(
+    entry: AuditLog, row: CandidateDisposition
+) -> tuple[dict[str, Any], dict[str, Any]] | None:
+    # Not Relevant is the only disposition this action records, and it is only
+    # recordable from `pending` with a structured reason and explicit
+    # confirmation (`statement_coordination.mark_statement_not_relevant`). Any
+    # other row under this reference is corrupt history, not another variant.
+    if entry.entity_type != CANDIDATE or entry.entity_id != row.candidate_id:
+        return None
+    if row.disposition != "not_relevant" or not row.reason:
+        return None
+    return {"candidate_state": "pending"}, {
+        "candidate_state": "rejected",
+        "candidate_disposition_id": row.id,
+        "reason": row.reason,
+        "confirmed": True,
+    }
+
+
+_DECISION_DERIVATIONS: dict[str, tuple[Any, Any]] = {
+    DISPUTE_SETTLEMENT: (DisputeSettlement, _dispute_settlement_change),
+    DEPENDENCY_DISMISSAL: (DependencyDismissal, _dependency_dismissal_change),
+    CANDIDATE_DISPOSITION: (CandidateDisposition, _candidate_disposition_change),
+}
+
+
 @dataclass(frozen=True)
 class AdmissionRecord:
     """Typed Admission history without exposing audit storage or JSON shape."""
@@ -374,6 +647,7 @@ def record(
     entity_id: int,
     before: dict | None = None,
     after: dict | None = None,
+    decided_by: DecisionIdentity | None = None,
 ) -> AuditLog:
     """Record one ledger mutation. Append-only, never updated.
 
@@ -381,6 +655,12 @@ def record(
     reachable to a reader once it is in the database — and "mutate, record,
     flush" spread over three statements in five modules is three chances to
     write two of them.
+
+    ``decided_by`` names the authoritative decision this mutation *is*, and is
+    written instead of a field map, never beside one (#604). The action and the
+    identity's kind must be the pair `REFERENCED_ACTIONS` declares, because an
+    entry whose reference contradicts its action is history no reader can
+    honestly derive.
     """
     if entity_type not in ENTITY_TYPES:
         raise ValueError(f"unknown audit entity {entity_type!r}")
@@ -388,6 +668,22 @@ def record(
         raise ValueError(f"unknown audit action {action!r}")
     if (actor is None) == (principal is None):
         raise ValueError("pass exactly one of actor= or principal=")
+    if decided_by is not None:
+        if before is not None or after is not None:
+            raise ValueError(
+                "a referenced decision replaces the field map; pass neither "
+                "before= nor after= with decided_by="
+            )
+        if REFERENCED_ACTIONS.get(action) != decided_by.kind:
+            raise ValueError(
+                f"action {action!r} does not reference a {decided_by.kind!r}"
+            )
+        after = {
+            DECISION_REFERENCE_KEY: {
+                "kind": decided_by.kind,
+                "id": decided_by.identity,
+            }
+        }
     principal_subject = None
     if principal is not None:
         principal = require_human_principal(principal)
@@ -415,8 +711,16 @@ def references_typed_ids(value: object, referenced_ids: dict[str, set[int]]) -> 
     act depends on a result of the grouped Save.  The match is typed key to
     integer id, never substring guessing, so unrelated numbers cannot block
     a legitimate reversal.
+
+    A referenced decision (#604) is read through the typed key its kind used
+    to be spelled as, so the guard is exactly as strong over an entry that
+    names its decision as over one that restated it.
     """
     if isinstance(value, dict):
+        reference = _referenced_typed_id(value)
+        if reference is not None:
+            key, identity = reference
+            return key in referenced_ids and identity in referenced_ids[key]
         return any(
             key in referenced_ids
             and isinstance(item, int)
@@ -426,6 +730,21 @@ def references_typed_ids(value: object, referenced_ids: dict[str, set[int]]) -> 
     if isinstance(value, list):
         return any(references_typed_ids(item, referenced_ids) for item in value)
     return False
+
+
+def _referenced_typed_id(value: dict) -> tuple[str, int] | None:
+    """The typed key and id one reference envelope stands for, if it is one."""
+
+    if set(value) != {DECISION_REFERENCE_KEY}:
+        return None
+    raw = value[DECISION_REFERENCE_KEY]
+    if not isinstance(raw, dict) or set(raw) != {"kind", "id"}:
+        return None
+    key = DECISION_IDENTITY_KEYS.get(raw["kind"]) if isinstance(raw["kind"], str) else None
+    identity = _positive_id(raw["id"])
+    if key is None or identity is None:
+        return None
+    return key, identity
 
 
 def trail_for_dependency(session: Session, dependency_id: int) -> list[AuditLog]:
