@@ -800,6 +800,184 @@ class Document(Base):
     )
 
 
+class RecordedVerbalOrigin(Base):
+    """One recorder's attestation: the spine-native origin of a verbal (#512).
+
+    ADR-0074 gave the ``recorded_verbal_statement`` segment a ``statement_id``
+    foreign key to ``dependency_events``, which made the evidence spine depend
+    on a legacy Project Record aggregate.  ADR-0081 stage 1 demotes that key to
+    lineage and puts the identity here instead: the project, the named recorder,
+    when the recording was made, the day of the conversation, the exact words
+    and their digest, the correction chain, and a stable identifier of its own.
+    A Recorded Verbal Statement's origin is a recorder's attestation, not a
+    document proposal (ADR-0082), so there are no bytes to dereference and the
+    digest is what the attestation certifies.
+
+    ``recorded_at`` is the attestation time supplied by the writer, never a
+    server clock this row reads for itself: the backfill preserves the original
+    legacy recording time, and ``created_at`` records separately when the row
+    was appended.
+
+    ``corrects_origin_id`` is the re-attestation chain — one origin corrects at
+    most one predecessor, and is corrected by at most one successor.  A legacy
+    ``supersedes_event_id`` is deliberately *not* mapped into it: a later
+    attributable timing is a Change to Promised Timing, a new statement, not a
+    correction of an earlier attestation (ADR-0036).
+    """
+
+    __tablename__ = "recorded_verbal_origins"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_recorded_verbal_origins_project_id"
+        ),
+        UniqueConstraint(
+            "corrects_origin_id", name="uq_recorded_verbal_origins_corrects"
+        ),
+        CheckConstraint(
+            "length(trim(recorded_by)) > 0",
+            name="ck_recorded_verbal_origins_recorder",
+        ),
+        CheckConstraint(
+            "length(exact_text) > 0", name="ck_recorded_verbal_origins_exact_text"
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_recorded_verbal_origins_content_sha256",
+        ),
+        CheckConstraint(
+            "corrects_origin_id is null or corrects_origin_id <> id",
+            name="ck_recorded_verbal_origins_corrects_other",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    recorded_by: Mapped[str] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    conversation_date: Mapped[date | None] = mapped_column(Date)
+    exact_text: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    corrects_origin_id: Mapped[int | None] = mapped_column(
+        ForeignKey("recorded_verbal_origins.id")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RecordedVerbalOriginStatement(Base):
+    """The temporary legacy mapping of one origin to its statement row (#512).
+
+    The legacy foreign key lives only here.  No target table and no identity
+    digest references ``dependency_events`` any more (ADR-0081 stage 1); the
+    dual-write of stages 1 through 5 still needs the legacy row, and the one
+    reader that resolves a legacy statement to its spine segment joins through
+    this mapping.  The relation is one-to-one in both directions, so a legacy
+    statement can never acquire a second origin, and it retires whole with the
+    dual-write at ADR-0081 stage 6.
+    """
+
+    __tablename__ = "recorded_verbal_origin_statements"
+    __table_args__ = (
+        UniqueConstraint(
+            "statement_id", name="uq_recorded_verbal_origin_statements_statement"
+        ),
+    )
+
+    origin_id: Mapped[int] = mapped_column(
+        ForeignKey("recorded_verbal_origins.id"), primary_key=True
+    )
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    statement_id: Mapped[int] = mapped_column(ForeignKey("dependency_events.id"))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RecordedVerbalOriginBackfillReceipt(Base):
+    """One attributable receipt per verbal the #512 backfill reconciled.
+
+    Exactly one row per dual-written verbal, and every one of its three
+    references is unique, so the reconciliation is one-to-one by construction:
+    a dropped, duplicated, or re-pointed row cannot be represented.  The
+    executor is recorded separately from the recorder the origin preserves, so
+    the migration never becomes the semantic author of the attestation.
+
+    ``legacy_statement_id`` is deliberately a plain identifier rather than a
+    foreign key: the receipt is the permanent record of what this transition
+    did, and it must stay readable after ADR-0081 stage 6 retires the legacy
+    table.  The live key lives on the compatibility mapping, which retires
+    with it.
+    """
+
+    __tablename__ = "recorded_verbal_origin_backfill_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "origin_id", name="uq_recorded_verbal_backfill_receipts_origin"
+        ),
+        UniqueConstraint(
+            "legacy_statement_id",
+            name="uq_recorded_verbal_backfill_receipts_statement",
+        ),
+        UniqueConstraint(
+            "source_segment_id",
+            name="uq_recorded_verbal_backfill_receipts_segment",
+        ),
+        CheckConstraint(
+            "length(trim(executed_by)) > 0",
+            name="ck_recorded_verbal_backfill_receipts_executor",
+        ),
+        CheckConstraint(
+            "fact_count >= 0", name="ck_recorded_verbal_backfill_receipts_fact_count"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    origin_id: Mapped[int] = mapped_column(ForeignKey("recorded_verbal_origins.id"))
+    legacy_statement_id: Mapped[int] = mapped_column(BigInteger)
+    source_segment_id: Mapped[int] = mapped_column(ForeignKey("source_segments.id"))
+    fact_count: Mapped[int] = mapped_column(Integer)
+    migration_revision: Mapped[str] = mapped_column(String(32))
+    executed_by: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class RecordedVerbalOriginFactDigest(Base):
+    """The exact Fact digest the #512 backfill replaced, and what it became.
+
+    Removing the legacy statement from the Fact identity changes the digest of
+    every Fact a dual-written verbal already carried.  The backfill first
+    reproduces the stored digest from the stored row; only a digest it has
+    reproduced exactly is replaced, and both values are recorded here, so the
+    change is attributable and reversible rather than silent.
+    """
+
+    __tablename__ = "recorded_verbal_origin_fact_digests"
+    __table_args__ = (
+        UniqueConstraint(
+            "fact_id", name="uq_recorded_verbal_origin_fact_digests_fact"
+        ),
+        CheckConstraint(
+            "prior_content_sha256 ~ '^[0-9a-f]{64}$' "
+            "and content_sha256 ~ '^[0-9a-f]{64}$' "
+            "and prior_content_sha256 <> content_sha256",
+            name="ck_recorded_verbal_origin_fact_digests_change",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    receipt_id: Mapped[int] = mapped_column(
+        ForeignKey("recorded_verbal_origin_backfill_receipts.id"), index=True
+    )
+    fact_id: Mapped[int] = mapped_column(ForeignKey("facts.id"))
+    prior_content_sha256: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+
+
 class SourceSegment(Base):
     """One immutable, addressable piece of an exact Document rendition.
 
@@ -857,21 +1035,27 @@ class SourceSegment(Base):
         CheckConstraint("ordinal > 0", name="ck_source_segments_ordinal"),
         CheckConstraint(
             "(kind = 'spreadsheet_cell' and document_id is not null "
-            "and statement_id is null and length(sheet_name) > 0 and "
+            "and recorded_verbal_origin_id is null and length(sheet_name) > 0 and "
             "cell_range ~ '^[A-Z]+[1-9][0-9]*$' and page_no is null and "
             "start_offset is null and end_offset is null) or "
             "(kind = 'prose_span' and document_id is not null "
-            "and statement_id is null and sheet_name is null and cell_range is null "
+            "and recorded_verbal_origin_id is null and sheet_name is null "
+            "and cell_range is null "
             "and page_no > 0 and start_offset >= 0 and end_offset > start_offset) or "
             "(kind = 'recorded_verbal_statement' and document_id is null "
-            "and statement_id is not null and sheet_name is null "
+            "and recorded_verbal_origin_id is not null and sheet_name is null "
             "and cell_range is null and page_no is null and start_offset is null "
             "and end_offset is null)",
             name="ck_source_segments_locator",
         ),
+        ForeignKeyConstraint(
+            ["project_id", "recorded_verbal_origin_id"],
+            ["recorded_verbal_origins.project_id", "recorded_verbal_origins.id"],
+            name="fk_source_segments_recorded_verbal_origin_scope",
+        ),
         Index(
-            "uq_source_segments_statement",
-            "statement_id",
+            "uq_source_segments_recorded_verbal_origin",
+            "recorded_verbal_origin_id",
             unique=True,
             postgresql_where=text("kind = 'recorded_verbal_statement'"),
         ),
@@ -880,9 +1064,10 @@ class SourceSegment(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     document_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
-    statement_id: Mapped[int | None] = mapped_column(
-        ForeignKey("dependency_events.id")
-    )
+    # The spine-native origin of a Recorded Verbal Statement (#512, ADR-0081
+    # stage 1).  The legacy statement is reachable only through
+    # ``recorded_verbal_origin_statements``, never from this table.
+    recorded_verbal_origin_id: Mapped[int | None] = mapped_column(BigInteger)
     kind: Mapped[str] = mapped_column(String(32))
     exact_text: Mapped[str] = mapped_column(Text)
     content_sha256: Mapped[str] = mapped_column(String(64))

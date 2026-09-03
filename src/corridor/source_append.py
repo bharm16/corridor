@@ -33,6 +33,7 @@ from corridor.materializer import MaterializedValue
 from corridor.models import (
     ExtractedProposal,
     Fact,
+    RecordedVerbalOrigin,
     SourceFactAppendReceipt,
     SourceSegment,
     SupportAssessment,
@@ -74,12 +75,50 @@ class TimingValues:
     end_date: date | None
 
 
+def append_recorded_verbal_origin(
+    session: Session,
+    *,
+    project_id: int,
+    recorded_by: str,
+    recorded_at: datetime,
+    conversation_date: date | None,
+    exact_text: str,
+    content_sha256: str,
+    corrects_origin_id: int | None = None,
+    legacy_statement_id: int | None = None,
+) -> RecordedVerbalOrigin:
+    """Append one recorder's attestation, or return the one a replay already wrote.
+
+    A Recorded Verbal Statement has no source Document to dereference, so its
+    origin *is* the identity every recorded-verbal segment and Fact hangs from
+    (#512, ADR-0081 stage 1).  While the dual-write of ADR-0081 stages 1
+    through 5 still writes the legacy statement, that statement is the replay
+    key and the command records the compatibility mapping beside the origin.
+    """
+
+    origin_id = session.scalar(
+        select(
+            func.append_recorded_verbal_origin(
+                project_id,
+                recorded_by,
+                recorded_at,
+                conversation_date,
+                exact_text,
+                content_sha256,
+                corrects_origin_id,
+                legacy_statement_id,
+            )
+        )
+    )
+    return session.get_one(RecordedVerbalOrigin, int(origin_id))
+
+
 def append_source_segments(
     session: Session,
     *,
     project_id: int,
     document_id: int | None,
-    statement_id: int | None,
+    recorded_verbal_origin_id: int | None,
     segments: Sequence[SegmentValues],
 ) -> tuple[SourceSegment, ...]:
     """Append one rendition's segments, in ordinal order, at most once each."""
@@ -103,7 +142,7 @@ def append_source_segments(
     appended = session.scalar(
         select(
             func.append_source_segments(
-                project_id, document_id, statement_id, _jsonb(payload)
+                project_id, document_id, recorded_verbal_origin_id, _jsonb(payload)
             )
         )
     )

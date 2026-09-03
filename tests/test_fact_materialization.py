@@ -88,7 +88,7 @@ def _cells(session, project, texts, *, filename="cells.xlsx"):
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=tuple(
             SegmentValues(
                 kind="spreadsheet_cell",
@@ -185,7 +185,7 @@ def test_a_quoted_statement_must_lie_inside_its_segment(session, project):
         session,
         project_id=project.id,
         document_id=_cells(session, project, ["x"])[0].document_id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(
             SegmentValues(
                 kind="prose_span",

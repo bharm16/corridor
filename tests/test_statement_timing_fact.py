@@ -9,7 +9,8 @@ Fact self-certifies — there are no external bytes to replay (ADR-0033/0074).
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import select
@@ -32,6 +33,7 @@ from corridor.models import (
     FactStatementTiming,
     Project,
     ProjectRecordRevision,
+    RecordedVerbalOrigin,
 )
 from corridor.principals import HumanPrincipal
 from corridor.source_segments import recorded_verbal_statement_segment
@@ -39,6 +41,8 @@ from corridor.statement_values import StatementTiming
 
 
 RECORDER = HumanPrincipal("local:dana-fields")
+# A supplied logical attestation time: nothing here reads a wall clock.
+RECORDED_AT = datetime(2025, 3, 3, 14, 30, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -67,9 +71,21 @@ def verbal(session):
     )
     session.add(statement)
     session.flush()
+    origin = RecordedVerbalOrigin(
+        project_id=project.id,
+        recorded_by="local:dana-fields",
+        recorded_at=RECORDED_AT,
+        conversation_date=date(2025, 3, 3),
+        exact_text="Equistar will submit the signed exhibit by March 2025.",
+        content_sha256=sha256(
+            "Equistar will submit the signed exhibit by March 2025.".encode("utf-8")
+        ).hexdigest(),
+    )
+    session.add(origin)
+    session.flush()
     segment = recorded_verbal_statement_segment(
         project_id=project.id,
-        statement_id=statement.id,
+        recorded_verbal_origin_id=origin.id,
         exact_text="Equistar will submit the signed exhibit by March 2025.",
     )
     session.add(segment)

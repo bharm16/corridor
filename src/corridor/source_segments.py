@@ -232,7 +232,7 @@ def append_ingested_source_segments(
         session,
         project_id=document.project_id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=values,
     )
 
@@ -252,7 +252,7 @@ def append_source_segment(session: Session, segment: SourceSegment) -> SourceSeg
         session,
         project_id=segment.project_id,
         document_id=segment.document_id,
-        statement_id=segment.statement_id,
+        recorded_verbal_origin_id=segment.recorded_verbal_origin_id,
         segments=(
             SegmentValues(
                 kind=segment.kind,
@@ -307,13 +307,20 @@ def dereference_source_segment(
 
 
 def recorded_verbal_statement_segment(
-    *, project_id: int, statement_id: int, exact_text: str, ordinal: int = 1
+    *,
+    project_id: int,
+    recorded_verbal_origin_id: int,
+    exact_text: str,
+    ordinal: int = 1,
 ) -> SourceSegment:
     """Build the one exact-wording segment for a Recorded Verbal Statement.
 
     A verbal has no source Document (ADR-0033): the named recorder's words are
-    the source, so the segment points at the statement and self-certifies its
-    words with a digest instead of pointing at document bytes (ADR-0068).
+    the source, so the segment points at the recorder's own attestation — the
+    spine-native Recorded Verbal origin — and self-certifies its words with a
+    digest instead of pointing at document bytes (ADR-0068).  It pointed at a
+    legacy ``dependency_events`` row until #512; ADR-0081 stage 1 demoted that
+    key to a compatibility mapping the segment never carries.
     """
 
     if not exact_text.strip():
@@ -323,7 +330,7 @@ def recorded_verbal_statement_segment(
     return SourceSegment(
         project_id=project_id,
         document_id=None,
-        statement_id=statement_id,
+        recorded_verbal_origin_id=recorded_verbal_origin_id,
         kind="recorded_verbal_statement",
         exact_text=exact_text,
         content_sha256=_text_digest(exact_text),
@@ -343,7 +350,7 @@ def replay_recorded_verbal_statement(segment: SourceSegment) -> str:
         raise SourceSegmentLocatorMismatch(
             "segment is not a recorded verbal statement"
         )
-    if segment.statement_id is None or segment.document_id is not None:
+    if segment.recorded_verbal_origin_id is None or segment.document_id is not None:
         raise SourceSegmentLocatorMismatch(
             "recorded verbal statement segment locator is incomplete"
         )

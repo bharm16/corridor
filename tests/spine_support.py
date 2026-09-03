@@ -28,7 +28,7 @@ from corridor.models import Base
 SPINE_TABLE_PATTERN = re.compile(
     r"^(facts|fact_[a-z_]+|source_segments|source_fact_[a-z_]+|"
     r"project_record_[a-z_]+|project_baseline_[a-z_]+|"
-    r"extracted_proposal_facts|"
+    r"extracted_proposal_facts|recorded_verbal_[a-z_]+|"
     r"support_assessment[a-z_]*|proposed_delta[a-z_]*|delta_[a-z_]+)$"
 )
 SPINE_ROOTS = frozenset({"facts", "source_segments", "project_record_revisions"})

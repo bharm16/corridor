@@ -9,6 +9,7 @@ attributable Human Record Decision per Fact, all in the same atomic act.
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import select
@@ -28,8 +29,12 @@ from corridor.models import (
     ExternalOrg,
     Fact,
     FactDecision,
+    FactSource,
     Project,
     ProjectRecordRevision,
+    RecordedVerbalOrigin,
+    RecordedVerbalOriginStatement,
+    SourceSegment,
 )
 from corridor.principals import HumanPrincipal
 from corridor.verbal import (
@@ -113,6 +118,70 @@ def test_recording_a_verbal_writes_the_three_facts_and_decisions(session, depend
 
     # The legacy event still stands beside the spine (dual-write, not replace).
     assert event.source_kind == "verbal"
+
+
+def test_recording_a_verbal_writes_one_spine_native_origin(session, dependency):
+    """ADR-0081 stage 1: the segment and the Fact identity hang from the origin.
+
+    The origin's recorded time is the legacy statement's own, read back rather
+    than taken from a second clock, so the attestation cannot drift from the
+    act that produced it. The legacy identity reaches the spine only through
+    the compatibility mapping.
+    """
+
+    words = "AT&T will relocate the line by June 15."
+    event = record_verbal(
+        session,
+        dependency,
+        stated_party="AT&T",
+        description=words,
+        conversation_date=date(2025, 5, 1),
+        committed_date=date(2025, 6, 15),
+        principal=RECORDER,
+    )
+    session.refresh(event)
+
+    origins = session.scalars(
+        select(RecordedVerbalOrigin).where(
+            RecordedVerbalOrigin.project_id == dependency.project_id
+        )
+    ).all()
+    assert len(origins) == 1
+    origin = origins[0]
+    assert origin.recorded_by == "local:phone-coordinator"
+    assert origin.recorded_at == event.created_at
+    assert origin.conversation_date == date(2025, 5, 1)
+    assert origin.exact_text == words
+    assert origin.content_sha256 == sha256(words.encode("utf-8")).hexdigest()
+    assert origin.corrects_origin_id is None
+
+    mappings = session.scalars(
+        select(RecordedVerbalOriginStatement).where(
+            RecordedVerbalOriginStatement.origin_id == origin.id
+        )
+    ).all()
+    assert [(row.statement_id, row.project_id) for row in mappings] == [
+        (event.id, dependency.project_id)
+    ]
+
+    segments = session.scalars(
+        select(SourceSegment).where(
+            SourceSegment.project_id == dependency.project_id,
+            SourceSegment.kind == "recorded_verbal_statement",
+        )
+    ).all()
+    assert [segment.recorded_verbal_origin_id for segment in segments] == [origin.id]
+    assert all(segment.document_id is None for segment in segments)
+
+    # Every Fact of this verbal takes its value from that one segment, so the
+    # identity digest names the origin and no legacy row.
+    sourced = session.scalars(
+        select(FactSource.source_segment_id).where(
+            FactSource.project_id == dependency.project_id,
+            FactSource.role == "value_source",
+        )
+    ).all()
+    assert set(sourced) == {segments[0].id}
 
 
 def test_the_verbal_facts_replay_from_their_own_words(session, dependency):

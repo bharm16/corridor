@@ -105,7 +105,7 @@ def test_segments_are_refused_for_a_document_outside_the_project(
             session,
             project_id=project.id,
             document_id=document.id,
-            statement_id=None,
+            recorded_verbal_origin_id=None,
             segments=(_span("Equistar will submit the exhibit."),),
         )
 
@@ -129,18 +129,20 @@ def test_segments_are_refused_when_the_digest_does_not_match_the_words(
             session,
             project_id=project.id,
             document_id=document.id,
-            statement_id=None,
+            recorded_verbal_origin_id=None,
             segments=(forged,),
         )
 
 
-def test_segments_need_exactly_one_of_a_document_or_a_statement(session, project):
-    with pytest.raises(DBAPIError, match="one document or one statement"):
+def test_segments_need_exactly_one_of_a_document_or_an_origin(session, project):
+    with pytest.raises(
+        DBAPIError, match="one document or one recorded verbal origin"
+    ):
         append_source_segments(
             session,
             project_id=project.id,
             document_id=None,
-            statement_id=None,
+            recorded_verbal_origin_id=None,
             segments=(_span("Orphaned words."),),
         )
 
@@ -153,14 +155,14 @@ def test_replaying_a_locator_returns_the_same_row_and_refuses_other_words(
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(_span("Equistar will submit the exhibit."),),
     )
     replayed = append_source_segments(
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(_span("Equistar will submit the exhibit."),),
     )
 
@@ -177,7 +179,7 @@ def test_replaying_a_locator_returns_the_same_row_and_refuses_other_words(
             session,
             project_id=project.id,
             document_id=document.id,
-            statement_id=None,
+            recorded_verbal_origin_id=None,
             segments=(rebound,),
         )
 
@@ -193,7 +195,7 @@ def test_a_fact_is_refused_when_its_source_lies_in_another_project(
         session,
         project_id=other_project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(_span("Equistar will submit the exhibit."),),
     )
 
@@ -226,7 +228,7 @@ def test_a_fact_needs_its_content_digest(session, project):
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(_span("Equistar will submit the exhibit."),),
     )
 
@@ -240,7 +242,7 @@ def test_replaying_a_fact_digest_returns_the_same_fact(session, project):
         session,
         project_id=project.id,
         document_id=document.id,
-        statement_id=None,
+        recorded_verbal_origin_id=None,
         segments=(_span("Equistar will submit the exhibit."),),
     )
     first = _wording_fact(session, project, segment)

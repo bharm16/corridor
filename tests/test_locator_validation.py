@@ -215,7 +215,9 @@ def test_a_recorded_verbal_statement_validates_on_its_own_digest():
     """ADR-0033: a verbal has no document, so the digest is the whole check."""
 
     segment = recorded_verbal_statement_segment(
-        project_id=1, statement_id=2, exact_text="They will pull the pole in March."
+        project_id=1,
+        recorded_verbal_origin_id=2,
+        exact_text="They will pull the pole in March.",
     )
 
     assert recorded_verbal_statement_locator_validation_status(segment) == VALID

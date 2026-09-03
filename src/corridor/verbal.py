@@ -21,6 +21,7 @@ as a convenience over the same atomic writer.
 from __future__ import annotations
 
 from datetime import date
+from hashlib import sha256
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -51,10 +52,12 @@ from corridor.models import (
     FactAppliesTo,
     FactDecision,
     Project,
+    RecordedVerbalOriginStatement,
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.source_append import append_recorded_verbal_origin
 from corridor.source_segments import (
     append_source_segment,
     recorded_verbal_statement_segment,
@@ -495,11 +498,25 @@ def _record_verbal_on_spine(
     """
 
     subject_key = f"lineage:{event.commitment_lineage_id}"
+    # The recorder's attestation is the segment's source, not the legacy
+    # statement row (#512, ADR-0081 stage 1).  Its recorded time is the one
+    # the legacy statement already carries, so the two never disagree, and the
+    # legacy identity stays in the compatibility mapping the command writes.
+    origin = append_recorded_verbal_origin(
+        session,
+        project_id=project.id,
+        recorded_by=event.created_by,
+        recorded_at=event.created_at,
+        conversation_date=event.event_date,
+        exact_text=description,
+        content_sha256=sha256(description.encode("utf-8")).hexdigest(),
+        legacy_statement_id=event.id,
+    )
     segment = append_source_segment(
         session,
         recorded_verbal_statement_segment(
             project_id=project.id,
-            statement_id=event.id,
+            recorded_verbal_origin_id=origin.id,
             exact_text=description,
         ),
     )
@@ -621,9 +638,22 @@ def _current_decision_id(
 def _verbal_segment_for_event(
     session: Session, event_id: int
 ) -> SourceSegment | None:
+    """The spine segment of one legacy statement, through the temporary mapping.
+
+    The segment no longer names the legacy row (#512); while the dual-write of
+    ADR-0081 stages 1 through 5 still writes one, the legacy identity resolves
+    through ``recorded_verbal_origin_statements`` and nowhere else.
+    """
+
     return session.scalar(
-        select(SourceSegment).where(
-            SourceSegment.statement_id == event_id,
+        select(SourceSegment)
+        .join(
+            RecordedVerbalOriginStatement,
+            RecordedVerbalOriginStatement.origin_id
+            == SourceSegment.recorded_verbal_origin_id,
+        )
+        .where(
+            RecordedVerbalOriginStatement.statement_id == event_id,
             SourceSegment.kind == "recorded_verbal_statement",
         )
     )
