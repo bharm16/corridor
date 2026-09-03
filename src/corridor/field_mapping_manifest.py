@@ -259,12 +259,101 @@ class FieldMappingManifest:
         }
 
     @property
+    def declaration_json(self) -> str:
+        """The exact bytes this revision is digested as, and stored as (#610).
+
+        The digest is taken over these bytes, so storing anything else beside
+        the digest would store something the digest does not cover.  They are
+        canonical — sorted keys, no separator padding — so the same declaration
+        digests the same way on every machine that writes it.
+        """
+
+        return json.dumps(
+            self.as_payload(), sort_keys=True, separators=(",", ":")
+        )
+
+    @property
     def content_sha256(self) -> str:
-        return sha256(
-            json.dumps(
-                self.as_payload(), sort_keys=True, separators=(",", ":")
-            ).encode("utf-8")
-        ).hexdigest()
+        return sha256(self.declaration_json.encode("utf-8")).hexdigest()
+
+
+# --- Reading one back -------------------------------------------------------
+
+
+def manifest_from_declaration(declaration: str) -> FieldMappingManifest:
+    """The mapping revision one stored declaration records, or a refusal (#610).
+
+    #597 registered a mapping revision by identity, version and digest alone,
+    so reproducing a past render depended on whoever declared it still holding
+    the declaration.  A digest nobody can resolve proves *that* a render used a
+    revision and not *what* that revision said, which for an auditable record
+    is the weaker half.
+
+    The bytes are not trusted for being stored.  They are read back into a
+    manifest and re-digested, and the result must be the digest of the bytes
+    themselves: a stored declaration that reconstructs into something else —
+    a mapping out of canonical order, a cardinality that disagrees with its
+    composition rule, a key nobody writes — is refused rather than rendered
+    through.
+    """
+
+    try:
+        payload = json.loads(declaration)
+    except ValueError as exc:
+        raise MappingManifestRefused(
+            f"the stored mapping revision is not readable: {exc}"
+        ) from exc
+    if not isinstance(payload, dict):
+        raise MappingManifestRefused(
+            "a stored mapping revision is one declared manifest, and these "
+            f"bytes read back as {type(payload).__name__}"
+        )
+    try:
+        manifest = FieldMappingManifest(
+            identity=payload["identity"],
+            version=payload["version"],
+            mappings=tuple(
+                _mapping_from_payload(item) for item in payload["mappings"]
+            ),
+            external_references=tuple(
+                ExternalReference(heading, role)
+                for heading, role in payload["external_references"]
+            ),
+            schema_version=payload["schema_version"],
+        )
+    except (KeyError, TypeError, ValueError) as exc:
+        raise MappingManifestRefused(
+            f"the stored mapping revision does not declare {exc}"
+        ) from exc
+
+    stored = sha256(declaration.encode("utf-8")).hexdigest()
+    if manifest.content_sha256 != stored:
+        raise MappingManifestRefused(
+            "the stored mapping revision does not reconstruct the declaration "
+            f"it is digested as: the stored bytes digest to {stored} and what "
+            f"they read back as digests to {manifest.content_sha256}"
+        )
+    return manifest
+
+
+def _mapping_from_payload(payload: Mapping[str, object]) -> MaterialMapping:
+    """One declared mapping, without the cardinality its rule derives."""
+
+    return MaterialMapping(
+        source_columns=tuple(payload["source_columns"]),
+        target_fields=tuple(payload["target_fields"]),
+        composition=payload["composition"],
+        parser=payload["parser"],
+        formatting=payload["formatting"],
+        delimiter=payload["delimiter"],
+        precision=payload["precision"],
+        controlled_vocabulary=tuple(payload["controlled_vocabulary"]),
+        vocabulary_reference=payload["vocabulary_reference"],
+        blank_behaviour=payload["blank_behaviour"],
+        material=payload["material"],
+        retirement=payload["retirement"],
+        example=tuple(payload["example"]),
+    )
 
 
 # --- The released composition rules -----------------------------------------

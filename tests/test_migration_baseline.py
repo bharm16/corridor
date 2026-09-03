@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "224366542e2867256cd6198b61f92013972ff38c07654a280f2b0e57daffe968"
+    "c8c20487c3bc624d0e4bdc73659d52c752f876222954e9b344df828d44d7801c"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -1550,6 +1550,140 @@ def test_the_delivery_family_transition_refuses_a_downgrade_that_would_lose_a_pu
                 text("delete from source_deliveries where id = :delivery_id"),
                 {"delivery_id": seeded["delivery_id"]},
             )
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+
+
+# The declaration a registered mapping revision stores (#610). It is a literal
+# rather than a constructed manifest because the transition holds it as exact
+# bytes and checks nothing but their digest: what this test proves is that the
+# bytes survive, unchanged, or the downgrade stops.
+STORED_DECLARATION = (
+    '{"external_references":[],"identity":"ucm-published-column-headings",'
+    '"mappings":[{"cardinality":"1 → 1","composition":'
+    '"one_value_per_column_v1","source_columns":["Start Station"],'
+    '"target_fields":["station_from"]}],'
+    '"schema_version":"field-mapping-manifest-v1","version":"v1"}'
+)
+
+
+def _seed_stored_mapping_revision(session, *, slug: str) -> dict:
+    """One registered mapping revision that stores its full declaration.
+
+    Written with the append-only guards lifted, the way the committed-scenario
+    cleanups do: the registration family is written only by the record-decision
+    role's commands, and reaching those would mean adopting a whole baseline to
+    prove a property of the transition rather than of the adoption.
+    """
+
+    project_id = session.scalar(
+        text(
+            "insert into projects (slug, name, is_synthetic) "
+            "values (:slug, 'Stored Mapping Revision', true) returning id"
+        ),
+        {"slug": slug},
+    )
+    digest = sha256(STORED_DECLARATION.encode("utf-8")).hexdigest()
+    session.execute(text("set local session_replication_role = replica"))
+    format_id = session.scalar(
+        text(
+            "insert into project_baseline_formats ("
+            "project_id, format_kind, format_identity, format_version, "
+            "content_sha256, registered_by_principal, idempotency_key"
+            ") values ("
+            ":project_id, 'field_mapping', 'ucm-published-column-headings', "
+            "'v1', :digest, 'local:coordinator', 'seed-stored-revision'"
+            ") returning id"
+        ),
+        {"project_id": project_id, "digest": digest},
+    )
+    session.execute(
+        text(
+            "insert into project_baseline_format_manifests ("
+            "format_id, project_id, format_identity, format_version, "
+            "content_sha256, manifest_schema_version, declaration"
+            ") values ("
+            ":format_id, :project_id, 'ucm-published-column-headings', 'v1', "
+            ":digest, 'field-mapping-manifest-v1', :declaration"
+            ")"
+        ),
+        {
+            "format_id": format_id,
+            "project_id": project_id,
+            "digest": digest,
+            "declaration": STORED_DECLARATION,
+        },
+    )
+    session.execute(text("set local session_replication_role = origin"))
+    return {"project_id": project_id, "format_id": format_id, "digest": digest}
+
+
+def test_the_stored_mapping_revision_refuses_a_downgrade_that_would_lose_it():
+    """#610, proved on the exact row the digest-only registration cannot hold.
+
+    The registration this downgrade restores carries a mapping revision's
+    identity, version and digest and nothing that resolves them, which is the
+    unresolvable digest #610 exists to remove. Dropping the declaration to get
+    back there would recreate it silently, so the transition counts what it
+    cannot carry, names it, and leaves the row exactly as it was.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_mapping_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with database.session_factory.begin() as session:
+            seeded = _seed_stored_mapping_revision(
+                session, slug="stored-mapping-revision"
+            )
+
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+
+        assert refused.returncode != 0
+        assert "#610 downgrade refuses" in refused.stderr
+        assert "1 registered mapping revision(s)" in refused.stderr
+        assert "Nothing is dropped here" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+        with database.session_factory() as session:
+            row = session.execute(
+                text(
+                    "select format_id, project_id, format_identity, "
+                    "       format_version, content_sha256, "
+                    "       manifest_schema_version, declaration "
+                    "  from project_baseline_format_manifests "
+                    " where format_id = :format_id"
+                ),
+                {"format_id": seeded["format_id"]},
+            ).one()
+            assert row.project_id == seeded["project_id"]
+            assert row.format_identity == "ucm-published-column-headings"
+            assert row.format_version == "v1"
+            assert row.content_sha256 == seeded["digest"]
+            assert row.manifest_schema_version == "field-mapping-manifest-v1"
+            assert row.declaration == STORED_DECLARATION
+
+        # A registration that stores no declaration loses nothing, so the
+        # transition crosses back.
+        with database.session_factory.begin() as session:
+            session.execute(text("set local session_replication_role = replica"))
+            session.execute(
+                text(
+                    "delete from project_baseline_format_manifests "
+                    " where format_id = :format_id"
+                ),
+                {"format_id": seeded["format_id"]},
+            )
+            session.execute(text("set local session_replication_role = origin"))
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
         assert _migration_head(database.session_factory) == SUPPORTED_HEAD

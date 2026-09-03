@@ -2888,6 +2888,65 @@ class BaselineFormat(Base):
     )
 
 
+class BaselineFormatManifest(Base):
+    """The full declaration one registered mapping revision records (#610).
+
+    ``BaselineFormat`` holds a mapping revision's identity, version and digest.
+    That proves *which* revision a render was performed under and not *what*
+    that revision declared, so reproducing a past render depended on whoever
+    declared it still holding the declaration. This row is that declaration,
+    stored as the exact canonical bytes the digest is taken over — the same
+    shape as a Source Segment, which retains exact text beside its digest
+    rather than the digest alone.
+
+    One row per registration, immutably: the primary key is the registration's
+    own id, so a stored declaration cannot outlive or precede the act that
+    registered it, and the composite foreign key back to the registration's
+    identity, version and digest makes a stored declaration that disagrees with
+    what was registered unrepresentable rather than merely unlikely. A
+    registration with no row here has no stored declaration, which is an
+    explicit absence and never an empty manifest.
+    """
+
+    __tablename__ = "project_baseline_format_manifests"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "format_id",
+                "project_id",
+                "format_identity",
+                "format_version",
+                "content_sha256",
+            ],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_identity",
+                "project_baseline_formats.format_version",
+                "project_baseline_formats.content_sha256",
+            ],
+            name="fk_project_baseline_format_manifests_registration",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(declaration, 'utf8')), 'hex') "
+            "= content_sha256",
+            name="ck_project_baseline_format_manifests_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(manifest_schema_version)) > 0",
+            name="ck_project_baseline_format_manifests_schema",
+        ),
+    )
+
+    format_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    format_identity: Mapped[str] = mapped_column(String(160))
+    format_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    manifest_schema_version: Mapped[str] = mapped_column(String(64))
+    declaration: Mapped[str] = mapped_column(Text)
+
+
 class FactDecision(Base):
     """One typed Record Inclusion decision whose effectiveness may be superseded."""
 

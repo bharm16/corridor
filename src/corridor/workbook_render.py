@@ -70,6 +70,7 @@ from corridor.baseline_adoption import (
     adopted_baseline_source,
     adopted_source_rows,
     effective_baseline_formats,
+    effective_field_mapping_manifest,
 )
 from corridor.baseline_workbook import (
     BaselineWorkbookUnsupported,
@@ -353,7 +354,7 @@ def render_project_record_workbook(
     project_id: int,
     revision_id: int,
     template_bytes: bytes,
-    field_mapping: FieldMappingManifest,
+    field_mapping: FieldMappingManifest | None = None,
     profile: RenderProfile = RenderProfile(),
 ) -> RenderedWorkbook:
     """Render one accepted revision into the approved template, or refuse.
@@ -363,6 +364,14 @@ def render_project_record_workbook(
     settled at onboarding. What the renderer looks up is only what a person
     already approved — the accepted data-baseline identity, the effective
     output-template identity, and the effective field-mapping identity.
+
+    ``field_mapping`` may be omitted, and then the mapping revision comes from
+    what the registration itself stores (#610). A past render is reproducible
+    that way without the caller holding the declaration: before #610 the
+    registration recorded a digest and nothing that resolved it, so a render
+    could be proved to have used a revision but not to have used *this* one.
+    A registration that stores no declaration refuses by name rather than
+    rendering through an empty mapping.
     """
 
     baseline = adopted_baseline_source(session, project_id)
@@ -393,6 +402,18 @@ def render_project_record_workbook(
             f"{template_sha256} was offered and "
             f"{template_format.content_sha256} is registered"
         )
+
+    if field_mapping is None:
+        field_mapping = effective_field_mapping_manifest(session, project_id)
+        if field_mapping is None:
+            raise WorkbookRenderRefused(
+                "this project's effective field-mapping registration "
+                f"({mapping_format.format_identity} "
+                f"{mapping_format.format_version}, "
+                f"{mapping_format.content_sha256}) stores no declaration, so "
+                "the mapping revision it names cannot be resolved from stored "
+                "state. Supply the manifest that digests to it."
+            )
 
     if field_mapping.content_sha256 != mapping_format.content_sha256:
         raise UnapprovedFieldMapping(
