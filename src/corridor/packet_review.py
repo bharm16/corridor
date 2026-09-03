@@ -1,0 +1,1251 @@
+"""What a coordinator actually reads before deciding one source revision (#527).
+
+ADR-0085 splits the adopted-project Work List into a **reading** and an **act**.
+``review_packet_reading`` owns the reading's skeleton — which deltas are decided
+together, in which band, with which exit — and ``review_packets`` owns the one
+atomic act.  Neither of them knows a single customer-facing fact: not the
+accepted value beside the incoming one, not the sheet and cell the incoming
+value came from, not the row identifier the customer's own utility-management
+system prints, and not which artifact the customer receives would change.  This
+module supplies exactly that layer, so the screen is a template over a reading
+rather than a pile of queries in a route.
+
+**It re-derives nothing.**  The partition, the consequence bands, the hold-out
+reasons, and the exactly-once guarantee are read from ``read_open_deltas`` and
+passed through untouched; ``bind_packet_request`` builds the act.  If a
+grouping question is ever asked here, the answer is wrong by construction,
+because two modules deciding which deltas belong together is how one delta gets
+offered twice.
+
+**The screen emits only the two events nothing else can.**  #519 already emits
+one ``child_decision`` per committed or refused child and #526 one
+``packet_save`` per act, both bound to the packetizer rule version the act was
+built by.  Emitting a third copy here would double-count exactly the measure the
+contract exists for, so this module adds only ``packet_surfacing`` and
+``packet_opening`` — the two facts that live on the screen and nowhere else.
+
+**Why a child can be listed and still not be applicable.**  #519 refuses an
+accept whose incoming Source Fact carries no effective ``value_support``
+Support Assessment (#530), and it is right to: a passed Source Passage Check
+says a cell exists, never that it supports the value.  A screen that hid that
+would offer forty changes and have the whole packet refused on the fortieth.
+So support is read here, per child, and the item reports how many of its
+children are *ready* — meaning Apply would not be refused for missing support.
+A child that is not ready is still offered by this item, still selectable, and
+still decidable as Keep current or Defer; nothing is hidden, and nothing that
+would refuse is presented as ready.
+
+**Held out is a sibling, not a disappearance.**  Everything the partition took
+out of a source revision's batch — an apparent removal, an unplaced subject, an
+organization change, an unresolved scope, a contradicted field — is still an
+actionable item of its own.  The batch names those siblings read-only, with the
+reason and the item that owns them, so the coordinator can see that the
+revision's accounting is complete without ever finding a second control for the
+same delta (ADR-0085's exactly-once rule).
+
+**Which customer artifacts would change** is answered from what the project has
+actually registered, never guessed.  ``ARTIFACT_IMPACT_RULE_VERSION`` names the
+rule: a field the customer's own workbook carries changes that workbook when an
+output template is registered (#495, ``workbook_render``), and every accepted
+change reaches the weekly change summary and report, which counts exactly the
+deltas that resolved (#534, ``report_preparation``).  A project that has
+registered no output template is simply not promised a workbook it has not
+configured.
+
+**No clock.**  ``as_of`` and ``decided_at`` are declared by the caller, exactly
+as the reading below them requires, so a screen and its test agree about what
+"already elapsed" and "decided at" mean.
+
+Terminology: nothing here coins a customer word.  Utility Conflict, Utility
+Conflict Matrix, Constraint, Proposed Delta, Defer, and Attention Reason are
+the adopted glossary's, and ``Review Packet`` stays the internal technical name
+it is — the screen names the source revision, never the packet type.
+"""
+
+from __future__ import annotations
+
+from collections import defaultdict
+from dataclasses import dataclass
+from datetime import datetime
+from hashlib import sha256
+from typing import Any, Mapping, Sequence
+from urllib.parse import urlparse
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session
+
+from corridor.analytics import (
+    AnalyticsBinding,
+    AnalyticsEvent,
+    EventFamily,
+    default_binding,
+    emit_event,
+)
+from corridor.baseline_adoption import effective_baseline_formats
+from corridor.baseline_workbook import BASELINE_FACT_FIELDS
+from corridor.delta_generation import COMPARABLE_FACT_TYPES
+from corridor.delta_resolution import RecordEffect
+from corridor.models import (
+    BaselineSourceRow,
+    DeltaGroup,
+    Document,
+    Fact,
+    FactSource,
+    ProposedDelta,
+    SourceSegment,
+    SupportAssessment,
+)
+from corridor.presentation import field_label
+from corridor.principals import HumanPrincipal
+from corridor.review_packet_reading import (
+    CONSEQUENCE_BANDS,
+    COORDINATION_QUESTION,
+    DEFERRED,
+    RESOLVED,
+    STALE,
+    SUPERSEDED,
+    HELD_OUT_APPARENT_REMOVAL,
+    HELD_OUT_OWNER_MISMATCH,
+    HELD_OUT_POSSIBLE_NEW_CONFLICT,
+    HELD_OUT_UNCERTAIN_SCOPE,
+    PARTITION_RULE_VERSION,
+    SOURCE_REVISION,
+    ActionableItem,
+    DeltaReading,
+    bind_packet_request,
+    read_open_deltas,
+    standing_accepted_revisions,
+)
+from corridor.review_packets import (
+    APPLY,
+    DEFER,
+    KEEP_CURRENT,
+    DeferralRequest,
+    PacketChildRequest,
+    ReviewPacketRequest,
+)
+
+
+# The rule that decides which customer artifacts a change reaches.  Recorded
+# beside every answer so a later change to the rule is visible rather than
+# retroactive, exactly as the partition records its own version.
+ARTIFACT_IMPACT_RULE_VERSION = "customer-artifact-impact-v1"
+
+# The two artifacts an adopted project actually produces today.  Both names are
+# the ones the repository already uses for them; neither is a new term.
+CUSTOMER_WORKBOOK = "Utility Conflict Matrix workbook"
+WEEKLY_REPORT = "Change summary and weekly report"
+
+# The Support Assessment that makes an incoming value applicable (#530).  A
+# passed Source Passage Check is not support and is never read as one.
+VALUE_SUPPORT_ROLE = "value_support"
+SUPPORTING_ASSESSMENTS = ("supported", "partially_supported")
+
+# What each partition hold-out reason means, in the coordinator's own terms.
+# #494 owns the tokens; the words for them are this screen's, and each explains
+# how the change fails rather than naming a new kind of thing.
+HELD_OUT_WORDS = {
+    HELD_OUT_APPARENT_REMOVAL: (
+        "the revised source no longer contains this row, which fails "
+        "differently from an edited value"
+    ),
+    HELD_OUT_POSSIBLE_NEW_CONFLICT: (
+        "the source proposes a Utility Conflict the accepted record does not "
+        "hold yet"
+    ),
+    HELD_OUT_OWNER_MISMATCH: (
+        "an organization change has to say whether it corrects a wrong name or "
+        "records that ownership moved"
+    ),
+    HELD_OUT_UNCERTAIN_SCOPE: (
+        "which Constraints this applies to is not settled by an exact cell "
+        "comparison"
+    ),
+}
+CONTRADICTED_ELSEWHERE = (
+    "two retained sources answer this differently, so it is decided as its own "
+    "question"
+)
+
+# The sentence each consequence band already carries in #494, read back rather
+# than restated, so the screen and the audit agree word for word.
+BAND_SENTENCES = {band.name: band.reason for band in CONSEQUENCE_BANDS}
+
+# Why a listed child cannot be applied right now.  These are not partition
+# hold-out reasons: the child stays in this item and stays selectable for Keep
+# current and Defer.
+NOT_READY_NO_INCOMING_FACT = (
+    "the incoming value has no captured Source Fact to make effective"
+)
+NOT_READY_NO_SUPPORT = (
+    "no effective Support Assessment records that the source supports this value"
+)
+
+# The batch outcomes this screen offers.  Edit and apply and Needs coordination
+# are per-child answers rather than batch ones, so they belong to the focused
+# item and to #528, not here.
+BATCH_OUTCOMES = (APPLY, KEEP_CURRENT, DEFER)
+
+# Only a link a browser can follow read-only is rendered as a link.
+_LINKABLE_SCHEMES = frozenset({"http", "https"})
+
+
+class ReviewScreenRefused(ValueError):
+    """The caller cannot build or act on this coordinator reading."""
+
+
+# --- what one child shows --------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ExternalRecordLink:
+    """One identifier or link the customer's own row already printed.
+
+    ``href`` is present only for an ``http``/``https`` location, so a stored
+    value that is not a followable web address is shown as text rather than
+    rendered as a link to nowhere.  Nothing here is a map; a map waits for
+    partner data.
+    """
+
+    role: str
+    text: str
+    href: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class IncomingCapture:
+    """The captured Source Fact behind one incoming value, and where it was read."""
+
+    fact: Fact
+    segment: SourceSegment | None
+    document: Document | None
+
+
+@dataclass(frozen=True, slots=True)
+class SourceReference:
+    """Exactly where the incoming value was read, in words."""
+
+    document_filename: str
+    sheet_name: str | None = None
+    cell_range: str | None = None
+    page_no: int | None = None
+    exact_text: str | None = None
+
+    @property
+    def location(self) -> str:
+        """The locator as a coordinator reads it aloud."""
+
+        if self.sheet_name and self.cell_range:
+            return f"sheet {self.sheet_name}, cell {self.cell_range}"
+        if self.page_no is not None:
+            return f"page {self.page_no}"
+        return "no cited location recorded"
+
+
+@dataclass(frozen=True, slots=True)
+class ChildReading:
+    """One Proposed Delta, as the coordinator sees it on the item."""
+
+    delta_id: int
+    subject_identity: str
+    subject_name: str
+    field: str | None
+    field_name: str
+    change_type: str
+    accepted_value: str | None
+    accepted_revision_id: int | None
+    incoming_value: str | None
+    source_family: str
+    source_revision: str
+    band: str
+    attention_reasons: tuple[str, ...]
+    customer_artifacts: tuple[str, ...]
+    source: SourceReference | None = None
+    external_links: tuple[ExternalRecordLink, ...] = ()
+    incoming_fact_id: int | None = None
+    support_assessment_ids: tuple[int, ...] = ()
+    not_ready_reason: str | None = None
+    # Whether this child is in the coordinator's current selection. A child
+    # that Apply would refuse starts unselected, so the batch's primary action
+    # never names work it cannot do.
+    selected: bool = False
+    # Set only on a child this item lists read-only because another item owns
+    # the decision.
+    held_out_reason: str | None = None
+    held_out_item_key: str | None = None
+
+    @property
+    def ready(self) -> bool:
+        """Whether Apply would not be refused for missing fact or support."""
+
+        return self.not_ready_reason is None
+
+    @property
+    def id(self) -> int:
+        """The identity the shared selection primitive addresses a child by."""
+
+        return self.delta_id
+
+    @property
+    def text(self) -> str:
+        """One line naming the change, for the selection list."""
+
+        return (
+            f"{self.subject_name} — {self.field_name}: "
+            f"{self.accepted_value or 'not recorded'} → "
+            f"{self.incoming_value or 'not recorded'}"
+        )
+
+    @property
+    def held_out(self) -> str | None:
+        """The shared selection primitive's reason for disabling a child."""
+
+        return self.held_out_reason
+
+
+# --- what one item shows ---------------------------------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class ItemReading:
+    """One bounded Work List item, in project language."""
+
+    actionable: ActionableItem
+    headline: str
+    source_family: str
+    source_revision: str
+    children: tuple[ChildReading, ...]
+    held_out_children: tuple[ChildReading, ...]
+    unchanged_count: int
+    customer_artifacts: tuple[str, ...]
+    artifact_rule_version: str = ARTIFACT_IMPACT_RULE_VERSION
+
+    @property
+    def ordinal(self) -> int:
+        return self.actionable.ordinal
+
+    @property
+    def item_key(self) -> str:
+        return self.actionable.item_key
+
+    @property
+    def grouping_key_kind(self) -> str:
+        return self.actionable.grouping_key_kind
+
+    @property
+    def grouping_key(self) -> str:
+        return self.actionable.grouping_key
+
+    @property
+    def grouping_rule_version(self) -> str:
+        return self.actionable.grouping_rule_version
+
+    @property
+    def band(self) -> str:
+        return self.actionable.band
+
+    @property
+    def attention_reasons(self) -> tuple[str, ...]:
+        return self.actionable.attention_reasons
+
+    @property
+    def held_out_reason(self) -> str | None:
+        return self.actionable.held_out_reason
+
+    @property
+    def child_count(self) -> int:
+        return len(self.children)
+
+    @property
+    def ready_count(self) -> int:
+        return sum(1 for child in self.children if child.ready)
+
+    @property
+    def held_out_count(self) -> int:
+        return len(self.held_out_children)
+
+    @property
+    def decidable(self) -> bool:
+        """Whether this screen offers the batch act for this item.
+
+        A cross-source coordination question is answered per child against two
+        disagreeing sources, which is #528's screen.  It is still counted,
+        still named, and still reachable here — it simply grows no decision
+        control on this screen, so no delta ever carries two.
+        """
+
+        return self.grouping_key_kind == SOURCE_REVISION
+
+    @property
+    def selected_count(self) -> int:
+        return sum(1 for child in self.children if child.selected)
+
+    @property
+    def selection_children(self) -> tuple[ChildReading, ...]:
+        """Every delta of this source revision: this item's, then its siblings'.
+
+        The siblings are listed disabled with the reason they were held out, so
+        the revision's accounting is complete on one screen and no held-out
+        delta is ever submitted by this item's action.
+        """
+
+        return self.children + self.held_out_children
+
+    @property
+    def attention_sentences(self) -> tuple[str, ...]:
+        """Why this item is in front of the coordinator, in #494's own words."""
+
+        return tuple(
+            BAND_SENTENCES[name]
+            for name in self.attention_reasons
+            if name in BAND_SENTENCES
+        )
+
+    @property
+    def held_out_words(self) -> str | None:
+        """This item's own hold-out reason as a sentence, where it has one."""
+
+        if self.held_out_reason is None:
+            return None
+        return HELD_OUT_WORDS.get(self.held_out_reason, self.held_out_reason)
+
+    @property
+    def before_after_rows(self) -> tuple[dict[str, str], ...]:
+        """The accepted and incoming values, in the shared primitive's shape."""
+
+        return tuple(
+            {
+                "field": f"{child.subject_name} — {child.field_name}",
+                "before": child.accepted_value,
+                "after": child.incoming_value,
+                "source": (
+                    f"{child.source.document_filename}, {child.source.location}"
+                    if child.source is not None
+                    else ""
+                ),
+            }
+            for child in self.children
+        )
+
+    @property
+    def subject_names(self) -> tuple[str, ...]:
+        """Every Utility Conflict this item touches, once each, in order."""
+
+        seen: list[str] = []
+        for child in self.children:
+            if child.subject_name not in seen:
+                seen.append(child.subject_name)
+        return tuple(seen)
+
+    @property
+    def field_names(self) -> tuple[str, ...]:
+        """Every affected field, once each, in order."""
+
+        seen: list[str] = []
+        for child in self.children:
+            if child.field_name not in seen:
+                seen.append(child.field_name)
+        return tuple(seen)
+
+
+@dataclass(frozen=True, slots=True)
+class ReviewReading:
+    """One project's actionable items, assembled for one coordinator."""
+
+    project_id: int
+    as_of: datetime
+    rule_version: str
+    accepted_revision_id: int | None
+    items: tuple[ItemReading, ...]
+    reading: DeltaReading
+
+    def standing_sentence(self, delta_id: int) -> str:
+        """Why this proposed change is no longer offered, in the reading's terms.
+
+        A coordinator whose Save was refused needs the *reason* their reading
+        went out of date, not the identifier of a row they never saw. Every
+        answer comes from #494's own deterministic exits.
+        """
+
+        for standing in self.reading.standings:
+            if standing.delta_id != delta_id:
+                continue
+            if standing.standing == RESOLVED:
+                return "it was already decided since this reading was taken"
+            if standing.standing == SUPERSEDED:
+                return (
+                    "a newer source version replaced it "
+                    f"(proposed change {standing.superseded_by_delta_id})"
+                )
+            if standing.standing == STALE:
+                return (
+                    "the accepted value it was compared against moved from "
+                    f"revision {standing.baseline_revision} to revision "
+                    f"{standing.current_accepted_revision_id}"
+                )
+            if standing.standing == DEFERRED:
+                return (
+                    "it was deferred and returns on "
+                    f"{standing.returns_at.date() if standing.returns_at else 'a wake condition'}"
+                )
+            return "it is offered on a different item under this reading"
+        return "it is no longer one of this project's open changes"
+
+    def item(self, item_key: str) -> ItemReading | None:
+        for item in self.items:
+            if item.item_key == item_key:
+                return item
+        return None
+
+    @property
+    def actionable_delta_ids(self) -> tuple[int, ...]:
+        return self.reading.actionable_delta_ids
+
+
+# --- the reading -----------------------------------------------------------
+
+
+def select_children(
+    item: ItemReading, delta_ids: Sequence[int] | None
+) -> ItemReading:
+    """Mark exactly the children a coordinator chose, preserving their order.
+
+    ``None`` keeps the reading's own default — every child Apply would not
+    refuse. A refused Save passes the submitted set back, so a resubmission
+    starts from what the person had chosen rather than from the default.
+    """
+
+    if delta_ids is None:
+        return item
+    chosen = set(delta_ids)
+    return ItemReading(
+        actionable=item.actionable,
+        headline=item.headline,
+        source_family=item.source_family,
+        source_revision=item.source_revision,
+        children=tuple(
+            _with_selection(child, child.delta_id in chosen)
+            for child in item.children
+        ),
+        held_out_children=item.held_out_children,
+        unchanged_count=item.unchanged_count,
+        customer_artifacts=item.customer_artifacts,
+        artifact_rule_version=item.artifact_rule_version,
+    )
+
+
+def _with_selection(child: ChildReading, selected: bool) -> ChildReading:
+    return ChildReading(
+        delta_id=child.delta_id,
+        subject_identity=child.subject_identity,
+        subject_name=child.subject_name,
+        field=child.field,
+        field_name=child.field_name,
+        change_type=child.change_type,
+        accepted_value=child.accepted_value,
+        accepted_revision_id=child.accepted_revision_id,
+        incoming_value=child.incoming_value,
+        source_family=child.source_family,
+        source_revision=child.source_revision,
+        band=child.band,
+        attention_reasons=child.attention_reasons,
+        customer_artifacts=child.customer_artifacts,
+        source=child.source,
+        external_links=child.external_links,
+        incoming_fact_id=child.incoming_fact_id,
+        support_assessment_ids=child.support_assessment_ids,
+        not_ready_reason=child.not_ready_reason,
+        selected=selected,
+        held_out_reason=child.held_out_reason,
+        held_out_item_key=child.held_out_item_key,
+    )
+
+
+def read_review_items(
+    session: Session,
+    *,
+    project_id: int,
+    as_of: datetime,
+    rule_version: str = PARTITION_RULE_VERSION,
+) -> ReviewReading:
+    """Assemble every actionable item of one project for presentation."""
+
+    reading = read_open_deltas(
+        session, project_id=project_id, as_of=as_of, rule_version=rule_version
+    )
+    deltas = _deltas_by_id(session, project_id, reading.actionable_delta_ids)
+    standing = standing_accepted_revisions(session, project_id=project_id)
+    documents = _lineage_documents(session, project_id)
+    incoming = _incoming_facts(session, project_id, deltas.values(), documents)
+    support = _value_support(session, project_id, incoming.values())
+    rows = _baseline_rows(session, project_id)
+    artifacts = _configured_artifacts(session, project_id)
+    reasons = {
+        standing_row.delta_id: standing_row.attention_reasons
+        for standing_row in reading.standings
+    }
+    bands = {
+        standing_row.delta_id: standing_row.band
+        for standing_row in reading.standings
+    }
+    unchanged = _unchanged_counts(session, project_id, standing, documents)
+
+    by_lineage: dict[str, list[ActionableItem]] = defaultdict(list)
+    for item in reading.items:
+        by_lineage[item.grouping_key].append(item)
+
+    # Each actionable delta is read once, whichever item names it.
+    readings = {
+        delta_id: _child(
+            deltas[delta_id],
+            standing=standing,
+            incoming=incoming,
+            support=support,
+            rows=rows,
+            artifacts=artifacts,
+            band=bands[delta_id],
+            attention_reasons=reasons.get(delta_id, ()),
+        )
+        for delta_id in reading.actionable_delta_ids
+    }
+
+    items: list[ItemReading] = []
+    for item in reading.items:
+        children = tuple(readings[delta_id] for delta_id in item.delta_ids)
+        # Only the source revision's batch names its held-out siblings. A
+        # focused one-delta item already says, in its own words, which batch it
+        # was held out of; listing the whole revision beside it would put five
+        # hundred read-only rows under one change.
+        siblings: tuple[ChildReading, ...] = ()
+        if item.held_out_reason is None and item.grouping_key_kind == SOURCE_REVISION:
+            siblings = tuple(
+                _held_out_sibling(readings[delta_id], other)
+                for other in by_lineage[item.grouping_key]
+                if other.item_key != item.item_key
+                for delta_id in other.delta_ids
+            )
+        family, _, revision = item.grouping_key.partition("@")
+        items.append(
+            ItemReading(
+                actionable=item,
+                headline=_headline(item, children),
+                source_family=family,
+                source_revision=revision,
+                children=children,
+                held_out_children=siblings,
+                unchanged_count=unchanged.get(item.grouping_key, 0),
+                customer_artifacts=_union(
+                    child.customer_artifacts for child in children
+                ),
+            )
+        )
+
+    return ReviewReading(
+        project_id=project_id,
+        as_of=as_of,
+        rule_version=reading.rule_version,
+        accepted_revision_id=reading.accepted_revision_id,
+        items=tuple(items),
+        reading=reading,
+    )
+
+
+def _headline(item: ActionableItem, children: Sequence[ChildReading]) -> str:
+    """Name the item's own subject, never its packet type (ADR-0085)."""
+
+    family, _, revision = item.grouping_key.partition("@")
+    if item.grouping_key_kind == COORDINATION_QUESTION:
+        subject = children[0].subject_name if children else item.grouping_key
+        field = children[0].field_name if children else "a recorded value"
+        return f"{subject} — sources disagree about {field}"
+    if item.held_out_reason is not None and children:
+        child = children[0]
+        return (
+            f"{child.subject_name} — {child.field_name} in "
+            f"{family} {revision}"
+        )
+    return f"{family} {revision}"
+
+
+# --- one child -------------------------------------------------------------
+
+
+def _child(
+    delta: ProposedDelta,
+    *,
+    standing: Mapping[tuple[str, str], int],
+    incoming: Mapping[int, IncomingCapture],
+    support: Mapping[int, tuple[int, ...]],
+    rows: Mapping[str, BaselineSourceRow],
+    artifacts: Mapping[str, str | None],
+    band: str,
+    attention_reasons: tuple[str, ...],
+) -> ChildReading:
+    capture = incoming.get(delta.id)
+    support_ids = support.get(capture.fact.id, ()) if capture is not None else ()
+    row = rows.get(delta.target_subject_identity)
+    if capture is None:
+        not_ready: str | None = NOT_READY_NO_INCOMING_FACT
+    elif not support_ids:
+        not_ready = NOT_READY_NO_SUPPORT
+    else:
+        not_ready = None
+    return ChildReading(
+        delta_id=delta.id,
+        subject_identity=delta.target_subject_identity,
+        subject_name=_subject_name(delta.target_subject_identity, row),
+        field=delta.target_field,
+        field_name=(
+            field_label(delta.target_field)
+            if delta.target_field
+            else "the whole row"
+        ),
+        change_type=delta.change_type,
+        accepted_value=_value_text(delta.accepted_value),
+        accepted_revision_id=standing.get(
+            (delta.target_subject_identity, delta.target_field or "")
+        ),
+        incoming_value=_value_text(delta.proposed_value),
+        source_family=delta.source_family,
+        source_revision=delta.source_revision,
+        band=band,
+        attention_reasons=attention_reasons,
+        customer_artifacts=_artifacts_for(delta.target_field, artifacts),
+        source=_source_reference(capture),
+        external_links=_external_links(row),
+        incoming_fact_id=capture.fact.id if capture is not None else None,
+        support_assessment_ids=support_ids,
+        not_ready_reason=not_ready,
+        selected=not_ready is None,
+    )
+
+
+def _held_out_sibling(child: ChildReading, owner: ActionableItem) -> ChildReading:
+    """The same child, marked as another item's decision and never this one's."""
+
+    reason = (
+        HELD_OUT_WORDS.get(owner.held_out_reason, owner.held_out_reason)
+        if owner.held_out_reason is not None
+        else CONTRADICTED_ELSEWHERE
+    )
+    return ChildReading(
+        delta_id=child.delta_id,
+        subject_identity=child.subject_identity,
+        subject_name=child.subject_name,
+        field=child.field,
+        field_name=child.field_name,
+        change_type=child.change_type,
+        accepted_value=child.accepted_value,
+        accepted_revision_id=child.accepted_revision_id,
+        incoming_value=child.incoming_value,
+        source_family=child.source_family,
+        source_revision=child.source_revision,
+        band=child.band,
+        attention_reasons=child.attention_reasons,
+        customer_artifacts=child.customer_artifacts,
+        source=child.source,
+        external_links=child.external_links,
+        incoming_fact_id=child.incoming_fact_id,
+        support_assessment_ids=child.support_assessment_ids,
+        not_ready_reason=child.not_ready_reason,
+        selected=False,
+        held_out_reason=reason,
+        held_out_item_key=owner.item_key,
+    )
+
+
+def _subject_name(subject_identity: str, row: BaselineSourceRow | None) -> str:
+    """The Utility Conflict in the customer's own words where they exist."""
+
+    if row is None:
+        return subject_identity
+    if row.business_identity:
+        return f"{row.business_identity} ({row.sheet_name} row {row.row_number})"
+    return f"{row.sheet_name} row {row.row_number}"
+
+
+def _value_text(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, str):
+        return value
+    return str(value)
+
+
+def _source_reference(capture: IncomingCapture | None) -> SourceReference | None:
+    if capture is None or capture.document is None:
+        return None
+    segment = capture.segment
+    return SourceReference(
+        document_filename=capture.document.filename,
+        sheet_name=segment.sheet_name if segment is not None else None,
+        cell_range=segment.cell_range if segment is not None else None,
+        page_no=segment.page_no if segment is not None else None,
+        exact_text=segment.exact_text if segment is not None else None,
+    )
+
+
+def _external_links(row: BaselineSourceRow | None) -> tuple[ExternalRecordLink, ...]:
+    """The utility-management-system id and document link the row printed."""
+
+    if row is None:
+        return ()
+    links: list[ExternalRecordLink] = []
+    if row.external_system_id:
+        links.append(
+            ExternalRecordLink(
+                role="external_system_id",
+                text=row.external_system_id,
+                href=_linkable(row.external_system_id),
+            )
+        )
+    if row.source_url:
+        links.append(
+            ExternalRecordLink(
+                role="source_url",
+                text=row.source_url,
+                href=_linkable(row.source_url),
+            )
+        )
+    return tuple(links)
+
+
+def _linkable(value: str) -> str | None:
+    """A followable web address, or ``None`` for anything else."""
+
+    try:
+        parsed = urlparse(value.strip())
+    except ValueError:
+        return None
+    if parsed.scheme.lower() in _LINKABLE_SCHEMES and parsed.netloc:
+        return value.strip()
+    return None
+
+
+# --- customer artifacts ----------------------------------------------------
+
+
+def _configured_artifacts(session: Session, project_id: int) -> dict[str, str | None]:
+    """What this project has actually registered to produce."""
+
+    formats = effective_baseline_formats(session, project_id)
+    template = formats.get("output_template")
+    return {
+        "output_template": (
+            f"{template.format_identity} {template.format_version}"
+            if template is not None
+            else None
+        )
+    }
+
+
+def _artifacts_for(
+    field: str | None, artifacts: Mapping[str, str | None]
+) -> tuple[str, ...]:
+    """Which customer artifacts one field's change would reach."""
+
+    names: list[str] = []
+    template = artifacts.get("output_template")
+    if template is not None and field is not None and field in BASELINE_FACT_FIELDS:
+        names.append(f"{CUSTOMER_WORKBOOK} ({template})")
+    names.append(WEEKLY_REPORT)
+    return tuple(names)
+
+
+def _union(groups: Any) -> tuple[str, ...]:
+    """Every artifact any child would reach, once each, in the rule's order."""
+
+    seen: list[str] = []
+    for group in groups:
+        for name in group:
+            if name not in seen:
+                seen.append(name)
+    return tuple(seen)
+
+
+# --- the queries behind the reading ---------------------------------------
+
+
+def _deltas_by_id(
+    session: Session, project_id: int, delta_ids: Sequence[int]
+) -> dict[int, ProposedDelta]:
+    if not delta_ids:
+        return {}
+    return {
+        delta.id: delta
+        for delta in session.scalars(
+            select(ProposedDelta).where(
+                ProposedDelta.project_id == project_id,
+                ProposedDelta.id.in_(list(delta_ids)),
+            )
+        ).all()
+    }
+
+
+def _lineage_documents(
+    session: Session, project_id: int
+) -> dict[str, tuple[int, ...]]:
+    """The documents each source lineage was captured from."""
+
+    documents: dict[str, list[int]] = defaultdict(list)
+    for family, revision, document_id in session.execute(
+        select(
+            DeltaGroup.source_family,
+            DeltaGroup.source_revision,
+            DeltaGroup.document_id,
+        ).where(DeltaGroup.project_id == project_id)
+    ).all():
+        if document_id is not None:
+            documents[f"{family}@{revision}"].append(int(document_id))
+    return {key: tuple(sorted(value)) for key, value in documents.items()}
+
+
+def _incoming_facts(
+    session: Session,
+    project_id: int,
+    deltas: Sequence[ProposedDelta],
+    documents: Mapping[str, tuple[int, ...]],
+) -> dict[int, IncomingCapture]:
+    """The captured Source Fact each delta's incoming value came from.
+
+    The newest Fact for the subject and field inside the delta's own source
+    lineage: the delta was derived from that capture, and #519 will only make
+    that exact Fact effective.
+    """
+
+    wanted = {
+        delta.id: (
+            documents.get(f"{delta.source_family}@{delta.source_revision}", ()),
+            delta.target_subject_identity,
+            delta.target_field,
+        )
+        for delta in deltas
+        if delta.target_field is not None
+    }
+    document_ids = sorted(
+        {value for scope, _, _ in wanted.values() for value in scope}
+    )
+    if not document_ids:
+        return {}
+    by_key: dict[tuple[int, str, str], IncomingCapture] = {}
+    for fact, segment, document in session.execute(
+        select(Fact, SourceSegment, Document)
+        .outerjoin(
+            FactSource,
+            (FactSource.fact_id == Fact.id) & (FactSource.role == "value_source"),
+        )
+        .outerjoin(SourceSegment, SourceSegment.id == FactSource.source_segment_id)
+        .outerjoin(Document, Document.id == Fact.document_id)
+        .where(
+            Fact.project_id == project_id,
+            Fact.document_id.in_(document_ids),
+        )
+        .order_by(Fact.id, FactSource.ordinal)
+    ).all():
+        # A later Fact for the same subject and field replaces an earlier one;
+        # its first value-source segment is the locator shown beside it.
+        key = (int(fact.document_id), fact.subject_key, fact.fact_type)
+        if key in by_key and by_key[key].fact.id == fact.id:
+            continue
+        by_key[key] = IncomingCapture(fact=fact, segment=segment, document=document)
+
+    found: dict[int, IncomingCapture] = {}
+    for delta_id, (scope, subject, field_name) in wanted.items():
+        for document_id in reversed(scope):
+            capture = by_key.get((document_id, subject, field_name or ""))
+            if capture is not None:
+                found[delta_id] = capture
+                break
+    return found
+
+
+def _value_support(
+    session: Session, project_id: int, captures: Sequence[IncomingCapture]
+) -> dict[int, tuple[int, ...]]:
+    """The effective value-support assessments of each incoming Source Fact."""
+
+    fact_ids = sorted({int(capture.fact.id) for capture in captures})
+    if not fact_ids:
+        return {}
+    support: dict[int, list[int]] = defaultdict(list)
+    for assessment_id, fact_id in session.execute(
+        select(SupportAssessment.id, SupportAssessment.fact_id).where(
+            SupportAssessment.project_id == project_id,
+            SupportAssessment.proposition_kind == "source_fact",
+            SupportAssessment.fact_id.in_(fact_ids),
+            SupportAssessment.superseded_by.is_(None),
+            SupportAssessment.evidence_role == VALUE_SUPPORT_ROLE,
+            SupportAssessment.assessment.in_(SUPPORTING_ASSESSMENTS),
+        )
+    ).all():
+        support[int(fact_id)].append(int(assessment_id))
+    return {key: tuple(sorted(value)) for key, value in support.items()}
+
+
+def _baseline_rows(
+    session: Session, project_id: int
+) -> dict[str, BaselineSourceRow]:
+    """Each adopted subject's own source row, for its printed identifiers."""
+
+    return {
+        row.record_subject_key: row
+        for row in session.scalars(
+            select(BaselineSourceRow).where(
+                BaselineSourceRow.project_id == project_id,
+                BaselineSourceRow.record_subject_key.is_not(None),
+            )
+        ).all()
+    }
+
+
+def _unchanged_counts(
+    session: Session,
+    project_id: int,
+    standing: Mapping[tuple[str, str], int],
+    documents: Mapping[str, tuple[int, ...]],
+) -> dict[str, int]:
+    """How many values each source revision carried that the record agreed with.
+
+    A captured value counts as unchanged when the accepted record already holds
+    that subject and field and this lineage proposed no difference for it —
+    which is the same comparison ``delta_generation`` made when it declined to
+    append a delta, read back rather than stored.
+    """
+
+    changed: dict[str, set[tuple[str, str]]] = defaultdict(set)
+    for family, revision, subject, field_name in session.execute(
+        select(
+            ProposedDelta.source_family,
+            ProposedDelta.source_revision,
+            ProposedDelta.target_subject_identity,
+            ProposedDelta.target_field,
+        ).where(ProposedDelta.project_id == project_id)
+    ).all():
+        changed[f"{family}@{revision}"].add((subject, field_name or ""))
+
+    counts: dict[str, int] = {}
+    for lineage_key, document_ids in documents.items():
+        if not document_ids:
+            counts[lineage_key] = 0
+            continue
+        counts[lineage_key] = sum(
+            1
+            for subject, fact_type in session.execute(
+                select(Fact.subject_key, Fact.fact_type).where(
+                    Fact.project_id == project_id,
+                    Fact.document_id.in_(list(document_ids)),
+                    Fact.fact_type.in_(sorted(COMPARABLE_FACT_TYPES)),
+                )
+            ).all()
+            if (subject, fact_type) in standing
+            and (subject, fact_type) not in changed[lineage_key]
+        )
+    return counts
+
+
+# --- the act this reading is committed over -------------------------------
+
+
+def packet_request(
+    reading: ReviewReading,
+    item: ItemReading,
+    *,
+    outcome: str,
+    principal: HumanPrincipal,
+    decided_at: datetime,
+    delta_ids: Sequence[int],
+    deferred_until: datetime | None = None,
+    deferral_reason: str | None = None,
+) -> ReviewPacketRequest:
+    """Build the #526 act for the children the coordinator actually selected.
+
+    Every child is named explicitly with the source version it was read
+    against; there is no wildcard and no implicit selection, and
+    ``bind_packet_request`` refuses anything this item does not offer.
+    """
+
+    if outcome not in BATCH_OUTCOMES:
+        raise ReviewScreenRefused(
+            f"{outcome!r} is not one of this screen's batch decisions"
+        )
+    if not item.decidable:
+        raise ReviewScreenRefused(
+            "a cross-source coordination question is decided per child against "
+            "both sources, not as a batch"
+        )
+    offered = {child.delta_id: child for child in item.children}
+    outside = [value for value in delta_ids if value not in offered]
+    if outside:
+        raise ReviewScreenRefused(
+            f"deltas {sorted(outside)} are not offered by this item; a delta is "
+            "actionable in exactly one item"
+        )
+    selected = [offered[value] for value in delta_ids]
+    if not selected:
+        raise ReviewScreenRefused("select at least one change before saving")
+    if outcome == DEFER and deferred_until is None:
+        raise ReviewScreenRefused("a Defer records the date the item returns")
+
+    children = tuple(
+        PacketChildRequest(
+            delta_id=child.delta_id,
+            outcome=outcome,
+            observed_source_revision=child.source_revision,
+            record_effects=(
+                _apply_effects(child) if outcome == APPLY else ()
+            ),
+            support_assessment_ids=(
+                child.support_assessment_ids if outcome == APPLY else ()
+            ),
+            deferral=(
+                DeferralRequest(
+                    deferred_until=deferred_until, reason=deferral_reason
+                )
+                if outcome == DEFER
+                else None
+            ),
+        )
+        for child in selected
+    )
+    return bind_packet_request(
+        reading.reading,
+        item.actionable,
+        principal=principal,
+        idempotency_key=idempotency_key(
+            item,
+            outcome=outcome,
+            principal=principal,
+            delta_ids=[child.delta_id for child in selected],
+            observed_accepted_revision_id=reading.accepted_revision_id,
+            deferred_until=deferred_until,
+        ),
+        decided_at=decided_at,
+        children=children,
+    )
+
+
+def _apply_effects(child: ChildReading) -> tuple[RecordEffect, ...]:
+    """The one Source Fact an Apply makes effective, or none to be refused by #519."""
+
+    if child.incoming_fact_id is None:
+        return ()
+    return (RecordEffect(fact_id=child.incoming_fact_id),)
+
+
+def idempotency_key(
+    item: ItemReading,
+    *,
+    outcome: str,
+    principal: HumanPrincipal,
+    delta_ids: Sequence[int],
+    observed_accepted_revision_id: int | None,
+    deferred_until: datetime | None,
+) -> str:
+    """One key per distinct act, so a resubmitted form replays rather than doubles.
+
+    Everything that makes the act different is in it — the item, the outcome,
+    the exact children, the revision they were read against, the person, and a
+    deferral's own return date — and nothing that merely makes the *request*
+    different is, so a double-click writes one packet (#457).
+    """
+
+    material = "\x00".join(
+        [
+            item.item_key,
+            outcome,
+            principal.subject,
+            ",".join(str(value) for value in sorted(delta_ids)),
+            str(observed_accepted_revision_id or 0),
+            deferred_until.isoformat() if deferred_until is not None else "",
+        ]
+    )
+    return f"review-packet:{sha256(material.encode('utf-8')).hexdigest()[:32]}"
+
+
+# --- the versioned event contract (#558) ----------------------------------
+
+
+def screen_binding(
+    item: ItemReading, binding: AnalyticsBinding | None = None
+) -> AnalyticsBinding:
+    """Bind every screen event to the packetizer rule the item was built by."""
+
+    base = binding or default_binding()
+    if base.packetizer_rules_version == item.grouping_rule_version:
+        return base
+    return AnalyticsBinding(
+        code_revision=base.code_revision,
+        product_revision=base.product_revision,
+        packetizer_rules_version=item.grouping_rule_version,
+        source_configuration=base.source_configuration,
+        connector_configuration=base.connector_configuration,
+        template_identity=base.template_identity,
+        mapping_identity=base.mapping_identity,
+        enabled_feature_flags=base.enabled_feature_flags,
+    )
+
+
+def emit_packet_surfacing(
+    reading: ReviewReading,
+    item: ItemReading,
+    *,
+    binding: AnalyticsBinding | None = None,
+) -> None:
+    """One event per item the Work List actually put in front of a person."""
+
+    emit_event(
+        AnalyticsEvent(
+            family=EventFamily.PACKET_SURFACING,
+            binding=screen_binding(item, binding),
+            occurred_at=reading.as_of,
+            payload=_item_payload(reading, item),
+            metric_labels=_item_labels(item),
+        )
+    )
+
+
+def emit_packet_opening(
+    reading: ReviewReading,
+    item: ItemReading,
+    *,
+    binding: AnalyticsBinding | None = None,
+) -> None:
+    """The coordinator opened this item; surfacing alone is not opening."""
+
+    emit_event(
+        AnalyticsEvent(
+            family=EventFamily.PACKET_OPENING,
+            binding=screen_binding(item, binding),
+            occurred_at=reading.as_of,
+            payload=_item_payload(reading, item),
+            metric_labels=_item_labels(item),
+        )
+    )
+
+
+def _item_payload(reading: ReviewReading, item: ItemReading) -> dict[str, Any]:
+    return {
+        "project_id": reading.project_id,
+        "item_key": item.item_key,
+        "grouping_key_kind": item.grouping_key_kind,
+        "grouping_key": item.grouping_key,
+        "grouping_rule_version": item.grouping_rule_version,
+        "band": item.band,
+        "attention_reasons": list(item.attention_reasons),
+        "held_out_reason": item.held_out_reason,
+        "child_count": item.child_count,
+        "ready_count": item.ready_count,
+        "held_out_count": item.held_out_count,
+        "unchanged_count": item.unchanged_count,
+        "customer_artifacts": list(item.customer_artifacts),
+        "artifact_rule_version": item.artifact_rule_version,
+        "observed_accepted_revision_id": reading.accepted_revision_id,
+    }
+
+
+def _item_labels(item: ItemReading) -> dict[str, str]:
+    return {
+        "grouping_key_kind": item.grouping_key_kind,
+        "band": item.band,
+        "held_out_reason": item.held_out_reason or "none",
+    }

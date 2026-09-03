@@ -1,0 +1,440 @@
+"""One adopted project with a later source revision, built for #527's screen.
+
+The screen under test needs more than Proposed Deltas: an accepted baseline the
+incoming values are compared against, the customer's own source rows with the
+identifiers their utility-management system printed, a registered output
+template so "which customer artifacts would change" has an answer, and the
+captured Source Facts and Support Assessments that make an Apply lawful.
+
+Every time is supplied by the caller. Nothing here reads a clock.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from datetime import date, datetime, timezone
+from hashlib import sha256
+from uuid import uuid4
+
+from sqlalchemy import text
+from sqlalchemy.orm import Session
+
+from corridor.models import (
+    ActiveExtractionRun,
+    BaselineFormat,
+    BaselineSource,
+    BaselineSourceRow,
+    Document,
+    ExtractionRun,
+    Fact,
+    FactSource,
+    Project,
+    ProposedDelta,
+    SourceSegment,
+)
+from corridor.principals import HumanPrincipal
+from corridor.proposed_deltas import (
+    ExistingSubjectTarget,
+    ProposedDeltaValues,
+    ProposedSubjectTarget,
+    create_proposed_delta_group,
+)
+from corridor.support_assessments import FactProposition, record_support_assessment
+
+
+ADOPTER = HumanPrincipal("local:adopter")
+ASSESSOR = HumanPrincipal("local:assessor")
+ASSESSED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+SHEET = "Utility Conflicts"
+SOURCE_FAMILY = "ucm-workbook"
+
+
+def subject(row_number: int) -> str:
+    """The Project Record subject key one adopted source row resolves to."""
+
+    return f"{SHEET}!{row_number}"
+
+
+@dataclass
+class Rendition:
+    """One arriving document and the Source Facts captured from it."""
+
+    session: Session
+    project: Project
+    name: str
+    document: Document = field(init=False)
+    run: ExtractionRun = field(init=False)
+    _ordinal: int = field(default=0, init=False)
+
+    def __post_init__(self) -> None:
+        self.document = Document(
+            project_id=self.project.id,
+            sha256=sha256(f"{self.project.slug}:{self.name}".encode()).hexdigest(),
+            filename=self.name,
+            doc_type="matrix",
+            numbering_scheme="project-unique",
+            pages=1,
+            parse_status="parsed",
+        )
+        self.session.add(self.document)
+        self.session.flush()
+        self.run = ExtractionRun(
+            document_id=self.document.id,
+            prompt_version="packet_review_fixture_v1",
+            outcome="completed",
+            candidate_count=0,
+            page_errors=0,
+        )
+        self.session.add(self.run)
+        self.session.flush()
+        self.session.add(
+            ActiveExtractionRun(
+                document_id=self.document.id, extraction_run_id=self.run.id
+            )
+        )
+        self.session.flush()
+
+    def capture(
+        self,
+        *,
+        fact_type: str,
+        value: str,
+        subject_key: str,
+        date_value: date | None = None,
+    ) -> tuple[Fact, SourceSegment]:
+        self._ordinal += 1
+        segment = SourceSegment(
+            project_id=self.project.id,
+            document_id=self.document.id,
+            kind="spreadsheet_cell",
+            exact_text=value,
+            content_sha256=sha256(f"{uuid4().hex}:{value}".encode()).hexdigest(),
+            ordinal=self._ordinal,
+            sheet_name=SHEET,
+            cell_range=f"C{self._ordinal}",
+        )
+        self.session.add(segment)
+        self.session.flush()
+        fact = Fact(
+            project_id=self.project.id,
+            document_id=self.document.id,
+            extraction_run_id=self.run.id,
+            fact_type=fact_type,
+            subject_kind="source_row",
+            subject_key=subject_key,
+            text_value=None if date_value is not None else value,
+            date_value=date_value,
+            transformation=(
+                "iso_date_cell_v1" if date_value is not None else "trim_cell_text_v1"
+            ),
+            recorded_by="extractor:packet_review_fixture_v1",
+            content_sha256=sha256(
+                f"{uuid4().hex}:{fact_type}:{value}".encode()
+            ).hexdigest(),
+        )
+        self.session.add(fact)
+        self.session.flush()
+        self.session.add(
+            FactSource(
+                project_id=self.project.id,
+                document_id=self.document.id,
+                fact_id=fact.id,
+                source_segment_id=segment.id,
+                role="value_source",
+                ordinal=1,
+            )
+        )
+        self.session.flush()
+        return fact, segment
+
+
+def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:
+    """One accepted decision for a subject and field, at its own revision."""
+
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    revision_id = session.scalar(
+        text(
+            "insert into project_record_revisions ("
+            "project_id, command_type, human_principal, idempotency_key"
+            ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
+            " returning id"
+        ),
+        {"project_id": project.id, "key": f"baseline:{uuid4().hex[:12]}"},
+    )
+    session.execute(
+        text(
+            "insert into fact_decisions ("
+            "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
+            ") values (:project_id, :fact_id, :subject_key, :fact_type,"
+            " :revision_id, 'include')"
+        ),
+        {
+            "project_id": project.id,
+            "fact_id": fact.id,
+            "subject_key": fact.subject_key,
+            "fact_type": fact.fact_type,
+            "revision_id": revision_id,
+        },
+    )
+    session.execute(text("reset role"))
+    session.expire_all()
+    return int(revision_id)
+
+
+def register_source_row(
+    session: Session,
+    project: Project,
+    baseline: BaselineSource,
+    *,
+    row_number: int,
+    business_identity: str,
+    external_system_id: str | None = None,
+    source_url: str | None = None,
+) -> BaselineSourceRow:
+    """Append one adopted source row as the record-decision role does (#492)."""
+
+    values = {
+        "project_id": project.id,
+        "baseline_source_id": baseline.id,
+        "source_row_key": f"{SHEET}!{row_number}",
+        "sheet_name": SHEET,
+        "row_number": row_number,
+        "business_identity": business_identity,
+        "record_subject_key": subject(row_number),
+        "external_system_id": external_system_id,
+        "source_url": source_url,
+    }
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    row_id = session.scalar(
+        text(
+            "insert into project_baseline_source_rows ("
+            "project_id, baseline_source_id, source_row_key, sheet_name,"
+            " row_number, business_identity, record_subject_key,"
+            " external_system_id, source_url"
+            ") values (:project_id, :baseline_source_id, :source_row_key,"
+            " :sheet_name, :row_number, :business_identity,"
+            " :record_subject_key, :external_system_id, :source_url)"
+            " returning id"
+        ),
+        values,
+    )
+    session.execute(text("reset role"))
+    return session.get(BaselineSourceRow, int(row_id))
+
+
+def register_baseline(
+    session: Session,
+    project: Project,
+    document: Document,
+    revision_id: int,
+) -> BaselineSource:
+    """Append the adopted data-baseline identity under its own writer role."""
+
+    values = {
+        "project_id": project.id,
+        "revision_id": revision_id,
+        "document_id": document.id,
+        "content_sha256": document.sha256,
+        "byte_size": 4096,
+        "filename": document.filename,
+        "source_identity": "UCM 2026-08",
+        "customer": "Test District",
+        "source_kind": "ucm_workbook",
+        "importer_identity": "packet_review_fixture",
+        "importer_version": "v1",
+        "preview_fingerprint": sha256(b"preview").hexdigest(),
+        "adopted_by_principal": ADOPTER.subject,
+        "idempotency_key": f"adopt:{uuid4().hex[:10]}",
+    }
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    baseline_id = session.scalar(
+        text(
+            "insert into project_baseline_sources ("
+            "project_id, revision_id, document_id, content_sha256, byte_size,"
+            " filename, source_identity, customer, source_kind, worksheet_scope,"
+            " unknown_columns, coordinator_questions, operations_summary,"
+            " importer_identity, importer_version, preview_fingerprint,"
+            " adopted_by_principal, idempotency_key"
+            ") values (:project_id, :revision_id, :document_id, :content_sha256,"
+            " :byte_size, :filename, :source_identity, :customer, :source_kind,"
+            " '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb,"
+            " :importer_identity, :importer_version, :preview_fingerprint,"
+            " :adopted_by_principal, :idempotency_key)"
+            " returning id"
+        ),
+        values,
+    )
+    session.execute(text("reset role"))
+    return session.get(BaselineSource, int(baseline_id))
+
+
+def register_output_template(
+    session: Session, project: Project, *, identity: str, version: str
+) -> BaselineFormat:
+    """Register the approved output template the workbook is rendered through."""
+
+    values = {
+        "project_id": project.id,
+        "format_kind": "output_template",
+        "format_identity": identity,
+        "format_version": version,
+        "content_sha256": sha256(f"{identity}:{version}".encode()).hexdigest(),
+        "registered_by_principal": ADOPTER.subject,
+        "idempotency_key": f"format:{uuid4().hex[:10]}",
+    }
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    format_id = session.scalar(
+        text(
+            "insert into project_baseline_formats ("
+            "project_id, format_kind, format_identity, format_version,"
+            " content_sha256, registered_by_principal, idempotency_key"
+            ") values (:project_id, :format_kind, :format_identity,"
+            " :format_version, :content_sha256, :registered_by_principal,"
+            " :idempotency_key) returning id"
+        ),
+        values,
+    )
+    session.execute(text("reset role"))
+    return session.get(BaselineFormat, int(format_id))
+
+
+def support(
+    session: Session,
+    project: Project,
+    fact: Fact,
+    segment: SourceSegment,
+    *,
+    assessment: str = "supported",
+    evidence_role: str = "value_support",
+):
+    return record_support_assessment(
+        session,
+        project_id=project.id,
+        proposition=FactProposition(fact.id),
+        source_segment_ids=[segment.id],
+        evidence_role=evidence_role,
+        assessment=assessment,
+        authority=ASSESSOR,
+        assessed_at=ASSESSED_AT,
+    )
+
+
+def append_deltas(
+    session: Session,
+    project: Project,
+    rendition: Rendition,
+    *,
+    source_revision: str,
+    values: list[ProposedDeltaValues],
+    is_complete_enumerative_source: bool = True,
+    row_accounting_sealed: bool = True,
+) -> tuple[ProposedDelta, ...]:
+    return create_proposed_delta_group(
+        session,
+        project_id=project.id,
+        source_family=SOURCE_FAMILY,
+        source_revision=source_revision,
+        document_id=rendition.document.id,
+        deltas=values,
+        is_complete_enumerative_source=is_complete_enumerative_source,
+        row_accounting_sealed=row_accounting_sealed,
+    )
+
+
+def modify(
+    *,
+    subject_key: str,
+    field_name: str,
+    accepted_value: object,
+    proposed_value: object,
+    baseline_revision: int | None,
+    change_type: str = "modify",
+) -> ProposedDeltaValues:
+    return ProposedDeltaValues(
+        change_type=change_type,
+        target=ExistingSubjectTarget(subject_identity=subject_key, field=field_name),
+        accepted_value=accepted_value,
+        proposed_value=proposed_value,
+        accepted_baseline_revision=(
+            f"revision:{baseline_revision}" if baseline_revision is not None else None
+        ),
+    )
+
+
+def new_subject(
+    *, subject_key: str, fields: tuple[str, ...], baseline_revision: int | None
+) -> ProposedDeltaValues:
+    return ProposedDeltaValues(
+        change_type="add",
+        target=ProposedSubjectTarget(
+            subject_identity=subject_key, proposed_fields=fields
+        ),
+        accepted_value=None,
+        proposed_value={name: "new" for name in fields},
+        accepted_baseline_revision=(
+            f"revision:{baseline_revision}" if baseline_revision is not None else None
+        ),
+    )
+
+
+def move_accepted_value(
+    session: Session, project: Project, fact: Fact
+) -> int:
+    """Supersede the standing decision for this subject and field with a newer one.
+
+    The accepted record moving under a coordinator mid-review is the exact
+    condition #519 refuses on, so a test needs to reproduce it honestly: one
+    later revision, one new effective decision, and the predecessor marked
+    superseded rather than replaced.
+    """
+
+    values = {
+        "project_id": project.id,
+        "fact_id": fact.id,
+        "subject_key": fact.subject_key,
+        "fact_type": fact.fact_type,
+    }
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    session.execute(text("set constraints all deferred"))
+    revision_id = session.scalar(
+        text(
+            "insert into project_record_revisions ("
+            "project_id, command_type, human_principal, idempotency_key"
+            ") values (:project_id, 'resolve_delta', 'local:corrector', :key)"
+            " returning id"
+        ),
+        {"project_id": project.id, "key": f"move:{uuid4().hex[:12]}"},
+    )
+    predecessor = session.scalar(
+        text(
+            "select max(id) from fact_decisions where project_id = :project_id"
+            " and subject_key = :subject_key and fact_type = :fact_type"
+            " and superseded_by is null"
+        ),
+        values,
+    )
+    # The same order the authorized command uses: claim the successor's id,
+    # retire the predecessor against it, then insert. The partial unique index
+    # on the effective decision is not deferrable, so the other order fails.
+    successor = int(session.scalar(text("select nextval('fact_decisions_id_seq')")))
+    if predecessor is not None:
+        session.execute(
+            text("update fact_decisions set superseded_by = :successor where id = :id"),
+            {"successor": successor, "id": int(predecessor)},
+        )
+    session.execute(
+        text(
+            "insert into fact_decisions ("
+            "id, project_id, fact_id, subject_key, fact_type, revision_id,"
+            " disposition) values (:id, :project_id, :fact_id, :subject_key,"
+            " :fact_type, :revision_id, 'include')"
+        ),
+        {**values, "id": successor, "revision_id": revision_id},
+    )
+    session.execute(text("reset role"))
+    session.expire_all()
+    return int(revision_id)

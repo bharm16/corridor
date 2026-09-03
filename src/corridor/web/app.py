@@ -18,7 +18,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import secrets
-from datetime import date, datetime, timezone
+from datetime import date, datetime, time, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
@@ -396,6 +396,15 @@ from corridor.statement_scope_match import (
 )
 from corridor.evidence_investigator_shadow import observe_shadow_review
 from corridor.statement_suggestions import read_statement_suggestions
+from corridor.packet_review import (
+    ReviewScreenRefused,
+    emit_packet_opening,
+    emit_packet_surfacing,
+    packet_request,
+    read_review_items,
+    select_children,
+)
+from corridor.review_packets import resolve_review_packet
 from corridor.work_list import build_work_list
 from corridor.web.statement_forms import (
     CANDIDATE_EVIDENCE_UNAVAILABLE,
@@ -4546,6 +4555,353 @@ def coordinator_home(
     )
     session.commit()
     return response
+
+
+def get_review_clock():
+    """The instant one review request is read and decided at.
+
+    A seam rather than a call to ``datetime.now`` inside the handlers: the
+    reading's cutoff, a deferral's return date, and the decision time all come
+    from here, so a test states the moment instead of racing the wall clock
+    (ADR-0084 and #488's rule that no logical time is taken from a clock a
+    caller cannot supply).
+    """
+
+    def now() -> datetime:
+        return datetime.now(timezone.utc)
+
+    return now
+
+
+# --- The source-revision review screen (#527) -----------------------------
+#
+# One authoritative source revision is one bounded Work List item. Every
+# actionable item of the project is listed with its own project-language
+# subject and its own accounting; exactly one is opened at a time, and only the
+# opened one carries decision controls, which is how ADR-0085's "actionable in
+# exactly one packet" survives contact with a screen. Saving goes through
+# #526's atomic packet command with the coordinator's explicit child set;
+# nothing here writes.
+
+
+def _review_context(
+    session: Session,
+    project: Project,
+    *,
+    now: datetime,
+    opened_key: str,
+    selected: list[int] | None = None,
+    saved: dict | None = None,
+    refusal: dict | None = None,
+    errors: tuple = (),
+) -> dict:
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    opened = reading.item(opened_key) if opened_key else None
+    landing = opened or (reading.items[0] if reading.items else None)
+    focus = ui_primitives.focus_target(
+        refused=refusal is not None, errors=errors, saved=saved is not None
+    )
+    views = []
+    for item in reading.items:
+        is_open = opened is not None and item.item_key == opened.item_key
+        shown = select_children(item, selected) if is_open else item
+        views.append(
+            {
+                "item": shown,
+                "opened": is_open,
+                "id": (
+                    ui_primitives.FOCUS_IDS["item"]
+                    if landing is not None and item.item_key == landing.item_key
+                    else f"item-{item.ordinal}"
+                ),
+                "guidance": _review_guidance(item),
+                "counts": _review_counts(shown),
+                "open_url": (
+                    f"/review/{project.slug}?item={quote(item.item_key, safe='')}"
+                ),
+            }
+        )
+    return {
+        "project": project,
+        "items": tuple(views),
+        "reading": reading,
+        "opened": opened,
+        "focus": focus,
+        "errors": tuple(errors),
+        "saved": saved,
+        "refusal": refusal,
+        "defer_until": "",
+    }
+
+
+def _review_guidance(item) -> str:
+    """Why this item is in front of the coordinator, in one sentence."""
+
+    sentences = list(item.attention_sentences)
+    if item.held_out_words:
+        sentences.append(
+            f"it is held out of its source revision's batch because "
+            f"{item.held_out_words}"
+        )
+    if not sentences:
+        return ""
+    joined = "; ".join(sentences)
+    return f"{joined[0].upper()}{joined[1:]}."
+
+
+def _review_counts(item) -> tuple[tuple[str, object], ...]:
+    """The item's own accounting, as terms and values a screen reader reads."""
+
+    return (
+        ("Source revision", f"{item.source_family} {item.source_revision}"),
+        ("Values this revision left unchanged", item.unchanged_count),
+        ("Changes ready for decision", item.ready_count),
+        ("Selected now", item.selected_count),
+        ("Held out of this batch", item.held_out_count),
+        ("Utility Conflicts affected", len(item.subject_names)),
+        ("Fields affected", ", ".join(item.field_names) or "none"),
+    )
+
+
+@app.get("/review/{slug}", response_class=HTMLResponse)
+def review_source_changes(
+    request: Request,
+    slug: str,
+    item: str = "",
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """List every actionable item, and open the one the coordinator asked for."""
+
+    project = _project(session, slug, principal)
+    now = clock()
+    context = _review_context(session, project, now=now, opened_key=item)
+    for view in context["items"]:
+        emit_packet_surfacing(context["reading"], view["item"])
+    if context["opened"] is not None:
+        emit_packet_opening(context["reading"], context["opened"])
+    return TEMPLATES.TemplateResponse(request, "review.html", context)
+
+
+@app.post("/review/{slug}", response_class=HTMLResponse)
+def save_source_changes(
+    request: Request,
+    slug: str,
+    item_key: str = Form(...),
+    outcome: str = Form(...),
+    child: list[str] = Form(default=[]),
+    defer_until: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Decide the selected children of one item, completely or not at all (#526)."""
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    now = clock()
+    selected = [int(value) for value in child if value.strip().isdigit()]
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    item = reading.item(item_key)
+    if item is None:
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key="",
+            selected=selected,
+            refusal={
+                "heading": "This item is no longer part of the reading",
+                "detail": (
+                    "A newer source or an earlier decision changed what is open, "
+                    "so nothing was saved. Open the item again from the list below."
+                ),
+                "rows": (),
+            },
+            status_code=409,
+        )
+
+    return_date = _optional_form_date(defer_until)
+    errors = []
+    if outcome == "defer" and return_date is None:
+        errors.append(
+            ui_primitives.FieldError(
+                field_id=f"{ui_primitives.FOCUS_IDS['item']}-defer-until",
+                message="Give the date this item should come back before deferring it.",
+            )
+        )
+    if not selected:
+        errors.append(
+            ui_primitives.FieldError(
+                field_id=f"child-{item.children[0].delta_id}" if item.children else "child",
+                message="Select at least one change before saving.",
+            )
+        )
+    if errors:
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            selected=selected,
+            errors=tuple(errors),
+            status_code=400,
+        )
+
+    offered = {child.delta_id for child in item.children}
+    missing = [value for value in selected if value not in offered]
+    if missing:
+        # The reading moved under the coordinator between opening and saving.
+        # Nothing is written, the selection survives, and each change that left
+        # says why it left (#494's deterministic exits).
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            selected=selected,
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": (
+                    "Part of what you selected is no longer offered on this item, "
+                    "so the whole save was refused and the project record is "
+                    "unchanged."
+                ),
+                "rows": tuple(
+                    {
+                        "subject": f"Proposed change {value}",
+                        "detail": reading.standing_sentence(value),
+                    }
+                    for value in missing
+                ),
+            },
+            status_code=409,
+        )
+
+    try:
+        act = packet_request(
+            reading,
+            select_children(item, selected),
+            outcome=outcome,
+            principal=principal,
+            decided_at=now,
+            delta_ids=selected,
+            deferred_until=(
+                datetime.combine(return_date, time(0, 0), tzinfo=timezone.utc)
+                if return_date is not None
+                else None
+            ),
+            deferral_reason=None,
+        )
+    except ReviewScreenRefused as exc:
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            selected=selected,
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": str(exc),
+                "rows": (),
+            },
+            status_code=409,
+        )
+
+    result = resolve_review_packet(session, act)
+    if result.status != "saved":
+        return _review_render(
+            request,
+            session,
+            project,
+            now=now,
+            opened_key=item_key,
+            selected=[row.delta_id for row in result.preserved_selections],
+            refusal={
+                "heading": "Nothing was saved",
+                "detail": (
+                    "One of the changes you selected moved under this reading, so "
+                    "the whole save was refused and the project record is "
+                    "unchanged."
+                ),
+                "rows": tuple(
+                    {
+                        "subject": (
+                            f"{refused.subject_identity or 'a proposed change'}"
+                            f" — {refused.field or 'the whole row'}"
+                        ),
+                        "detail": refused.detail,
+                    }
+                    for refused in result.refusals
+                ),
+            },
+            status_code=409,
+        )
+
+    session.commit()
+    return _review_render(
+        request,
+        session,
+        project,
+        now=now,
+        opened_key="",
+        saved={
+            "heading": _review_saved_heading(outcome, len(act.children)),
+            "detail": (
+                "Project record revision "
+                f"{result.revision_id} records each decision separately."
+                if result.revision_id is not None
+                else (
+                    "This is Work List scheduling: the proposed changes stay open "
+                    "and the accepted record is unchanged."
+                )
+            ),
+        },
+        status_code=200,
+    )
+
+
+def _review_saved_heading(outcome: str, count: int) -> str:
+    noun = "change" if count == 1 else "changes"
+    return {
+        "apply": f"Applied {count} {noun}",
+        "keep_current": f"Kept the current value for {count} {noun}",
+        "defer": f"Deferred {count} {noun}",
+    }.get(outcome, f"Saved {count} {noun}")
+
+
+def _review_render(
+    request: Request,
+    session: Session,
+    project: Project,
+    *,
+    now: datetime,
+    opened_key: str,
+    selected: list[int] | None = None,
+    saved: dict | None = None,
+    refusal: dict | None = None,
+    errors: tuple = (),
+    status_code: int = 200,
+):
+    """Re-read after a write, so what the coordinator sees is what now stands."""
+
+    context = _review_context(
+        session,
+        project,
+        now=now,
+        opened_key=opened_key,
+        selected=selected,
+        saved=saved,
+        refusal=refusal,
+        errors=errors,
+    )
+    return TEMPLATES.TemplateResponse(
+        request, "review.html", context, status_code=status_code
+    )
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)

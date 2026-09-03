@@ -4,7 +4,7 @@ domain: human-work
 scope: current product
 amends:
   - ADR-0035
-migration: the four primary decisions, the dated Defer receipt, the one atomic packet transaction that commits them, and the derived reading that keys the packets and partitions every open delta exactly once exist (#519, #526, #494); the coordinator-facing presentations and the three visible consequence levels are unimplemented (#527, #528, #559).
+migration: the four primary decisions, the dated Defer receipt, the one atomic packet transaction that commits them, the derived reading that keys the packets and partitions every open delta exactly once, the shared accessible primitives, and the source-revision review screen exist (#519, #526, #494, #559, #527); the cross-source coordination screen and the three visible consequence levels are unimplemented (#528, #536).
 ---
 
 # The adopted-project Work List is a derived reading of adaptive Review Packets

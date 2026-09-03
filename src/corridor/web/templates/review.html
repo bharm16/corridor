@@ -1,0 +1,200 @@
+{% import "_primitives.html" as ui -%}
+{#
+  One authoritative source revision, reviewed as one bounded Work List item
+  (#527). Every actionable item of the project is listed with its own subject in
+  project language and its own accounting; exactly one is opened at a time, and
+  only the opened one carries decision controls, so no Proposed Delta ever grows
+  a second control (ADR-0085).
+
+  `Review Packet` is an internal name and never appears here: an item is named
+  by the source revision it came from, or by the question two sources raised.
+
+  Everything visible is rendered by `_primitives.html` or is ordinary prose, and
+  no class on this page paints a state. There is no script: the selection is
+  native checkboxes, the actions are submit buttons, and the keyboard shortcuts
+  are real `accesskey` attributes rather than hints for behaviour that is not
+  there.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>Source changes — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:60rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h3 { font-size:1rem; margin:1.2rem 0 .3rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .item { border:1px solid var(--line); border-radius:7px;
+          padding:.9rem 1.1rem; margin:1rem 0; }
+  .item dl.facts { display:grid; grid-template-columns:auto 1fr; gap:.15rem .8rem;
+                   margin:.4rem 0 .6rem; }
+  .item dl.facts dt { color:var(--muted); }
+  .item dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  button { font:inherit; padding:.4rem .7rem; border:1px solid var(--line);
+           border-radius:4px; background:#fafafa; cursor:pointer; }
+  input[type=date] { font:inherit; padding:.3rem .4rem; border:1px solid var(--line);
+                     border-radius:4px; }
+  kbd { font:11px ui-monospace, monospace; background:#f0f0f0;
+        border:1px solid var(--line); border-radius:3px; padding:0 .25rem; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>Source changes — {{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">project work &rarr;</a></span>
+</header>
+
+<main>
+  <h1>Source changes to review</h1>
+  <p class="lead">
+    Every proposed change from a source is offered here once, on exactly one item.
+    Opening an item shows what it would change.
+    Leaving an item records nothing.
+  </p>
+
+  {%- if saved %}
+  {% call ui.outcome("saved", saved.heading, focus) %}
+    <p>{{ saved.detail }}</p>
+  {% endcall %}
+  {%- endif %}
+
+  {%- if refusal %}
+  {% call ui.outcome("refused", refusal.heading, focus) %}
+    <p>{{ refusal.detail }}</p>
+    {%- if refusal.rows %}
+    {% call ui.record_table("What changed under this reading", ["Proposed change", "What moved"]) %}
+      {%- for row in refusal.rows %}
+      <tr><th scope="row">{{ row.subject }}</th><td>{{ row.detail }}</td></tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- endif %}
+    <p>Your selections are kept below. Review what moved, then save again.</p>
+  {% endcall %}
+  {%- endif %}
+
+  {{ ui.error_summary(errors, focus) }}
+
+  {%- if not items %}
+  <p{{ ui.anchor(focus_ids["item"], focus) }}>
+    No source has proposed a change to this project record.
+  </p>
+  {%- endif %}
+
+  {%- for view in items %}
+  <section class="item"{{ ui.anchor(view.id, focus) }} aria-label="{{ view.item.headline }}">
+    {{ ui.reason_presented(view.item.headline, view.guidance) }}
+
+    {{ ui.fact_list(view.counts) }}
+
+    {%- if view.opened %}
+
+    <h3>{{ label('attention_reason') }}</h3>
+    <ul>
+      {%- for sentence in view.item.attention_sentences %}
+      <li>{{ sentence }}</li>
+      {%- endfor %}
+      {%- if view.item.held_out_words %}
+      <li>Held out of this source revision's batch because {{ view.item.held_out_words }}.</li>
+      {%- endif %}
+    </ul>
+
+    <h3>What each change would do</h3>
+    {{ ui.before_after(
+         "Proposed changes from " ~ view.item.source_family ~ " " ~ view.item.source_revision,
+         view.item.before_after_rows) }}
+
+    <h3>Where each incoming value was read</h3>
+    {% call ui.record_table(
+         "The exact source behind each proposed change",
+         ["Utility Conflict", "Field", "Accepted revision", "Source", "Cited text", "External record"]) %}
+      {%- for child in view.item.children %}
+      <tr>
+        <th scope="row">{{ child.subject_name }}</th>
+        <td>{{ child.field_name }}</td>
+        <td>{{ child.accepted_revision_id if child.accepted_revision_id else not_recorded }}</td>
+        <td>
+          {%- if child.source %}{{ child.source.document_filename }}, {{ child.source.location }}
+          {%- else %}{{ not_recorded }}{% endif %}
+        </td>
+        <td>{{ child.source.exact_text if child.source and child.source.exact_text else not_recorded }}</td>
+        <td>
+          {%- if child.external_links %}
+            {%- for link in child.external_links %}
+              {%- if link.href %}<a href="{{ link.href }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
+              {%- else %}{{ link.text }}{% endif %}{% if not loop.last %}<br>{% endif %}
+            {%- endfor %}
+          {%- else %}{{ not_recorded }}{% endif %}
+        </td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+
+    <h3>What would change for the customer</h3>
+    <ul>
+      {%- for artifact in view.item.customer_artifacts %}
+      <li>{{ artifact }}</li>
+      {%- endfor %}
+    </ul>
+    <p class="quiet">Worked out by rule {{ view.item.artifact_rule_version }}.</p>
+
+    {%- if view.item.decidable %}
+    <form method="post" action="/review/{{ project.slug }}">
+      {{ csrf_field() }}
+      <input type="hidden" name="item_key" value="{{ view.item.item_key }}">
+
+      {{ ui.child_selection(
+           "child",
+           "Changes to decide in " ~ view.item.source_family ~ " " ~ view.item.source_revision,
+           view.item.selection_children,
+           described_by=view.id ~ "-scope") }}
+
+      <p class="quiet" id="{{ view.id }}-scope">
+        A change you do not select stays open and is decided later. A change
+        held out of this batch is decided on its own item.
+      </p>
+
+      {%- for child in view.item.children if not child.ready %}
+      <p>{{ ui.state(state_label("attention", child.subject_name ~ " — " ~ child.field_name ~ ": " ~ child.not_ready_reason)) }}</p>
+      {%- endfor %}
+
+      {% call ui.field(
+           view.id ~ "-defer-until",
+           "Return date for Defer",
+           "Defer leaves the change open and brings this item back on the date you give.") %}
+      <input type="date" id="{{ view.id }}-defer-until" name="defer_until"
+             value="{{ defer_until }}"
+             aria-describedby="{{ view.id }}-defer-until-hint">
+      {% endcall %}
+
+      {% call ui.sticky_actions("Decisions for " ~ view.item.headline) %}
+        <button type="submit" name="outcome" value="apply" accesskey="a">
+          {{ ui.shortcut("a", "Apply " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes")) }}
+        </button>
+        <button type="submit" name="outcome" value="keep_current" accesskey="k">
+          {{ ui.shortcut("k", "Keep current for " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes")) }}
+        </button>
+        <button type="submit" name="outcome" value="defer" accesskey="d">
+          {{ ui.shortcut("d", "Defer " ~ view.item.selected_count ~ " selected " ~ ("change" if view.item.selected_count == 1 else "changes") ~ " until the date above") }}
+        </button>
+      {% endcall %}
+    </form>
+    {%- else %}
+    <p>
+      Two retained sources answer this differently, so it is settled as its own
+      coordination question rather than as part of a source revision's batch.
+      Nothing here decides it.
+    </p>
+    {%- endif %}
+
+    {%- else %}
+    <p><a href="{{ view.open_url }}">Open this item</a></p>
+    {%- endif %}
+  </section>
+  {%- endfor %}
+</main>
