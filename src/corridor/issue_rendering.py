@@ -103,6 +103,7 @@ from corridor.models import (
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.presentation import exception_name, field_label
+from corridor.review_packet_reading import is_stale
 from corridor.support_assessments import FactProposition, current_support_assessments
 
 
@@ -1122,7 +1123,7 @@ def _unaccepted_deltas(
             state = DELTA_SUPERSEDED
         elif delta.id in deferred:
             state = DELTA_DEFERRED
-        elif _is_stale(delta, standing):
+        elif is_stale(delta, standing):
             state = DELTA_STALE
         else:
             state = DELTA_OPEN
@@ -1146,21 +1147,6 @@ def _standing_revisions(
         (value.subject_key, value.fact_type): value.revision_id
         for value in reading.accepted_values
     }
-
-
-def _is_stale(delta: ProposedDelta, standing: Mapping[tuple[str, str], int]) -> bool:
-    baseline = _baseline_revision(delta.accepted_baseline_revision)
-    if baseline is None or delta.target_field is None:
-        return False
-    current = standing.get((delta.target_subject_identity, delta.target_field))
-    return current is not None and current > baseline
-
-
-def _baseline_revision(recorded: str | None) -> int | None:
-    if not recorded or not recorded.startswith("revision:"):
-        return None
-    tail = recorded.split(":", 1)[1]
-    return int(tail) if tail.isdigit() else None
 
 
 def read_weekly_report(
