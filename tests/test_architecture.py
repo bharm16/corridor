@@ -477,6 +477,34 @@ def test_store_deletion_is_permitted_only_by_retention():
     assert delete_sites == []
 
 
+def test_a_push_binding_is_established_only_by_the_credential_boundary():
+    """A pushed delivery's customer and project come from its credential (#511).
+
+    ADR-0059's defect was that content decided the boundary. The replacement
+    holds only while the object that says "this delivery belongs to this
+    customer's project" cannot be built by whatever is reading the payload, so
+    `PushBinding` is constructed in `push_intake` alone, where the credential
+    registry is the only input."""
+
+    sites = []
+    for path in _module_paths():
+        if path.name == "push_intake.py":
+            continue
+        for node in ast.walk(_tree(path)):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            name = (
+                callee.attr
+                if isinstance(callee, ast.Attribute)
+                else getattr(callee, "id", None)
+            )
+            if name == "PushBinding":
+                sites.append(f"{path.name}:{node.lineno}")
+
+    assert sites == []
+
+
 def test_the_render_worker_has_no_database_or_storage_dependency():
     """The isolated render subprocess reads staged bytes and writes a local
     staging directory; the parent owns persistence (ADR-0079 as amended by

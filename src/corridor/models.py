@@ -323,6 +323,106 @@ class IntakeProjectIdentifier(Base):
     )
 
 
+class PushIntakeCredential(Base):
+    """One inbound alias or webhook credential bound to one customer and project.
+
+    ADR-0059 gave the deployment one address and read the project out of the
+    message; ADR-0078 replaced that with a binding declared before the bytes
+    arrive, and this row is that declaration.  A presented credential resolves
+    here first, so nothing in a payload can name the customer or project it
+    belongs to.
+
+    Only a one-way digest of the credential material is kept: connector
+    credentials live in the control plane (ADR-0079 as amended by ADR-0083),
+    and recognizing a presented credential needs nothing more than a digest.
+    The database lets a runtime capability insert a credential and revoke one,
+    and nothing else, so an alias cannot be re-pointed at another project.
+    """
+
+    __tablename__ = "push_intake_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "credential_sha256", name="uq_push_intake_credential_digest"
+        ),
+        CheckConstraint(
+            "length(btrim(customer)) > 0", name="ck_push_intake_credential_customer"
+        ),
+        CheckConstraint(
+            "channel in ('project_alias', 'shared_mailbox', 'webhook')",
+            name="ck_push_intake_credential_channel",
+        ),
+        CheckConstraint(
+            "state in ('active', 'revoked')", name="ck_push_intake_credential_state"
+        ),
+        CheckConstraint(
+            "credential_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_push_intake_credential_digest",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    customer: Mapped[str] = mapped_column(Text)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(32))
+    credential_sha256: Mapped[str] = mapped_column(String(64))
+    state: Mapped[str] = mapped_column(
+        String(16), default="active", server_default="active"
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class PushDelivery(Base):
+    """One normalized push ingress record: ADR-0083's SourceEnvelope, persisted.
+
+    A pull connector re-lists what it has not checkpointed; a push channel gets
+    one chance at each delivery, so the ledger is what makes a replay
+    idempotent.  ``idempotency_key`` is unique, and it is derived from the
+    binding's customer, project, and channel together with the transport's own
+    delivery identity and the content digest — never from anything read out of
+    the payload.
+    """
+
+    __tablename__ = "push_deliveries"
+    __table_args__ = (
+        UniqueConstraint("idempotency_key", name="uq_push_delivery_idempotency"),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_push_delivery_content_sha256",
+        ),
+        CheckConstraint(
+            "delivery_identity ~ '^[0-9a-f]{64}$'", name="ck_push_delivery_identity"
+        ),
+        CheckConstraint(
+            "idempotency_key ~ '^[0-9a-f]{64}$'", name="ck_push_delivery_idempotency"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    credential_id: Mapped[int] = mapped_column(
+        ForeignKey("push_intake_credentials.id")
+    )
+    customer: Mapped[str] = mapped_column(Text)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    channel: Mapped[str] = mapped_column(String(32))
+    external_identity: Mapped[str] = mapped_column(Text)
+    external_version: Mapped[str] = mapped_column(Text)
+    original_timestamps_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    bytes_reference: Mapped[str] = mapped_column(Text)
+    metadata_json: Mapped[dict] = mapped_column(
+        JSONB, default=dict, server_default=text("'{}'::jsonb")
+    )
+    delivery_identity: Mapped[str] = mapped_column(String(64))
+    idempotency_key: Mapped[str] = mapped_column(String(64))
+    received_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class InboundThread(Base):
     """One header-connected conversation, never reconstructed by content."""
 
@@ -347,9 +447,21 @@ class InboundMessage(Base):
     """An immutable raw inbound email and the deterministic route it received."""
 
     __tablename__ = "inbound_messages"
+    # Message identity is scoped to the project boundary (#511, ADR-0078).
+    # The same bytes, or the same Message-ID, delivered to two projects are two
+    # deliveries: a cross-project constraint would hand one customer's stored
+    # message back to another customer's alias, or let a guessed Message-ID
+    # refuse a delivery in a project the sender cannot see.
     __table_args__ = (
-        UniqueConstraint("raw_sha256"),
-        UniqueConstraint("message_id", name="uq_inbound_message_message_id"),
+        UniqueConstraint(
+            "project_id", "raw_sha256", name="uq_inbound_message_project_bytes"
+        ),
+        UniqueConstraint(
+            "project_id", "message_id", name="uq_inbound_message_project_message_id"
+        ),
+        UniqueConstraint(
+            "push_delivery_id", name="uq_inbound_message_push_delivery"
+        ),
         CheckConstraint(
             "raw_sha256 ~ '^[0-9a-f]{64}$'", name="ck_inbound_message_sha256"
         ),
@@ -379,6 +491,11 @@ class InboundMessage(Base):
     # registered document id or the exact shared-intake refusal reason.
     attachments_json: Mapped[list] = mapped_column(
         JSONB, default=list, server_default="[]"
+    )
+    # The one push delivery this message arrived on (#511). Null for a message
+    # the frozen global-address path received.
+    push_delivery_id: Mapped[int | None] = mapped_column(
+        ForeignKey("push_deliveries.id")
     )
     received_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
