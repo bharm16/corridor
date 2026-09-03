@@ -6,10 +6,10 @@ readiness a derived predicate (ADR-0002). Ask the question when you need
 the answer and it cannot be stale.
 
 `MISSING_EVIDENCE` cannot fire on a ready Dependency, and that is true by
-construction rather than by a guard: readiness requires verified evidence,
-so a ready record has some. There is a test asserting it anyway, because if
-it ever fails, readiness has become reachable some other way and that is
-worth hearing about loudly.
+construction rather than by a guard: readiness requires a supporting
+document whose Source Passage Check passed, so a ready record has one.
+There is a test asserting it anyway, because if it ever fails, readiness
+has become reachable some other way and that is worth hearing about loudly.
 """
 
 from __future__ import annotations
@@ -609,7 +609,14 @@ def _apply(
         )
 
     if not facts.has_verified_evidence and not facts.has_closure:
-        found.append(("MISSING_EVIDENCE", "no verified evidence on this record", None))
+        found.append(
+            (
+                "MISSING_EVIDENCE",
+                "no supporting document on this record passed the source "
+                "passage check",
+                None,
+            )
+        )
 
     if live:
         if facts.last_evidenced_at is None:

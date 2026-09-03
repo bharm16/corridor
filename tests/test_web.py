@@ -2381,6 +2381,54 @@ def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, proje
 # ----------------- exception pills read as facts (#117, ADR-0010)
 
 
+def test_a_constraint_page_names_the_source_passage_check_and_its_state(
+    client, session, project, document
+):
+    """ADR-0082: the mechanical flag reads as the check, never as "verified".
+
+    Two supporting documents on one Constraint, one whose cited passage is on
+    its page and one whose is not, so the page has to print both states.
+    """
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-PASSAGE-CHECK",
+        dep_type="utility_relocation",
+        title="Relocate the 12-inch main",
+    )
+    session.add(dependency)
+    session.flush()
+    session.add_all(
+        [
+            EvidenceLink(
+                dependency_id=dependency.id,
+                document_id=document.id,
+                page_no=1,
+                quote="the owner will relocate the main",
+                verified=True,
+            ),
+            EvidenceLink(
+                dependency_id=dependency.id,
+                document_id=document.id,
+                page_no=1,
+                quote="a sentence that is not on the page",
+                verified=False,
+            ),
+        ]
+    )
+    session.flush()
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}")
+
+    assert page.status_code == 200
+    assert "Source passage check" in page.text
+    assert ">Passed</span>" in page.text
+    assert ">Failed</span>" in page.text
+    # The retired word is gone from the page, and so are the yes/no cells
+    # that used to stand in for the check's state.
+    assert "unverified" not in page.text
+    assert '"pill unver">no<' not in page.text
+
+
 def test_documentation_review_labels_preserve_source_wording_and_current_mark(
     client, session, project, document
 ):
@@ -2415,6 +2463,7 @@ def test_documentation_review_labels_preserve_source_wording_and_current_mark(
     assert before.status_code == 200
     assert "Documents required for this condition" in before.text
     assert "Source passage check" in before.text
+    assert ">Passed</span>" in before.text
     assert "Not confirmed" in before.text
     assert "Mark documents sufficient" in before.text
 

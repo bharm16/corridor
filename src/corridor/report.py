@@ -285,9 +285,10 @@ def build_report(
     by_id = {r.dependency.id: r for r in rows}
     ids = tuple(by_id)
 
-    # Verified, because that is what the cell beside it says. Counting
-    # every link published "With verified evidence 2 · 100.0%" in the same
-    # document as "MISSING_EVIDENCE — no verified evidence on this record"
+    # Only links whose Source Passage Check passed, because that is what the
+    # cell beside it says. Counting every link published "With checked source
+    # passages 2 · 100.0%" in the same document as "MISSING_EVIDENCE — no
+    # supporting document on this record passed the source passage check"
     # about one of those two.
     with_evidence = {r.dependency.id for r in rows if r.verified_evidence_count}
     ready = {r.dependency.id for r in rows if r.is_ready}
@@ -460,8 +461,8 @@ def _milestone_rollup(
                 e.rule in ("OVERDUE", "DUE_SOON", "CONTRADICTION") for e in r.exceptions
             )
         ]
-        # Verified, as in the summary tile: "% evidenced" is a claim about
-        # evidence that holds, not about links that exist.
+        # A passed Source Passage Check, as in the summary tile: "% evidenced"
+        # is a claim about evidence that holds, not about links that exist.
         evidenced = [r.dependency.id for r in group if r.verified_evidence_count]
         pct = (100 * len(evidenced) / len(ids)) if ids else 0.0
         section.rows.append(

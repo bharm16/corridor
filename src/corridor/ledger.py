@@ -48,6 +48,11 @@ from corridor.models import (
     ExternalOrg,
 )
 from corridor.disputes import contradicted_fields, settled_field_names
+from corridor.locator_validation import (
+    VALID as LOCATOR_VALID,
+    evidence_link_locator_validation_status,
+    evidence_link_verified,
+)
 from corridor.operative_support import resolve_operative_support
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
@@ -61,11 +66,19 @@ class AssertionView:
     filename: str | None
     page_no: int | None
     quote: str | None
-    verified: bool
+    # The Source Passage Check for this claim's own locator (ADR-0082). A
+    # claim with no supporting document has not been checked, which the old
+    # boolean could only render as a failure.
+    locator_validation_status: str
     document_date: date | None
     text_source: str | None
     document_type: str | None
     image_available: bool
+
+    @property
+    def verified(self) -> bool:
+        """The retired flag, kept as the projection ADR-0082 defines (#458)."""
+        return evidence_link_verified(self.locator_validation_status)
 
 
 @dataclass
@@ -83,21 +96,23 @@ class FieldView:
 
     @property
     def contradicted(self) -> bool:
-        """Two or more verified assertions claiming different values.
+        """Two or more claims that passed the Source Passage Check and differ.
 
-        Only verified assertions count: an unverified claim is not evidence
-        of disagreement, it is evidence of a bad citation. `is_claim` is
-        the same predicate the engine's query applies, so this view and
-        the list page's pill cannot disagree about one record again. A
-        settled field is not a disagreement either: the sources still say
-        what they said and the record has said what it concludes.
+        Only a passed check counts: a claim whose cited passage is not in its
+        source is not evidence of disagreement, it is evidence of a bad
+        citation. `is_claim` is the same predicate the engine's query applies,
+        so this view and the list page's pill cannot disagree about one record
+        again. A settled field is not a disagreement either: the sources still
+        say what they said and the record has said what it concludes.
         """
         if self.settled:
             return False
-        verified = {
-            a.value for a in self.assertions if a.verified and is_claim(a.value)
+        checked = {
+            a.value
+            for a in self.assertions
+            if a.locator_validation_status == LOCATOR_VALID and is_claim(a.value)
         }
-        return len(verified) > 1
+        return len(checked) > 1
 
 
 @dataclass
@@ -412,7 +427,9 @@ def load_dependency(
                 filename=document.filename if document else None,
                 page_no=link.page_no if link else None,
                 quote=link.quote if link else None,
-                verified=bool(link.verified) if link else False,
+                locator_validation_status=evidence_link_locator_validation_status(
+                    link
+                ),
                 document_date=document.doc_date if document else None,
                 text_source=page.text_source if page else None,
                 document_type=document.doc_type if document else None,
@@ -541,10 +558,10 @@ def mark_satisfies(
     )
     if link is None or (link.dependency_id != dependency_id and event_scope is None):
         raise NoSuchEvidence(f"no evidence {link_id} on dependency {dependency_id}")
-    if not link.verified:
+    if evidence_link_locator_validation_status(link) != LOCATOR_VALID:
         raise UnverifiedEvidence(
-            f"evidence {link_id} is unverified; readiness cannot rest on a "
-            "quote that is not on the page"
+            "the source passage check has not passed for supporting document "
+            f"{link_id}; readiness cannot rest on a quote that is not on the page"
         )
 
     designation = session.scalar(
@@ -582,10 +599,10 @@ def mark_satisfies(
 
 
 def is_ready(session: Session, dependency_id: int) -> bool:
-    """Verified evidence that a reviewer marked as meeting the bar.
+    """A passed Source Passage Check that a reviewer marked as meeting the bar.
 
-    Both halves are required. `verified` alone means the quote is really on
-    the page; it says nothing about whether the quote closes anything.
+    Both halves are required. A passed check alone means the quote is really
+    on the page; it says nothing about whether the quote closes anything.
     """
     return resolve_operative_support(session, [dependency_id])[dependency_id].is_ready
 
