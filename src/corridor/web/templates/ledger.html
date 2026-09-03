@@ -1,8 +1,9 @@
+{% import "_primitives.html" as ui -%}
 <!doctype html>
 <meta charset="utf-8">
 <title>Constraints — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
+  :root { --line:#e2e2e2; --muted:#666; }
   * { box-sizing:border-box; }
   body { font:14px/1.5 system-ui, sans-serif; margin:0; color:#111; background:#fff; }
   header { display:flex; justify-content:space-between; align-items:baseline;
@@ -20,18 +21,17 @@
   td { border-bottom:1px solid #f0f0f0; padding:.35rem .5rem; vertical-align:top; }
   td a { color:#06c; text-decoration:none; font-variant-numeric:tabular-nums; }
   .num { font-variant-numeric:tabular-nums; color:var(--muted); }
-  .pill { font-size:.72rem; padding:.05rem .4rem; border-radius:10px; border:1px solid var(--line); }
-  /* A date past its mark reads as late without a second column saying so.
-     Colour is the only signal here and it never reorders anything. */
+  /* A date past its mark used to read as late by colour and weight alone,
+     which said nothing in print, in greyscale, or aloud. Every state on this
+     page is now named by the shared primitives, which print the words first
+     and use colour only to repeat them (#559). Lateness still reorders
+     nothing (ADR-0010). */
   .due { color:var(--muted); font-size:.78rem; margin-left:.25rem; }
-  .late { color:var(--bad); font-weight:600; }
-  .ready { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
-  .notready { color:var(--muted); }
-  .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
   .count { color:var(--muted); font-variant-numeric:tabular-nums; }
-  .exc { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
   .excs { display:flex; gap:.25rem; flex-wrap:wrap; }
+  .empty { color:var(--muted); padding:1.5rem 0; }
 </style>
+{{ ui.styles() }}
 
 <header>
   <b>Constraints — {{ project.name }}</b>
@@ -91,11 +91,11 @@
           <td><a href="/ledger/{{ project.slug }}/{{ r.dependency.id }}">{{ r.dependency.ref_code }}</a></td>
           <td class="num">{{ r.dependency.source_ref or '—' }}</td>
           <td>{{ r.org_name or '—' }}
-            {%- if r.contradicted %} <span class="pill contra">sources disagree</span>{% endif %}</td>
+            {%- if r.contradicted %} {{ ui.state(sources_disagree) }}{% endif %}</td>
           <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
           <td>{{ resolution_strategy_label(r.dependency.resolution_strategy) if r.dependency.resolution_strategy else '—' }}</td>
           <td>
-            <span class="pill {{ 'ready' if r.is_ready else 'notready' }}">{{ documentation_review_label(r.is_ready) }}</span>
+            {{ ui.state(documentation_review_state(r.is_ready)) }}
             {% for c in r.open_conditions %}
               <div class="muted">waiting on: <span class="q">“{{ c.condition_text }}”</span>
                 <a href="/page-image/{{ c.document_id }}/{{ c.page_no }}">letter</a></div>
@@ -110,15 +110,17 @@
             {%- if r.dependency.next_action -%}
               {{ r.dependency.next_action }}
               {%- if r.dependency.action_due_date %}
-                <span class="due {% if r.dependency.action_due_date < today %}late{% endif %}">by {{ r.dependency.action_due_date }}</span>
+                <span class="due">by {{ r.dependency.action_due_date }}</span>
+                {{ ui.state(next_action_overdue(r.dependency.action_due_date, today=today)) }}
               {%- endif -%}
             {%- else -%}—{%- endif -%}
           </td>
           <td class="num">
             {%- if r.committed_date -%}
-              <span class="{% if r.dependency.need_date and r.committed_date > r.dependency.need_date %}late{% endif %}">{{ r.committed_date }}</span>
+              {{ r.committed_date }}
+              {{ ui.state(promised_after_required(r.committed_date, r.dependency.need_date)) }}
               {%- if r.committed_event and r.committed_event.source_kind == 'verbal' %}
-                <span class="pill contra">{{ provenance_label('verbal') }} · {{ r.committed_event.created_by }} {{ r.committed_event.event_date }}</span>
+                {{ ui.state(state_label('neutral', provenance_label('verbal') ~ ' · ' ~ r.committed_event.created_by ~ ' ' ~ r.committed_event.event_date)) }}
               {%- endif -%}
             {%- else -%}—{%- endif -%}
           </td>
@@ -128,14 +130,13 @@
             {#- Preserve the engine's filing order; this view does not invent
                 cross-category priority (ADR-0010). #}
             {%- for e in r.exceptions %}
-              <span class="pill exc"
-                    title="Technical detail: {{ e.detail }}">{{ e.label }}</span>
+              <span title="Technical detail: {{ e.detail }}">{{ ui.state(state_label('attention', e.label)) }}</span>
             {%- else %}<span class="muted">—</span>{% endfor %}
             </span>
           </td>
         </tr>
       {% else %}
-        <tr><td colspan="11" style="color:var(--muted);padding:1.5rem 0">
+        <tr><td colspan="11" class="empty">
           Nothing matches these filters.</td></tr>
       {% endfor %}
     </tbody>

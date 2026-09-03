@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 import importlib.util
+import re
 import sys
 from collections import defaultdict
 from pathlib import Path
@@ -645,3 +646,186 @@ def test_released_policy_sources_are_outside_executable_migration_history():
         "the executable graph is one consolidated baseline plus the "
         "transitions src/corridor/migrations/policy.py records"
     )
+
+
+# --- Shared coordinator-screen presentation (#559) ---------------------------
+#
+# The Constraint log used to mark a late date in colour and font weight alone
+# and said so in a comment beside the rule. That is invisible in print, in
+# greyscale, and to a screen reader, and every new review screen was about to
+# copy it. The rule below is mechanical: in a template that shares the
+# primitives, a class may paint with grey — structure and de-emphasis — but a
+# chromatic colour means state, and state belongs to the primitives, which
+# always print their own words.
+
+TEMPLATE_ROOT = SOURCE_ROOT / "web" / "templates"
+PRIMITIVES_TEMPLATE = TEMPLATE_ROOT / "_primitives.html"
+
+_STYLE_BLOCK = re.compile(r"<style[^>]*>(.*?)</style>", re.S)
+_CSS_COMMENT = re.compile(r"/\*.*?\*/", re.S)
+_CSS_RULE = re.compile(r"([^{}]+)\{([^{}]*)\}")
+_SELECTOR_CLASS = re.compile(r"\.([A-Za-z_][\w-]*)")
+_CSS_VAR = re.compile(r"var\(\s*(--[\w-]+)\s*[^)]*\)")
+_HEX_COLOUR = re.compile(r"#([0-9a-fA-F]{3,8})\b")
+_RGB_COLOUR = re.compile(r"rgba?\(([^)]*)\)")
+_INLINE_STYLE = re.compile(r'style\s*=\s*"([^"]*)"')
+
+# Properties that can paint. A shorthand such as `border` is included because
+# it carries a colour in its value.
+_COLOUR_PROPERTIES = (
+    "color",
+    "background",
+    "border",
+    "outline",
+    "box-shadow",
+    "fill",
+    "stroke",
+)
+# Sub-properties whose names begin with a painting property but that never
+# carry a colour themselves.
+_NON_PAINTING_PROPERTIES = (
+    "border-collapse",
+    "border-radius",
+    "border-spacing",
+    "border-style",
+    "border-width",
+    "background-attachment",
+    "background-clip",
+    "background-origin",
+    "background-position",
+    "background-repeat",
+    "background-size",
+    "outline-offset",
+    "outline-style",
+    "outline-width",
+)
+# Values that name no colour at all.
+_COLOURLESS_WORDS = frozenset(
+    {"none", "inherit", "initial", "unset", "transparent", "currentcolor",
+     "white", "black", "solid", "dashed", "dotted", "auto"}
+)
+
+
+def _is_chromatic(value: str, variables: dict[str, str]) -> bool:
+    """True when a declaration paints with anything but a grey."""
+    seen = set()
+    while True:
+        match = _CSS_VAR.search(value)
+        if match is None or match.group(1) in seen:
+            break
+        seen.add(match.group(1))
+        value = value.replace(match.group(0), variables.get(match.group(1), ""))
+    for digits in _HEX_COLOUR.findall(value):
+        if len(digits) in (3, 4):
+            digits = "".join(digit * 2 for digit in digits)
+        channels = tuple(
+            int(digits[index : index + 2], 16) for index in range(0, 6, 2)
+        )
+        if len(set(channels)) > 1:
+            return True
+    for arguments in _RGB_COLOUR.findall(value):
+        channels = [part.strip() for part in re.split(r"[,/\s]+", arguments) if part]
+        numbers = [part for part in channels[:3] if re.fullmatch(r"\d+", part)]
+        if len(numbers) == 3 and len(set(numbers)) > 1:
+            return True
+    words = {
+        word
+        for word in re.findall(r"[A-Za-z][A-Za-z-]*", _HEX_COLOUR.sub("", value))
+        if not word.endswith("px") and not word.startswith("--")
+    }
+    return bool(words - _COLOURLESS_WORDS - {"var"})
+
+
+def _style_sheets(markup: str) -> str:
+    return _CSS_COMMENT.sub(" ", "\n".join(_STYLE_BLOCK.findall(markup)))
+
+
+def _chromatic_classes(markup: str) -> set[str]:
+    css = _style_sheets(markup)
+    variables: dict[str, str] = {}
+    for _, body in _CSS_RULE.findall(css):
+        for declaration in body.split(";"):
+            name, _, value = declaration.partition(":")
+            if name.strip().startswith("--"):
+                variables[name.strip()] = value.strip()
+    painted: set[str] = set()
+    for selector, body in _CSS_RULE.findall(css):
+        classes = set(_SELECTOR_CLASS.findall(selector))
+        if not classes:
+            continue
+        for declaration in body.split(";"):
+            name, separator, value = declaration.partition(":")
+            name = name.strip().lower()
+            if not separator or not name.startswith(_COLOUR_PROPERTIES):
+                continue
+            if name.startswith(_NON_PAINTING_PROPERTIES):
+                continue
+            if _is_chromatic(value, variables):
+                painted |= classes
+    return painted
+
+
+def _shared_templates() -> tuple[Path, ...]:
+    shared = [PRIMITIVES_TEMPLATE]
+    shared.extend(
+        path
+        for path in sorted(TEMPLATE_ROOT.glob("*.html"))
+        if path != PRIMITIVES_TEMPLATE
+        and PRIMITIVES_TEMPLATE.name in path.read_text(encoding="utf-8")
+    )
+    return tuple(shared)
+
+
+def test_shared_templates_exist_and_include_the_first_consumer():
+    """The check is worthless if it silently covers nothing."""
+    names = {path.name for path in _shared_templates()}
+
+    assert PRIMITIVES_TEMPLATE.name in names
+    assert "ledger.html" in names
+
+
+def test_no_shared_template_conveys_state_by_colour_alone():
+    from corridor.web.ui_primitives import STATE_CLASSES
+
+    offenders: dict[str, list[str]] = {}
+    for path in _shared_templates():
+        markup = path.read_text(encoding="utf-8")
+        painted = _chromatic_classes(markup)
+        if path == PRIMITIVES_TEMPLATE:
+            painted -= STATE_CLASSES
+        if painted:
+            offenders[path.name] = sorted(painted)
+        inline = [
+            style
+            for style in _INLINE_STYLE.findall(_STYLE_BLOCK.sub("", markup))
+            if any(
+                part.strip().lower().startswith(_COLOUR_PROPERTIES)
+                and not part.strip().lower().startswith(_NON_PAINTING_PROPERTIES)
+                for part in style.split(";")
+            )
+        ]
+        if inline:
+            offenders.setdefault(path.name, []).extend(sorted(inline))
+
+    assert offenders == {}, (
+        "a shared template paints state itself instead of rendering it through "
+        "the primitives, which print the state's own words"
+    )
+
+
+def test_every_declared_state_class_is_defined_by_the_primitives():
+    """The registry the check trusts stays tied to the stylesheet it names."""
+    from corridor.web.ui_primitives import STATE_CLASSES
+
+    defined = set(
+        _SELECTOR_CLASS.findall(
+            " ".join(
+                selector
+                for selector, _ in _CSS_RULE.findall(
+                    _style_sheets(PRIMITIVES_TEMPLATE.read_text(encoding="utf-8"))
+                )
+            )
+        )
+    )
+
+    assert STATE_CLASSES <= defined

@@ -145,7 +145,7 @@ for everything else.
 | ADR | Title | Scope | Supersedes | Amends | Amended by | Citing modules | Unresolved migration |
 |---|---|---|---|---|---|---|---|
 | [ADR-0047](0047-domain-language-follows-researched-construction-practice.md) | Domain language follows researched construction practice | current product | — | — | — | — | — |
-| [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md) | Complete glossary adoption preserves record and source identity | current product | — | — | — | `locator_validation`, `milestones`, `presentation`, `statement_coordination`, `work_decisions` | — |
+| [ADR-0048](0048-complete-glossary-adoption-preserves-record-and-source-identity.md) | Complete glossary adoption preserves record and source identity | current product | — | — | — | `locator_validation`, `milestones`, `presentation`, `statement_coordination`, `web.ui_primitives`, `work_decisions` | — |
 
 ### migration
 

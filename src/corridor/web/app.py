@@ -75,6 +75,7 @@ from corridor.telemetry import (
 )
 from corridor import access
 from corridor.web import auth
+from corridor.web import ui_primitives
 from corridor.check_configuration import (
     SUPPORTED_THRESHOLDS,
     InvalidCheckConfiguration,
@@ -438,6 +439,9 @@ TEMPLATES.env.globals.update(
     source_passage_check_label=source_passage_check_label,
     csrf_field=_csrf_field,
 )
+# The shared accessibility primitives (#559): state and consequence words, the
+# before-and-after reading, and the one focus target per response.
+ui_primitives.register(TEMPLATES.env)
 app = FastAPI(title="Corridor — coordination records")
 # Configured where the process is defined rather than in an entry point, so
 # every way this application is served — uvicorn, a test client, a smoke
@@ -2846,6 +2850,12 @@ def _key_dates_context(session: Session, project: Project, **overrides) -> dict:
         "draft_receipt_id": "",
     }
     context.update(overrides)
+    # One element per response takes focus: a refusal, then a completed
+    # import, then the reading itself (#559).
+    context["focus"] = ui_primitives.focus_target(
+        refused=bool(context["error"] or context["stale"]),
+        saved=bool(context["message"]),
+    )
     return context
 
 
