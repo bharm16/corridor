@@ -18,14 +18,15 @@ jobs:
     # Sharded across runners: the job is CPU-bound on one four-core runner,
     # so the only remaining lever is more actual CPU (#548). Every test file
     # lands in exactly one shard, which scripts/test_shard.py proves.
-    # Four, not six. Six was measured and the shards themselves were faster,
-    # but ten concurrent test jobs saturated this account's package downloads
-    # and two jobs stalled for minutes inside pytest. Runner count is bounded
-    # by what the account will actually serve at once, not by the partition.
+    # Five, not six. Six put twelve jobs on this account at once, saturated
+    # its package downloads, and two jobs stalled for minutes inside pytest.
+    # Runner count is bounded by what the account will serve concurrently,
+    # not by what the partition can divide, so it is raised one step at a
+    # time and measured.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -68,7 +69,7 @@ jobs:
       # restored uv cache either (#548).
       - run: uv sync --project workers/render --frozen
       - run: uv run alembic upgrade head
-      - run: make test-shard SHARDS=4 SHARD=${{ matrix.shard }}
+      - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
 
   slow:
     # Sharded for the same reason as pytest (#548).
