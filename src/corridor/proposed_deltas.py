@@ -13,7 +13,9 @@ This module implements the Proposed Delta layer:
 2. Immutable Occurrence + Derived Live State:
    - ``ProposedDelta`` is an immutable occurrence.
    - ``DeltaGroup`` binds one atomic source change for source lineage and lifecycle.
-   - ``DeltaDisposition`` records semantic resolution (accept, edit, reject).
+   - ``DeltaDisposition`` records semantic resolution (accept, edit, reject);
+     it is written only by ``delta_resolution`` through the record-decision
+     role's command (#519), never from here.
    - ``DeltaSupersession`` links an old occurrence to a newer one from the same lineage.
    - ``DeltaDeferral`` records attributable Work List scheduling with a wake condition;
      it leaves the delta open and writes no Project Record revision (ADR-0035).
@@ -41,7 +43,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import (
@@ -321,35 +323,6 @@ def query_live_deltas(
     return tuple(deltas)
 
 
-def record_delta_disposition(
-    session: Session,
-    *,
-    project_id: int,
-    delta_id: int,
-    disposition: str,
-    decided_at: datetime,
-    decided_by_principal: str | None = None,
-    decided_by_policy: str | None = None,
-    rationale: str | None = None,
-    effective_value: Any | None = None,
-) -> DeltaDisposition:
-    """Record semantic resolution (accept, edit, reject)."""
-
-    row = DeltaDisposition(
-        project_id=project_id,
-        delta_id=delta_id,
-        disposition=disposition,
-        decided_at=decided_at,
-        decided_by_principal=decided_by_principal,
-        decided_by_policy=decided_by_policy,
-        rationale=rationale,
-        effective_value=effective_value,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 def record_delta_supersession(
     session: Session,
     *,
@@ -382,17 +355,26 @@ def record_delta_deferral(
     wake_condition: str | None = None,
     reason: str | None = None,
 ) -> DeltaDeferral:
-    """Schedule delta on Work List with wake condition (delta remains open)."""
+    """Schedule delta on Work List with wake condition (delta remains open).
 
-    row = DeltaDeferral(
-        project_id=project_id,
-        delta_id=delta_id,
-        deferred_at=deferred_at,
-        deferred_until=deferred_until,
-        wake_condition=wake_condition,
-        scheduled_by_principal=scheduled_by_principal,
-        reason=reason,
+    The receipt is written by ``defer_proposed_delta``, the record-decision
+    role's command (#519): the runtime capabilities hold no write on
+    ``delta_deferrals`` and a guard trigger refuses one that does not arrive
+    through the command.
+    """
+
+    deferral_id = session.scalar(
+        select(
+            func.defer_proposed_delta(
+                project_id,
+                delta_id,
+                scheduled_by_principal,
+                deferred_at,
+                deferred_until,
+                wake_condition,
+                reason,
+            )
+        )
     )
-    session.add(row)
-    session.flush()
-    return row
+    session.expire_all()
+    return session.get_one(DeltaDeferral, int(deferral_id))

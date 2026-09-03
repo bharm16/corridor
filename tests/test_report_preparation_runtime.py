@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import datetime, timedelta, timezone
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
@@ -31,14 +32,29 @@ from corridor.due_work import (
     enqueue_due_work,
     run_due_work_once,
 )
-from corridor.models import DueWorkSchedule, Project
+from corridor.delta_resolution import (
+    ChildDecisionRequest,
+    RecordEffect,
+    resolve_delta,
+)
+from corridor.models import (
+    ActiveExtractionRun,
+    DueWorkSchedule,
+    ExtractionRun,
+    Document,
+    Fact,
+    FactSource,
+    Project,
+    SourceSegment,
+)
+from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
     ProposedDeltaValues,
     create_proposed_delta_group,
     record_delta_deferral,
-    record_delta_disposition,
 )
+from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
 
 
@@ -48,6 +64,125 @@ class ControlledClock:
 
     def now(self) -> datetime:
         return self.value
+
+
+COORDINATOR = HumanPrincipal("local:coordinator")
+
+
+def _supported_fact(session, project_id: int, subject: str, value: str):
+    """One captured Source Fact for a subject, with its value support.
+
+    A #519 accept names the Source Fact it makes effective and the effective
+    Support Assessment it relied on, so a reading that counts accepted deltas
+    needs both to exist.
+    """
+
+    document = Document(
+        project_id=project_id,
+        sha256=sha256(f"{project_id}:{subject}:{value}".encode()).hexdigest(),
+        filename=f"{subject}.xlsx",
+        doc_type="matrix",
+        numbering_scheme="project-unique",
+        pages=1,
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    run = ExtractionRun(
+        document_id=document.id,
+        prompt_version="report_preparation_fixture_v1",
+        outcome="completed",
+        candidate_count=0,
+        page_errors=0,
+    )
+    session.add(run)
+    session.flush()
+    session.add(
+        ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id)
+    )
+    segment = SourceSegment(
+        project_id=project_id,
+        document_id=document.id,
+        kind="spreadsheet_cell",
+        exact_text=value,
+        content_sha256=sha256(value.encode()).hexdigest(),
+        ordinal=1,
+        sheet_name="Utility Conflicts",
+        cell_range="A2",
+    )
+    session.add(segment)
+    session.flush()
+    fact = Fact(
+        project_id=project_id,
+        document_id=document.id,
+        extraction_run_id=run.id,
+        fact_type="station_from",
+        subject_kind="source_row",
+        subject_key=subject,
+        text_value=value,
+        transformation="trim_cell_text_v1",
+        recorded_by="extractor:report_preparation_fixture_v1",
+        content_sha256=sha256(f"{subject}:{value}".encode()).hexdigest(),
+    )
+    session.add(fact)
+    session.flush()
+    session.add(
+        FactSource(
+            project_id=project_id,
+            document_id=document.id,
+            fact_id=fact.id,
+            source_segment_id=segment.id,
+            role="value_source",
+            ordinal=1,
+        )
+    )
+    session.flush()
+    assessment = record_support_assessment(
+        session,
+        project_id=project_id,
+        proposition=FactProposition(fact.id),
+        source_segment_ids=[segment.id],
+        evidence_role="value_support",
+        assessment="supported",
+        authority=COORDINATOR,
+        assessed_at=datetime(2026, 9, 1, tzinfo=timezone.utc),
+    )
+    return fact, assessment
+
+
+def _accept(session, project_id: int, delta, subject: str, value: str, at):
+    fact, assessment = _supported_fact(session, project_id, subject, value)
+    outcome = resolve_delta(
+        session,
+        ChildDecisionRequest(
+            project_id=project_id,
+            delta_id=delta,
+            action="accept",
+            principal=COORDINATOR,
+            idempotency_key=f"accept:{delta}",
+            decided_at=at,
+            record_effects=(RecordEffect(fact_id=fact.id),),
+            support_assessment_ids=(assessment.id,),
+        ),
+    )
+    assert outcome.status == "resolved", outcome.refusal
+    return outcome
+
+
+def _reject(session, project_id: int, delta, at):
+    outcome = resolve_delta(
+        session,
+        ChildDecisionRequest(
+            project_id=project_id,
+            delta_id=delta,
+            action="reject",
+            principal=COORDINATOR,
+            idempotency_key=f"reject:{delta}",
+            decided_at=at,
+        ),
+    )
+    assert outcome.status == "resolved", outcome.refusal
+    return outcome
 
 
 def _accepted_revision(session, project_id: int, key: str) -> int:
@@ -136,14 +271,15 @@ def test_the_first_reading_separates_resolved_deferred_and_open(runtime_database
         resolved = _delta(writing, project_id, "UC-1", "1200+00", revision)
         deferred = _delta(writing, project_id, "UC-2", "1300+00", revision)
         _delta(writing, project_id, "UC-3", "1400+00", revision)
-        record_delta_disposition(
+        accepted = _accept(
             writing,
-            project_id=project_id,
-            delta_id=resolved.id,
-            disposition="accept",
-            decided_at=now - timedelta(minutes=5),
-            decided_by_principal="local:coordinator",
+            project_id,
+            resolved.id,
+            "UC-1",
+            "1200+00",
+            now - timedelta(minutes=5),
         )
+        accepted_revision = accepted.revision_id
         record_delta_deferral(
             writing,
             project_id=project_id,
@@ -166,7 +302,10 @@ def test_the_first_reading_separates_resolved_deferred_and_open(runtime_database
     assert body["window_start"] == ""
     assert body["through_delta_id"] > 0
     assert body["through_disposition_id"] > 0
-    assert body["accepted_revision_id"] == revision
+    # Accepting a delta writes the next Project Record revision (#519), so the
+    # reading stands on that one rather than on the adopted baseline.
+    assert accepted_revision > revision
+    assert body["accepted_revision_id"] == accepted_revision
     assert body["proposed_new"] == 3
     assert body["resolved_accepted"] == 1
     assert body["resolved_edited"] == 0
@@ -199,14 +338,7 @@ def test_the_next_weekly_reading_covers_only_the_week_since_the_last(
 
     later = now + timedelta(days=7)
     with factory() as writing:
-        record_delta_disposition(
-            writing,
-            project_id=project_id,
-            delta_id=first_id,
-            disposition="reject",
-            decided_at=later - timedelta(days=1),
-            decided_by_principal="local:coordinator",
-        )
+        _reject(writing, project_id, first_id, later - timedelta(days=1))
         writing.commit()
 
     second = _run(factory, later)
@@ -251,13 +383,13 @@ def test_the_window_is_a_watermark_and_not_a_clock_comparison(runtime_database):
     # One more proposal and one resolution land after that retained reading.
     with factory() as writing:
         _delta(writing, project_id, "UC-2", "1300+00", revision)
-        record_delta_disposition(
+        _accept(
             writing,
-            project_id=project_id,
-            delta_id=first_id,
-            disposition="accept",
-            decided_at=now + timedelta(days=3),
-            decided_by_principal="local:coordinator",
+            project_id,
+            first_id,
+            "UC-1",
+            "1200+00",
+            now + timedelta(days=3),
         )
         writing.commit()
 

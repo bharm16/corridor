@@ -23,9 +23,10 @@ from corridor.proposed_deltas import (
     derive_live_delta_state,
     query_live_deltas,
     record_delta_deferral,
-    record_delta_disposition,
     record_delta_supersession,
 )
+from corridor.delta_resolution import ChildDecisionRequest, resolve_delta
+from corridor.principals import HumanPrincipal
 
 
 @pytest.fixture
@@ -144,20 +145,25 @@ def test_immutable_occurrence_and_derived_live_state(
     assert state.status == "deferred"
     assert state.wake_condition == "next_monthly_utility_meeting"
 
-    # Disposition marks state as resolved
-    record_delta_disposition(
+    # A semantic disposition marks state as resolved. It is written only by
+    # the record-decision role's command (#519), never from this module.
+    outcome = resolve_delta(
         session,
-        project_id=test_project.id,
-        delta_id=delta.id,
-        disposition="accept",
-        decided_at=datetime.now(timezone.utc),
-        decided_by_principal="coordinator-jane",
-        rationale="Verified with field inspector",
+        ChildDecisionRequest(
+            project_id=test_project.id,
+            delta_id=delta.id,
+            action="reject",
+            principal=HumanPrincipal("local:jane"),
+            idempotency_key=f"resolve:{delta.id}",
+            decided_at=datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc),
+            rationale="the accepted station stands",
+        ),
     )
+    assert outcome.status == "resolved"
 
     state = derive_live_delta_state(session, delta.id)
     assert state.status == "resolved"
-    assert state.disposition == "accept"
+    assert state.disposition == "reject"
 
 
 def test_coalescing_follows_source_lineage(

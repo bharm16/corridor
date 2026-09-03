@@ -4,7 +4,7 @@ domain: human-work
 scope: current product
 amends:
   - ADR-0035
-migration: no Review Packet exists; the adaptive keying, the three visible consequence levels, the four primary decisions, and the Defer receipt are unimplemented (#494, #526, #527, #528).
+migration: the dated Defer receipt and the semantic dispositions behind three of the four primary decisions exist (#519); no Review Packet exists, and the adaptive keying, the three visible consequence levels, and Needs coordination are unimplemented (#494, #526, #527, #528).
 ---
 
 # The adopted-project Work List is a derived reading of adaptive Review Packets
