@@ -117,8 +117,9 @@ Complete.
 1. #428 buyer, budget, sponsor, procurement, and pricing validation. *(Not a
    code gate; it decides whether there is a pilot to run.)* #555 observes and
    prototype-tests real weekly closes before the production screens lock;
-   #556 records the primary-source incumbent evidence now, so #486's
-   synthesis in Phase 3 waits only on the interview findings. #560 decides
+   #556 recorded the primary-source incumbent evidence in
+   [docs/research/adr-0075-incumbent-evidence-2026-09-02.md](docs/research/adr-0075-incumbent-evidence-2026-09-02.md),
+   so #486's synthesis in Phase 3 waits only on the interview findings. #560 decides
    the release artifact contract from #555's observations.
 2. #492 least-privileged database write authority — the first substantive code
    PR. Separate deployment credentials, NOLOGIN function owners, no PUBLIC
