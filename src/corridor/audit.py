@@ -157,6 +157,13 @@ CONFIRM_SOURCE_INTAKE = "confirm_source_intake"
 # not produce, and rather than a new table because it is a receipt of one
 # attributable act and nothing reads it as authority.
 CAPTURE_LATER_SOURCE_REVISION = "capture_later_source_revision"
+# One Key Date table was captured as Source Facts and Proposed Deltas (#450).
+# The entry carries the complete row accounting — every populated row, the key
+# date it resolved to, and every row that did not complete the reading contract
+# — together with the impact Derivation of each appended delta, which
+# `proposed_deltas` has no column for and which is a computed consequence
+# rather than a fact about the record (ADR-0082).
+CAPTURE_KEY_DATE_TABLE = "capture_key_date_table"
 # A person authorized one discovered reference for processing, declaring the
 # document kind the observed bytes cannot state (#350). Discovery only proposes;
 # this attributable act is what lets the fetch pass register the reference.
@@ -233,6 +240,7 @@ ACTIONS = frozenset(
         ENROLL_PROJECT_MEMBER,
         CONFIRM_SOURCE_INTAKE,
         CAPTURE_LATER_SOURCE_REVISION,
+        CAPTURE_KEY_DATE_TABLE,
         AUTHORIZE_DISCOVERED_REFERENCE,
         RECOVER_DOCUMENT_PARSE,
         AUTHORIZE_DEPENDENCY_ADMISSION,
