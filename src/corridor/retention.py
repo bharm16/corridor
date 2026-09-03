@@ -279,13 +279,20 @@ def plan_retention(
     *,
     as_of: datetime,
     principal: HumanPrincipal,
+    project_id: int | None = None,
 ) -> RetentionManifest:
-    """Persist the exact dry-run candidate list and every content digest."""
+    """Persist the exact dry-run candidate list and every content digest.
+
+    `project_id` narrows the candidate list to one project. A Due Work
+    schedule is declared per project (`retention_sweep`), so a scheduled sweep
+    must be able to plan its own project's expiry without listing another's;
+    omitting it keeps the operator command's whole-database scope.
+    """
 
     actor = require_human_principal(principal).subject
     candidates: list[dict] = []
     for spec in FAMILY_SPECS:
-        for row in _due_rows(session, spec, as_of):
+        for row in _due_rows(session, spec, as_of, project_id):
             if _active_hold(session, row["project_id"]):
                 continue
             refs = _open_references(session, spec.family, row["id"])
@@ -308,14 +315,16 @@ def plan_retention(
                     "delete_after": row["completed_at"] + timedelta(days=CLASS_B_DAYS),
                 }
             )
-    for artifact in session.scalars(
-        select(ProcessingArtifact).where(
-            ProcessingArtifact.retention_class == "class_b",
-            ProcessingArtifact.deleted_at.is_(None),
-            ProcessingArtifact.terminal_at
-            <= as_of - timedelta(days=CLASS_B_DAYS),
+    artifact_query = select(ProcessingArtifact).where(
+        ProcessingArtifact.retention_class == "class_b",
+        ProcessingArtifact.deleted_at.is_(None),
+        ProcessingArtifact.terminal_at <= as_of - timedelta(days=CLASS_B_DAYS),
+    )
+    if project_id is not None:
+        artifact_query = artifact_query.where(
+            ProcessingArtifact.project_id == project_id
         )
-    ).all():
+    for artifact in session.scalars(artifact_query).all():
         if _active_hold(session, artifact.project_id):
             continue
         refs = _open_references(session, "processing_artifact", artifact.id)
@@ -448,17 +457,26 @@ def delete_rebuildable_page_data(session: Session) -> None:
     session.execute(text("delete from page_processing_failures"))
 
 
-def _due_rows(session: Session, spec: FamilySpec, as_of: datetime) -> list[dict]:
+def _due_rows(
+    session: Session,
+    spec: FamilySpec,
+    as_of: datetime,
+    project_id: int | None = None,
+) -> list[dict]:
     cutoff = as_of - timedelta(days=CLASS_B_DAYS)
     columns = ", ".join(spec.content_columns)
+    scope = "" if project_id is None else " and project_id = :project_id"
+    parameters: dict = {"cutoff": cutoff}
+    if project_id is not None:
+        parameters["project_id"] = project_id
     return list(
         session.execute(
             text(
                 f"select id, project_id, completed_at, {columns} from {spec.table} "
                 "where retention_class = 'class_b' and retention_deleted_at is null "
-                "and completed_at <= :cutoff"
+                f"and completed_at <= :cutoff{scope}"
             ),
-            {"cutoff": cutoff},
+            parameters,
         ).mappings()
     )
 

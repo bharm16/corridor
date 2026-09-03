@@ -371,3 +371,136 @@ def test_supervisor_honors_shutdown_before_taking_work(runtime_database, capsys)
         wait=lambda _seconds: pytest.fail("stopped supervisor must not wait"),
     ) == 0
     assert _payload(capsys) == {"command": "supervise", "completed_cycles": 0}
+
+
+def _pilot_schedule_argv(command: str, project_slug: str, *extra: str) -> list[str]:
+    """The four #488 declarations share one gate-7 envelope; only scope differs."""
+
+    weekly = command in ("configure-report-preparation", "configure-retention-sweep")
+    return [
+        command,
+        project_slug,
+        *extra,
+        "--starts-at=2026-09-03T07:00:00+00:00",
+        f"--cadence={'weekly' if weekly else 'hourly'}",
+        "--timezone=UTC",
+        "--missed-run-policy=latest_only",
+        "--retention-days=3650",
+        "--max-attempts=3",
+        "--backoff-seconds=120",
+        "--claim-ttl-seconds=900",
+        "--deadline-seconds=600",
+        "--concurrency-limit=1",
+        "--model-token-budget=0",
+        "--notification-budget=0",
+    ]
+
+
+def test_the_four_pilot_handlers_are_declared_through_the_same_command(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 9, 3, 7, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"pilot-cli-{uuid4().hex}", name="Pilot CLI", is_synthetic=True
+        )
+        setup.add(project)
+        setup.commit()
+
+    declarations = (
+        (
+            "configure-connector-polling",
+            (
+                "--configuration-version=connector-polling-v1",
+                "--customer=acme-utilities",
+                "--channel=shared-files",
+                "--connector-identity=txdot-rid-box-v1",
+                "--source-url=https://docs.example.gov/shared/index",
+            ),
+            "connector_polling",
+        ),
+        (
+            "configure-delta-generation",
+            (
+                "--configuration-version=delta-generation-v1",
+                "--comparison-rule-version=structured-cell-value-comparison-v1",
+            ),
+            "delta_generation",
+        ),
+        (
+            "configure-report-preparation",
+            ("--configuration-version=report-preparation-v1",),
+            "report_preparation",
+        ),
+        (
+            "configure-retention-sweep",
+            (
+                "--configuration-version=retention-sweep-v1",
+                "--authorized-by=local:retention-operator",
+            ),
+            "retention_sweep",
+        ),
+    )
+    for command, extra, _handler in declarations:
+        assert (
+            main(
+                _pilot_schedule_argv(command, project.slug, *extra),
+                session_factory=factory,
+                clock=clock,
+            )
+            == 0
+        )
+        assert _payload(capsys)["enabled"] is True
+
+    assert main(
+        ["status", f"--project-slug={project.slug}"],
+        session_factory=factory,
+        clock=clock,
+    ) == 0
+    status = _payload(capsys)
+    assert {job["handler"] for job in status["jobs"]} == {
+        handler for _command, _extra, handler in declarations
+    }
+    assert all(job["model_token_budget"] == 0 for job in status["jobs"])
+    assert all(job["notification_budget"] == 0 for job in status["jobs"])
+
+
+def test_an_uninstalled_connector_is_refused_without_a_schedule(
+    runtime_database, capsys
+):
+    factory = runtime_database.session_factory
+    clock = ControlledClock(datetime(2026, 9, 3, 7, 5, tzinfo=timezone.utc))
+    with factory() as setup:
+        project = Project(
+            slug=f"pilot-cli-refusal-{uuid4().hex}",
+            name="Pilot CLI Refusal",
+            is_synthetic=True,
+        )
+        setup.add(project)
+        setup.commit()
+
+    exit_code = main(
+        _pilot_schedule_argv(
+            "configure-connector-polling",
+            project.slug,
+            "--configuration-version=connector-polling-v1",
+            "--customer=acme-utilities",
+            "--channel=shared-files",
+            "--connector-identity=invented-v1",
+            "--source-url=https://docs.example.gov/shared/index",
+        ),
+        session_factory=factory,
+        clock=clock,
+    )
+
+    assert exit_code == 1
+    with factory() as verify:
+        assert (
+            verify.scalars(
+                select(DueWorkSchedule).where(
+                    DueWorkSchedule.project_id == project.id
+                )
+            ).all()
+            == []
+        )

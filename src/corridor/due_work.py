@@ -38,6 +38,7 @@ from corridor.notifications import (
     ASSIGNMENT_NOTIFICATION_HANDLER,
     DUE_ACTION_NOTIFICATION_HANDLER,
 )
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.telemetry import correlation_scope, log_event
 
 
@@ -74,6 +75,13 @@ HANDLER_REPORT_PUBLICATION = "report_publication"
 # The discovery and delivery logic and this key live in
 # ``corridor.document_notifications``; the runtime depends on that module.
 HANDLER_DOCUMENT_NOTIFICATION = DOCUMENT_NOTIFICATION_HANDLER
+# The four recurring passes a live pilot needs (#488). Each string matches its
+# lower module's ``HANDLER_KEY``; the execution lives there and the runtime
+# imports it lazily so no import cycle forms.
+HANDLER_CONNECTOR_POLLING = "connector_polling"
+HANDLER_DELTA_GENERATION = "delta_generation"
+HANDLER_REPORT_PREPARATION = "report_preparation"
+HANDLER_RETENTION_SWEEP = "retention_sweep"
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
@@ -752,6 +760,237 @@ class ReportPublicationDeclaration:
 
 
 @dataclass(frozen=True)
+class ConnectorPollingDeclaration:
+    """One validated gate-7 declaration that enables connector checkpoint polling.
+
+    Scope names the exact normalized ingress identity of #496: the customer and
+    channel that, with the project and the item's own identity and version,
+    make the delivery identity ADR-0083 fixes, plus the server-owned connector
+    the schedule may build and the one location it may reach.  Polling reads no
+    model, sends nothing, and writes only content-addressed bytes, so the model
+    and notification budgets must both be a declared zero and no destination is
+    authorized.
+    """
+
+    project_id: int
+    configuration_version: str
+    customer: str
+    channel: str
+    connector_identity: str
+    source_url: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        customer: str,
+        channel: str,
+        connector_identity: str,
+        source_url: str,
+        starts_at: datetime,
+    ) -> "ConnectorPollingDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            customer=customer,
+            channel=channel,
+            connector_identity=connector_identity,
+            source_url=source_url,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=900,
+            deadline_seconds=600,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
+class DeltaGenerationDeclaration:
+    """One validated gate-7 declaration that enables Proposed Delta generation.
+
+    Scope names the project and the comparison rule the pass appends under, so
+    a later change to how values are compared is visible on every delta rather
+    than retroactive.  The pass reads no model and appends only through the
+    source-append command, so both budgets are a declared zero, concurrency
+    stays one, and no destination is authorized: it can propose a difference
+    and can never make one effective.
+    """
+
+    project_id: int
+    configuration_version: str
+    comparison_rule_version: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        comparison_rule_version: str,
+        starts_at: datetime,
+    ) -> "DeltaGenerationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            comparison_rule_version=comparison_rule_version,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=900,
+            deadline_seconds=600,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
+class ReportPreparationDeclaration:
+    """One validated gate-7 declaration that enables the weekly change reading.
+
+    The reading counts one project's Proposed Delta lifecycle over the week and
+    writes nothing, so it is weekly rather than hourly, reads no model, and
+    authorizes no destination: what the change summary and weekly report are
+    rendered from is a reading, and releasing either stays a separate
+    designated-human act (ADR-0040, ADR-0086).
+    """
+
+    project_id: int
+    configuration_version: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+    ) -> "ReportPreparationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
+class RetentionSweepDeclaration:
+    """One validated gate-7 declaration that enables the Class B TTL sweep.
+
+    ``authorized_by`` is the named person with authority under the customer
+    relationship who authorized this standing sweep (ADR-0080).  It is a
+    ``HumanPrincipal`` subject, not a role label, and it is the actor recorded
+    on every dry-run manifest and deletion receipt the sweep produces, so an
+    automatic expiry is still attributable to somebody.  The sweep reads no
+    model and sends nothing; it is weekly because the Class B TTL is measured
+    in days, not hours.
+    """
+
+    project_id: int
+    configuration_version: str
+    authorized_by: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        authorized_by: str,
+        starts_at: datetime,
+    ) -> "RetentionSweepDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            authorized_by=authorized_by,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=300,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -1232,6 +1471,73 @@ def _report_publication_effectful(context: EffectfulContext) -> dict[str, Any]:
     )
 
 
+def _connector_polling_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Take delivery of one connected location's changes for a claimed occurrence.
+
+    The pass stores every listed change in the content-addressed store before it
+    returns, and the token it reached is retained only when the runtime completes
+    the attempt, so the checkpoint can never advance past an unstored change
+    (ADR-0083). It reads no model and holds no runtime transaction while fetching.
+    """
+
+    from corridor.connector_polling import execute_connector_polling
+
+    return execute_connector_polling(
+        context.session_factory,
+        schedule_id=context.claim.schedule_id,
+        clock=context.clock,
+    )
+
+
+def _delta_generation_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Propose one project's new differences from its accepted record (#518).
+
+    The pass commits its Proposed Deltas durably through the session factory
+    before the runtime finalizes the claim, and appends only through the
+    source-append command, so it can never write an accepted value on any path
+    and a recovered re-run appends nothing that is already there.
+    """
+
+    from corridor.delta_generation import execute_delta_generation
+
+    return execute_delta_generation(
+        context.session_factory,
+        schedule_id=context.claim.schedule_id,
+        clock=context.clock,
+    )
+
+
+def _report_preparation(
+    session: Session,
+    schedule: DueWorkSchedule,
+    observed_at: datetime,
+) -> dict[str, Any]:
+    """Read one week of Proposed Delta lifecycle for the change summary (#488)."""
+
+    from corridor.report_preparation import execute_report_preparation
+
+    return execute_report_preparation(session, schedule, observed_at)
+
+
+def _retention_sweep_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Expire one project's due Class B intermediaries for a claimed occurrence.
+
+    The manifest, the hold and reachability rechecks, and the deletion permit
+    all stay in ``corridor.retention``; this wrapper only adapts the runtime's
+    claim into that sweep. A refusal comes back as an attention reading rather
+    than an exception, so a held or still-reachable candidate is visible in the
+    receipt instead of burning the occurrence's retries.
+    """
+
+    from corridor.retention_sweep import execute_retention_sweep
+
+    return execute_retention_sweep(
+        context.session_factory,
+        schedule_id=context.claim.schedule_id,
+        clock=context.clock,
+    )
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -1363,6 +1669,58 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
                 session, declaration, now=now
             ),
             run_effectful=_report_publication_effectful,
+        ),
+        HANDLER_CONNECTOR_POLLING: HandlerContract(
+            key=HANDLER_CONNECTOR_POLLING,
+            scope_kind="one_declared_pull_connector",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=ConnectorPollingDeclaration,
+            configure=lambda session, declaration, now: configure_connector_polling(
+                session, declaration, now=now
+            ),
+            run_effectful=_connector_polling_effectful,
+        ),
+        HANDLER_DELTA_GENERATION: HandlerContract(
+            key=HANDLER_DELTA_GENERATION,
+            scope_kind="one_project_proposed_delta_generation",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=DeltaGenerationDeclaration,
+            configure=lambda session, declaration, now: configure_delta_generation(
+                session, declaration, now=now
+            ),
+            run_effectful=_delta_generation_effectful,
+        ),
+        HANDLER_REPORT_PREPARATION: HandlerContract(
+            key=HANDLER_REPORT_PREPARATION,
+            scope_kind="one_project_change_summary_reading",
+            idempotency_contract="read_only_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=ReportPreparationDeclaration,
+            configure=lambda session, declaration, now: configure_report_preparation(
+                session, declaration, now=now
+            ),
+            run=_report_preparation,
+        ),
+        HANDLER_RETENTION_SWEEP: HandlerContract(
+            key=HANDLER_RETENTION_SWEEP,
+            scope_kind="one_project_class_b_intermediaries",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=RetentionSweepDeclaration,
+            configure=lambda session, declaration, now: configure_retention_sweep(
+                session, declaration, now=now
+            ),
+            run_effectful=_retention_sweep_effectful,
         ),
     }
 )
@@ -1718,6 +2076,112 @@ def configure_report_publication(
             "prepare_external_pdf": declaration.prepare_external_pdf,
         },
         disable_same_input_only=True,
+    )
+
+
+def configure_connector_polling(
+    session: Session,
+    declaration: ConnectorPollingDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 connector-polling declaration.
+
+    Enabling a new configuration disables the project's prior schedule for this
+    exact ingress identity while retaining it for audit; a second connector or
+    a second location on the same project is a different identity and keeps its
+    own schedule and its own checkpoint.
+    """
+
+    configuration = _validated_connector_polling_declaration(declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_CONNECTOR_POLLING,
+        configuration=configuration,
+        scope=configuration["scope"],
+        input_identity={
+            "handler": HANDLER_CONNECTOR_POLLING,
+            "project_id": declaration.project_id,
+            "customer": declaration.customer,
+            "channel": declaration.channel,
+            "connector_identity": declaration.connector_identity,
+            "source_url": declaration.source_url,
+        },
+        disable_same_input_only=True,
+    )
+
+
+def configure_delta_generation(
+    session: Session,
+    declaration: DeltaGenerationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 delta-generation declaration."""
+
+    configuration = _validated_delta_generation_declaration(declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_DELTA_GENERATION,
+        configuration=configuration,
+        scope=configuration["scope"],
+        input_identity={
+            "handler": HANDLER_DELTA_GENERATION,
+            "project_id": declaration.project_id,
+            "comparison_rule_version": declaration.comparison_rule_version,
+        },
+    )
+
+
+def configure_report_preparation(
+    session: Session,
+    declaration: ReportPreparationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 report-preparation declaration."""
+
+    configuration = _validated_report_preparation_declaration(declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_REPORT_PREPARATION,
+        configuration=configuration,
+        scope=configuration["scope"],
+        input_identity={
+            "handler": HANDLER_REPORT_PREPARATION,
+            "project_id": declaration.project_id,
+            "source": "proposed_delta_lifecycle-v1",
+        },
+    )
+
+
+def configure_retention_sweep(
+    session: Session,
+    declaration: RetentionSweepDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one enabled gate-7 Class B retention-sweep declaration."""
+
+    configuration = _validated_retention_sweep_declaration(declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_RETENTION_SWEEP,
+        configuration=configuration,
+        scope=configuration["scope"],
+        input_identity={
+            "handler": HANDLER_RETENTION_SWEEP,
+            "project_id": declaration.project_id,
+            "retention_class": "class_b",
+        },
     )
 
 
@@ -3136,6 +3600,313 @@ def _validated_report_publication_declaration(
     }
 
 
+def _validated_connector_polling_declaration(
+    declaration: ConnectorPollingDeclaration,
+) -> dict[str, Any]:
+    from urllib.parse import urlparse
+
+    from corridor.connector_polling import CONNECTOR_FACTORIES
+
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("connector-polling starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _COHORT_IDENTITY.fullmatch(declaration.customer):
+        raise DueWorkRefusal("connector-polling customer identity is invalid")
+    if not _LOCATION_IDENTITY.fullmatch(declaration.channel):
+        raise DueWorkRefusal("connector-polling channel identity is invalid")
+    if not _LOCATION_IDENTITY.fullmatch(declaration.connector_identity):
+        raise DueWorkRefusal("connector-polling connector identity is invalid")
+    if declaration.connector_identity not in CONNECTOR_FACTORIES:
+        raise DueWorkRefusal("connector-polling connector is not installed")
+    parsed = urlparse(declaration.source_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not _LOCATION_HOST.fullmatch(parsed.hostname)
+        or len(declaration.source_url) > 2048
+    ):
+        raise DueWorkRefusal(
+            "connector-polling source url must be one https location"
+        )
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "connector-polling supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal("connector-polling gate-7 resource declaration is invalid")
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_CONNECTOR_POLLING,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "customer": declaration.customer,
+            "channel": declaration.channel,
+            "connector_identity": declaration.connector_identity,
+            "source_url": declaration.source_url,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "declared_pull_connector-v1",
+            "project_id": declaration.project_id,
+            "customer": declaration.customer,
+            "channel": declaration.channel,
+            "connector_identity": declaration.connector_identity,
+            "source_url": declaration.source_url,
+        },
+        # ADR-0083: the token advances only after every change up to it is in
+        # the content-addressed store under its digest. The retained completed
+        # receipt is where this schedule's token stands.
+        "checkpoint_policy": "advance_after_durable_storage",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
+def _validated_delta_generation_declaration(
+    declaration: DeltaGenerationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("delta-generation starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if not _POLICY_IDENTITY.fullmatch(declaration.comparison_rule_version):
+        raise DueWorkRefusal("delta-generation comparison rule identity is invalid")
+    if (
+        declaration.cadence != "hourly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "delta-generation supports only hourly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal("delta-generation gate-7 resource declaration is invalid")
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_DELTA_GENERATION,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "comparison_rule_version": declaration.comparison_rule_version,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_proposed_delta_generation-v1",
+            "project_id": declaration.project_id,
+            "comparison_rule_version": declaration.comparison_rule_version,
+        },
+        # The pass proposes; it never makes anything effective. Every append
+        # goes through the source-append command, so an adopted-baseline
+        # project's accepted values are unreachable from here (#520).
+        "record_authority": "proposes_only_never_accepts",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
+def _validated_report_preparation_declaration(
+    declaration: ReportPreparationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("report-preparation starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if (
+        declaration.cadence != "weekly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "report-preparation supports only weekly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal("report-preparation gate-7 resource declaration is invalid")
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_REPORT_PREPARATION,
+        "project_id": declaration.project_id,
+        "scope": {"project_id": declaration.project_id},
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_change_summary_reading-v1",
+            "project_id": declaration.project_id,
+        },
+        # The week the reading covers starts where the previous retained
+        # reading observed, so consecutive readings tile without a gap and
+        # without counting one resolution twice.
+        "comparison_window_policy": "since_last_prepared_reading",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "read_only_reconcilable",
+    }
+
+
+def _validated_retention_sweep_declaration(
+    declaration: RetentionSweepDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal("retention-sweep starts_at must align to a UTC hour")
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    try:
+        HumanPrincipal(declaration.authorized_by)
+    except InvalidHumanPrincipal as exc:
+        raise DueWorkRefusal(
+            "retention-sweep authorization must name a human principal"
+        ) from exc
+    if (
+        declaration.cadence != "weekly"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "latest_only"
+    ):
+        raise DueWorkRefusal(
+            "retention-sweep supports only weekly UTC latest-only scheduling"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 30 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal("retention-sweep gate-7 resource declaration is invalid")
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_RETENTION_SWEEP,
+        "project_id": declaration.project_id,
+        "scope": {
+            "project_id": declaration.project_id,
+            "authorized_by": declaration.authorized_by,
+        },
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "project_class_b_intermediaries-v1",
+            "project_id": declaration.project_id,
+        },
+        # ADR-0080: only the five Class B intermediary families and registered
+        # processing artifacts are reachable, and every deletion still passes
+        # the hold check, the reachability check, and the dry-run manifest.
+        "retention_class": "class_b",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _due_slot(schedule: DueWorkSchedule, now: datetime) -> datetime | None:
     """The current occurrence slot for one schedule's cadence, or ``None``.
 
@@ -3499,6 +4270,131 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "prepare_external_pdf": prepare_external_pdf,
             }
         )
+    elif schedule.handler_key == HANDLER_CONNECTOR_POLLING:
+        customer = schedule.scope_json.get("customer", "")
+        channel = schedule.scope_json.get("channel", "")
+        connector_identity = schedule.scope_json.get("connector_identity", "")
+        source_url = schedule.scope_json.get("source_url", "")
+        expected_config = _validated_connector_polling_declaration(
+            ConnectorPollingDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                customer=customer,
+                channel=channel,
+                connector_identity=connector_identity,
+                source_url=source_url,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "customer": customer,
+                "channel": channel,
+                "connector_identity": connector_identity,
+                "source_url": source_url,
+            }
+        )
+    elif schedule.handler_key == HANDLER_DELTA_GENERATION:
+        comparison_rule_version = schedule.scope_json.get(
+            "comparison_rule_version", ""
+        )
+        expected_config = _validated_delta_generation_declaration(
+            DeltaGenerationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                comparison_rule_version=comparison_rule_version,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "comparison_rule_version": comparison_rule_version,
+            }
+        )
+    elif schedule.handler_key == HANDLER_REPORT_PREPARATION:
+        expected_config = _validated_report_preparation_declaration(
+            ReportPreparationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "source": "proposed_delta_lifecycle-v1",
+            }
+        )
+    elif schedule.handler_key == HANDLER_RETENTION_SWEEP:
+        authorized_by = schedule.scope_json.get("authorized_by", "")
+        expected_config = _validated_retention_sweep_declaration(
+            RetentionSweepDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                authorized_by=authorized_by,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "retention_class": "class_b",
+            }
+        )
     else:
         expected_config = _validated_health_declaration(
             ProcessingHealthDeclaration(
@@ -3571,6 +4467,14 @@ def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -
         return "inspect_event_admission_reproof_attention"
     if contract.key == HANDLER_EVIDENCE_OUTCOME_CAPTURE:
         return "inspect_capture_attention"
+    if contract.key == HANDLER_CONNECTOR_POLLING:
+        return "inspect_connector_checkpoint"
+    if contract.key == HANDLER_DELTA_GENERATION:
+        return "adopt_project_baseline"
+    if contract.key == HANDLER_REPORT_PREPARATION:
+        return "adopt_project_baseline"
+    if contract.key == HANDLER_RETENTION_SWEEP:
+        return "inspect_retention_refusal"
     return "inspect_failed_document_processing"
 
 
@@ -3747,6 +4651,91 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or not isinstance(result.get("prepared"), bool)
     ):
         raise DueWorkRefusal("report-publication handler result is invalid")
+    if contract.key == HANDLER_CONNECTOR_POLLING and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "channel",
+            "connector_identity",
+            "cursor",
+            "checkpoint_token",
+            "advanced",
+            "changes_taken",
+        }
+        or result.get("health") not in {"healthy", "polling_attention_required"}
+        or not isinstance(result.get("advanced"), bool)
+        # The retained token is this schedule's durable cursor, so a result
+        # that cannot state one is not a completed pass.
+        or not isinstance(result.get("checkpoint_token"), str)
+    ):
+        raise DueWorkRefusal("connector-polling handler result is invalid")
+    if contract.key == HANDLER_DELTA_GENERATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "operating_mode",
+            "accepted_baseline_revision",
+            "facts_considered",
+            "facts_agreed",
+            "groups_created",
+            "deltas_created",
+            "deltas_already_present",
+            "through_fact_id",
+        }
+        or result.get("health")
+        not in {"healthy", "delta_generation_attention_required"}
+        or result.get("operating_mode") not in {"legacy", "adopted_baseline"}
+    ):
+        raise DueWorkRefusal("delta-generation handler result is invalid")
+    if contract.key == HANDLER_REPORT_PREPARATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "window_start",
+            "accepted_revision_id",
+            "resolved_accepted",
+            "resolved_edited",
+            "resolved_rejected",
+            "proposed_new",
+            "open_actionable",
+            "open_deferred",
+            "superseded",
+        }
+        or result.get("health") not in {"healthy", "preparation_attention_required"}
+    ):
+        raise DueWorkRefusal("report-preparation handler result is invalid")
+    if contract.key == HANDLER_RETENTION_SWEEP and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "authorized_by",
+            "manifest_public_id",
+            "planned",
+            "deleted",
+            "refusal",
+        }
+        or result.get("health") not in {"healthy", "retention_attention_required"}
+        # A sweep that deleted more than it planned deleted something the
+        # dry-run manifest never named.
+        or int(result.get("deleted", 0)) > int(result.get("planned", 0))
+    ):
+        raise DueWorkRefusal("retention-sweep handler result is invalid")
 
 
 def _locked_live_claim(
