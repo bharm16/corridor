@@ -137,7 +137,8 @@ for everything else.
 | ADR | Title | Scope | Supersedes | Amends | Amended by | Citing modules | Unresolved migration |
 |---|---|---|---|---|---|---|---|
 | [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | Test gates preserve feedback without weakening release proof | current product | — | — | [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | — | — |
-| [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | The migration window and the feedback budget are enforced numbers, not prose | current product | — | [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | — | — | the executable chain still carries 21 unreleased transitions against a target of 1, and the PR gate still runs both full suites. |
+| [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | The migration window and the feedback budget are enforced numbers, not prose | current product | — | [ADR-0065](0065-test-gates-preserve-feedback-without-weakening-release-proof.md) | [ADR-0088](0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md) | — | the required pull-request gate's median is 4m25s against the three-minute median recorded here (#548). |
+| [ADR-0088](0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md) | The required gate runs the whole suite in parallel, not a path-selected subset | current product | — | [ADR-0087](0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md) | — | — | — |
 
 ### terminology
 

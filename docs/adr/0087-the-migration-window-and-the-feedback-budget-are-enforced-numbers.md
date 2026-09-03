@@ -4,7 +4,9 @@ domain: testing
 scope: current product
 amends:
   - ADR-0065
-migration: the executable chain still carries 21 unreleased transitions against a target of 1, and the PR gate still runs both full suites.
+amended_by:
+  - ADR-0088
+migration: the required pull-request gate's median is 4m25s against the three-minute median recorded here (#548).
 ---
 
 # The migration window and the feedback budget are enforced numbers, not prose

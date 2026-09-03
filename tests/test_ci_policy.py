@@ -49,6 +49,26 @@ def test_behavior_gates_skip_documentation_only_revisions():
     assert {"**.md", "docs/**"} <= ignored
 
 
+def test_behavior_gates_are_not_narrowed_to_a_subset_of_code_paths():
+    """The full suites stay required on every code change (ADR-0088).
+
+    ADR-0087 decided a selected, path-based gate; ADR-0088 amended that away
+    after sharding met the budget without deselecting a single test. A `paths`
+    allowlist would reintroduce the one failure this gate must not have: a
+    green run that silently skipped an affected test. Skipping revisions where
+    every changed file is documentation is the only narrowing permitted, and
+    `make check` still runs on those.
+    """
+
+    trigger = _workflow("test.yml")["on"]["pull_request"]
+
+    assert "paths" not in trigger, (
+        "test.yml selects behavior tests by path; ADR-0088 requires the full "
+        "suites on every change that is not documentation-only"
+    )
+    assert set(trigger) == {"paths-ignore"}
+
+
 def test_check_runs_on_every_revision_including_documentation_only():
     workflow = _workflow("check.yml")
 
