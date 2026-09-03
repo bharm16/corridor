@@ -321,7 +321,7 @@ def preview_baseline_adoption(
         raise BaselineAdoptionRefused(
             "the output template identity must be an output_template"
         )
-    mapping = _field_mapping_identity(operations)
+    mapping = field_mapping_identity(operations)
     intake = preview_intake(session, project, staged, BASELINE_DOC_TYPE)
 
     preview = BaselinePreview(
@@ -797,7 +797,23 @@ def _current_preview(session: Session, preview: BaselinePreview) -> BaselinePrev
     )
 
 
-def _field_mapping_identity(operations: OperationsReading) -> FormatIdentity:
+def field_mapping_identity(operations: OperationsReading) -> FormatIdentity:
+    """The mapping identity one reading of a workbook's columns amounts to.
+
+    Public because it is also the check a later render makes: #495 renders the
+    accepted record *through* a registered output template, and the only way it
+    can refuse a successor template that changed the mapping is by recomputing
+    this digest over that template's own columns and finding it is not the one
+    a person approved.
+
+    The payload therefore covers everything a successor template can change
+    while keeping the same printed headings: which canonical field each column
+    carries, which of those fields are material, and the controlled vocabulary
+    each column declares. Row content is deliberately absent — the approved
+    output template may be the customer's blank form, and a mapping identity
+    that moved when the rows moved would refuse it for no reason.
+    """
+
     payload = {
         "identity": FIELD_MAPPING_IDENTITY,
         "version": FIELD_MAPPING_VERSION,
@@ -805,6 +821,22 @@ def _field_mapping_identity(operations: OperationsReading) -> FormatIdentity:
         "applied": [
             [column.column, column.heading, column.field]
             for column in operations.column_mapping
+        ],
+        "material": sorted(
+            column.field for column in operations.column_mapping if column.material
+        ),
+        "controlled_vocabularies": [
+            [
+                item.column,
+                item.heading,
+                list(item.allowed_values),
+                item.checked,
+                item.reference,
+            ]
+            for item in sorted(
+                operations.controlled_vocabularies,
+                key=lambda item: (item.column, item.heading),
+            )
         ],
     }
     return FormatIdentity(
