@@ -1705,6 +1705,356 @@ class DeltaDecisionSupport(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
 
 
+# The five outcomes one Review Packet child may carry (#526, ADR-0085).  The
+# first four are ADR-0085's primary decisions; the fifth is its secondary
+# dated Defer, which is Work List scheduling and not a semantic disposition
+# (ADR-0084).
+PACKET_CHILD_OUTCOMES = (
+    "apply",
+    "keep_current",
+    "edit_and_apply",
+    "needs_coordination",
+    "defer",
+)
+PACKET_SEMANTIC_OUTCOMES = ("apply", "keep_current", "edit_and_apply")
+# How a packet was keyed, so the receipt preserves the grouping basis a later
+# reader would otherwise have to guess at (ADR-0085).
+PACKET_GROUPING_KEY_KINDS = (
+    "source_revision",
+    "coordination_question",
+    "shared_commitment",
+)
+_PACKET_CHILD_OUTCOMES_SQL = ", ".join(f"'{value}'" for value in PACKET_CHILD_OUTCOMES)
+_PACKET_GROUPING_KEY_KINDS_SQL = ", ".join(
+    f"'{value}'" for value in PACKET_GROUPING_KEY_KINDS
+)
+
+
+class DeltaFollowUpPlan(Base):
+    """The Follow-up Plan decision a Needs coordination outcome records (#526).
+
+    ADR-0085 keeps Needs coordination among the four primary packet decisions
+    and ADR-0084 forbids settling an external fact with free text, so the
+    coordinator's answer to "I cannot settle this yet" has to be a recorded
+    decision rather than a dropped selection.  The row is a separately
+    identified decision inside the packet's one Project Record revision: it
+    names the exact question, the person or organization who owes the answer,
+    the date the question returns, the scope it affects, and the evidence that
+    raised it.  It leaves the proposed value unaccepted and the Proposed Delta
+    open, which is why it writes no ``delta_dispositions`` row.
+
+    This is the spine's Follow-up Plan.  ``follow_up_plan_receipts`` is the
+    frozen legacy grouping receipt over ``work_decisions`` (ADR-0081) and is
+    not extended for adopted-baseline projects (ADR-0084 §3).
+    """
+
+    __tablename__ = "delta_follow_up_plans"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_delta_follow_up_plans_project_id"),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_delta_follow_up_plans_key"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_follow_up_plans_delta",
+        ),
+        CheckConstraint(
+            "length(btrim(open_question)) > 0",
+            name="ck_delta_follow_up_plans_question",
+        ),
+        CheckConstraint(
+            "responsible_principal is not null "
+            "or responsible_organization is not null",
+            name="ck_delta_follow_up_plans_responsible",
+        ),
+        CheckConstraint(
+            "jsonb_typeof(affected_scope) = 'object'",
+            name="ck_delta_follow_up_plans_scope_object",
+        ),
+        CheckConstraint(
+            "length(btrim(recorded_by_principal)) > 0",
+            name="ck_delta_follow_up_plans_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    revision_id: Mapped[int] = mapped_column(
+        ForeignKey("project_record_revisions.id"), index=True
+    )
+    open_question: Mapped[str] = mapped_column(Text)
+    responsible_principal: Mapped[str | None] = mapped_column(String(128))
+    responsible_organization: Mapped[str | None] = mapped_column(String(255))
+    return_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    affected_scope: Mapped[Any] = mapped_column(JSONB)
+    recorded_by_principal: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaFollowUpPlanEvidence(Base):
+    """One effective Support Assessment a Follow-up Plan cited (#526, #530)."""
+
+    __tablename__ = "delta_follow_up_plan_evidence"
+    __table_args__ = (
+        UniqueConstraint(
+            "plan_id",
+            "support_assessment_id",
+            name="uq_delta_follow_up_plan_evidence_member",
+        ),
+        UniqueConstraint(
+            "plan_id", "ordinal", name="uq_delta_follow_up_plan_evidence_ordinal"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_delta_follow_up_plan_evidence_plan",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "support_assessment_id"],
+            ["support_assessments.project_id", "support_assessments.id"],
+            name="fk_delta_follow_up_plan_evidence_assessment",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_delta_follow_up_plan_evidence_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    plan_id: Mapped[int] = mapped_column(BigInteger)
+    support_assessment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class DeltaReviewPacketReceipt(Base):
+    """The one receipt for one guided Review Packet act (#526, ADR-0085).
+
+    A Review Packet is a derived presentation and never an authoritative
+    record (ADR-0085), so nothing here stores a packet's membership as state
+    a later reading must reconcile.  What this row preserves is the *act*: the
+    grouping rule and key the coordinator was shown, the human principal, the
+    accepted revision they had read, the optional one Project Record revision
+    the act produced, and — through ``delta_review_packet_children`` — the
+    exact ordered child set with one outcome and one decision, plan, or
+    deferral identity each.
+
+    ``revision_id`` is null exactly when every child was a dated Defer: a
+    scheduling-only act writes no Project Record revision (ADR-0084,
+    ADR-0085).
+    """
+
+    __tablename__ = "delta_review_packet_receipts"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_delta_review_packet_receipts_project_id"
+        ),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_delta_review_packet_receipts_key"
+        ),
+        CheckConstraint(
+            f"grouping_key_kind in ({_PACKET_GROUPING_KEY_KINDS_SQL})",
+            name="ck_delta_review_packet_receipts_key_kind",
+        ),
+        CheckConstraint(
+            "length(btrim(grouping_rule_version)) > 0",
+            name="ck_delta_review_packet_receipts_rule_version",
+        ),
+        CheckConstraint(
+            "length(btrim(decided_by_principal)) > 0",
+            name="ck_delta_review_packet_receipts_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id"), index=True
+    )
+    grouping_rule_version: Mapped[str] = mapped_column(String(64))
+    grouping_key_kind: Mapped[str] = mapped_column(String(32))
+    grouping_key: Mapped[str] = mapped_column(String(255))
+    decided_by_principal: Mapped[str] = mapped_column(String(128))
+    observed_accepted_revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    decided_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class DeltaReviewPacketChild(Base):
+    """One child delta of one packet act, with its own retained identity (#526).
+
+    ADR-0035 forbids one Save collapsing the identity of the distinct domain
+    acts inside it, so the receipt does not summarize its children: each row
+    names the exact Proposed Delta, the position it was shown in, the outcome
+    the coordinator chose, and the one identity that outcome produced.
+    """
+
+    __tablename__ = "delta_review_packet_children"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id", "ordinal", name="uq_delta_review_packet_children_ordinal"
+        ),
+        UniqueConstraint(
+            "receipt_id", "delta_id", name="uq_delta_review_packet_children_delta"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "receipt_id"],
+            [
+                "delta_review_packet_receipts.project_id",
+                "delta_review_packet_receipts.id",
+            ],
+            name="fk_delta_review_packet_children_receipt",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"],
+            name="fk_delta_review_packet_children_delta",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "decision_id"],
+            ["delta_record_decisions.project_id", "delta_record_decisions.id"],
+            name="fk_delta_review_packet_children_decision",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "follow_up_plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_delta_review_packet_children_plan",
+        ),
+        CheckConstraint(
+            f"outcome in ({_PACKET_CHILD_OUTCOMES_SQL})",
+            name="ck_delta_review_packet_children_outcome",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_delta_review_packet_children_ordinal"),
+        # One outcome, one identity: a semantic child names its Human Record
+        # Decision, a Needs coordination child its Follow-up Plan, and a dated
+        # Defer its scheduling receipt. No child names two, and none names none.
+        CheckConstraint(
+            "(case when decision_id is null then 0 else 1 end) "
+            "+ (case when follow_up_plan_id is null then 0 else 1 end) "
+            "+ (case when deferral_id is null then 0 else 1 end) = 1",
+            name="ck_delta_review_packet_children_one_identity",
+        ),
+        CheckConstraint(
+            "(outcome in ('apply', 'keep_current', 'edit_and_apply')) "
+            "= (decision_id is not null)",
+            name="ck_delta_review_packet_children_semantic",
+        ),
+        CheckConstraint(
+            "(outcome = 'needs_coordination') = (follow_up_plan_id is not null)",
+            name="ck_delta_review_packet_children_coordination",
+        ),
+        CheckConstraint(
+            "(outcome = 'defer') = (deferral_id is not null)",
+            name="ck_delta_review_packet_children_defer",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    receipt_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+    delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    outcome: Mapped[str] = mapped_column(String(32))
+    observed_source_revision: Mapped[str] = mapped_column(String(128))
+    decision_id: Mapped[int | None] = mapped_column(BigInteger)
+    follow_up_plan_id: Mapped[int | None] = mapped_column(BigInteger)
+    deferral_id: Mapped[int | None] = mapped_column(
+        ForeignKey("delta_deferrals.id"), unique=True
+    )
+
+
+class DeltaReviewPacketSupport(Base):
+    """One effective Support Assessment the whole packet act relied on (#526)."""
+
+    __tablename__ = "delta_review_packet_supports"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id",
+            "support_assessment_id",
+            name="uq_delta_review_packet_supports_member",
+        ),
+        UniqueConstraint(
+            "receipt_id", "ordinal", name="uq_delta_review_packet_supports_ordinal"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "receipt_id"],
+            [
+                "delta_review_packet_receipts.project_id",
+                "delta_review_packet_receipts.id",
+            ],
+            name="fk_delta_review_packet_supports_receipt",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "support_assessment_id"],
+            ["support_assessments.project_id", "support_assessments.id"],
+            name="fk_delta_review_packet_supports_assessment",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_delta_review_packet_supports_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    receipt_id: Mapped[int] = mapped_column(BigInteger)
+    support_assessment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+class DeltaReviewPacketReversal(Base):
+    """The compensating act for one guided packet Save (#526, ADR-0035).
+
+    Undo never deletes and never cascades into later work.  It appends one
+    compensating Project Record revision that restores each predecessor
+    accepted decision the packet superseded, and names the receipt it
+    compensates so the original act, its children, and its history all stay
+    exactly as they were recorded.  A packet whose every child was a dated
+    Defer has no revision to compensate; reversing it only releases those
+    scheduling receipts, so ``revision_id`` is null.
+    """
+
+    __tablename__ = "delta_review_packet_reversals"
+    __table_args__ = (
+        UniqueConstraint(
+            "receipt_id", name="uq_delta_review_packet_reversals_receipt"
+        ),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_delta_review_packet_reversals_key"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "receipt_id"],
+            [
+                "delta_review_packet_receipts.project_id",
+                "delta_review_packet_receipts.id",
+            ],
+            name="fk_delta_review_packet_reversals_receipt",
+        ),
+        CheckConstraint(
+            "length(btrim(reversed_by_principal)) > 0",
+            name="ck_delta_review_packet_reversals_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    receipt_id: Mapped[int] = mapped_column(BigInteger)
+    revision_id: Mapped[int | None] = mapped_column(
+        ForeignKey("project_record_revisions.id")
+    )
+    reversed_by_principal: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    reversed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class SupportAssessment(Base):
     """One attributable judgment that Source Segments support a proposition.
 

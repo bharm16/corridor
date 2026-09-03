@@ -75,6 +75,8 @@ from corridor.models import (
     DeltaDecisionSupport,
     DeltaDisposition,
     DeltaRecordDecision,
+    DeltaReviewPacketChild,
+    DeltaReviewPacketReversal,
     DeltaSupersession,
     Fact,
     FactDecision,
@@ -415,7 +417,23 @@ def live_delta_status(session: Session, delta_id: int) -> str:
     ):
         return "superseded"
     if session.scalar(
-        select(DeltaDeferral.id).where(DeltaDeferral.delta_id == delta_id)
+        select(DeltaDeferral.id)
+        .where(DeltaDeferral.delta_id == delta_id)
+        # A packet Undo compensates for its scheduling receipts too, so a
+        # reversed deferral no longer holds the delta out of immediate work
+        # (#526, ADR-0035).  The receipt is never rewritten; the reversal is
+        # simply a later row this derivation reads.
+        .where(
+            ~DeltaDeferral.id.in_(
+                select(DeltaReviewPacketChild.deferral_id)
+                .join(
+                    DeltaReviewPacketReversal,
+                    DeltaReviewPacketReversal.receipt_id
+                    == DeltaReviewPacketChild.receipt_id,
+                )
+                .where(DeltaReviewPacketChild.deferral_id.is_not(None))
+            )
+        )
     ):
         return "deferred"
     return "open"
@@ -605,8 +623,13 @@ def validate_child_decision(
     )
 
 
-def _refresh_context(session: Session, delta: ProposedDelta) -> dict[str, Any]:
-    """What a Work List reading needs to refresh, and nothing the caller typed."""
+def refresh_context(session: Session, delta: ProposedDelta) -> dict[str, Any]:
+    """What a Work List reading needs to refresh, and nothing the caller typed.
+
+    Public because #526 builds the same structured refusal for a coordination
+    or deferral child, and two spellings of "what the reading must re-read"
+    is how the Work List starts discarding a coordinator's selections.
+    """
 
     return {
         "subject_identity": delta.target_subject_identity,
@@ -637,7 +660,7 @@ def _delta_state_refusal(
         reason=reason,
         detail=detail,
         delta_id=delta.id,
-        **_refresh_context(session, delta),
+        **refresh_context(session, delta),
     )
 
 
@@ -665,7 +688,7 @@ def _validate_scope_support_and_staleness(
                     "assessment of this project"
                 ),
                 delta_id=delta.id,
-                **_refresh_context(session, delta),
+                **refresh_context(session, delta),
             )
 
     if request.action in (ACCEPT, EDIT) and not support_ids:
@@ -677,7 +700,7 @@ def _validate_scope_support_and_staleness(
                 "relied on; a passed Source Passage Check is not support"
             ),
             delta_id=delta.id,
-            **_refresh_context(session, delta),
+            **refresh_context(session, delta),
         )
 
     for effect in record_effects:
@@ -721,7 +744,7 @@ def _validate_scope_support_and_staleness(
                     "decision names"
                 ),
                 delta_id=delta.id,
-                **{**_refresh_context(session, delta), "field": fact.fact_type},
+                **{**refresh_context(session, delta), "field": fact.fact_type},
             )
 
         standing = current_accepted_revision_id(
@@ -741,7 +764,7 @@ def _validate_scope_support_and_staleness(
                 ),
                 delta_id=delta.id,
                 **{
-                    **_refresh_context(session, delta),
+                    **refresh_context(session, delta),
                     "subject_identity": fact.subject_key,
                     "field": fact.fact_type,
                     "current_accepted_revision_id": standing,
@@ -790,7 +813,7 @@ def _validate_edit_basis(
                 ),
                 delta_id=delta.id,
                 open_question=_coordination_question(delta, basis),
-                **_refresh_context(session, delta),
+                **refresh_context(session, delta),
             )
         return Refusal(
             status=CONSTRAINED_EDIT,
@@ -801,7 +824,7 @@ def _validate_edit_basis(
                 "normalization, or cites a separate attributable source origin"
             ),
             delta_id=delta.id,
-            **_refresh_context(session, delta),
+            **refresh_context(session, delta),
         )
 
     if isinstance(basis, CapturedSupport):
@@ -952,7 +975,7 @@ def _edit_basis_refusal(
         reason="constrained_edit",
         detail=detail,
         delta_id=delta.id,
-        **_refresh_context(session, delta),
+        **refresh_context(session, delta),
     )
 
 
