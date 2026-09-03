@@ -54,7 +54,7 @@ from corridor.page_inventory import (
 from corridor.render_profiles import (
     RenderDerivative,
     persist_render_derivative,
-    render_page_derivative,
+    render_page_derivatives,
 )
 from corridor.retention import open_reference, register_processing_artifact
 from corridor.source_segments import (
@@ -494,28 +494,18 @@ def _extract_pages(
             native_text = page.get_text()
             inventory = inventory_page(page, native_text=native_text)
             routing = route_page(inventory)
-            review_derivative = render_page_derivative(
-                pdf_path=path,
-                page_number=page_no,
-                profile_name="review",
-                output_dir=images_dir,
-            )
-            image_path = review_derivative.artifact_path
             # The layout/model derivative is purpose-specific even when OCR is
-            # not needed; vision consumers never borrow reviewer pixels.
-            ocr_derivative = render_page_derivative(
+            # not needed; vision consumers never borrow reviewer pixels. All
+            # three are asked for at once so the worker's OpenCV/PyMuPDF import
+            # is paid once a page rather than three times (#548).
+            derivatives = render_page_derivatives(
                 pdf_path=path,
                 page_number=page_no,
-                profile_name="ocr_layout",
+                profile_names=("review", "ocr_layout", "table_cv"),
                 output_dir=images_dir,
             )
-            table_derivative = render_page_derivative(
-                pdf_path=path,
-                page_number=page_no,
-                profile_name="table_cv",
-                output_dir=images_dir,
-            )
-            derivatives = [review_derivative, ocr_derivative, table_derivative]
+            review_derivative, ocr_derivative, table_derivative = derivatives
+            image_path = review_derivative.artifact_path
             ocr_text: list[str] = []
             failures: list[PageFailure] = []
             ocr_attempts: list[OcrAttempt] = []

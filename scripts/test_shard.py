@@ -6,11 +6,20 @@ uneven the files are.  More actual CPU can, and GitHub runs matrix jobs on
 separate runners.
 
 Balance uses the recorded per-file seconds in ``tests/durations.json``, which
-`make test-timing` produces.  A file with no recorded duration is treated as
-average rather than free, so a newly added file cannot silently land in an
-already-full shard.  Shards are filled longest-first onto whichever shard is
-currently smallest, which keeps the slowest file from deciding the wall clock
-on its own.
+`make test-timing` and ``scripts/test_timing.py --write`` produce together.  A file with no recorded duration is
+treated as average rather than free, so a newly added file cannot silently
+land in an already-full shard.  Shards are filled longest-first onto whichever
+shard is currently smallest, which keeps the slowest file from deciding the
+wall clock on its own.
+
+Every named file also costs its shard ``COLLECTION_SECONDS`` whether or not
+the gate selects a test from it, because each xdist worker imports every
+module named on the command line.  Measured by collecting the whole tests
+directory against three files: 4.6s for 183 extra files, so 0.025s each, and
+0.05s allowed for a CI runner.  It is a small term and it is meant to be —
+an earlier revision set it to 0.5s from a CI shard that held 166 files and
+ran 79s while running two tests, which turned out to be the render worker
+building its environment over a saturated network, not collection at all.
 
 Usage:
     uv run python scripts/test_shard.py --shards 4 --shard 1
@@ -27,6 +36,10 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 DURATIONS = ROOT / "tests" / "durations.json"
 SLOW_DURATIONS = ROOT / "tests" / "durations-slow.json"
+# What one named test file costs a CI shard in import and collection, before
+# any of its tests run: 0.025s measured locally, doubled for a CI runner
+# (#548).
+COLLECTION_SECONDS = 0.05
 
 
 def test_files() -> list[str]:
@@ -56,7 +69,10 @@ def shard(files: list[str], durations: dict[str, float], shards: int) -> list[li
     known = [value for value in durations.values() if value > 0]
     average = sum(known) / len(known) if known else 1.0
     weighted = sorted(
-        ((durations.get(name, average), name) for name in files),
+        (
+            (durations.get(name, average) + COLLECTION_SECONDS, name)
+            for name in files
+        ),
         key=lambda item: (-item[0], item[1]),
     )
     buckets: list[list[str]] = [[] for _ in range(shards)]

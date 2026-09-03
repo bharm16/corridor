@@ -18,10 +18,15 @@ jobs:
     # Sharded across runners: the job is CPU-bound on one four-core runner,
     # so the only remaining lever is more actual CPU (#548). Every test file
     # lands in exactly one shard, which scripts/test_shard.py proves.
+    # Five, not six. Six put twelve jobs on this account at once, saturated
+    # its package downloads, and two jobs stalled for minutes inside pytest.
+    # Runner count is bounded by what the account will serve concurrently,
+    # not by what the partition can divide, so it is raised one step at a
+    # time and measured.
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     services:
@@ -49,10 +54,22 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
+      # `apt-get update` measured 11-34s across the eight jobs of one run,
+      # and the runner image normally ships usable package lists. Refresh
+      # them only when the install actually needs it (#548). A genuine
+      # failure still fails the job; nothing is silently skipped.
+      - run: >-
+          sudo apt-get install -y tesseract-ocr ||
+          { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
       - run: uv sync --locked
+      # `make boot` provisions this; CI never did, so the first page render
+      # inside a test built the worker's environment over the network, in
+      # four racing xdist workers, with its output captured and invisible.
+      # opencv-python-headless is locked only here, so it is never in the
+      # restored uv cache either (#548).
+      - run: uv sync --project workers/render --frozen
       - run: uv run alembic upgrade head
-      - run: make test-shard SHARDS=4 SHARD=${{ matrix.shard }}
+      - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
 
   slow:
     # Sharded for the same reason as pytest (#548).
@@ -87,7 +104,19 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
+      # `apt-get update` measured 11-34s across the eight jobs of one run,
+      # and the runner image normally ships usable package lists. Refresh
+      # them only when the install actually needs it (#548). A genuine
+      # failure still fails the job; nothing is silently skipped.
+      - run: >-
+          sudo apt-get install -y tesseract-ocr ||
+          { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
       - run: uv sync --locked
+      # `make boot` provisions this; CI never did, so the first page render
+      # inside a test built the worker's environment over the network, in
+      # four racing xdist workers, with its output captured and invisible.
+      # opencv-python-headless is locked only here, so it is never in the
+      # restored uv cache either (#548).
+      - run: uv sync --project workers/render --frozen
       - run: uv run alembic upgrade head
       - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}

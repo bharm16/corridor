@@ -49,8 +49,20 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      - run: sudo apt-get update && sudo apt-get install -y poppler-utils tesseract-ocr
+      # `apt-get update` measured 11-34s across the eight jobs of one run,
+      # and the runner image normally ships usable package lists. Refresh
+      # them only when the install actually needs it (#548). A genuine
+      # failure still fails the job; nothing is silently skipped.
+      - run: >-
+          sudo apt-get install -y tesseract-ocr ||
+          { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
       - run: uv sync --locked
+      # `make boot` provisions this; CI never did, so the first page render
+      # inside a test built the worker's environment over the network, in
+      # four racing xdist workers, with its output captured and invisible.
+      # opencv-python-headless is locked only here, so it is never in the
+      # restored uv cache either (#548).
+      - run: uv sync --project workers/render --frozen
       - run: uv run alembic upgrade head
       - if: github.event_name == 'pull_request'
         run: make test-migrations

@@ -314,14 +314,25 @@ def render(request):
 
 
 def main(argv=None):
+    """Render every requested derivative in this one process.
+
+    Importing OpenCV, Pillow, PyMuPDF and NumPy costs about 0.27s, which is
+    roughly 70% of what rendering one ordinary page costs. Ingest wants three
+    profiles of the same page, so the request carries a list and the caller
+    pays that import once instead of three times (#548). A one-element list is
+    exactly the old behavior.
+    """
+
     parser = argparse.ArgumentParser()
     parser.add_argument("--request", type=Path, required=True)
     parser.add_argument("--manifest", type=Path, required=True)
     arguments = parser.parse_args(argv)
-    request = json.loads(arguments.request.read_text())
-    manifest = render(request)
+    payload = json.loads(arguments.request.read_text())
+    manifests = [render(request) for request in payload["requests"]]
     arguments.manifest.parent.mkdir(parents=True, exist_ok=True)
-    arguments.manifest.write_text(json.dumps(manifest, indent=2, sort_keys=True) + "\n")
+    arguments.manifest.write_text(
+        json.dumps({"manifests": manifests}, indent=2, sort_keys=True) + "\n"
+    )
     return 0
 
 

@@ -4,10 +4,12 @@ The acceptance tests were one 1,263-line module holding 258 of the slow
 gate's 381 seconds. A single file cannot be split across CI runners, so it
 set the gate's floor on its own (#548).
 
-The module-scoped ``replay_capture`` and ``baseline_acceptance`` fixtures are
-why the split is where it is: they provision once per module, so the twelve
-tests that share them stay together in one suite. Splitting those apart would
-pay the provisioning again rather than save anything.
+The split is drawn around the module-scoped ``replay_capture`` and
+``baseline_acceptance`` fixtures each suite declares over ``_capture_fixture``
+and ``_run_config`` here. Those provision once per module, so a further split
+costs about 7s of capture and, where the baseline bundle is wanted, about 12s
+of replay. The three suites carry roughly 30 to 40 seconds of work each, which
+earns that back several times over.
 """
 
 from __future__ import annotations
