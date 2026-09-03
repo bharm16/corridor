@@ -12,10 +12,22 @@ byte for byte.
 data-baseline identity, the approved output-template identity, and the approved
 field-mapping identity separately, because a later template or mapping is
 registered on its own act and changes no accepted value. So the renderer is
-handed template bytes and reads the registrations; it refuses bytes that are not
-the approved template, and it refuses a template whose columns do not amount to
-the approved mapping (`baseline_adoption.field_mapping_identity`). Rendering is
-never a second Adopt Baseline and never writes anything.
+handed template bytes *and* the mapping revision they are to be read through,
+and reads the registrations; it refuses bytes that are not the approved
+template, and a manifest that is not the approved mapping revision, on the same
+terms — the caller supplies the artifact and the registration supplies the
+digest a person approved.
+
+**The template does not get to say what it means (#597).** A digest over the
+template's own columns cannot see a form that stopped carrying `Start Station`
+and `End Station` as two values and started carrying one combined range in the
+same two columns: every heading and every drop-down is unchanged. So the
+registered `field_mapping_manifest` is the authority, and the template is
+checked *against* it — its printed columns, its declared vocabularies, and its
+own populated values, which must split and combine the way the mapping revision
+declares. A form that changed carries a different mapping revision, registered
+by a person holding the project-coordination designation. Rendering is never a
+second Adopt Baseline and never writes anything.
 
 **Source-row identity is not record-subject identity.** A cell is addressed by
 the source row's own coordinate in the customer's file; the value in it belongs
@@ -58,7 +70,6 @@ from corridor.baseline_adoption import (
     adopted_baseline_source,
     adopted_source_rows,
     effective_baseline_formats,
-    field_mapping_identity,
 )
 from corridor.baseline_workbook import (
     BaselineWorkbookUnsupported,
@@ -68,6 +79,15 @@ from corridor.baseline_workbook import (
 from corridor.current_record import (
     CurrentRecordValue,
     read_project_record_as_of_revision,
+)
+from corridor.field_mapping_manifest import (
+    CARRIES_RETIREMENT_WORDING,
+    FieldMappingManifest,
+    MappingManifestRefused,
+    MaterialMapping,
+    composition_rule,
+    conformance_refusals,
+    exact_text,
 )
 from corridor.models import BaselineSourceRow, ProjectRecordRevision
 from corridor.presentation import label
@@ -245,15 +265,26 @@ class RenderProfile:
 
 @dataclass(frozen=True)
 class RenderedCell:
-    """One mapped cell this render wrote, and both identities behind it."""
+    """One mapped cell this render wrote, and both identities behind it.
+
+    ``fields`` is plural because one cell need not carry one canonical field: a
+    mapping revision may declare a combined range, and then the cell carries
+    both ends of it (and the mapping's other column carries none).
+    """
 
     source_row_key: str
     record_subject_key: str
-    field: str
+    fields: tuple[str, ...]
     sheet_name: str
     cell_range: str
     before: str
     after: str
+
+    @property
+    def field(self) -> str:
+        """The canonical fields this cell carries, as one printable name."""
+
+        return "+".join(self.fields)
 
 
 @dataclass(frozen=True)
@@ -298,6 +329,7 @@ class RenderedWorkbook:
     field_mapping_identity: str
     field_mapping_version: str
     field_mapping_sha256: str
+    field_mapping_schema_version: str
     render_profile_sha256: str
     sheet_name: str
     changed_cells: tuple[RenderedCell, ...] = ()
@@ -308,6 +340,12 @@ class RenderedWorkbook:
     package_differences: tuple[str, ...] = ()
     external_references: tuple[tuple[str, str, str], ...] = ()
 
+    @property
+    def field_mapping_revision(self) -> str:
+        """The mapping revision this render was performed under."""
+
+        return f"{self.field_mapping_identity} {self.field_mapping_version}"
+
 
 def render_project_record_workbook(
     session: Session,
@@ -315,15 +353,16 @@ def render_project_record_workbook(
     project_id: int,
     revision_id: int,
     template_bytes: bytes,
+    field_mapping: FieldMappingManifest,
     profile: RenderProfile = RenderProfile(),
 ) -> RenderedWorkbook:
     """Render one accepted revision into the approved template, or refuse.
 
     Every input is named rather than discovered: the exact revision, the exact
-    template bytes, and the profile settled at onboarding. What the renderer
-    looks up is only what a person already approved — the accepted data-baseline
-    identity, the effective output-template identity, and the effective
-    field-mapping identity.
+    template bytes, the mapping revision they are read through, and the profile
+    settled at onboarding. What the renderer looks up is only what a person
+    already approved — the accepted data-baseline identity, the effective
+    output-template identity, and the effective field-mapping identity.
     """
 
     baseline = adopted_baseline_source(session, project_id)
@@ -355,16 +394,24 @@ def render_project_record_workbook(
             f"{template_format.content_sha256} is registered"
         )
 
+    if field_mapping.content_sha256 != mapping_format.content_sha256:
+        raise UnapprovedFieldMapping(
+            f"{field_mapping.revision} is not the approved mapping revision: "
+            f"{field_mapping.content_sha256} was offered and "
+            f"{mapping_format.content_sha256} is registered"
+        )
+
     parts = _package_parts(template_bytes)
     _refuse_unsupported_package(parts)
-    reading = _template_reading(template_bytes)
-    applied = field_mapping_identity(reading)
-    if applied.content_sha256 != mapping_format.content_sha256:
+    reading = _template_reading(template_bytes, field_mapping)
+    refusals = conformance_refusals(field_mapping, reading)
+    if refusals:
         raise UnapprovedFieldMapping(
-            "this template's columns are not the approved field mapping. A "
-            "changed material field, field meaning, split or combined value, or "
-            "controlled vocabulary needs an explicitly approved mapping before "
-            "the record can be written through it."
+            "this template is not the approved mapping revision "
+            f"{field_mapping.revision}. A changed material field, field "
+            "meaning, split or combined value, or controlled vocabulary needs "
+            "an explicitly approved mapping revision before the record can be "
+            "written through it: " + "; ".join(refusals)
         )
 
     plan = _plan(
@@ -372,6 +419,7 @@ def render_project_record_workbook(
         project_id=project_id,
         revision_id=revision_id,
         reading=reading,
+        manifest=field_mapping,
         profile=profile,
     )
     provenance = (
@@ -384,8 +432,8 @@ def render_project_record_workbook(
         ),
         (
             "Approved field mapping",
-            f"{mapping_format.format_identity} {mapping_format.format_version} "
-            f"{mapping_format.content_sha256}",
+            f"{field_mapping.revision} {mapping_format.content_sha256} "
+            f"({field_mapping.schema_version})",
         ),
         ("Render profile", profile.content_sha256),
         ("Renderer", RENDERER_VERSION),
@@ -410,6 +458,7 @@ def render_project_record_workbook(
         field_mapping_identity=mapping_format.format_identity,
         field_mapping_version=mapping_format.format_version,
         field_mapping_sha256=mapping_format.content_sha256,
+        field_mapping_schema_version=field_mapping.schema_version,
         render_profile_sha256=profile.content_sha256,
         sheet_name=reading.adopted_sheet,
         changed_cells=plan.changed_cells,
@@ -449,14 +498,23 @@ class _Plan:
     external_references: tuple[tuple[str, str, str], ...]
 
 
-def _template_reading(template_bytes: bytes) -> OperationsReading:
-    """The #509 capability inventory of the template, read from its own bytes."""
+def _template_reading(
+    template_bytes: bytes, manifest: FieldMappingManifest
+) -> OperationsReading:
+    """The #509 capability inventory of the template, read from its own bytes.
+
+    Read *through* the mapping revision: which headings carry a reference out
+    of the workbook is the manifest's declaration, never a guess at a spelling
+    (#597), and a heading nobody declared stays a retained unknown column.
+    """
 
     with TemporaryDirectory() as directory:
         path = Path(directory) / "output-template.xlsx"
         path.write_bytes(template_bytes)
         try:
-            reading = read_baseline_workbook(path)
+            reading = read_baseline_workbook(
+                path, external_references=manifest.external_reference_headings
+            )
         except BaselineWorkbookUnsupported as exc:
             raise UnsupportedWorkbookFeature(
                 f"the approved output template cannot be read: {exc}"
@@ -478,11 +536,19 @@ def _plan(
     project_id: int,
     revision_id: int,
     reading: OperationsReading,
+    manifest: FieldMappingManifest,
     profile: RenderProfile,
 ) -> _Plan:
-    """Decide every cell before a byte is written, and refuse before that."""
+    """Decide every cell before a byte is written, and refuse before that.
 
-    columns = {column.field: column.column for column in reading.column_mapping}
+    Every write goes through the registered mapping revision rather than
+    through a field-to-column dictionary: the mapping decides how many cells a
+    canonical value occupies and which of them it lands in, so a project whose
+    approved revision declares a combined range writes one cell where a project
+    declaring one value per column writes two.
+    """
+
+    letters = {column.heading: column.column for column in reading.column_mapping}
     template_rows = {row.source_row_key: row for row in reading.rows}
     formula_cells = set(reading.formula_cells)
     source_rows = {
@@ -509,26 +575,18 @@ def _plan(
         source_row = source_rows.get(subject_key)
         if source_row is None:
             next_row += 1
+            cells = _composed_cells(manifest, values, letters)
             added.append(
                 _new_row(
                     reading,
                     profile,
+                    manifest,
                     subject_key=subject_key,
                     row_number=next_row,
                     values=values,
-                    columns=columns,
                 )
             )
-            appended.append(
-                (
-                    next_row,
-                    {
-                        columns[name]: text
-                        for name, text in sorted(values.items())
-                        if name in columns
-                    },
-                )
-            )
+            appended.append((next_row, cells))
             continue
         template_row = template_rows.get(subject_key)
         if template_row is None:
@@ -543,38 +601,55 @@ def _plan(
                 f"row is {source_row.business_identity!r}; the rows have moved "
                 "and an accepted value would be written into another line"
             )
-        for name, text in sorted(values.items()):
-            column = columns.get(name)
-            if column is None:
+        for mapping in manifest.mappings:
+            accepted = tuple(values.get(field) for field in mapping.target_fields)
+            if all(value is None for value in accepted):
                 continue
-            cell_range = f"{column}{source_row.row_number}"
-            locator = f"{reading.adopted_sheet}!{cell_range}"
-            if (template_row.value(name) or "") == text:
-                continue
-            if locator in formula_cells:
-                raise UnsupportedWorkbookFeature(
-                    f"{locator} is a formula cell the approved mapping writes to; "
-                    "overwriting it would drop the customer's own calculation"
+            rule = composition_rule(mapping.composition)
+            try:
+                composed = rule.compose(mapping, accepted)
+            except MappingManifestRefused as exc:
+                raise UndeclaredRenderBehaviour(
+                    f"{subject_key!r} cannot be written through the approved "
+                    f"mapping revision {manifest.revision}: {exc}"
+                ) from exc
+            for index, heading in enumerate(mapping.source_columns):
+                before = exact_text(template_row, mapping.target_fields[index])
+                after = composed[index]
+                if after == before:
+                    continue
+                column = letters[heading]
+                cell_range = f"{column}{source_row.row_number}"
+                locator = f"{reading.adopted_sheet}!{cell_range}"
+                if locator in formula_cells:
+                    raise UnsupportedWorkbookFeature(
+                        f"{locator} is a formula cell the approved mapping "
+                        "writes to; overwriting it would drop the customer's "
+                        "own calculation"
+                    )
+                writes.setdefault(source_row.row_number, {})[column] = after
+                changed.append(
+                    RenderedCell(
+                        source_row_key=source_row.source_row_key,
+                        record_subject_key=(
+                            source_row.record_subject_key or subject_key
+                        ),
+                        fields=rule.fields_at(mapping, index),
+                        sheet_name=reading.adopted_sheet,
+                        cell_range=cell_range,
+                        before=before,
+                        after=after,
+                    )
                 )
-            writes.setdefault(source_row.row_number, {})[column] = text
-            changed.append(
-                RenderedCell(
-                    source_row_key=source_row.source_row_key,
-                    record_subject_key=source_row.record_subject_key or subject_key,
-                    field=name,
-                    sheet_name=reading.adopted_sheet,
-                    cell_range=cell_range,
-                    before=template_row.value(name) or "",
-                    after=text,
-                )
-            )
 
     for key, source_row in sorted(source_rows.items()):
         subject = record.get(key)
         if subject is not None and subject.open_conflict:
             continue
         retired.append(
-            _retire(reading, profile, source_row, columns, formula_cells, writes)
+            _retire(
+                reading, profile, manifest, source_row, letters, formula_cells, writes
+            )
         )
 
     return _Plan(
@@ -591,14 +666,40 @@ def _plan(
     )
 
 
+def _composed_cells(
+    manifest: FieldMappingManifest,
+    values: dict[str, str],
+    letters: dict[str, str],
+) -> dict[str, str]:
+    """Every column one subject's accepted values occupy, by column letter."""
+
+    cells: dict[str, str] = {}
+    for mapping in manifest.mappings:
+        accepted = tuple(values.get(field) for field in mapping.target_fields)
+        if all(value is None for value in accepted):
+            continue
+        rule = composition_rule(mapping.composition)
+        try:
+            composed = rule.compose(mapping, accepted)
+        except MappingManifestRefused as exc:
+            raise UndeclaredRenderBehaviour(
+                f"these accepted values cannot be written through "
+                f"{manifest.revision}: {exc}"
+            ) from exc
+        for heading, text in zip(mapping.source_columns, composed):
+            if text:
+                cells[letters[heading]] = text
+    return dict(sorted(cells.items()))
+
+
 def _new_row(
     reading: OperationsReading,
     profile: RenderProfile,
+    manifest: FieldMappingManifest,
     *,
     subject_key: str,
     row_number: int,
     values: dict[str, str],
-    columns: dict[str, str],
 ) -> RenderedRow:
     if profile.row_insertion is None:
         raise UndeclaredRenderBehaviour(
@@ -610,15 +711,18 @@ def _new_row(
         record_subject_key=subject_key,
         sheet_name=reading.adopted_sheet,
         row_number=row_number,
-        fields=tuple(sorted(name for name in values if name in columns)),
+        fields=tuple(
+            sorted(name for name in values if manifest.mapping_for(name) is not None)
+        ),
     )
 
 
 def _retire(
     reading: OperationsReading,
     profile: RenderProfile,
+    manifest: FieldMappingManifest,
     source_row: BaselineSourceRow,
-    columns: dict[str, str],
+    letters: dict[str, str],
     formula_cells: set[str],
     writes: dict[int, dict[str, str]],
 ) -> RetiredRow:
@@ -630,19 +734,22 @@ def _retire(
             "as an open conflict, and this customer has declared no retirement "
             "or status mapping to say so in their own form's words"
         )
-    column = columns.get(profile.retirement.field)
-    if column is None:
+    mapping = manifest.mapping_for(profile.retirement.field)
+    if mapping is None:
         raise UndeclaredRenderBehaviour(
             f"the declared retirement mapping writes {profile.retirement.field!r}, "
             "which the approved template heads no column for"
         )
-    cell_range = f"{column}{source_row.row_number}"
+    _refuse_undeclared_retirement(mapping, manifest, profile.retirement.field)
+    cell_range = f"{letters[mapping.source_columns[0]]}{source_row.row_number}"
     locator = f"{reading.adopted_sheet}!{cell_range}"
     if locator in formula_cells:
         raise UnsupportedWorkbookFeature(
             f"{locator} is a formula cell the declared retirement mapping writes to"
         )
-    writes.setdefault(source_row.row_number, {})[column] = profile.retirement.wording
+    writes.setdefault(source_row.row_number, {})[
+        letters[mapping.source_columns[0]]
+    ] = profile.retirement.wording
     return RetiredRow(
         source_row_key=source_row.source_row_key,
         record_subject_key=source_row.record_subject_key or source_row.source_row_key,
@@ -650,6 +757,29 @@ def _retire(
         cell_range=cell_range,
         wording=profile.retirement.wording,
     )
+
+
+def _refuse_undeclared_retirement(
+    mapping: MaterialMapping, manifest: FieldMappingManifest, field: str
+) -> None:
+    """A retirement wording goes only where the mapping revision says it may.
+
+    Not a formality: writing the customer's own `Not Used` into one end of a
+    combined range, or into a column their mapping says carries something else,
+    is the same silent damage as writing a split value into a combined column.
+    """
+
+    if mapping.retirement != CARRIES_RETIREMENT_WORDING:
+        raise UndeclaredRenderBehaviour(
+            f"the approved mapping revision {manifest.revision} declares that "
+            f"{field!r} does not carry a retirement wording ({mapping.retirement})"
+        )
+    if len(mapping.source_columns) != 1:
+        raise UndeclaredRenderBehaviour(
+            f"the approved mapping revision {manifest.revision} carries {field!r} "
+            f"across {len(mapping.source_columns)} columns, and a retirement "
+            "wording is one value in one column"
+        )
 
 
 def _record_by_subject(

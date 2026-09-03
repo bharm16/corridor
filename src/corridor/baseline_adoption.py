@@ -56,6 +56,7 @@ from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.access import COORDINATION, resolve_membership
 from corridor.baseline_workbook import (
     IMPORTER_IDENTITY,
     IMPORTER_VERSION,
@@ -66,6 +67,13 @@ from corridor.baseline_workbook import (
 )
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
+from corridor.field_mapping_manifest import (
+    FieldMappingManifest,
+    MappingDeclaration,
+    MappingManifestRefused,
+    declared_field_mapping,
+    prove_manifest,
+)
 from corridor.materializer import materialize_segment_value
 from corridor.models import (
     BaselineAdoption,
@@ -89,18 +97,16 @@ from corridor.source_intake import (
 )
 from corridor.storage import staged_file
 from corridor.support_assessments import FactProposition, record_support_assessment
-from corridor.vocabulary import TEMPLATE_FIELDS
 
 
 BASELINE_DOC_TYPE = "matrix"
 BASELINE_COMMAND_TYPE = "adopt_baseline"
 
-# The field mapping this importer applied, as its own identity.  It is recorded
-# apart from the data baseline because a later mapping revision must be
-# registrable without re-adopting anything: the accepted values already exist
-# and a mapping change cannot move them.
-FIELD_MAPPING_IDENTITY = "ucm-published-column-headings"
-FIELD_MAPPING_VERSION = "v1"
+# The field mapping this importer applies is a declared manifest and its
+# identity is that manifest's (`field_mapping_manifest`), not a digest of
+# anything read off the template: a successor form that combines two mapped
+# values while printing the same headings is a different mapping revision, and
+# only a declaration can say so (#597).
 
 # The closed set of questions a coordinator may be asked while adopting.  A
 # question kind outside this set is a bug, not a new feature: the whole point
@@ -233,6 +239,8 @@ class BaselinePreview:
     rows: tuple[PreviewRow, ...]
     output_template: FormatIdentity
     field_mapping: FormatIdentity
+    field_mapping_manifest: FieldMappingManifest
+    field_mapping_declaration: MappingDeclaration
     intake_binding_fingerprint: str
     binding_fingerprint: str
     already_adopted: bool
@@ -274,8 +282,16 @@ def preview_baseline_adoption(
     source_identity: str,
     source_kind: str = "ucm_workbook",
     output_template: FormatIdentity | None = None,
+    field_mapping: MappingDeclaration | None = None,
 ) -> BaselinePreview:
     """Read the staged source and report only the material project questions.
+
+    ``field_mapping`` is the mapping revision Corridor operations declares for
+    this form: which columns carry which canonical fields, how their values
+    split or combine, and which headings carry a reference out of the workbook.
+    It defaults to one value per column under the published headings and no
+    external references at all, because nothing in a file may be given a
+    meaning it did not declare (#597).
 
     Writes nothing.  Refuses before producing a coordinator reading when
     Corridor operations has an unresolved diagnostic, and when the project
@@ -294,8 +310,11 @@ def preview_baseline_adoption(
         raise BaselineAdoptionRefused(
             "the staged source is no longer in the content store; upload it again"
         )
+    declaration = field_mapping or MappingDeclaration()
     try:
-        operations = read_baseline_workbook(path)
+        operations = read_baseline_workbook(
+            path, external_references=declaration.external_reference_headings
+        )
     except BaselineWorkbookUnsupported as exc:
         raise BaselineAdoptionRefused(str(exc)) from exc
     if not operations.resolved:
@@ -321,7 +340,13 @@ def preview_baseline_adoption(
         raise BaselineAdoptionRefused(
             "the output template identity must be an output_template"
         )
-    mapping = field_mapping_identity(operations)
+    try:
+        manifest = declared_field_mapping(operations, declaration)
+    except MappingManifestRefused as exc:
+        raise BaselineAdoptionRefused(
+            f"this form is not the declared mapping revision: {exc}"
+        ) from exc
+    mapping = format_identity_of(manifest)
     intake = preview_intake(session, project, staged, BASELINE_DOC_TYPE)
 
     preview = BaselinePreview(
@@ -338,6 +363,8 @@ def preview_baseline_adoption(
         rows=rows,
         output_template=template,
         field_mapping=mapping,
+        field_mapping_manifest=manifest,
+        field_mapping_declaration=declaration,
         intake_binding_fingerprint=intake.binding_fingerprint,
         binding_fingerprint="",
         already_adopted=already is not None,
@@ -474,11 +501,20 @@ def register_baseline_format(
     identity: FormatIdentity,
     principal: HumanPrincipal,
     idempotency_key: str,
+    manifest: FieldMappingManifest | None = None,
 ) -> BaselineFormat:
-    """Register a replacement output template or field mapping, on its own act.
+    """Register a replacement output template or mapping revision, on its own act.
 
     It supersedes the effective registration of the same kind, writes no
     accepted value, and is never a second Adopt Baseline.
+
+    A field mapping is registered as a **declared manifest** and nothing else
+    (#597): Corridor operations may construct and technically validate one, and
+    where it changes what a mapped column means, a person holding the
+    project-coordination designation must approve it.  So a mapping whose
+    digest differs from the one in force is refused unless this actor holds
+    that designation on this project — the registration is the approval, and an
+    approval nobody was designated for is not one.
     """
 
     actor = require_human_principal(principal)
@@ -486,6 +522,14 @@ def register_baseline_format(
         raise BaselineAdoptionRefused(f"unknown format kind {identity.kind!r}")
     if not idempotency_key.strip():
         raise BaselineAdoptionRefused("a format registration needs an idempotency key")
+    if identity.kind == "field_mapping":
+        _refuse_unapproved_mapping_revision(
+            session,
+            project_id=project_id,
+            identity=identity,
+            manifest=manifest,
+            actor=actor,
+        )
     outcome = session.scalar(
         select(
             func.register_baseline_format(
@@ -501,6 +545,53 @@ def register_baseline_format(
     )
     session.expire_all()
     return session.get_one(BaselineFormat, int(outcome["format_id"]))
+
+
+def _refuse_unapproved_mapping_revision(
+    session: Session,
+    *,
+    project_id: int,
+    identity: FormatIdentity,
+    manifest: FieldMappingManifest | None,
+    actor: HumanPrincipal,
+) -> None:
+    """A mapping revision is a proved declaration a designated person approves."""
+
+    if manifest is None:
+        raise BaselineAdoptionRefused(
+            "a field mapping is registered as a declared mapping revision; "
+            "a digest with no manifest behind it records nothing about what "
+            "the customer's columns mean"
+        )
+    try:
+        prove_manifest(manifest)
+    except MappingManifestRefused as exc:
+        raise BaselineAdoptionRefused(
+            f"this mapping revision does not prove out: {exc}"
+        ) from exc
+    if (
+        manifest.content_sha256 != identity.content_sha256
+        or manifest.identity != identity.identity
+        or manifest.version != identity.version
+    ):
+        raise BaselineAdoptionRefused(
+            "the registered identity is not this manifest's; a mapping "
+            "revision is named and digested by the declaration it records, so "
+            "a receipt can never name a revision the manifest does not"
+        )
+    effective = effective_baseline_formats(session, project_id).get("field_mapping")
+    if effective is None or effective.content_sha256 == identity.content_sha256:
+        # Nothing in force to change, or the same declaration registered again
+        # under a new key: an idempotent act, not a semantic one.
+        return
+    membership = resolve_membership(session, actor.subject, project_id)
+    if membership is None or not membership.has(COORDINATION):
+        raise BaselineAdoptionRefused(
+            f"{manifest.revision} changes what this project's mapped columns "
+            "mean, which is a material semantic change. A person holding the "
+            "project-coordination designation approves it; Corridor operations "
+            "constructs and validates it and cannot approve it."
+        )
 
 
 def adopted_baseline_source(
@@ -794,58 +885,31 @@ def _current_preview(session: Session, preview: BaselinePreview) -> BaselinePrev
         source_identity=preview.source_identity,
         source_kind=preview.source_kind,
         output_template=preview.output_template,
+        field_mapping=preview.field_mapping_declaration,
     )
 
 
-def field_mapping_identity(operations: OperationsReading) -> FormatIdentity:
-    """The mapping identity one reading of a workbook's columns amounts to.
+def format_identity_of(manifest: FieldMappingManifest) -> FormatIdentity:
+    """The registerable identity one declared mapping revision amounts to.
 
     Public because it is also the check a later render makes: #495 renders the
-    accepted record *through* a registered output template, and the only way it
-    can refuse a successor template that changed the mapping is by recomputing
-    this digest over that template's own columns and finding it is not the one
-    a person approved.
+    accepted record *through* a registered field mapping, and the way it
+    refuses a successor template is by finding that the manifest offered with
+    the template is not the one a person approved.
 
-    The payload therefore covers everything a successor template can change
-    while keeping the same printed headings: which canonical field each column
-    carries, which of those fields are material, and the controlled vocabulary
-    each column declares. Row content is deliberately absent — the approved
-    output template may be the customer's blank form, and a mapping identity
-    that moved when the rows moved would refuse it for no reason.
+    The digest is taken over the **declaration**, never over the template.
+    That is the whole correction #597 makes: a digest computed from a
+    template's own columns cannot see a form that stopped carrying `Start
+    Station` and `End Station` as two values and started carrying one combined
+    range in the same two columns, because nothing about that change is
+    printed.  A declaration says it, so the digest moves when the meaning does.
     """
 
-    payload = {
-        "identity": FIELD_MAPPING_IDENTITY,
-        "version": FIELD_MAPPING_VERSION,
-        "template_fields": {field: TEMPLATE_FIELDS[field] for field in TEMPLATE_FIELDS},
-        "applied": [
-            [column.column, column.heading, column.field]
-            for column in operations.column_mapping
-        ],
-        "material": sorted(
-            column.field for column in operations.column_mapping if column.material
-        ),
-        "controlled_vocabularies": [
-            [
-                item.column,
-                item.heading,
-                list(item.allowed_values),
-                item.checked,
-                item.reference,
-            ]
-            for item in sorted(
-                operations.controlled_vocabularies,
-                key=lambda item: (item.column, item.heading),
-            )
-        ],
-    }
     return FormatIdentity(
         kind="field_mapping",
-        identity=FIELD_MAPPING_IDENTITY,
-        version=FIELD_MAPPING_VERSION,
-        content_sha256=sha256(
-            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-        ).hexdigest(),
+        identity=manifest.identity,
+        version=manifest.version,
+        content_sha256=manifest.content_sha256,
     )
 
 

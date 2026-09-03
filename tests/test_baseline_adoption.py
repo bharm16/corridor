@@ -42,6 +42,11 @@ from corridor.baseline_workbook import (
 )
 from corridor.config import settings
 from corridor.db import Session, engine
+from corridor.field_mapping_manifest import (
+    DEMO_EXTERNAL_REFERENCES,
+    MappingDeclaration,
+    declared_field_mapping,
+)
 from corridor.models import (
     AuditLog,
     BaselineFormat,
@@ -68,6 +73,12 @@ from corridor.support_assessments import FactProposition, current_support_assess
 
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
+
+# The four headings #509 guessed at are no longer production defaults (#597).
+# A fixture that wants them declares this profile by its name, which is exactly
+# what a customer does with headings read from their own data dictionary.
+DEMO = MappingDeclaration(external_references=DEMO_EXTERNAL_REFERENCES)
+DEMO_HEADINGS = DEMO.external_reference_headings
 
 HEADINGS = [
     "Utility Conflict ID",
@@ -187,6 +198,7 @@ def _preview(session, project, staged, **overrides):
         "customer": "Lone Star Transit Authority",
         "source_identity": "UCM workbook revision C",
     }
+    values.setdefault("field_mapping", DEMO)
     values.update(overrides)
     return preview_baseline_adoption(
         session, project=project, staged=staged, **values
@@ -210,7 +222,9 @@ def test_the_operations_reading_reports_the_workbook_mechanics(tmp_path, store):
     body = _workbook_bytes(tmp_path, extra_sheet="Drop-Down Lists")
     staged = _stage(body)
 
-    reading = read_baseline_workbook(staged.stored_path)
+    reading = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
 
     assert reading.parser == "openpyxl:data_only"
     assert reading.importer_identity == IMPORTER_IDENTITY
@@ -242,13 +256,65 @@ def test_the_operations_reading_reports_the_workbook_mechanics(tmp_path, store):
     assert reading.resolved
 
 
+def test_no_heading_carries_an_external_reference_by_its_spelling_alone(
+    tmp_path, store
+):
+    """#597: the four guessed headings are gone from the production default.
+
+    `UCM Record ID`, `Document Control No.`, `Record URL` and `Document Link`
+    were provisional names with no customer form behind them. Read with nothing
+    declared, they are retained unknown columns like any other heading nobody
+    named — and read through a declared profile they carry their roles again.
+    """
+
+    staged = _stage(_workbook_bytes(tmp_path))
+
+    undeclared = read_baseline_workbook(staged.stored_path)
+
+    assert [column.heading for column in undeclared.unknown_columns] == [
+        "UCM Record ID",
+        "Record URL",
+        "Early TxDOT Utility Activity",
+    ]
+    assert all(row.external_system_id is None for row in undeclared.rows)
+    assert all(row.source_url is None for row in undeclared.rows)
+    # Nothing is lost by declining to guess: the cells are retained.
+    retained = {
+        value.heading
+        for row in undeclared.rows
+        for value in row.retained
+    }
+    assert {"UCM Record ID", "Record URL"} <= retained
+
+    declared = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
+
+    assert declared.rows[0].external_system_id == "UCM-1001"
+    assert declared.rows[0].source_url == "https://ucm.example/records/1001"
+
+
+def test_a_declared_external_reference_role_must_be_one_this_reader_carries(
+    tmp_path, store
+):
+    staged = _stage(_workbook_bytes(tmp_path))
+
+    with pytest.raises(BaselineWorkbookUnsupported, match="external-reference role"):
+        read_baseline_workbook(
+            staged.stored_path,
+            external_references={"ucm record id": "whatever_the_caller_liked"},
+        )
+
+
 def test_the_operations_reading_reports_formulas_and_hidden_content(
     tmp_path, store
 ):
     body = _workbook_bytes(tmp_path, formula_cell="P3", hide_row=4)
     staged = _stage(body)
 
-    reading = read_baseline_workbook(staged.stored_path)
+    reading = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
 
     assert reading.formula_cells == ("Utility Conflicts!P3",)
     assert reading.hidden_content == ("Utility Conflicts!row 4 is hidden",)
@@ -265,7 +331,9 @@ def test_the_operations_reading_reports_a_controlled_vocabulary_and_its_outliers
     body = _workbook_bytes(tmp_path, validation=("C", '"Electric,Water,Gas"'))
     staged = _stage(body)
 
-    reading = read_baseline_workbook(staged.stored_path)
+    reading = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
 
     controlled = {item.column: item for item in reading.controlled_vocabularies}
     assert controlled["C"].heading == "Utility Type"
@@ -284,7 +352,9 @@ def test_a_controlled_vocabulary_held_in_another_sheet_is_reported_unresolved(
     )
     staged = _stage(body)
 
-    reading = read_baseline_workbook(staged.stored_path)
+    reading = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
 
     controlled = {item.column: item for item in reading.controlled_vocabularies}
     assert controlled["C"].checked is False
@@ -303,7 +373,9 @@ def test_a_file_that_heads_no_conflict_matrix_is_refused_by_operations(
     staged = _stage(body)
 
     with pytest.raises(BaselineWorkbookUnsupported):
-        read_baseline_workbook(staged.stored_path)
+        read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
 
 
 def test_a_sequencing_column_blocks_adoption_before_the_coordinator_sees_it(
@@ -313,7 +385,9 @@ def test_a_sequencing_column_blocks_adoption_before_the_coordinator_sees_it(
     rows = [list(row) + ["UC-2"] for row in ROWS]
     staged = _stage(_workbook_bytes(tmp_path, headings=headings, rows=rows))
 
-    reading = read_baseline_workbook(staged.stored_path)
+    reading = read_baseline_workbook(
+        staged.stored_path, external_references=DEMO_HEADINGS
+    )
     assert not reading.resolved
     assert [item.code for item in reading.blocking_diagnostics] == [
         "sequencing_column_unsupported"
@@ -955,6 +1029,14 @@ def test_a_replacement_output_template_changes_no_accepted_value(
 def test_a_format_cannot_be_registered_before_the_data_baseline(
     session, project, tmp_path, store
 ):
+    staged = _stage(_workbook_bytes(tmp_path))
+    manifest = declared_field_mapping(
+        read_baseline_workbook(
+            staged.stored_path, external_references=DEMO_HEADINGS
+        ),
+        DEMO,
+    )
+
     with pytest.raises(DBAPIError, match="adopts its data baseline"):
         with session.begin_nested():
             register_baseline_format(
@@ -962,12 +1044,13 @@ def test_a_format_cannot_be_registered_before_the_data_baseline(
                 project_id=project.id,
                 identity=FormatIdentity(
                     kind="field_mapping",
-                    identity="early",
-                    version="v1",
-                    content_sha256=hashlib.sha256(b"early").hexdigest(),
+                    identity=manifest.identity,
+                    version=manifest.version,
+                    content_sha256=manifest.content_sha256,
                 ),
                 principal=PRINCIPAL,
                 idempotency_key="register-early",
+                manifest=manifest,
             )
 
 

@@ -38,6 +38,7 @@ bytes and reports.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -112,23 +113,21 @@ BASELINE_FACT_FIELDS = tuple(
     if "spreadsheet_cell" in FACT_TYPE_CONTRACTS[name].accepted_segment_kinds
 )
 
-# Exact printed headings that carry a reference *out* of this workbook: the
-# utility-management system's own record identifier, and a document-control
-# link.  Preserved on source-row identity so #527 and #528 can offer a
-# read-only deep link without re-reading the file.
+# The roles a printed heading may carry *out* of this workbook: the
+# utility-management system's own record identifier for the conflict, and a
+# link to a controlled document about it.  They are preserved on source-row
+# identity so #527 and #528 can offer a read-only deep link without re-reading
+# the file, and they are kept apart because they are different records.
 #
-# These names are provisional and are the one place this module guesses at a
-# real customer form.  #561 is the real-bytes compatibility intake that will
-# replace them with headings read from an actual customer workbook's own data
-# dictionary; until it runs, the rule `vocabulary` states holds — an exact
-# name, never a synonym — and a heading not listed here stays an unknown
-# column rather than being matched loosely.
-EXTERNAL_REFERENCE_HEADINGS = {
-    "ucm record id": "external_system_id",
-    "document control no.": "external_system_id",
-    "record url": "source_url",
-    "document link": "source_url",
-}
+# **No heading is assigned either role from its spelling alone (#597).**  This
+# module used to default four guessed names — `UCM Record ID`, `Document
+# Control No.`, `Record URL`, `Document Link` — and no customer form was ever
+# read for them.  A caller now declares the exact headings its registered
+# mapping revision names (`field_mapping_manifest.ExternalReference`), the
+# default is none at all, and a heading nobody declared stays a retained
+# unknown column.  #561 supplies real ones from a partner's own data
+# dictionary.
+EXTERNAL_REFERENCE_ROLES = ("external_system_id", "source_url")
 
 
 class BaselineWorkbookUnsupported(ValueError):
@@ -291,8 +290,17 @@ class OperationsReading:
         return not self.blocking_diagnostics and self.round_trip.clean
 
 
-def read_baseline_workbook(path: Path | str) -> OperationsReading:
+def read_baseline_workbook(
+    path: Path | str,
+    *,
+    external_references: Mapping[str, str] | None = None,
+) -> OperationsReading:
     """Read one offered workbook and report only what operations owns.
+
+    ``external_references`` is the declared heading-to-role map of the mapping
+    revision this file is being read through, casefolded and whitespace
+    collapsed.  It defaults to none: an undeclared heading carries no meaning
+    here whatever it is spelled (#597).
 
     Raises ``BaselineWorkbookUnsupported`` when the file is not a workbook this
     importer can read at all — there is nothing to report a diagnostic *about*,
@@ -301,6 +309,12 @@ def read_baseline_workbook(path: Path | str) -> OperationsReading:
     """
 
     path = Path(path)
+    declared = dict(external_references or {})
+    unknown = sorted(set(declared.values()) - set(EXTERNAL_REFERENCE_ROLES))
+    if unknown:
+        raise BaselineWorkbookUnsupported(
+            f"{unknown} is not an external-reference role this reader carries"
+        )
     try:
         sheets = read_workbook(path)
     except Exception as exc:  # openpyxl raises its own container errors
@@ -363,7 +377,7 @@ def read_baseline_workbook(path: Path | str) -> OperationsReading:
         )
         for position, field in sorted(chosen.mapping.items())
     )
-    reference_columns = _reference_columns(headings, chosen.mapping)
+    reference_columns = _reference_columns(headings, chosen.mapping, declared)
     rows, unknown_counts, unsupported = _read_rows(
         chosen, segments, reference_columns, diagnostics
     )
@@ -543,7 +557,7 @@ def _unsupported_reason(field: str, text: str) -> str | None:
 
 
 def _reference_columns(
-    headings: list[str], mapping: dict[int, str]
+    headings: list[str], mapping: dict[int, str], declared: dict[str, str]
 ) -> dict[int, str]:
     """Which columns carry an external system id or a source URL, by exact name."""
 
@@ -552,9 +566,7 @@ def _reference_columns(
     for position, heading in enumerate(headings):
         if position in mapping:
             continue
-        role = EXTERNAL_REFERENCE_HEADINGS.get(
-            " ".join(str(heading or "").split()).casefold()
-        )
+        role = declared.get(" ".join(str(heading or "").split()).casefold())
         if role is not None and role not in taken:
             found[position] = role
             taken.add(role)

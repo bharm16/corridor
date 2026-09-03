@@ -24,9 +24,10 @@ from uuid import uuid4
 
 import pytest
 from openpyxl import Workbook, load_workbook
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from corridor.baseline_adoption import (
+    BaselineAdoptionRefused,
     FormatIdentity,
     adopt_baseline,
     effective_baseline_formats,
@@ -38,11 +39,24 @@ from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
 from corridor.fact_decisions import record_human_fact_decision
+from corridor.field_mapping_manifest import (
+    COMBINED_RANGE,
+    DEMO_EXTERNAL_REFERENCES,
+    MappingDeclaration,
+    MappingManifestRefused,
+    MaterialMapping,
+    declared_field_mapping,
+)
 from corridor.materializer import (
     materialize_segment_value,
     materialize_typed_satellite,
 )
-from corridor.models import Document, FactDecision, Project
+from corridor.models import (
+    Document,
+    FactDecision,
+    Project,
+    ProjectRecordRevision,
+)
 from corridor.principals import HumanPrincipal
 from corridor.source_append import ClosureValues, SegmentValues, append_fact
 from corridor.source_append import append_source_segments
@@ -65,6 +79,29 @@ from corridor.workbook_render import (
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
 SHEET = "Utility Conflicts"
+
+# The synthetic profile these fixtures declare by name. The four headings under
+# it stopped being production defaults with #597; a fixture that wants an
+# external reference says so, exactly as a customer's own mapping revision does.
+DEMO = MappingDeclaration(external_references=DEMO_EXTERNAL_REFERENCES)
+
+# The successor form this ticket exists for: `Start Station` carries the whole
+# range and `End Station` is blank. Same headings, same drop-downs, same
+# canonical fields — nothing a digest over the template's bytes can see.
+COMBINED_STATIONS = MaterialMapping(
+    source_columns=("Start Station", "End Station"),
+    target_fields=("station_from", "station_to"),
+    composition=COMBINED_RANGE,
+    delimiter=" - ",
+    precision="source_stated_unit_v1",
+    blank_behaviour="all_absent_is_unknown_v1",
+    material=True,
+)
+COMBINED_DECLARATION = MappingDeclaration(
+    version="v2",
+    external_references=DEMO_EXTERNAL_REFERENCES,
+    mappings=(COMBINED_STATIONS,),
+)
 
 HEADINGS = [
     "Utility Conflict ID",
@@ -198,6 +235,7 @@ def adopted(session, project, tmp_path, store):
         staged=staged,
         customer="Lone Star Transit Authority",
         source_identity="UCM workbook revision C",
+        field_mapping=DEMO,
     )
     result = adopt_baseline(
         session,
@@ -206,15 +244,21 @@ def adopted(session, project, tmp_path, store):
         idempotency_key="adopt-1",
         images_dir=tmp_path / "images",
     )
-    return _Adopted(body=body, result=result, document_id=result.document_id)
+    return _Adopted(
+        body=body,
+        result=result,
+        document_id=result.document_id,
+        manifest=preview.field_mapping_manifest,
+    )
 
 
 class _Adopted:
-    def __init__(self, body, result, document_id):
+    def __init__(self, body, result, document_id, manifest):
         self.body = body
         self.result = result
         self.document_id = document_id
         self.revision_id = result.revision_id
+        self.manifest = manifest
 
 
 def _render(session, project, adopted, **kwargs):
@@ -223,6 +267,7 @@ def _render(session, project, adopted, **kwargs):
         project_id=project.id,
         revision_id=kwargs.pop("revision_id", adopted.revision_id),
         template_bytes=kwargs.pop("template_bytes", adopted.body),
+        field_mapping=kwargs.pop("field_mapping", adopted.manifest),
         **kwargs,
     )
 
@@ -372,6 +417,10 @@ def test_the_receipt_carries_every_bound_identity_without_reparsing_the_workbook
     assert rendered.field_mapping_identity == "ucm-published-column-headings"
     assert rendered.field_mapping_sha256 == formats["field_mapping"].content_sha256
     assert rendered.field_mapping_version == "v1"
+    # The receipt names the mapping revision the render was performed under,
+    # and the manifest schema that revision was written against (#597).
+    assert rendered.field_mapping_revision == "ucm-published-column-headings v1"
+    assert rendered.field_mapping_schema_version == "field-mapping-manifest-v1"
     assert rendered.render_profile_sha256 == RenderProfile().content_sha256
     assert rendered.renderer_version == RENDERER_VERSION
     assert rendered.output_sha256 == hashlib.sha256(rendered.content).hexdigest()
@@ -521,11 +570,7 @@ def test_an_approved_successor_template_renders_without_re_adopting_the_baseline
 ):
     """A later template and mapping change no accepted value and open no adoption."""
 
-    from corridor.baseline_adoption import (
-        adopted_baseline_source,
-        field_mapping_identity,
-    )
-    from corridor.baseline_workbook import read_baseline_workbook
+    from corridor.baseline_adoption import adopted_baseline_source
 
     successor = _workbook_bytes(
         tmp_path,
@@ -533,24 +578,12 @@ def test_an_approved_successor_template_renders_without_re_adopting_the_baseline
         headings=[*HEADINGS[:-1], "Sheet No."],
         rows=[[*row[:-1], "12"] for row in ROWS],
     )
-    path = tmp_path / "successor-read.xlsx"
-    path.write_bytes(successor)
-    mapping = field_mapping_identity(read_baseline_workbook(path))
-    for kind, identity, digest in (
-        ("output_template", "Customer standard UCM export", hashlib.sha256(successor).hexdigest()),
-        ("field_mapping", mapping.identity, mapping.content_sha256),
-    ):
-        register_baseline_format(
-            session,
-            project_id=project.id,
-            identity=FormatIdentity(
-                kind=kind, identity=identity, version="2026.1", content_sha256=digest
-            ),
-            principal=PRINCIPAL,
-            idempotency_key=f"register-{kind}",
-        )
+    _approve_template(session, project, successor)
     before = adopted_baseline_source(session, project.id)
 
+    # The renamed column carries no canonical field either way, so the mapping
+    # revision in force still describes this template exactly and nothing needs
+    # to be registered for it.
     rendered = _render(session, project, adopted, template_bytes=successor)
 
     after = adopted_baseline_source(session, project.id)
@@ -558,6 +591,7 @@ def test_an_approved_successor_template_renders_without_re_adopting_the_baseline
     assert after.content_sha256 == before.content_sha256
     assert rendered.output_template_identity == "Customer standard UCM export"
     assert rendered.output_template_version == "2026.1"
+    assert rendered.field_mapping_revision == "ucm-published-column-headings v1"
     assert rendered.changed_cells == ()
     # The customer's own unmapped column travels untouched.
     assert _cells(rendered.content)["P3"] == "12"
@@ -581,7 +615,241 @@ def test_a_project_that_never_adopted_a_baseline_is_refused(
             project_id=other.id,
             revision_id=adopted.revision_id,
             template_bytes=adopted.body,
+            field_mapping=adopted.manifest,
         )
+
+
+# --- The mapping revision, not the template's bytes (#597) -------------------
+
+
+def _combined_rows():
+    """The same rows, with the station range carried as one combined value."""
+
+    return [
+        [*row[:6], f"{row[6]} - {row[7]}", "", *row[8:]] for row in ROWS
+    ]
+
+
+def _reading_of(tmp_path, body: bytes, name: str):
+    from corridor.baseline_workbook import read_baseline_workbook
+
+    path = tmp_path / name
+    path.write_bytes(body)
+    return read_baseline_workbook(
+        path, external_references=DEMO.external_reference_headings
+    )
+
+
+def _combined_manifest(tmp_path, body: bytes):
+    """The declared revision for a form that combines the station range."""
+
+    return declared_field_mapping(
+        _reading_of(tmp_path, body, "combined-read.xlsx"), COMBINED_DECLARATION
+    )
+
+
+def _coordinator(session, project):
+    """One person holding the project-coordination designation on this project."""
+
+    from corridor.access import COORDINATION, enroll_member
+
+    principal = HumanPrincipal(f"local:coord-{uuid4().hex[:8]}")
+    enroll_member(
+        session,
+        project_id=project.id,
+        email=f"{principal.subject.split(':')[1]}@example.test",
+        principal=principal,
+        display_name="Dana Ruiz",
+        designations=[COORDINATION],
+        operator=PRINCIPAL,
+    )
+    return principal
+
+
+def _register_mapping(session, project, manifest, principal, key):
+    return register_baseline_format(
+        session,
+        project_id=project.id,
+        identity=FormatIdentity(
+            kind="field_mapping",
+            identity=manifest.identity,
+            version=manifest.version,
+            content_sha256=manifest.content_sha256,
+        ),
+        principal=principal,
+        idempotency_key=key,
+        manifest=manifest,
+    )
+
+
+def test_a_template_that_combines_a_mapped_material_value_is_refused(
+    session, project, adopted, tmp_path
+):
+    """Direction one: two values become one, and nothing printed changes.
+
+    This is the hole #495 left. Every heading, every canonical field, every
+    materiality flag and every drop-down is identical, so a digest over the
+    template's own columns is identical too — the assertion below says so
+    directly. Only the registered mapping revision can tell, because only it
+    says how many values a column carries.
+    """
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    before = _reading_of(tmp_path, adopted.body, "before-read.xlsx")
+    after = _reading_of(tmp_path, combined, "after-read.xlsx")
+    assert [
+        (column.column, column.heading, column.field, column.material)
+        for column in after.column_mapping
+    ] == [
+        (column.column, column.heading, column.field, column.material)
+        for column in before.column_mapping
+    ]
+    assert after.controlled_vocabularies == before.controlled_vocabularies
+    _approve_template(session, project, combined)
+
+    with pytest.raises(UnapprovedFieldMapping, match="combines two values") as raised:
+        _render(session, project, adopted, template_bytes=combined)
+
+    assert "one value per column" in str(raised.value)
+    assert "project-coordination designation" in str(raised.value)
+
+
+def test_a_template_that_splits_a_combined_mapped_material_value_is_refused(
+    session, project, adopted, tmp_path
+):
+    """Direction two: one value becomes two, headings still unchanged.
+
+    The project's approved revision now says the range is one combined value,
+    so the split form it was adopted from is the successor — and it is refused
+    on exactly the same terms.
+    """
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+    _register_mapping(
+        session, project, manifest, _coordinator(session, project), "register-v2"
+    )
+
+    with pytest.raises(
+        UnapprovedFieldMapping, match="declares the whole range"
+    ) as raised:
+        _render(session, project, adopted, field_mapping=manifest)
+
+    assert "combined_range_v1, cardinality 1 → 2" in str(raised.value)
+    assert "project-coordination designation" in str(raised.value)
+
+
+def test_an_approved_mapping_revision_renders_the_combined_template(
+    session, project, adopted, tmp_path
+):
+    """The attributable act is what unblocks it, and it moves no accepted value."""
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+    _approve_template(session, project, combined)
+    _register_mapping(
+        session, project, manifest, _coordinator(session, project), "register-v2"
+    )
+
+    rendered = _render(
+        session, project, adopted, template_bytes=combined, field_mapping=manifest
+    )
+
+    assert rendered.field_mapping_revision == "ucm-published-column-headings v2"
+    # The accepted record still holds two station values; the customer's form
+    # now prints them as one, and the render writes nothing to say so.
+    assert rendered.changed_cells == ()
+    cells = _cells(rendered.content)
+    assert cells["G3"] == "1149+00 - 1150+00"
+    assert "H3" not in cells
+
+
+def test_a_mapping_revision_is_approved_by_the_project_coordination_designation(
+    session, project, adopted, tmp_path
+):
+    """Operations constructs and validates it; a designated person approves it."""
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+
+    with pytest.raises(
+        BaselineAdoptionRefused, match="project-coordination designation"
+    ):
+        _register_mapping(session, project, manifest, PRINCIPAL, "register-v2")
+
+    registered = _register_mapping(
+        session, project, manifest, _coordinator(session, project), "register-v2-again"
+    )
+
+    assert registered.content_sha256 == manifest.content_sha256
+    assert effective_baseline_formats(session, project.id)[
+        "field_mapping"
+    ].content_sha256 == manifest.content_sha256
+
+
+def test_registering_a_mapping_revision_changes_no_accepted_value(
+    session, project, adopted, tmp_path
+):
+    """A mapping revision says how the record is read out, never what it says."""
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+    before_revision = session.scalar(
+        select(func.max(ProjectRecordRevision.id)).where(
+            ProjectRecordRevision.project_id == project.id
+        )
+    )
+    before_decisions = _effective_decisions(session, project)
+
+    _register_mapping(
+        session, project, manifest, _coordinator(session, project), "register-v2"
+    )
+
+    assert session.scalar(
+        select(func.max(ProjectRecordRevision.id)).where(
+            ProjectRecordRevision.project_id == project.id
+        )
+    ) == before_revision
+    assert _effective_decisions(session, project) == before_decisions
+
+
+def _effective_decisions(session, project):
+    return sorted(
+        session.execute(
+            select(
+                FactDecision.subject_key, FactDecision.fact_type, FactDecision.fact_id
+            ).where(
+                FactDecision.project_id == project.id,
+                FactDecision.superseded_by.is_(None),
+            )
+        ).all()
+    )
+
+
+def test_a_declaration_its_own_populated_example_contradicts_is_refused(
+    session, project, adopted, tmp_path
+):
+    """The round trip is what proves a declaration, before anyone registers it."""
+
+    with pytest.raises(MappingManifestRefused, match="declares the whole range"):
+        declared_field_mapping(
+            _reading_of(tmp_path, adopted.body, "split-read.xlsx"),
+            COMBINED_DECLARATION,
+        )
+
+
+def test_a_manifest_that_is_not_the_registered_mapping_revision_is_refused(
+    session, project, adopted, tmp_path
+):
+    """Offering a manifest is exactly as unprivileged as offering template bytes."""
+
+    combined = _workbook_bytes(tmp_path, name="combined.xlsx", rows=_combined_rows())
+    manifest = _combined_manifest(tmp_path, combined)
+
+    with pytest.raises(
+        UnapprovedFieldMapping, match="not the approved mapping revision"
+    ):
+        _render(session, project, adopted, field_mapping=manifest)
 
 
 # --- Fail closed on what cannot be preserved --------------------------------
@@ -959,6 +1227,7 @@ def adopted_rich(session, project, tmp_path, store):
         staged=staged,
         customer="Lone Star Transit Authority",
         source_identity="UCM workbook revision C",
+        field_mapping=DEMO,
     )
     result = adopt_baseline(
         session,
@@ -967,7 +1236,12 @@ def adopted_rich(session, project, tmp_path, store):
         idempotency_key="adopt-rich",
         images_dir=tmp_path / "images",
     )
-    return _Adopted(body=body, result=result, document_id=result.document_id)
+    return _Adopted(
+        body=body,
+        result=result,
+        document_id=result.document_id,
+        manifest=preview.field_mapping_manifest,
+    )
 
 
 def test_formatting_validation_tables_filters_and_hidden_content_survive_a_write(
@@ -1019,7 +1293,9 @@ def test_formatting_validation_tables_filters_and_hidden_content_survive_a_write
     with tempfile.TemporaryDirectory() as directory:
         path = Path(directory) / "rendered.xlsx"
         path.write_bytes(rendered.content)
-        again = read_baseline_workbook(path)
+        again = read_baseline_workbook(
+            path, external_references=DEMO.external_reference_headings
+        )
     assert again.adopted_sheet == SHEET
     assert again.round_trip.clean
     assert [row.value("external_org") for row in again.rows] == [
@@ -1150,6 +1426,7 @@ def test_a_shared_string_template_renders_the_way_excel_writes_one(
         staged=staged,
         customer="Lone Star Transit Authority",
         source_identity="UCM workbook revision C",
+        field_mapping=DEMO,
     )
     result = adopt_baseline(
         session,
@@ -1158,7 +1435,12 @@ def test_a_shared_string_template_renders_the_way_excel_writes_one(
         idempotency_key="adopt-shared",
         images_dir=tmp_path / "images",
     )
-    adopted = _Adopted(body=body, result=result, document_id=result.document_id)
+    adopted = _Adopted(
+        body=body,
+        result=result,
+        document_id=result.document_id,
+        manifest=preview.field_mapping_manifest,
+    )
     outcome = _decide(
         session,
         project,
