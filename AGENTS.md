@@ -87,8 +87,10 @@ written only through the record-decision role's `SECURITY DEFINER` commands
 proposals only through the source-append role's commands (`source_append.py`),
 and cannot make anything effective. Support assessments join that matrix with
 #530.
-Implementation status is in [roadmap.md](roadmap.md): Adopt Baseline and
-Proposed Delta are **not yet implemented** (#509, #510).
+Implementation status is in [roadmap.md](roadmap.md). The spine lifecycle is
+now built end to end: Adopt Baseline (#509), Proposed Delta identity (#518),
+Resolve Delta (#519), and the atomic Review Packet transaction (#526). What
+remains open on it is the released class-specific projection policies.
 
 ### Transitional legacy path (frozen; ADR-0081)
 
@@ -109,7 +111,8 @@ legacy reader working during migration. They also run only for a **legacy
 project**: a project holding a baseline-adoption receipt is in
 `adopted_baseline` operating mode (`operating_mode.py`, #520), and PostgreSQL
 refuses every legacy accepted-value write for it. The Adopt Baseline importer
-that establishes that mode in production is still #509.
+that establishes that mode is built (`baseline_adoption.py`, #509) and invokes
+that one-way transition in the same transaction as the baseline it adopts.
 
 Extractors only ever produce Extracted Proposals. Every module opens with a docstring
 saying why it exists and what was tried before — read it before changing one.
