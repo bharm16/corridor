@@ -16,6 +16,7 @@ where a later openpyxl release cannot quietly reintroduce a wall clock.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import date, datetime
 from io import BytesIO
 import re
@@ -91,22 +92,37 @@ def _cell_value(value):
     return str(value)
 
 
-def _canonical_zip(value: bytes) -> bytes:
-    source = zipfile.ZipFile(BytesIO(value))
+def canonical_package(parts: Mapping[str, bytes]) -> bytes:
+    """Write one OOXML package to bytes that depend only on its parts.
+
+    Public because every writer that content-addresses its own workbook needs
+    exactly this shaping and must not grow a second copy of it: a zip entry
+    carries a modification time, a creating system, and a permission mask, and
+    each of those is a wall clock or a host detail leaking into a digest. The
+    caller supplies the finished part bytes; this decides nothing about them.
+    """
+
     output = BytesIO()
-    with source, zipfile.ZipFile(
-        output,
-        "w",
-        compression=zipfile.ZIP_DEFLATED,
-        compresslevel=9,
+    with zipfile.ZipFile(
+        output, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9
     ) as target:
-        for name in sorted(source.namelist()):
+        for name in sorted(parts):
             info = zipfile.ZipInfo(name, _ZIP_TIME)
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = 0o600 << 16
-            target.writestr(info, _canonical_entry(name, source.read(name)))
+            target.writestr(info, parts[name])
     return output.getvalue()
+
+
+def _canonical_zip(value: bytes) -> bytes:
+    with zipfile.ZipFile(BytesIO(value)) as source:
+        return canonical_package(
+            {
+                name: _canonical_entry(name, source.read(name))
+                for name in source.namelist()
+            }
+        )
 
 
 def _canonical_entry(name: str, payload: bytes) -> bytes:
