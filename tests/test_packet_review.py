@@ -361,7 +361,11 @@ def test_conflicting_sources_become_one_coordination_question(
         if item.grouping_key_kind == COORDINATION_QUESTION
     ]
     assert question.child_count == 2
-    assert question.decidable is False
+    # It is decided, but child by child against both sources (#528), never as
+    # one batch outcome over the pair.
+    assert question.batched is False
+    assert question.focused is True
+    assert question.decidable is True
     assert "sources disagree" in question.headline
 
 

@@ -17,6 +17,7 @@ from collections import Counter
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 import random
+from typing import Sequence
 from uuid import uuid4
 
 import pytest
@@ -33,6 +34,7 @@ from corridor.delta_resolution import (
 from corridor.models import (
     ActiveExtractionRun,
     Document,
+    ExternalPartyStatement,
     ExtractionRun,
     Fact,
     FactSource,
@@ -56,14 +58,22 @@ from corridor.review_packet_reading import (
     COORDINATION_QUESTION,
     DEFERRED,
     HELD_OUT_APPARENT_REMOVAL,
+    HELD_OUT_DIFFERENT_ACTION,
     HELD_OUT_OWNER_MISMATCH,
     HELD_OUT_POSSIBLE_NEW_CONFLICT,
     HELD_OUT_UNCERTAIN_SCOPE,
+    KEY_CONTRADICTED_IDENTITY,
+    KEY_CONTRADICTED_VALUE,
+    KEY_HELD_OUT_OF_BATCH,
+    KEY_REASONS,
+    KEY_SHARED_COMMITMENT_SCOPE,
+    KEY_SOURCE_REVISION_BATCH,
     PARTITION_RULE_VERSION,
     PAST_DUE_COMMITMENT_BAND,
     PROMISED_TIMING_CHANGE_BAND,
     RECORD_CLEANUP_BAND,
     RESOLVED,
+    SHARED_COMMITMENT,
     SOURCE_CONTRADICTION_BAND,
     SOURCE_REVISION,
     STALE,
@@ -315,6 +325,7 @@ def _generate(session: Session, project: Project, rng: random.Random) -> None:
         "external_org",
         "applies_to",
         "notes",
+        "utility_id",
     )
     lineages = (
         ("ucm-workbook", "rev-1"),
@@ -386,6 +397,33 @@ def _generate(session: Session, project: Project, rng: random.Random) -> None:
             superseding_delta_id=superseding.id,
         )
         spent.add(delta.id)
+
+    # Some of the set arrives as attributable statements rather than documents,
+    # at both settled and unsettled scope, so the commitment key and its refusal
+    # are inside the property's input space rather than beside it.
+    for index in range(rng.randint(1, 2)):
+        statement = _statement(
+            session,
+            project,
+            # `selected` is the one enumerable settled scope, so it is weighted
+            # to appear; `all_active` and `unknown` are both in the space
+            # because neither may ever become a shared-commitment item.
+            scope_mode=rng.choice(
+                ("selected", "selected", "all_active", "unknown")
+            ),
+            description=f"generated statement {index}",
+        )
+        deltas.extend(
+            _statement_deltas(
+                session,
+                project,
+                statement,
+                subjects=rng.sample(subjects, rng.randint(1, 3)),
+                field=rng.choice(("committed_date", "need_date", "external_org")),
+                proposed_value=f"2026-12-{rng.randint(10, 28)}",
+                source_revision=f"stmt-{uuid4().hex[:6]}",
+            )
+        )
 
     for delta in deltas:
         if delta.id in spent:
@@ -1095,6 +1133,7 @@ def test_the_generated_scenarios_exercise_every_standing_and_key(
     standings: set[str] = set()
     kinds: set[str] = set()
     held_out: set[str] = set()
+    key_reasons: set[str] = set()
     batched = False
     for seed in range(24):
         project = Project(
@@ -1109,18 +1148,21 @@ def test_the_generated_scenarios_exercise_every_standing_and_key(
         standings.update(standing.standing for standing in reading.standings)
         for item in reading.items:
             kinds.add(item.grouping_key_kind)
+            key_reasons.add(item.key_reason)
             if item.held_out_reason is not None:
                 held_out.add(item.held_out_reason)
             batched = batched or len(item.delta_ids) > 1
 
     assert standings == {ACTIONABLE, DEFERRED, STALE, SUPERSEDED, RESOLVED}
-    assert kinds == {SOURCE_REVISION, COORDINATION_QUESTION}
+    assert kinds == {SOURCE_REVISION, COORDINATION_QUESTION, SHARED_COMMITMENT}
     assert held_out == {
         HELD_OUT_APPARENT_REMOVAL,
         HELD_OUT_POSSIBLE_NEW_CONFLICT,
         HELD_OUT_OWNER_MISMATCH,
         HELD_OUT_UNCERTAIN_SCOPE,
+        HELD_OUT_DIFFERENT_ACTION,
     }
+    assert key_reasons == set(KEY_REASONS)
     assert batched
 
 
@@ -1162,3 +1204,370 @@ def test_the_band_table_is_a_total_order_with_no_gaps() -> None:
         band for band in CONSEQUENCE_BANDS if band.name == APPARENT_REMOVAL_BAND
     )
     assert apparent.work_list_group is None
+
+
+# --- delta-partition-v2: cross-source consolidation (#528) ----------------
+
+
+def _statement(
+    session: Session,
+    project: Project,
+    *,
+    scope_mode: str = "selected",
+    description: str = "the contractor committed to the whole block",
+) -> ExternalPartyStatement:
+    """One attributable External Party Statement, at a declared scope mode."""
+
+    row = ExternalPartyStatement(
+        event_type="commitment",
+        project_id=project.id,
+        scope_mode=scope_mode,
+        source_kind="cited",
+        description=description,
+        created_by="local:recorder",
+    )
+    session.add(row)
+    session.flush()
+    return row
+
+
+def _statement_deltas(
+    session: Session,
+    project: Project,
+    statement: ExternalPartyStatement,
+    *,
+    subjects: Sequence[str],
+    field: str = "committed_date",
+    proposed_value: str = "2026-12-15",
+    source_family: str = "recorded-statement",
+    source_revision: str = "stmt-1",
+) -> tuple[ProposedDelta, ...]:
+    """One statement-bound delta group reaching each named Utility Conflict."""
+
+    return create_proposed_delta_group(
+        session,
+        project_id=project.id,
+        source_family=source_family,
+        source_revision=source_revision,
+        statement_id=statement.id,
+        deltas=[
+            ProposedDeltaValues(
+                change_type="modify",
+                target=ExistingSubjectTarget(
+                    subject_identity=subject_key, field=field
+                ),
+                accepted_value="2026-11-01",
+                proposed_value=proposed_value,
+            )
+            for subject_key in subjects
+        ],
+    )
+
+
+def test_a_reading_refuses_a_rule_version_it_does_not_implement(
+    session: Session, project: Project
+) -> None:
+    """A receipt never records a partition rule that did not run."""
+
+    _delta(session, project)
+
+    with pytest.raises(ReviewPacketReadingRefused) as refused:
+        read_open_deltas(
+            session,
+            project_id=project.id,
+            as_of=CUTOFF,
+            rule_version="delta-partition-v1",
+        )
+
+    assert "delta-partition-v1" in str(refused.value)
+    assert PARTITION_RULE_VERSION in str(refused.value)
+
+
+def test_every_item_records_why_the_rule_keyed_it_that_way(
+    session: Session, project: Project
+) -> None:
+    """The selected key is explainable from the item alone (ADR-0085)."""
+
+    _delta(session, project, field="station_from")
+    _delta(session, project, field="external_org", proposed_value="Bell")
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    assert reading.items
+    for item in reading.items:
+        assert item.key_reason in KEY_REASONS
+        assert item.key_sentence == KEY_REASONS[item.key_reason]
+    assert {item.key_reason for item in reading.items} == {
+        KEY_SOURCE_REVISION_BATCH,
+        KEY_HELD_OUT_OF_BATCH,
+    }
+
+
+def test_sources_disagreeing_about_which_utility_a_row_is_ask_an_identity_question(
+    session: Session, project: Project
+) -> None:
+    """An identity contradiction is named as one, not as a value question."""
+
+    workbook = _delta(
+        session,
+        project,
+        field="utility_id",
+        accepted_value="U-042",
+        proposed_value="U-042A",
+    )
+    minutes = _delta(
+        session,
+        project,
+        field="utility_id",
+        accepted_value="U-042",
+        proposed_value="U-143",
+        source_family="meeting-minutes",
+        source_revision="m-1",
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    (item,) = reading.items
+    assert item.grouping_key_kind == COORDINATION_QUESTION
+    assert item.key_reason == KEY_CONTRADICTED_IDENTITY
+    assert item.delta_ids == (workbook.id, minutes.id)
+    assert "which utility this row is" in item.key_sentence
+
+
+def test_a_value_contradiction_is_not_an_identity_question(
+    session: Session, project: Project
+) -> None:
+    """Only an identity field raises the identity reason."""
+
+    _delta(session, project, field="committed_date", proposed_value="2026-12-15")
+    _delta(
+        session,
+        project,
+        field="committed_date",
+        proposed_value="2027-01-20",
+        source_family="meeting-minutes",
+        source_revision="m-1",
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    (item,) = reading.items
+    assert item.key_reason == KEY_CONTRADICTED_VALUE
+
+
+def test_materially_different_actions_are_never_one_question(
+    session: Session, project: Project
+) -> None:
+    """An edited value and a vanished row are two questions, not one."""
+
+    edited = _delta(
+        session,
+        project,
+        field="station_from",
+        proposed_value="1200+00",
+    )
+    vanished = _delta(
+        session,
+        project,
+        field="station_from",
+        change_type="apparent_removal",
+        proposed_value=None,
+        source_family="ucm-workbook",
+        source_revision="rev-2",
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    assert len(reading.items) == 2
+    offered = {item.delta_ids: item for item in reading.items}
+    assert set(offered) == {(edited.id,), (vanished.id,)}
+    for item in reading.items:
+        assert item.grouping_key_kind == SOURCE_REVISION
+        assert item.held_out_reason == HELD_OUT_DIFFERENT_ACTION
+        assert item.key_reason == KEY_HELD_OUT_OF_BATCH
+
+
+def test_sources_agreeing_on_the_action_still_form_one_question(
+    session: Session, project: Project
+) -> None:
+    """The split keeps the disagreement that survives it (#528, criterion 4)."""
+
+    first = _delta(session, project, field="station_from", proposed_value="1200+00")
+    second = _delta(
+        session,
+        project,
+        field="station_from",
+        proposed_value="1300+00",
+        source_family="meeting-minutes",
+        source_revision="m-1",
+    )
+    vanished = _delta(
+        session,
+        project,
+        field="station_from",
+        change_type="apparent_removal",
+        proposed_value=None,
+        source_revision="rev-2",
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    questions = [
+        item
+        for item in reading.items
+        if item.grouping_key_kind == COORDINATION_QUESTION
+    ]
+    (question,) = questions
+    assert question.delta_ids == (first.id, second.id)
+    assert question.grouping_key.endswith("#modify")
+    removals = [item for item in reading.items if item.delta_ids == (vanished.id,)]
+    assert removals and removals[0].held_out_reason == HELD_OUT_DIFFERENT_ACTION
+
+
+def test_one_commitment_over_several_conflicts_is_one_item(
+    session: Session, project: Project
+) -> None:
+    """ADR-0085's third key: one attributable commitment, one decision."""
+
+    statement = _statement(session, project)
+    children = _statement_deltas(
+        session,
+        project,
+        statement,
+        subjects=("Utility Conflicts!7", "Utility Conflicts!8", "Utility Conflicts!9"),
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    (item,) = reading.items
+    assert item.grouping_key_kind == SHARED_COMMITMENT
+    assert item.grouping_key == f"statement:{statement.id}"
+    assert item.key_reason == KEY_SHARED_COMMITMENT_SCOPE
+    assert item.delta_ids == tuple(sorted(child.id for child in children))
+
+
+def test_a_commitment_whose_scope_is_not_settled_is_not_one_decision(
+    session: Session, project: Project
+) -> None:
+    """`Applies To: not yet known` is record state, never a bounded scope."""
+
+    statement = _statement(session, project, scope_mode="unknown")
+    _statement_deltas(
+        session,
+        project,
+        statement,
+        subjects=("Utility Conflicts!7", "Utility Conflicts!8"),
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    assert reading.items
+    assert all(
+        item.grouping_key_kind != SHARED_COMMITMENT for item in reading.items
+    )
+
+
+def test_a_commitment_reaching_one_conflict_is_an_ordinary_batch(
+    session: Session, project: Project
+) -> None:
+    """Nothing is 'shared' across one Utility Conflict."""
+
+    statement = _statement(session, project)
+    _statement_deltas(
+        session, project, statement, subjects=("Utility Conflicts!7",)
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    (item,) = reading.items
+    assert item.grouping_key_kind == SOURCE_REVISION
+    assert item.key_reason == KEY_SOURCE_REVISION_BATCH
+
+
+def test_a_contradicted_conflict_leaves_its_commitment(
+    session: Session, project: Project
+) -> None:
+    """A commitment stops being one decision exactly where a source disagrees."""
+
+    statement = _statement(session, project)
+    committed = _statement_deltas(
+        session,
+        project,
+        statement,
+        subjects=("Utility Conflicts!7", "Utility Conflicts!8", "Utility Conflicts!9"),
+    )
+    disputed = next(
+        child
+        for child in committed
+        if child.target_subject_identity == "Utility Conflicts!8"
+    )
+    later_email = _delta(
+        session,
+        project,
+        subject="Utility Conflicts!8",
+        field="committed_date",
+        accepted_value="2026-11-01",
+        proposed_value="2027-03-02",
+        source_family="email",
+        source_revision="e-1",
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    question = next(
+        item
+        for item in reading.items
+        if item.grouping_key_kind == COORDINATION_QUESTION
+    )
+    assert question.delta_ids == tuple(sorted((disputed.id, later_email.id)))
+    commitment = next(
+        item for item in reading.items if item.grouping_key_kind == SHARED_COMMITMENT
+    )
+    assert commitment.delta_ids == tuple(
+        sorted(child.id for child in committed if child.id != disputed.id)
+    )
+    # Exactly once still holds across the two items.
+    offered = [
+        delta_id for item in reading.items for delta_id in item.delta_ids
+    ]
+    assert len(offered) == len(set(offered)) == len(reading.actionable_delta_ids)
+
+
+def test_a_commitment_child_that_cannot_join_a_batch_still_leaves_it(
+    session: Session, project: Project
+) -> None:
+    """The shape hold-outs run before the commitment key, not after it."""
+
+    statement = _statement(session, project)
+    dated = _statement_deltas(
+        session,
+        project,
+        statement,
+        subjects=("Utility Conflicts!7", "Utility Conflicts!8"),
+    )
+    (owner,) = create_proposed_delta_group(
+        session,
+        project_id=project.id,
+        source_family="recorded-statement",
+        source_revision="stmt-1",
+        statement_id=statement.id,
+        deltas=[
+            ProposedDeltaValues(
+                change_type="modify",
+                target=ExistingSubjectTarget(
+                    subject_identity="Utility Conflicts!9", field="external_org"
+                ),
+                accepted_value="Bell",
+                proposed_value="Bell South",
+            )
+        ],
+    )
+
+    reading = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+
+    held = next(item for item in reading.items if item.delta_ids == (owner.id,))
+    assert held.held_out_reason == HELD_OUT_OWNER_MISMATCH
+    commitment = next(
+        item for item in reading.items if item.grouping_key_kind == SHARED_COMMITMENT
+    )
+    assert commitment.delta_ids == tuple(sorted(child.id for child in dated))

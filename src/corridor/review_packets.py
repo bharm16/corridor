@@ -300,6 +300,8 @@ def resolve_review_packet(
         else:
             validated.append(outcome)
 
+    refusals.extend(_rival_effects(session, request))
+
     if refusals:
         _emit_packet_save(
             packet_binding,
@@ -413,6 +415,55 @@ class _ValidatedChild:
     ordinal: int
     request: PacketChildRequest
     decision: ValidatedChildDecision | None = None
+
+
+def _rival_effects(
+    session: Session, request: ReviewPacketRequest
+) -> list[Refusal]:
+    """Refuse an act whose children would each make the same field effective.
+
+    A cross-source coordination question offers two sources answering one
+    field, and exactly one of those answers can become the accepted value
+    (#528).  Nothing downstream would say so: #519 validates one child at a
+    time, and two accepts for the same subject and field would each commit,
+    leaving the accepted value decided by the order the children happened to
+    be written in.  The rule lives here rather than on the screen because both
+    the batch and the focused path build packets through this command, and an
+    invariant enforced at one door is not enforced.
+
+    Read from the request rather than from what passed validation, so a rival
+    pair is still reported when one of the two is also stale — otherwise the
+    check would be silently skipped exactly when the packet is most confused.
+    """
+
+    seen: dict[tuple[str, str | None], int] = {}
+    refusals: list[Refusal] = []
+    for child in request.children:
+        if child.outcome not in (APPLY, EDIT_AND_APPLY):
+            continue
+        delta = session.get(ProposedDelta, child.delta_id)
+        if delta is None or delta.project_id != request.project_id:
+            continue
+        key = (delta.target_subject_identity, delta.target_field)
+        rival = seen.get(key)
+        if rival is None:
+            seen[key] = delta.id
+            continue
+        refusals.append(
+            Refusal(
+                status=REFUSED,
+                reason="rival_effects",
+                detail=(
+                    "two of the changes selected would each become the accepted "
+                    f"value for the same field, so nothing was saved; proposed "
+                    f"change {rival} and proposed change {delta.id} answer "
+                    "the same question and only one of them can stand"
+                ),
+                delta_id=delta.id,
+                **refresh_context(session, delta),
+            )
+        )
+    return refusals
 
 
 def _require_well_formed(request: ReviewPacketRequest) -> None:
