@@ -387,6 +387,17 @@ class PushDelivery(Base):
     __tablename__ = "push_deliveries"
     __table_args__ = (
         UniqueConstraint("idempotency_key", name="uq_push_delivery_idempotency"),
+        # The envelope's structural key, so dedup no longer rests on the
+        # derived digest having been derived correctly (#457). A trigger
+        # re-derives both ADR-0083 digests from the row's own columns and the
+        # bound project's slug, and refuses a row whose identity is not its
+        # own; this constraint holds even if that derivation is bypassed.
+        UniqueConstraint(
+            "project_id",
+            "delivery_identity",
+            "content_sha256",
+            name="uq_push_deliveries_envelope",
+        ),
         CheckConstraint(
             "content_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_push_delivery_content_sha256",
@@ -1202,12 +1213,11 @@ class Fact(Base):
             "content_sha256 is null or content_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_facts_content_sha256",
         ),
-        Index(
-            "uq_facts_content_sha256",
-            "content_sha256",
-            unique=True,
-            postgresql_where=text("content_sha256 is not null"),
-        ),
+        # The Fact identity digest is permanent state, not a command's
+        # precondition (#457): ``append_fact`` refuses a Fact without one and
+        # returns the row that already carries it, and the constraint is what
+        # makes a second copy unrepresentable rather than unlikely.
+        UniqueConstraint("content_sha256", name="uq_facts_content_sha256"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1230,7 +1240,7 @@ class Fact(Base):
     document_value_id: Mapped[int | None] = mapped_column(ForeignKey("documents.id"))
     transformation: Mapped[str] = mapped_column(String(64))
     recorded_by: Mapped[str] = mapped_column(String(128))
-    content_sha256: Mapped[str | None] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1623,6 +1633,20 @@ class DeltaGroup(Base):
     __tablename__ = "delta_groups"
     __table_args__ = (
         UniqueConstraint("project_id", "id", name="uq_delta_groups_project_id"),
+        # One atomic source change per source version (#457): replaying a
+        # version, or taking it in more than one batch, joins the group that
+        # version already opened instead of leaving another behind. The
+        # document and the statement are part of the identity and either may
+        # be absent, so two absences are the same absence.
+        UniqueConstraint(
+            "project_id",
+            "source_family",
+            "source_revision",
+            "document_id",
+            "statement_id",
+            name="uq_delta_groups_source_change",
+            postgresql_nulls_not_distinct=True,
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -1758,6 +1782,16 @@ class DeltaDeferral(Base):
             ["project_id", "delta_id"],
             ["proposed_deltas.project_id", "proposed_deltas.id"],
             name="fk_delta_deferrals_delta",
+        ),
+        # Scheduling writes no Project Record revision (ADR-0084), so the act
+        # carries no idempotency key; the delta, the instant it was scheduled
+        # at, and the person who scheduled it are its identity, and a retried
+        # Defer returns the receipt already written (#457).
+        UniqueConstraint(
+            "delta_id",
+            "deferred_at",
+            "scheduled_by_principal",
+            name="uq_delta_deferrals_occurrence",
         ),
     )
 
@@ -2478,6 +2512,13 @@ class ProjectRecordRevision(Base):
             "(human_principal is null) <> (released_policy is null)",
             name="ck_project_record_revision_authority_xor",
         ),
+        # Every command refuses a blank key in its own body; the column used
+        # to accept one, and a blank key is the same non-identity for all of
+        # them, so the revision family's dedup identity has to exist (#457).
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_project_record_revisions_idempotency_key",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -2727,6 +2768,14 @@ class FactDecision(Base):
         CheckConstraint(
             "disposition in ('include', 'do_not_add', 'restore')",
             name="ck_fact_decision_disposition",
+        ),
+        # One revision decides one Fact once (#457). The decision's dedup
+        # identity is its revision's idempotency key, and the commands read
+        # a revision's decision back by ``revision_id``; without this a
+        # revision could carry the same Fact twice and that read would be
+        # picking one of a set.
+        UniqueConstraint(
+            "revision_id", "fact_id", name="uq_fact_decisions_revision_fact"
         ),
         Index(
             "uq_fact_decision_effective",

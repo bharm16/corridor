@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "7f52224c3368e9f846dfe784c4811268f49df87850776b3c192833afe4abe57b"
+    "0ceb6beb7b07bdb1348642d05d342df8ce79f2c53079ec1b1cb15069d0bb10a4"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -1138,5 +1138,280 @@ def test_the_recorded_verbal_backfill_refuses_an_unreconcilable_fact(tmp_path):
                     "select count(*) from information_schema.tables "
                     " where table_schema = 'public' "
                     "   and table_name like 'recorded_verbal%'"
+                )
+            ) == 0
+
+
+DEDUPLICATION_WORDS = "Oncor will relocate the pole before 3 March 2025."
+
+
+def _seed_identified_fact(session, *, slug: str, digest: str | None) -> dict:
+    """One project-scoped Fact at the supported head, with or without identity.
+
+    ``facts.content_sha256`` is nullable there behind a partial unique index,
+    which is exactly what #457 makes permanent state: a Fact with no digest is
+    a Fact with no identity, and two of them are indistinguishable.
+    """
+
+    project_id = session.scalar(
+        text(
+            "insert into projects (slug, name, is_synthetic) "
+            "values (:slug, :name, true) returning id"
+        ),
+        {"slug": slug, "name": slug},
+    )
+    document_id = session.scalar(
+        text(
+            "insert into documents (project_id, sha256, filename, doc_type) "
+            "values (:project_id, :digest, 'minutes.pdf', 'minutes') returning id"
+        ),
+        {
+            "project_id": project_id,
+            "digest": sha256(slug.encode("utf-8")).hexdigest(),
+        },
+    )
+    segment_id = session.scalar(
+        text(
+            "insert into source_segments ("
+            "project_id, document_id, kind, exact_text, content_sha256, ordinal, "
+            "page_no, start_offset, end_offset"
+            ") values ("
+            ":project_id, :document_id, 'prose_span', :words, :digest, 1, "
+            "1, 0, :end_offset) returning id"
+        ),
+        {
+            "project_id": project_id,
+            "document_id": document_id,
+            "words": DEDUPLICATION_WORDS,
+            "digest": sha256(DEDUPLICATION_WORDS.encode("utf-8")).hexdigest(),
+            "end_offset": len(DEDUPLICATION_WORDS),
+        },
+    )
+    subject_key = f"candidate:{segment_id}"
+    fact_id = session.scalar(
+        text(
+            "insert into facts ("
+            "project_id, fact_type, subject_kind, subject_key, text_value, "
+            "transformation, recorded_by, content_sha256"
+            ") values ("
+            ":project_id, 'statement_wording', 'statement_candidate', "
+            ":subject_key, :words, 'exact_prose_span_v1', 'local:test', :digest"
+            ") returning id"
+        ),
+        {
+            "project_id": project_id,
+            "subject_key": subject_key,
+            "words": DEDUPLICATION_WORDS,
+            "digest": digest,
+        },
+    )
+    session.execute(
+        text(
+            "insert into fact_sources ("
+            "project_id, fact_id, source_segment_id, role, ordinal"
+            ") values (:project_id, :fact_id, :segment_id, 'value_source', 1)"
+        ),
+        {"project_id": project_id, "fact_id": fact_id, "segment_id": segment_id},
+    )
+    # A revision is written only by the role that owns accepted authority; a
+    # guard trigger refuses every other writer, this seed included.
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    revision_id = session.scalar(
+        text(
+            "insert into project_record_revisions ("
+            "project_id, command_type, human_principal, released_policy, "
+            "idempotency_key"
+            ") values ("
+            ":project_id, 'record_human_fact_decision', 'local:coordinator', "
+            "null, :key) returning id"
+        ),
+        {"project_id": project_id, "key": f"decide:{fact_id}"},
+    )
+    session.execute(text("reset role"))
+    return {
+        "project_id": project_id,
+        "document_id": document_id,
+        "segment_id": segment_id,
+        "subject_key": subject_key,
+        "fact_id": fact_id,
+        "revision_id": revision_id,
+        "digest": digest,
+        "idempotency_key": f"decide:{fact_id}",
+    }
+
+
+def test_the_deduplication_transition_carries_identified_rows_across_unchanged():
+    """#457, proved on the exact rows the transition constrains.
+
+    The block writes no row: it turns each family's derived identity into a
+    constraint. So the proof is that an identified Fact and its revision cross
+    unchanged, that the identity is afterwards a property of the table rather
+    than of the command — an exact copy is refused — and that the downgrade
+    leaves both rows exactly as they were seeded.
+    """
+
+    configured = make_url(settings.database_url)
+    digest = sha256(f"fact:{DEDUPLICATION_WORDS}".encode("utf-8")).hexdigest()
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_dedup_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            seeded = _seed_identified_fact(
+                session, slug="dedup-identified", digest=digest
+            )
+
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        with database.session_factory() as session:
+            fact = session.execute(
+                text(
+                    "select project_id, fact_type, subject_kind, subject_key, "
+                    "       text_value, transformation, recorded_by, content_sha256 "
+                    "  from facts where id = :fact_id"
+                ),
+                {"fact_id": seeded["fact_id"]},
+            ).one()
+            assert fact.project_id == seeded["project_id"]
+            assert fact.fact_type == "statement_wording"
+            assert fact.subject_kind == "statement_candidate"
+            assert fact.subject_key == seeded["subject_key"]
+            assert fact.text_value == DEDUPLICATION_WORDS
+            assert fact.transformation == "exact_prose_span_v1"
+            assert fact.recorded_by == "local:test"
+            assert fact.content_sha256 == digest
+
+            revision = session.execute(
+                text(
+                    "select project_id, command_type, human_principal, "
+                    "       released_policy, idempotency_key "
+                    "  from project_record_revisions where id = :revision_id"
+                ),
+                {"revision_id": seeded["revision_id"]},
+            ).one()
+            assert revision.project_id == seeded["project_id"]
+            assert revision.command_type == "record_human_fact_decision"
+            assert revision.human_principal == "local:coordinator"
+            assert revision.released_policy is None
+            assert revision.idempotency_key == seeded["idempotency_key"]
+
+            # The identity is now the table's, not the command's.
+            assert session.execute(
+                text(
+                    "select conname, contype from pg_constraint "
+                    " where conname in ('uq_facts_content_sha256', "
+                    "   'ck_project_record_revisions_idempotency_key', "
+                    "   'uq_delta_groups_source_change', "
+                    "   'uq_fact_decisions_revision_fact', "
+                    "   'uq_delta_deferrals_occurrence', "
+                    "   'uq_push_deliveries_envelope') order by conname"
+                )
+            ).all() == [
+                ("ck_project_record_revisions_idempotency_key", "c"),
+                ("uq_delta_deferrals_occurrence", "u"),
+                ("uq_delta_groups_source_change", "u"),
+                ("uq_fact_decisions_revision_fact", "u"),
+                ("uq_facts_content_sha256", "u"),
+                ("uq_push_deliveries_envelope", "u"),
+            ]
+            assert session.scalar(
+                text(
+                    "select attnotnull from pg_attribute "
+                    " where attrelid = 'public.facts'::regclass "
+                    "   and attname = 'content_sha256'"
+                )
+            ) is True
+
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError, match="uq_facts_content_sha256"):
+                session.execute(
+                    text(
+                        "insert into facts (project_id, fact_type, subject_kind, "
+                        "  subject_key, text_value, transformation, recorded_by, "
+                        "  content_sha256) "
+                        "select project_id, fact_type, subject_kind, subject_key, "
+                        "  text_value, transformation, recorded_by, content_sha256 "
+                        "  from facts where id = :fact_id"
+                    ),
+                    {"fact_id": seeded["fact_id"]},
+                )
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+
+        with database.session_factory() as session:
+            restored = session.execute(
+                text(
+                    "select content_sha256, subject_key, text_value "
+                    "  from facts where id = :fact_id"
+                ),
+                {"fact_id": seeded["fact_id"]},
+            ).one()
+            assert restored.content_sha256 == digest
+            assert restored.subject_key == seeded["subject_key"]
+            assert restored.text_value == DEDUPLICATION_WORDS
+            assert session.scalar(
+                text(
+                    "select count(*) from pg_constraint "
+                    " where conname in ('uq_facts_content_sha256', "
+                    "   'ck_project_record_revisions_idempotency_key', "
+                    "   'uq_delta_deferrals_occurrence', "
+                    "   'uq_push_deliveries_envelope')"
+                )
+            ) == 0
+            assert session.scalar(
+                text(
+                    "select indexdef from pg_indexes "
+                    " where indexname = 'uq_facts_content_sha256'"
+                )
+            ) == (
+                "CREATE UNIQUE INDEX uq_facts_content_sha256 ON public.facts "
+                "USING btree (content_sha256) WHERE (content_sha256 IS NOT NULL)"
+            )
+
+
+def test_the_deduplication_transition_refuses_a_fact_with_no_identity():
+    """A row the new identity cannot represent aborts the transition.
+
+    Which of two indistinguishable rows is the record is a semantic question,
+    and no migration has the authority to answer it: the transition counts what
+    it cannot represent, names the family, and leaves every row alone.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        database_prefix="corridor_baseline_dedup_bad_",
+        migration_revision=SUPPORTED_HEAD,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            seeded = _seed_identified_fact(
+                session, slug="dedup-unidentified", digest=None
+            )
+
+        completed = _alembic(database_url, "upgrade", "head")
+
+        assert completed.returncode != 0
+        assert "#457 de-duplication refuses" in completed.stderr
+        assert "1 Source Facts with no identity digest" in completed.stderr
+        assert "Nothing is merged or dropped here" in completed.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        with database.session_factory() as session:
+            assert session.scalar(
+                text("select content_sha256 from facts where id = :fact_id"),
+                {"fact_id": seeded["fact_id"]},
+            ) is None
+            assert session.scalar(
+                text(
+                    "select count(*) from pg_constraint "
+                    " where conname = 'uq_push_deliveries_envelope'"
                 )
             ) == 0

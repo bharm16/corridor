@@ -33,12 +33,18 @@ This module implements the Proposed Delta layer:
      + evaluation time), not "impact facts".
 6. Analytics events:
    - Emits versioned events from ``corridor.analytics``.
+
+What was tried and removed: a ``build_delta_content_hash`` helper here that
+re-derived the delta identity in Python.  Nothing called it, and it could not
+agree with the command that does derive it — the command hashes PostgreSQL's
+``jsonb`` rendering of the values and this hashed ``json.dumps`` — so it was a
+second, silently divergent definition of an identity the database now owns
+outright (``uq_proposed_deltas_content``, #457).  A delta's identity is
+computed in exactly one place.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Sequence
@@ -134,40 +140,6 @@ def assert_removal_permitted(
             "apparent_removal is only lawful when the incoming source is a complete "
             "enumerative revision and row accounting is sealed"
         )
-
-
-def build_delta_content_hash(
-    *,
-    project_id: int,
-    change_type: str,
-    target_type: str,
-    target_subject_identity: str,
-    target_field: str | None,
-    accepted_value: Any | None,
-    proposed_value: Any | None,
-    source_family: str,
-    source_revision: str,
-    comparison_rule_version: str,
-) -> str:
-    """Deterministic content hash identifying one exact proposed delta."""
-
-    acc_str = json.dumps(accepted_value, sort_keys=True) if accepted_value is not None else ""
-    prop_str = json.dumps(proposed_value, sort_keys=True) if proposed_value is not None else ""
-    canonical = ":".join(
-        (
-            str(project_id),
-            change_type,
-            target_type,
-            target_subject_identity,
-            target_field or "",
-            acc_str,
-            prop_str,
-            source_family,
-            source_revision,
-            comparison_rule_version,
-        )
-    )
-    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
 def create_proposed_delta_group(

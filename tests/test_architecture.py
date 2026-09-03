@@ -829,3 +829,88 @@ def test_every_declared_state_class_is_defined_by_the_primitives():
     )
 
     assert STATE_CLASSES <= defined
+# The families ADR-0081 converges on, and the constraint in each that makes a
+# duplicate unrepresentable (#457).  A dedup identity that lives in a writer —
+# a ``SECURITY DEFINER`` command's body, or the Python calling it — holds only
+# while every writer remembers it, so each identity below is named here and
+# asserted against the declared schema.  Adding a family, or removing one of
+# these, is a deliberate edit reviewed as one.
+DEDUPLICATION_IDENTITIES = {
+    # Source Facts: the Fact identity digest, over every value, reference and
+    # source link the command hashed.
+    "facts": "uq_facts_content_sha256",
+    # Proposed Deltas: the delta's own content digest, and one atomic source
+    # change per source version for the group that carries it.
+    "proposed_deltas": "uq_proposed_deltas_content",
+    "delta_groups": "uq_delta_groups_source_change",
+    # Decisions: the revision an inclusion decision belongs to decides its
+    # Fact once; a Resolve Delta decision, a Follow-up Plan, a packet act and
+    # its Undo each carry their command's key; a dated deferral is the delta,
+    # the instant, and the person who scheduled it (ADR-0084).
+    "fact_decisions": "uq_fact_decisions_revision_fact",
+    "delta_record_decisions": "uq_delta_record_decisions_key",
+    "delta_follow_up_plans": "uq_delta_follow_up_plans_key",
+    "delta_review_packet_receipts": "uq_delta_review_packet_receipts_key",
+    "delta_review_packet_reversals": "uq_delta_review_packet_reversals_key",
+    "delta_deferrals": "uq_delta_deferrals_occurrence",
+    # Project Record revisions: the command's idempotency key, per project.
+    "project_record_revisions": "uq_project_record_revision_key",
+    # Connector deliveries: ADR-0083's envelope identity, structurally, so
+    # dedup does not rest on the derived digest having been derived.
+    "push_deliveries": "uq_push_deliveries_envelope",
+}
+
+
+def test_every_deduplicated_family_declares_its_identity_in_permanent_state():
+    """The identity is a constraint on the table, not a rule in a writer.
+
+    A unique constraint over a nullable column deduplicates nothing — two
+    absences are distinct by default — and a *partial* unique index is not a
+    constraint on the table at all.  ``facts.content_sha256`` was exactly that
+    before #457, so the check is not only that a constraint of the recorded
+    name exists but that it can actually refuse a duplicate.
+    """
+
+    from sqlalchemy import UniqueConstraint
+
+    from corridor.models import Base
+
+    findings = []
+    for table_name, constraint_name in sorted(DEDUPLICATION_IDENTITIES.items()):
+        table = Base.metadata.tables[table_name]
+        declared = next(
+            (
+                item
+                for item in tuple(table.constraints) + tuple(table.indexes)
+                if item.name == constraint_name
+            ),
+            None,
+        )
+        if declared is None:
+            findings.append(f"{table_name}: {constraint_name} is not declared")
+            continue
+        unique = isinstance(declared, UniqueConstraint) or getattr(
+            declared, "unique", False
+        )
+        if not unique:
+            findings.append(f"{table_name}: {constraint_name} is not unique")
+            continue
+        if declared.dialect_kwargs.get("postgresql_where") is not None:
+            findings.append(
+                f"{table_name}: {constraint_name} is partial, so it constrains "
+                "a subset rather than the family"
+            )
+            continue
+        nullable = sorted(
+            column.name for column in declared.columns if column.nullable
+        )
+        if nullable and not declared.dialect_kwargs.get(
+            "postgresql_nulls_not_distinct"
+        ):
+            findings.append(
+                f"{table_name}: {constraint_name} spans nullable "
+                f"{', '.join(nullable)} without nulls-not-distinct, so two "
+                "absences would be two rows"
+            )
+
+    assert findings == []
