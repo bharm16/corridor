@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+from sqlalchemy import create_engine, text
 import yaml
 
 
@@ -78,6 +79,82 @@ def test_check_runs_on_every_revision_including_documentation_only():
     assert not workflow["on"]["pull_request"], "no paths / paths-ignore scoping"
     assert set(workflow["jobs"]) == {"check"}
     assert _run_commands(workflow).count("make check") == 1
+
+
+def test_every_gate_job_runs_the_one_concurrent_setup_step():
+    """Per-job setup is one step because the gate takes a max, not a mean.
+
+    The wall clock is the slowest of nine test jobs, so each run samples the
+    worst setup draw taken in it. Over the twelve pull-request runs after the
+    five-way split, the job that decided the wall clock spent a median of 60s
+    outside its test command against a fleet-wide per-job median of 38s — it
+    was the job whose downloads were slow, not the one holding the most
+    tests. Serial setup steps add their draws; scripts/ci_environment.sh runs
+    the independent ones concurrently so only the largest counts (#595).
+    """
+
+    for name in ("test.yml", "migration-test.yml"):
+        workflow = _workflow(name)
+        for job, definition in workflow["jobs"].items():
+            commands = tuple(
+                step["run"] for step in definition["steps"] if "run" in step
+            )
+            assert "scripts/ci_environment.sh" in commands, (
+                f"{name}:{job} does not run the shared setup script"
+            )
+            # A second setup step would be a serial draw again.
+            assert sum(
+                command.startswith(("uv sync", "sudo apt-get", "uv run alembic"))
+                for command in commands
+            ) == 0, f"{name}:{job} sets up outside the concurrent step"
+            # A `services:` container is pulled and health-checked before the
+            # first step, so none of its cost can overlap with anything.
+            assert "services" not in definition, (
+                f"{name}:{job} pays for a service container before it starts"
+            )
+
+
+def test_the_gate_migrates_the_database_its_shared_state_tests_read():
+    """The workflow's `alembic upgrade head` is not redundant (#595).
+
+    tests/conftest.py migrates a per-run template and clones it per worker,
+    which makes the workflow's own upgrade look like duplicated work. It is
+    not: `shared_source_database_url` hands tests the *configured* database
+    rather than a worker clone, and three tests read it —
+    tests/test_briefing.py, tests/test_sh99_admission_acceptance.py and
+    tests/test_sh99_shared_admission_seal.py. Each is written to skip when
+    the shared corpus is absent, which is the outcome CI wants. Measured on
+    an empty database all three raise UndefinedTable instead, and all three
+    skip again once it is migrated.
+    """
+
+    setup = (ROOT / "scripts" / "ci_environment.sh").read_text()
+
+    assert "alembic upgrade head" in setup
+
+
+def test_the_shared_state_fixture_reaches_a_migrated_database(
+    shared_source_database_url,
+):
+    """The executable half of the guard above.
+
+    This fails on a CI job whose setup stopped migrating the configured
+    database, and it fails there instead of in three unrelated test files.
+    """
+
+    engine = create_engine(shared_source_database_url)
+    try:
+        with engine.connect() as connection:
+            present = connection.execute(
+                text("select to_regclass('public.projects')")
+            ).scalar()
+    finally:
+        engine.dispose()
+
+    assert present is not None, (
+        "the configured database carries no schema, so the shared-state "
+        "tests will raise UndefinedTable instead of skipping"
+    )
 
 
 def test_every_test_file_lands_in_exactly_one_shard():

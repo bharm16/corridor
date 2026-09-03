@@ -29,20 +29,6 @@ jobs:
         shard: [1, 2, 3, 4, 5]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: corridor
-          POSTGRES_PASSWORD: corridor
-          POSTGRES_DB: corridor
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U corridor -d corridor"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
@@ -54,21 +40,13 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # `apt-get update` measured 11-34s across the eight jobs of one run,
-      # and the runner image normally ships usable package lists. Refresh
-      # them only when the install actually needs it (#548). A genuine
-      # failure still fails the job; nothing is silently skipped.
-      - run: >-
-          sudo apt-get install -y tesseract-ocr ||
-          { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
-      - run: uv sync --locked
-      # `make boot` provisions this; CI never did, so the first page render
-      # inside a test built the worker's environment over the network, in
-      # four racing xdist workers, with its output captured and invisible.
-      # opencv-python-headless is locked only here, so it is never in the
-      # restored uv cache either (#548).
-      - run: uv sync --project workers/render --frozen
-      - run: uv run alembic upgrade head
+      # One step, and no `services:` container, because this gate's wall
+      # clock is the slowest of its nine jobs and so samples the worst setup
+      # draw taken in the run rather than the average one. The script starts
+      # the runner's own PostgreSQL 16 and installs the OCR engine
+      # concurrently with the two uv syncs; it carries the measurements and
+      # the reason each piece is still there (#595).
+      - run: scripts/ci_environment.sh
       - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
 
   slow:
@@ -79,20 +57,6 @@ jobs:
         shard: [1, 2, 3, 4]
     runs-on: ubuntu-latest
     timeout-minutes: 20
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: corridor
-          POSTGRES_PASSWORD: corridor
-          POSTGRES_DB: corridor
-        ports:
-          - 5433:5432
-        options: >-
-          --health-cmd "pg_isready -U corridor -d corridor"
-          --health-interval 5s
-          --health-timeout 5s
-          --health-retries 12
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
@@ -104,19 +68,6 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
-      # `apt-get update` measured 11-34s across the eight jobs of one run,
-      # and the runner image normally ships usable package lists. Refresh
-      # them only when the install actually needs it (#548). A genuine
-      # failure still fails the job; nothing is silently skipped.
-      - run: >-
-          sudo apt-get install -y tesseract-ocr ||
-          { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
-      - run: uv sync --locked
-      # `make boot` provisions this; CI never did, so the first page render
-      # inside a test built the worker's environment over the network, in
-      # four racing xdist workers, with its output captured and invisible.
-      # opencv-python-headless is locked only here, so it is never in the
-      # restored uv cache either (#548).
-      - run: uv sync --project workers/render --frozen
-      - run: uv run alembic upgrade head
+      # See the pytest job: the same setup, for the same measured reason.
+      - run: scripts/ci_environment.sh
       - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}

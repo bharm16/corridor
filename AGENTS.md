@@ -46,6 +46,12 @@ and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-
   network, inside pytest, in four racing xdist workers, with its output
   captured. Every job that runs tests now runs `uv sync --project
   workers/render --frozen` first.
+- **CI's per-job setup is one concurrent step**, `scripts/ci_environment.sh`.
+  PostgreSQL comes from the runner image instead of a pulled `services:`
+  container, and the OCR engine installs alongside the two `uv sync` calls.
+  The gate's wall clock is the slowest of its nine jobs, so it samples the
+  worst setup draw taken in the run rather than the average one: serial setup
+  steps add their draws, concurrent ones do not (#595).
 - The partition comes from `tests/durations.json` and `tests/durations-slow.json`.
   Regenerate both after any change that moves the numbers — a file missing
   from them is weighted as *average*, not free, which unbalances the gate:
