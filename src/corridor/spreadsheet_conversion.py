@@ -5,12 +5,20 @@ legacy binary container, and pretending otherwise registered silent failures.
 Discarding the original or treating an ad-hoc conversion as an equivalent
 source were also rejected. This module converts cell values only, produces
 stable XLSX bytes, and leaves provenance registration to the corpus pipeline.
+
+Pinning `Workbook.properties.modified` before `save()` was tried and is not
+enough on its own: openpyxl overwrites it with the current UTC time while it
+serializes `docProps/core.xml`, so the archive changed every second and the
+corpus content-addressed each re-conversion as new bytes (#579). The canonical
+rewrite therefore pins every date-typed core property in the serialized part,
+where a later openpyxl release cannot quietly reintroduce a wall clock.
 """
 
 from __future__ import annotations
 
 from datetime import date, datetime
 from io import BytesIO
+import re
 import zipfile
 
 from openpyxl import Workbook
@@ -21,7 +29,12 @@ from python_calamine import CalamineWorkbook
 CONVERTER_NAME = "corridor.xls-to-xlsx"
 CONVERTER_VERSION = "3"
 _FIXED_TIME = datetime(2000, 1, 1)
+_FIXED_TIMESTAMP = _FIXED_TIME.strftime("%Y-%m-%dT%H:%M:%SZ").encode()
 _ZIP_TIME = (1980, 1, 1, 0, 0, 0)
+_CORE_PROPERTIES = "docProps/core.xml"
+# Every core property carrying a timestamp is serialized as a W3CDTF-typed
+# element, so the text between its tags is the wall clock to pin.
+_W3CDTF_VALUE = re.compile(rb'(<[^<>]*xsi:type="dcterms:W3CDTF"[^<>]*>)[^<]*')
 
 
 def convert_xls_bytes(source: bytes) -> bytes:
@@ -92,8 +105,16 @@ def _canonical_zip(value: bytes) -> bytes:
             info.compress_type = zipfile.ZIP_DEFLATED
             info.create_system = 3
             info.external_attr = 0o600 << 16
-            target.writestr(info, source.read(name))
+            target.writestr(info, _canonical_entry(name, source.read(name)))
     return output.getvalue()
+
+
+def _canonical_entry(name: str, payload: bytes) -> bytes:
+    """Return one archive part with every recorded wall clock pinned."""
+
+    if name != _CORE_PROPERTIES:
+        return payload
+    return _W3CDTF_VALUE.sub(lambda match: match.group(1) + _FIXED_TIMESTAMP, payload)
 
 
 def _format_readable_table(sheet, rows) -> None:
