@@ -21,6 +21,15 @@ accepted subject's own `utility_id` value — rather than from the adoption
 receipt, so a subject accepted from an earlier revision's new-subject delta is
 matched on the next revision like any other.
 
+**The mapping revision is read back, not reconstructed by the caller.**  The
+declaration is stored beside its registration (#610), so the manifest a later
+revision is read through is resolved from that stored state rather than rebuilt
+byte-for-byte by whoever hands us the delivery (#622).  A caller that already
+holds the declaration may still supply it, and it is still verified against the
+registered identity, version and digest; a registration written before that
+storage existed names a revision Corridor cannot resolve, and is refused by
+name rather than standing in as an empty mapping.
+
 **The Row Identification Rule is never guessed from a printed row number.**
 The glossary is explicit that a matrix row is identified by its conflict number
 alone or by its owner and conflict number together, and never by where it sits
@@ -93,6 +102,7 @@ from corridor.baseline_adoption import (
     adopted_baseline_source,
     assign_record_subjects,
     effective_baseline_formats,
+    effective_field_mapping_manifest,
     format_identity_of,
 )
 from corridor.baseline_workbook import (
@@ -370,7 +380,7 @@ def capture_later_revision(
     project: Project,
     staged: StagedSource,
     envelope: SourceEnvelope,
-    manifest: FieldMappingManifest,
+    manifest: FieldMappingManifest | None = None,
     principal: HumanPrincipal,
     is_complete_enumerative_source: bool = False,
     row_accounting_sealed: bool = False,
@@ -388,8 +398,11 @@ def capture_later_revision(
     `envelope` is the ingress record #511 wrote for this delivery; the delivery
     must already stand in the ledger as `stored`, which is what makes the exact
     bytes, their digest, the customer's own identity for the source, and its
-    external version retained rather than asserted.  `manifest` is the mapping
-    revision the project has registered, and the file is read only through it.
+    external version retained rather than asserted.  The file is read only
+    through the mapping revision the project has registered, which is resolved
+    from stored state when `manifest` is omitted (#610, #622); a supplied
+    `manifest` is still accepted and still verified against the registered
+    identity, version and digest.
 
     `is_complete_enumerative_source` and `row_accounting_sealed` are the
     caller's declaration about this delivery.  Both must be true before an
@@ -399,7 +412,7 @@ def capture_later_revision(
 
     actor = require_human_principal(principal)
     _refuse_unbound_delivery(session, project, staged, envelope)
-    _refuse_unregistered_mapping(session, project, manifest)
+    manifest = _registered_mapping(session, project, manifest)
 
     path = staged_file(staged.sha256)
     if path is None:
@@ -559,15 +572,25 @@ def _refuse_unbound_delivery(
         )
 
 
-def _refuse_unregistered_mapping(
-    session: Session, project: Project, manifest: FieldMappingManifest
-) -> None:
-    """A later revision is read only through the mapping the project registered.
+def _registered_mapping(
+    session: Session, project: Project, manifest: FieldMappingManifest | None
+) -> FieldMappingManifest:
+    """The mapping revision in force, resolved from stored state or verified (#622).
 
-    The check is against the registered identity *and* digest (#597), so a
-    manifest that merely reuses the registered name is refused: the declaration
-    is what says whether two columns still carry two values, and only its own
-    digest moves when that changes.
+    A later revision is read only through the mapping the project registered.
+    Where the caller supplies nothing, the registered declaration is read back
+    through `effective_field_mapping_manifest` (#610), so a caller no longer has
+    to reconstruct the approved bytes before it can process a delivery.
+
+    A supplied manifest is still accepted and still checked against the
+    registered identity *and* digest (#597), so a manifest that merely reuses the
+    registered name is refused: the declaration is what says whether two columns
+    still carry two values, and only its own digest moves when that changes.
+
+    A registration written before #610 stored declarations beside registrations
+    names a revision Corridor cannot resolve.  That absence is refused by name,
+    in the shape the renderer already refuses it, and is never read as an empty
+    mapping or quietly replaced by one rebuilt from the delivered file.
     """
 
     registered = effective_baseline_formats(session, project.id).get("field_mapping")
@@ -576,6 +599,17 @@ def _refuse_unregistered_mapping(
             f"{project.slug} has no registered field mapping; a later revision "
             "is processed only under one a designated person approved"
         )
+    if manifest is None:
+        resolved = effective_field_mapping_manifest(session, project.id)
+        if resolved is None:
+            raise LaterRevisionRefused(
+                "this project's effective field-mapping registration "
+                f"({registered.format_identity} {registered.format_version}, "
+                f"{registered.content_sha256}) stores no declaration, so the "
+                "mapping revision it names cannot be resolved from stored "
+                "state. Supply the manifest that digests to it."
+            )
+        return resolved
     identity = format_identity_of(manifest)
     if (
         registered.format_identity != identity.identity
@@ -587,6 +621,7 @@ def _refuse_unregistered_mapping(
             f"{project.slug}; registering a successor is its own attributable "
             "act (register_baseline_format)"
         )
+    return manifest
 
 
 # --- the comparison plan ----------------------------------------------------
