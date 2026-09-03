@@ -65,7 +65,7 @@ it is — the screen names the source revision, never the packet type.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from hashlib import sha256
 from typing import Any, Mapping, Sequence
@@ -518,46 +518,12 @@ def select_children(
     if delta_ids is None:
         return item
     chosen = set(delta_ids)
-    return ItemReading(
-        actionable=item.actionable,
-        headline=item.headline,
-        source_family=item.source_family,
-        source_revision=item.source_revision,
+    return replace(
+        item,
         children=tuple(
-            _with_selection(child, child.delta_id in chosen)
+            replace(child, selected=child.delta_id in chosen)
             for child in item.children
         ),
-        held_out_children=item.held_out_children,
-        unchanged_count=item.unchanged_count,
-        customer_artifacts=item.customer_artifacts,
-        artifact_rule_version=item.artifact_rule_version,
-    )
-
-
-def _with_selection(child: ChildReading, selected: bool) -> ChildReading:
-    return ChildReading(
-        delta_id=child.delta_id,
-        subject_identity=child.subject_identity,
-        subject_name=child.subject_name,
-        field=child.field,
-        field_name=child.field_name,
-        change_type=child.change_type,
-        accepted_value=child.accepted_value,
-        accepted_revision_id=child.accepted_revision_id,
-        incoming_value=child.incoming_value,
-        source_family=child.source_family,
-        source_revision=child.source_revision,
-        band=child.band,
-        attention_reasons=child.attention_reasons,
-        customer_artifacts=child.customer_artifacts,
-        source=child.source,
-        external_links=child.external_links,
-        incoming_fact_id=child.incoming_fact_id,
-        support_assessment_ids=child.support_assessment_ids,
-        not_ready_reason=child.not_ready_reason,
-        selected=selected,
-        held_out_reason=child.held_out_reason,
-        held_out_item_key=child.held_out_item_key,
     )
 
 
@@ -728,26 +694,8 @@ def _held_out_sibling(child: ChildReading, owner: ActionableItem) -> ChildReadin
         if owner.held_out_reason is not None
         else CONTRADICTED_ELSEWHERE
     )
-    return ChildReading(
-        delta_id=child.delta_id,
-        subject_identity=child.subject_identity,
-        subject_name=child.subject_name,
-        field=child.field,
-        field_name=child.field_name,
-        change_type=child.change_type,
-        accepted_value=child.accepted_value,
-        accepted_revision_id=child.accepted_revision_id,
-        incoming_value=child.incoming_value,
-        source_family=child.source_family,
-        source_revision=child.source_revision,
-        band=child.band,
-        attention_reasons=child.attention_reasons,
-        customer_artifacts=child.customer_artifacts,
-        source=child.source,
-        external_links=child.external_links,
-        incoming_fact_id=child.incoming_fact_id,
-        support_assessment_ids=child.support_assessment_ids,
-        not_ready_reason=child.not_ready_reason,
+    return replace(
+        child,
         selected=False,
         held_out_reason=reason,
         held_out_item_key=owner.item_key,
