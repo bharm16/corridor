@@ -68,7 +68,7 @@
       <blockquote>{{ item.quote }}</blockquote>
     </section>
   {% else %}
-    <p class="gap">Verified source passages are unavailable; the remaining decisions stay pending.</p>
+    <p class="gap">No source passage with a passed source passage check is available; the remaining decisions stay pending.</p>
   {% endfor %}
 
   {% if authority_gap %}<p class="gap"><b>The remaining decision cannot be recorded.</b> Technical detail: {{ authority_gap }}</p>{% endif %}

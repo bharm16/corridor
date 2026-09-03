@@ -1130,8 +1130,9 @@ def test_the_report_never_claims_evidence_for_records_it_says_have_none(
 ):
     """The two sentences could appear in one document, about one record.
 
-    MISSING_EVIDENCE reads "no verified evidence on this record" and the
-    tile above it counted the link anyway, so the report contradicted
+    MISSING_EVIDENCE says no supporting document passed the source passage
+    check and the tile above it counted the link anyway, so the report
+    contradicted
     itself in the direction that flatters the project — which is the worst
     direction for a document a project forwards to an External Party.
     """
@@ -1145,7 +1146,8 @@ def test_the_report_never_claims_evidence_for_records_it_says_have_none(
     report = build_report(session, project_with_two_dependencies.id)
     markup = render(report)
 
-    assert "No verified supporting documents" in markup
+    assert "No supporting document passed the source passage check" in markup
+    assert "No verified supporting documents" not in markup
     assert _summary(report, "With checked source passages").value == "0"
     assert _summary(report, "% with checked source passages").value == "0.0%"
 

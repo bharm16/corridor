@@ -88,6 +88,22 @@ def statement_type_label(event_type: str) -> str:
     }.get(event_type, event_type)
 
 
+def source_passage_check_label(status: str) -> str:
+    """Name a Source Passage Check state without claiming what it supports.
+
+    The stored identifiers stay the machine words ADR-0082 fixed (``valid``,
+    ``invalid``, ``not_checked``); these are the customer words for the same
+    three states.  A passed check says the cited passage is present in its
+    source, never that the source supports the value beside it — that is a
+    Support Assessment, and it is displayed separately.
+    """
+    return {
+        "valid": "Passed",
+        "invalid": "Failed",
+        "not_checked": "Not run",
+    }[status]
+
+
 def documentation_review_label(sufficient: bool) -> str:
     """Describe the legacy marker; never infer a specific construction outcome."""
     return "Documents marked sufficient" if sufficient else "Not confirmed"
@@ -160,7 +176,10 @@ def field_label(field_name: str) -> str:
 def exception_name(rule: str) -> str:
     """Name a known check without changing its retained rule code or meaning."""
     return {
-        "MISSING_EVIDENCE": "No verified supporting documents",
+        # The rule counts supporting documents whose cited passage was found
+        # in its source, so the alert names that check rather than calling the
+        # documents themselves verified (ADR-0082).
+        "MISSING_EVIDENCE": "No supporting document passed the source passage check",
         "MISSING_DATE": "No exact promised date for this check",
         "MISSING_OWNER": "No person assigned",
         "OVERDUE": "Promised timing passed",

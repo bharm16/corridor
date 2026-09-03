@@ -262,6 +262,9 @@ from corridor.source_intake_draft import (
 )
 from corridor.render_profiles import render_path_for_page
 from corridor.storage import staged_file
+from corridor.locator_validation import (
+    evidence_link_locator_validation_status as locator_validation_status,
+)
 from corridor.presentation import (
     documentation_review_label,
     field_label,
@@ -269,6 +272,7 @@ from corridor.presentation import (
     label,
     provenance_label,
     resolution_strategy_label,
+    source_passage_check_label,
     statement_type_label,
 )
 from corridor.report_release import (
@@ -426,6 +430,11 @@ TEMPLATES.env.globals.update(
     provenance_label=provenance_label,
     resolution_strategy_label=resolution_strategy_label,
     statement_type_label=statement_type_label,
+    # The Source Passage Check, as its own two steps: the mechanical status of
+    # one locator, then the customer word for that state (ADR-0082). A screen
+    # never reads the retired `verified` flag itself.
+    locator_validation_status=locator_validation_status,
+    source_passage_check_label=source_passage_check_label,
     csrf_field=_csrf_field,
 )
 app = FastAPI(title="Corridor — coordination records")

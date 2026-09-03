@@ -408,7 +408,7 @@
             {{ a.filename or 'unknown document' }}{% if a.page_no %} p.{{ a.page_no }}{% endif %}
             {% if a.document_date %} · {{ a.document_date }}{% else %} · date unavailable{% endif %}
             {% if a.text_source %} · {{ a.text_source|replace('_', ' ') }}{% endif %}
-            {% if not a.verified %}<span class="pill unver">unverified</span>{% endif %}
+            {% if a.locator_validation_status != 'valid' %}<span class="pill unver">{{ label('source_passage_check') }}: {{ source_passage_check_label(a.locator_validation_status)|lower }}</span>{% endif %}
           </span>
           <span class="value">{{ a.value or '—' }}</span>
           <span class="q">{{ a.quote or '' }}</span>
@@ -730,7 +730,7 @@
                       <label>met by
                         <select name="basis_evidence_link_id">
                           <option value="">— cite a later passage —</option>
-                          {% for link, doc in view.evidence if link.verified and link.id != c.evidence_link_id %}
+                          {% for link, doc in view.evidence if locator_validation_status(link) == 'valid' and link.id != c.evidence_link_id %}
                             <option value="{{ link.id }}">{{ doc.filename }} p.{{ link.page_no }}: “{{ link.quote[:80] }}”</option>
                           {% endfor %}
                         </select>
@@ -778,8 +778,8 @@
           <td>{{ doc.filename }}{% if doc.superseded_by %}<br><span class="pill contra">Replaced source</span>{% endif %}</td>
           <td class="muted">{{ link.page_no }}</td>
           <td class="q" style="font-family:ui-monospace,monospace;font-size:.76rem">{{ link.quote[:110] }}</td>
-          <td>{% if link.verified %}<span class="pill ready">yes</span>
-              {% else %}<span class="pill unver">no</span>{% endif %}</td>
+          {% set passage_check = locator_validation_status(link) %}
+          <td><span class="pill {% if passage_check == 'valid' %}ready{% else %}unver{% endif %}">{{ source_passage_check_label(passage_check) }}</span></td>
           <td>
             {% if checklist.uses_standard_checklist %}
               <span class="muted">Read through the standard checklist above.</span>
@@ -788,7 +788,7 @@
                     action="/dependencies/{{ view.dependency.id }}/evidence/{{ link.id }}/satisfies">
     {{ csrf_field() }}
                 <input type="hidden" name="slug" value="{{ project.slug }}">
-                <button {% if not link.verified %}disabled
+                <button {% if passage_check != 'valid' %}disabled
                   title="The cited passage must be found in the source before these documents can be marked sufficient."{% endif %}>
                   {% if link.id in sufficient_evidence_ids %}Remove sufficiency mark{% else %}Mark documents sufficient{% endif %}
                 </button>

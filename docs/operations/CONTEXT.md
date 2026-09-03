@@ -44,8 +44,9 @@ _Customer label_: Proposed constraint or Proposed statement, with the actual han
 _Avoid_: an accepted fact, every proposal still pending review
 
 **Source Passage Check**:
-A check that a Cited Passage is present in the identified source page or row, under the stated matching method and its limits. It says nothing about what the passage supports; that is the Support Assessment ([ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)).
-_Avoid_: Documentation Review, physical inspection, proof the statement is true, Support Assessment
+A check that a Cited Passage is present in the identified source page or row, under the stated matching method and its limits. It says nothing about what the passage supports; that is the Support Assessment ([ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md)). Its result is recorded as the locator validation status `valid`, `invalid`, or `not_checked` and shown as **Passed**, **Failed**, or **Not run**; Not run means there was no locator to dereference, which is not the same as a check that ran and failed ([state-label research](../research/source-passage-check-state-labels-2026-09-03.md)).
+_Customer label_: Source passage check — Passed, Failed, or Not run
+_Avoid_: verified beside a value, Documentation Review, physical inspection, proof the statement is true, Support Assessment
 
 ### Record decisions and outcomes
 
