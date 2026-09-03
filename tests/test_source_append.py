@@ -13,6 +13,10 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 
 from corridor.db import Session, engine
+from corridor.materializer import (
+    materialize_document_reference,
+    materialize_quoted_statement_wording,
+)
 from corridor.models import Document, Fact, Project, SourceSegment
 from corridor.source_append import (
     SegmentValues,
@@ -78,14 +82,11 @@ def _wording_fact(session, project, segment, **overrides):
         project_id=project.id,
         document_id=None,
         extraction_run_id=None,
-        fact_type="statement_wording",
         subject_kind="statement_candidate",
         subject_key="candidate:1",
-        text_value=segment.exact_text,
-        transformation="exact_prose_span_v1",
         recorded_by="local:test",
         content_sha256=sha256(f"wording:{segment.id}".encode()).hexdigest(),
-        sources=(("value_source", segment.id), ("attribution_source", segment.id)),
+        value=materialize_quoted_statement_wording(segment, segment.exact_text),
     )
     values.update(overrides)
     return append_fact(session, **values)
@@ -211,14 +212,11 @@ def test_a_fact_is_refused_when_its_document_value_lies_in_another_project(
             project_id=project.id,
             document_id=None,
             extraction_run_id=None,
-            fact_type="supporting_documentation_in_use",
             subject_kind="record_subject",
             subject_key="constraint:1",
-            document_value_id=foreign.id,
-            transformation="supporting_document_revision_v1",
             recorded_by="local:test",
             content_sha256=sha256(b"support").hexdigest(),
-            sources=(),
+            value=materialize_document_reference(foreign.id),
         )
 
 

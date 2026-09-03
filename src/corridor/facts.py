@@ -5,7 +5,9 @@ Project Record says. Verified structured cells qualify for automatic Record
 Inclusion; Minutes statement wording stays pending for a human decision. Both
 materialized values reproduce through named transformations, and role-tagged
 support stays constrained to the Fact's own rendition (ADR-0067, ADR-0069,
-ADR-0070).
+ADR-0070).  Every value an appender here hands to the append command is a
+``MaterializedValue`` from ``materializer.py`` (#446): a Candidate's field is
+compared with what its cell materializes and is never itself written.
 """
 
 from __future__ import annotations
@@ -36,7 +38,6 @@ from corridor.models import (
     FactDisposition,
     FactSource,
     FactStatementTiming,
-    ExternalOrg,
     SourceSegment,
 )
 from corridor.fact_types import (
@@ -44,7 +45,18 @@ from corridor.fact_types import (
     STRUCTURED_CELL_FACT_TYPES,
     FactTypeContract,
 )
-from corridor.identity import normalize_party
+from corridor.materializer import (
+    FactReplayMismatch,
+    FactValidationError,
+    MaterializedValue,
+    materialize_document_reference,
+    materialize_prose_wording,
+    materialize_quoted_statement_wording,
+    materialize_segment_value,
+    materialize_typed_satellite,
+    transform,
+    validated_scalar_value,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.sheets import column_mapping
 from corridor.source_append import (
@@ -59,14 +71,6 @@ from corridor.source_segments import (
     replay_recorded_verbal_statement,
 )
 from corridor.statement_values import StatementTiming
-
-
-class FactValidationError(ValueError):
-    """A proposed Fact cannot replay from its declared source support."""
-
-
-class FactReplayMismatch(FactValidationError):
-    """A materialized Fact value differs from its replayed transformation."""
 
 
 @dataclass(frozen=True)
@@ -189,37 +193,27 @@ def append_structured_cell_facts(
                     fact_type=fact_type,
                     subject_kind=contract.subject_kind,
                     subject_key=f"{sheet_name}!{source_row}",
-                    transformation=contract.transformation,
                     segment=segment,
                     structured_value={"dependency_ids": dependency_ids},
                     applies_to=dependency_ids,
                 )
                 appended.append(fact)
                 continue
-            value = _validated_scalar_value(contract, segment.exact_text)
+            materialized = materialize_segment_value(session, fact_type, segment)
+            value = materialized.scalar
             if value != fields[fact_type]:
                 candidate_value = _candidate_typed_value(contract, fields[fact_type])
                 if value != candidate_value:
                     raise FactReplayMismatch(
                         f"Candidate {fact_type} does not reproduce from {cell_range}"
                     )
-            external_org_id = (
-                _exact_registered_external_org_id(session, str(value))
-                if fact_type == "external_org"
-                else None
-            )
             fact = append_fact(
                 session,
                 project_id=document.project_id,
                 document_id=document.id,
                 extraction_run_id=run.id,
-                fact_type=fact_type,
                 subject_kind=contract.subject_kind,
                 subject_key=f"{sheet_name}!{source_row}",
-                text_value=value if isinstance(value, str) else None,
-                date_value=value if isinstance(value, date) else None,
-                external_org_value_id=external_org_id,
-                transformation=contract.transformation,
                 recorded_by=f"extractor:{run.prompt_version}",
                 content_sha256=_fact_digest(
                     run_identity={
@@ -229,15 +223,11 @@ def append_structured_cell_facts(
                         "model": run.model,
                         "extractor_config_sha256": run.extractor_config_sha256,
                     },
-                    fact_type=fact_type,
                     subject_kind=contract.subject_kind,
                     subject_key=f"{sheet_name}!{source_row}",
-                    text_value=value if isinstance(value, str) else None,
-                    date_value=value if isinstance(value, date) else None,
-                    external_org_value_id=external_org_id,
-                    source_links=(("value_source", segment.id),),
+                    value=materialized,
                 ),
-                sources=(("value_source", segment.id),),
+                value=materialized,
             )
             appended.append(fact)
             if fact_type == "marked_resolution":
@@ -249,7 +239,6 @@ def append_structured_cell_facts(
                     fact_type="closure_result",
                     subject_kind=closure_contract.subject_kind,
                     subject_key=f"{sheet_name}!{source_row}",
-                    transformation=closure_contract.transformation,
                     segment=segment,
                     structured_value={
                         "closure_kind": "source_marked_resolved",
@@ -398,16 +387,20 @@ def append_statement_wording_facts(
         if candidate.id is None:
             raise FactValidationError("statement Candidate needs an immutable identity")
         subject_key = f"candidate:{candidate.id}"
+        materialized = materialize_prose_wording(
+            value_segment, attribution_segment, attribution=attribution
+        )
+        if materialized.text_value != description:
+            raise FactReplayMismatch(
+                "statement wording does not reproduce from its value source"
+            )
         fact = append_fact(
             session,
             project_id=document.project_id,
             document_id=document.id,
             extraction_run_id=run.id,
-            fact_type="statement_wording",
             subject_kind=contract.subject_kind,
             subject_key=subject_key,
-            text_value=description,
-            transformation=contract.transformation,
             recorded_by=f"extractor:{run.prompt_version}",
             content_sha256=_fact_digest(
                 run_identity={
@@ -417,13 +410,11 @@ def append_statement_wording_facts(
                     "model": run.model,
                     "extractor_config_sha256": run.extractor_config_sha256,
                 },
-                fact_type="statement_wording",
                 subject_kind=contract.subject_kind,
                 subject_key=subject_key,
-                text_value=description,
-                source_links=links,
+                value=materialized,
             ),
-            sources=links,
+            value=materialized,
         )
         appended.append(fact)
     session.flush()
@@ -529,26 +520,23 @@ def append_recorded_statement_timing_fact(
     ordered = _validated_statement_timings(timings)
     segment = append_source_segment(session, segment)
     structured = _statement_timing_structured(ordered)
+    materialized = materialize_typed_satellite("statement_timing", segment)
     return append_fact(
         session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
-        fact_type="statement_timing",
         subject_kind="statement_candidate",
         subject_key=subject_key,
-        transformation="typed_statement_timing_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
             run_identity=_statement_source_run_identity(segment),
-            fact_type="statement_timing",
             subject_kind="statement_candidate",
             subject_key=subject_key,
-            text_value=None,
-            source_links=(("value_source", segment.id),),
+            value=materialized,
             structured_value=structured,
         ),
-        sources=(("value_source", segment.id),),
+        value=materialized,
         timings=tuple(
             TimingValues(
                 role=role,
@@ -612,11 +600,9 @@ def replay_recorded_statement_timing_fact(
     )
     expected = _fact_digest(
         run_identity=_statement_source_run_identity(segment),
-        fact_type="statement_timing",
         subject_kind="statement_candidate",
         subject_key=fact.subject_key,
-        text_value=None,
-        source_links=(("value_source", segment.id),),
+        value=materialize_typed_satellite("statement_timing", segment),
         structured_value=_statement_timing_structured(timings),
     )
     if expected != fact.content_sha256:
@@ -662,30 +648,22 @@ def append_recorded_statement_wording_fact(
             "statement wording must appear in its cited passage"
         )
     segment = append_source_segment(session, segment)
-    links = (
-        ("value_source", segment.id),
-        ("attribution_source", segment.id),
-    )
+    materialized = materialize_quoted_statement_wording(segment, description)
     return append_fact(
         session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
-        fact_type="statement_wording",
         subject_kind="statement_candidate",
         subject_key=subject_key,
-        text_value=description,
-        transformation="exact_prose_span_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
             run_identity=_statement_source_run_identity(segment),
-            fact_type="statement_wording",
             subject_kind="statement_candidate",
             subject_key=subject_key,
-            text_value=description,
-            source_links=links,
+            value=materialized,
         ),
-        sources=links,
+        value=materialized,
     )
 
 
@@ -718,26 +696,23 @@ def append_recorded_applies_to_fact(
         raise FactValidationError("statement Applies To members must be unique")
     segment = append_source_segment(session, segment)
     structured = {"dependency_ids": list(dependency_ids)}
+    materialized = materialize_typed_satellite("applies_to", segment)
     return append_fact(
         session,
         project_id=segment.project_id,
         document_id=None,
         extraction_run_id=None,
-        fact_type="applies_to",
         subject_kind="statement_candidate",
         subject_key=subject_key,
-        transformation="structured_reference_set_v1",
         recorded_by=recorded_by,
         content_sha256=_fact_digest(
             run_identity=_statement_source_run_identity(segment),
-            fact_type="applies_to",
             subject_kind="statement_candidate",
             subject_key=subject_key,
-            text_value=None,
-            source_links=(("value_source", segment.id),),
+            value=materialized,
             structured_value=structured,
         ),
-        sources=(("value_source", segment.id),),
+        value=materialized,
         applies_to=dependency_ids,
     )
 
@@ -751,28 +726,25 @@ def replay_recorded_statement_wording_fact(
         raise FactValidationError("Fact is not a recorded statement wording")
     segment = _statement_value_segment(session, fact)
     _certify_statement_source_segment(segment)
-    links = (
-        ("value_source", segment.id),
-        ("attribution_source", segment.id),
-    )
+    try:
+        materialized = materialize_quoted_statement_wording(
+            segment, fact.text_value or ""
+        )
+    except FactValidationError as exc:
+        raise FactReplayMismatch(
+            "statement wording does not reproduce the Fact digest"
+        ) from exc
     expected = _fact_digest(
         run_identity=_statement_source_run_identity(segment),
-        fact_type="statement_wording",
         subject_kind="statement_candidate",
         subject_key=fact.subject_key,
-        text_value=fact.text_value,
-        source_links=links,
+        value=materialized,
     )
-    words_reproduce = (
-        fact.text_value == segment.exact_text
-        if segment.kind == "recorded_verbal_statement"
-        else bool(fact.text_value) and fact.text_value in segment.exact_text
-    )
-    if expected != fact.content_sha256 or not words_reproduce:
+    if expected != fact.content_sha256:
         raise FactReplayMismatch(
             "statement wording does not reproduce the Fact digest"
         )
-    return fact.text_value
+    return materialized.text_value
 
 
 def replay_recorded_applies_to_fact(
@@ -793,11 +765,9 @@ def replay_recorded_applies_to_fact(
     )
     expected = _fact_digest(
         run_identity=_statement_source_run_identity(segment),
-        fact_type="applies_to",
         subject_kind="statement_candidate",
         subject_key=fact.subject_key,
-        text_value=None,
-        source_links=(("value_source", segment.id),),
+        value=materialize_typed_satellite("applies_to", segment),
         structured_value={"dependency_ids": list(dependency_ids)},
     )
     if expected != fact.content_sha256:
@@ -899,13 +869,12 @@ def append_supporting_documentation_fact(
         raise FactValidationError(
             "supporting documentation needs a registered project document"
         )
+    materialized = materialize_document_reference(document_id)
     digest = _fact_digest(
         run_identity={"document_value_id": document_id},
-        fact_type="supporting_documentation_in_use",
         subject_kind="record_subject",
         subject_key=subject_key,
-        text_value=None,
-        source_links=(),
+        value=materialized,
     )
     existing = session.scalar(
         select(Fact).where(Fact.content_sha256 == digest)
@@ -917,14 +886,11 @@ def append_supporting_documentation_fact(
         project_id=project_id,
         document_id=None,
         extraction_run_id=None,
-        fact_type="supporting_documentation_in_use",
         subject_kind="record_subject",
         subject_key=subject_key,
-        document_value_id=document_id,
-        transformation="supporting_document_revision_v1",
         recorded_by=recorded_by,
         content_sha256=digest,
-        sources=(),
+        value=materialized,
     )
 
 
@@ -1001,27 +967,14 @@ def correct_fact(
     contract = FACT_TYPE_CONTRACTS.get(predecessor.fact_type)
     if contract is None or segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError("corrected Fact source kind violates its contract")
-    value = _validated_scalar_value(contract, segment.exact_text)
-    text_value = value if isinstance(value, str) else None
-    date_value = value if isinstance(value, date) else None
-    external_org_value_id = (
-        _exact_registered_external_org_id(session, text_value)
-        if predecessor.fact_type == "external_org" and text_value is not None
-        else None
-    )
-    links = tuple((role, segment.id) for role in sorted(contract.required_roles))
+    materialized = materialize_segment_value(session, predecessor.fact_type, segment)
     successor = append_fact(
         session,
         project_id=predecessor.project_id,
         document_id=predecessor.document_id,
         extraction_run_id=predecessor.extraction_run_id,
-        fact_type=predecessor.fact_type,
         subject_kind=predecessor.subject_kind,
         subject_key=predecessor.subject_key,
-        text_value=text_value,
-        date_value=date_value,
-        external_org_value_id=external_org_value_id,
-        transformation=predecessor.transformation,
         recorded_by=actor.subject,
         content_sha256=_fact_digest(
             run_identity={
@@ -1029,15 +982,11 @@ def correct_fact(
                 "extraction_run_id": predecessor.extraction_run_id,
                 "correction_of": predecessor.id,
             },
-            fact_type=predecessor.fact_type,
             subject_kind=predecessor.subject_kind,
             subject_key=predecessor.subject_key,
-            text_value=text_value,
-            date_value=date_value,
-            external_org_value_id=external_org_value_id,
-            source_links=links,
+            value=materialized,
         ),
-        sources=links,
+        value=materialized,
     )
     disposition = FactDisposition(
         project_id=successor.project_id,
@@ -1225,7 +1174,7 @@ def replay_fact(
             successor_dependency_id=result.successor_dependency_id,
             governing_source_segment_ids=governing,
         )
-    replayed = _validated_scalar_value(contract, exact)
+    replayed = validated_scalar_value(contract, exact)
     materialized = fact.date_value if fact.date_value is not None else fact.text_value
     if replayed != materialized:
         raise FactReplayMismatch("materialized Fact value does not reproduce")
@@ -1242,7 +1191,7 @@ def replay_proposed_fact_value(
         raise FactValidationError(f"unknown Fact type {fact_type!r}")
     if len(exact_value_sources) != 1:
         raise FactValidationError("Fact proposal needs one value source")
-    return _transform(contract.transformation, exact_value_sources[0])
+    return transform(contract.transformation, exact_value_sources[0])
 
 
 def _segment_rows(segments: tuple[SourceSegment, ...]) -> dict[str, dict[int, dict[int, str]]]:
@@ -1270,59 +1219,10 @@ def _cell_range(column_number: int, row_number: int) -> str:
     return f"{get_column_letter(column_number)}{row_number}"
 
 
-def _transform(name: str, exact_text: str) -> str | date:
-    if name == "trim_cell_text_v1":
-        return exact_text.strip()
-    if name == "exact_prose_span_v1":
-        return exact_text
-    if name == "iso_date_cell_v1":
-        try:
-            return date.fromisoformat(exact_text.strip().split(" ", 1)[0])
-        except ValueError as exc:
-            raise FactValidationError(
-                f"structured date is not an ISO calendar date: {exact_text!r}"
-            ) from exc
-    raise FactValidationError(f"unknown Fact transformation {name!r}")
-
-
 def _candidate_typed_value(contract: FactTypeContract, value: object) -> str | date:
     if contract.value_class == "date":
-        return _validated_scalar_value(contract, str(value))
+        return validated_scalar_value(contract, str(value))
     return str(value).strip()
-
-
-def _validated_scalar_value(
-    contract: FactTypeContract, exact_text: str
-) -> str | date:
-    value = _transform(contract.transformation, exact_text)
-    if contract.validation_rule in {
-        "non_empty_replay_exact",
-        "non_empty_replay_exact_optional_registered_alias",
-    }:
-        if not isinstance(value, str) or not value.strip():
-            raise FactValidationError("structured text Fact cannot be empty")
-    elif contract.validation_rule == "iso_calendar_date_replay_exact":
-        if not isinstance(value, date):
-            raise FactValidationError("structured date Fact must be a calendar date")
-    elif contract.validation_rule != "exact_attributed_prose_span":
-        raise FactValidationError(
-            f"Fact validation rule is not scalar: {contract.validation_rule!r}"
-        )
-    return value
-
-
-def _exact_registered_external_org_id(session: Session, wording: str) -> int | None:
-    wanted = normalize_party(wording)
-    matches = {
-        organization.id
-        for organization in session.scalars(select(ExternalOrg).order_by(ExternalOrg.id))
-        if any(
-            normalize_party(spelling) == wanted
-            for spelling in (organization.name, *(organization.aliases or ()))
-            if spelling
-        )
-    }
-    return next(iter(matches)) if len(matches) == 1 else None
 
 
 def _resolve_applies_to_dependencies(
@@ -1355,7 +1255,6 @@ def _append_fact_envelope(
     fact_type: str,
     subject_kind: str,
     subject_key: str,
-    transformation: str,
     segment: SourceSegment,
     structured_value: object,
     applies_to: tuple[int, ...] | None = None,
@@ -1363,15 +1262,14 @@ def _append_fact_envelope(
 ) -> Fact:
     """Append one structured-value Fact whose value lives in a typed satellite."""
 
+    materialized = materialize_typed_satellite(fact_type, segment)
     return append_fact(
         session,
         project_id=document.project_id,
         document_id=document.id,
         extraction_run_id=run.id,
-        fact_type=fact_type,
         subject_kind=subject_kind,
         subject_key=subject_key,
-        transformation=transformation,
         recorded_by=f"extractor:{run.prompt_version}",
         content_sha256=_fact_digest(
             run_identity={
@@ -1381,14 +1279,12 @@ def _append_fact_envelope(
                 "model": run.model,
                 "extractor_config_sha256": run.extractor_config_sha256,
             },
-            fact_type=fact_type,
             subject_kind=subject_kind,
             subject_key=subject_key,
-            text_value=None,
-            source_links=(("value_source", segment.id),),
+            value=materialized,
             structured_value=structured_value,
         ),
-        sources=(("value_source", segment.id),),
+        value=materialized,
         applies_to=applies_to,
         closure=closure,
     )
@@ -1397,29 +1293,27 @@ def _append_fact_envelope(
 def _fact_digest(
     *,
     run_identity: dict[str, object],
-    fact_type: str,
     subject_kind: str,
     subject_key: str,
-    text_value: str | None,
-    source_links: tuple[tuple[str, int], ...],
-    date_value: date | None = None,
-    external_org_value_id: int | None = None,
+    value: MaterializedValue,
     structured_value: object | None = None,
 ) -> str:
-    value = {
+    digest_input = {
         "run": run_identity,
-        "fact_type": fact_type,
+        "fact_type": value.fact_type,
         "subject_kind": subject_kind,
         "subject_key": subject_key,
-        "text_value": text_value,
-        "date_value": date_value.isoformat() if date_value is not None else None,
-        "external_org_value_id": external_org_value_id,
+        "text_value": value.text_value,
+        "date_value": (
+            value.date_value.isoformat() if value.date_value is not None else None
+        ),
+        "external_org_value_id": value.external_org_value_id,
         "structured_value": structured_value,
         "source_links": [
             {"role": role, "source_segment_id": segment_id}
-            for role, segment_id in source_links
+            for role, segment_id in value.source_links
         ],
     }
     return sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+        json.dumps(digest_input, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()

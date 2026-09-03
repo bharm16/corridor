@@ -6,6 +6,10 @@ instead gives the model opaque segment/subject references, validates one strict
 typed output locally, measures omissions, and delegates its only persistence to
 ``append_source_facts``.  It cannot include anything in the Project Record;
 interpretation-bearing Fact contracts remain human-gated (ADR-0068..0070).
+The output schema carries references only — segment ids, roles, subject ids —
+and no value field at all (#446): the wording a proposal asserts is whatever
+its cited value-source segment materializes, so a model literal has nowhere to
+land.
 """
 
 from __future__ import annotations
@@ -43,7 +47,7 @@ from corridor.typed_output import (
 
 
 PROMPT_VERSION = "prose_interpretation_v1"
-SCHEMA_VERSION = "prose_interpretation_output_v1"
+SCHEMA_VERSION = "prose_interpretation_output_v2"
 PROMPT_PATH = Path("prompts/prose_interpretation_v1.md")
 
 
@@ -65,7 +69,6 @@ class ProseFactProposal(StrictOutputModel):
     """One reference-only, human-gated Fact proposal from prose."""
 
     fact_type: Literal["statement_wording"]
-    value: str = Field(min_length=1)
     sources: tuple[SegmentReference, ...] = Field(min_length=2)
     subject_candidates: tuple[SubjectReference, ...] = Field(min_length=1)
 
@@ -298,13 +301,9 @@ def _validate_references(
             if source.role == "value_source"
         )
         try:
-            replayed = replay_proposed_fact_value(
-                proposal.fact_type, value_sources
-            )
+            replay_proposed_fact_value(proposal.fact_type, value_sources)
         except ValueError as exc:
             raise ValueError(str(exc)) from exc
-        if replayed != proposal.value:
-            raise ValueError("proposed value does not replay from cited segments")
         if len(proposal.subject_candidates) != 1:
             raise ValueError("statement wording needs one registered subject candidate")
         subject_ref = proposal.subject_candidates[0]
@@ -381,6 +380,9 @@ def _candidate_from_proposal(
     subject = subject_by_identity[(subject_ref.subject_type, subject_ref.subject_id)]
     wording = _matched_subject_wording(subject, attribution_segment.exact_text)
     assert wording is not None
+    description = replay_proposed_fact_value(
+        proposal.fact_type, (segment.exact_text,)
+    )
     return Candidate(
         project_id=document.project_id,
         source_document_id=document.id,
@@ -391,7 +393,7 @@ def _candidate_from_proposal(
         payload_json={
             "kind": "event",
             "fields": {
-                "description": proposal.value,
+                "description": description,
                 "external_org": wording,
                 "stated_party": wording,
             },
@@ -399,7 +401,7 @@ def _candidate_from_proposal(
                 {
                     "document_id": document.id,
                     "page": segment.page_no,
-                    "quote": proposal.value,
+                    "quote": description,
                     "verified": True,
                     "whole_row": False,
                 }
