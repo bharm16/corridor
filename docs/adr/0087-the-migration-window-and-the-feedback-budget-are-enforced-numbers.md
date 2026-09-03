@@ -6,7 +6,7 @@ amends:
   - ADR-0065
 amended_by:
   - ADR-0088
-migration: the required pull-request gate's median is 4m25s against the three-minute median recorded here (#548).
+migration: the required pull-request gate's median is 3m14s against the three-minute median recorded here, over the twelve pull-request runs after the five-way split (#548); the 90th percentile and the 45s `make test-migrations` number are met. #595 removed the repeated per-job setup and owes the five-run measurement of the result.
 ---
 
 # The migration window and the feedback budget are enforced numbers, not prose
