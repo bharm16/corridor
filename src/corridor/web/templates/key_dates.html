@@ -1,9 +1,9 @@
+{% import "_primitives.html" as ui -%}
 <!doctype html>
 <meta charset="utf-8">
 <title>Key dates — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --warn:#8a5a00; --warnbg:#fff6e6;
-          --bad:#8a1f1f; --badbg:#fdecec; --ok:#1f6f3f; --okbg:#ecf7f0; }
+  :root { --line:#e2e2e2; --muted:#666; }
   * { box-sizing:border-box; }
   body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
   header { display:flex; justify-content:space-between; align-items:baseline;
@@ -26,30 +26,25 @@
                  padding:.5rem; border:1px solid var(--line); border-radius:4px; }
   button { font:inherit; color:#fff; background:#111; border:1px solid #111;
            border-radius:4px; padding:.45rem .8rem; cursor:pointer; margin-top:.7rem; }
-  .banner { border-radius:6px; padding:.6rem .8rem; margin:.8rem 0; }
-  .banner.error { color:var(--bad); background:var(--badbg); }
-  .banner.stale { color:var(--warn); background:var(--warnbg); }
-  .banner.ok { color:var(--ok); background:var(--okbg); }
+  /* Outcomes and refusals are the shared primitives (#559); what remains
+     here is the plain note box, whose meaning is entirely in its words. */
+  .banner { border-radius:6px; padding:.6rem .8rem; margin:.8rem 0;
+            background:#f6f6f6; border:1px solid var(--line); }
   .preview { border:1px solid var(--line); border-radius:7px; padding:1rem 1.2rem; margin-top:.6rem; }
   dl { display:grid; grid-template-columns:9rem 1fr; gap:.25rem .8rem; margin:.3rem 0 .8rem; }
   dt { color:var(--muted); }
   dd { margin:0; overflow-wrap:anywhere; }
-  .tag { display:inline-block; font-size:.75rem; padding:.05rem .4rem; border-radius:3px;
-         border:1px solid var(--line); white-space:nowrap; }
-  .tag.new { color:var(--ok); border-color:#bfe3cc; }
-  .tag.changed { color:var(--warn); border-color:#e6d0a8; }
-  .tag.newver { color:#334; }
-  .tag.unchanged { color:var(--muted); }
   .counts { font-size:.9rem; margin:.4rem 0 .2rem; }
   .was { color:var(--muted); }
 </style>
+{{ ui.styles() }}
 
 <header>
   <b>{{ project.name }}</b>
   <span><a href="/work/{{ project.slug }}">Back to coordination</a></span>
 </header>
 
-<main>
+<main{{ ui.anchor(focus_ids["item"], focus) }}>
   <h1>Key dates</h1>
   <p class="muted">
     Each Key date is one registered schedule milestone — its event name and its
@@ -58,7 +53,9 @@
   </p>
 
   {% if message %}
-    <div class="banner ok">Imported: {{ message }}. Each row now has a Key Date Version recorded under your name.</div>
+    {% call ui.outcome("saved", "Imported: " ~ message ~ ".", focus) %}
+      Each row now has a Key Date Version recorded under your name.
+    {% endcall %}
   {% endif %}
 
   <h2>Registered Key dates</h2>
@@ -85,7 +82,9 @@
 
   <h2>Preview a hand-typed CSV</h2>
   {% if error %}
-    <div class="banner error">Not imported — {{ error }}</div>
+    {% call ui.outcome("refused", "Not imported — " ~ error, focus) %}
+      Nothing was imported. Correct the rows below, then preview again.
+    {% endcall %}
   {% endif %}
   <form class="import" method="post" action="/key-dates/{{ project.slug }}/preview">
     <label for="source_name">Source name (what you typed this from)</label>
@@ -100,13 +99,13 @@
   {% if preview %}
     <div class="preview">
       {% if stale %}
-        <div class="banner stale">
-          Refused — {{ stale }}. Nothing was imported. Below is the current state; review it, then confirm again.
-        </div>
+        {% call ui.outcome("refused", "Refused — " ~ stale ~ ".", focus) %}
+          Nothing was imported. Below is the current state; review it, then confirm again.
+        {% endcall %}
       {% endif %}
       <h2 style="margin-top:.2rem">Preview of {{ preview.source_name }}</h2>
       {% if draft %}
-        <div class="banner stale">
+        <div class="banner">
           <b>Drafted from {{ draft.source_name }}.</b> This is a non-authoritative
           transcription from the retained source, not a schedule decision. Review
           the cited wording, then use the ordinary import confirmation below.
@@ -138,10 +137,10 @@
                 {% endif %}
               </td>
               <td>
-                {% if row.classification == "new" %}<span class="tag new">New key date</span>
-                {% elif row.classification == "changed" %}<span class="tag changed">Changed</span>
-                {% elif row.classification == "new_source_version" %}<span class="tag newver">New source version, date unchanged</span>
-                {% else %}<span class="tag unchanged">No change</span>{% endif %}
+                {% if row.classification == "new" %}{{ ui.state(state_label("settled", "New key date")) }}
+                {% elif row.classification == "changed" %}{{ ui.state(state_label("attention", "Changed")) }}
+                {% elif row.classification == "new_source_version" %}{{ ui.state(state_label("neutral", "New source version, date unchanged")) }}
+                {% else %}{{ ui.state(state_label("neutral", "No change")) }}{% endif %}
               </td>
               {% if draft %}
                 {% set source = draft.rows[loop.index0].source %}

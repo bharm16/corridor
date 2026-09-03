@@ -177,6 +177,7 @@
   "tests/test_token_layer_ingest.py": 1.4,
   "tests/test_token_layers.py": 1.6,
   "tests/test_typed_output.py": 0.0,
+  "tests/test_ui_primitives.py": 0.6,
   "tests/test_unreadable_cells.py": 0.7,
   "tests/test_verbal.py": 3.6,
   "tests/test_verbal_spine.py": 0.6,

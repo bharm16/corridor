@@ -1,0 +1,275 @@
+{#
+  The server-rendered primitives the coordinator work screens share.
+
+  Why: #527, #528, #536, and #537 all present the same shapes — a named state,
+  a heading-bound region, a labelled field, a before-and-after pair, a child
+  selection, an outcome that takes focus. Each screen inventing its own is how
+  the Constraint log came to mark a late date in colour and weight alone.
+  `corridor.web.ui_primitives` holds the words and the focus rule; this file
+  holds only their markup. There is no framework and no build step: a macro
+  here must render correctly with the page's own stylesheet and no script.
+
+  Use:  {% import "_primitives.html" as ui %}
+        {{ ui.styles() }}            once, in the page's head
+        {{ ui.state(label) }}        wherever a state is shown
+
+  Every state prints its own words. Colour is redundant reinforcement, and the
+  mark beside the words is decorative (`aria-hidden`), so a reader in
+  greyscale, in print, or listening receives the same fact.
+#}
+
+{% macro styles() %}
+<style>
+  /* Off-screen but announced: the text a sighted reader gets from position
+     or a glyph, spoken in the same place in the reading order. */
+  .visually-hidden { position:absolute; width:1px; height:1px; margin:-1px;
+                     padding:0; overflow:hidden; clip:rect(0 0 0 0);
+                     white-space:nowrap; border:0; }
+  .state { display:inline-block; font-size:.75rem; padding:.05rem .45rem;
+           border-radius:10px; border:1px solid #e2e2e2; }
+  .state .mark { margin-right:.3rem; font-weight:700; }
+  .state-settled { color:#067647; border-color:#abefc6; background:#ecfdf3; }
+  .state-attention { color:#b54708; border-color:#fedf89; background:#fffaeb; }
+  .state-refused { color:#b42318; border-color:#fecdca; background:#fef3f2; }
+  .state-neutral { color:#666; border-color:#e2e2e2; background:#fafafa; }
+  .outcome { border:1px solid #e2e2e2; border-radius:6px;
+             padding:.7rem .9rem; margin:.8rem 0; }
+  .outcome-saved { border-color:#abefc6; background:#ecfdf3; }
+  .outcome-refused { border-color:#fecdca; background:#fef3f2; }
+  .outcome > .outcome-head { margin:0 0 .35rem; }
+  .error-summary { border:1px solid #fecdca; background:#fef3f2; border-radius:6px;
+                   padding:.7rem .9rem; margin:.8rem 0; }
+  .error-summary h2 { margin:0 0 .35rem; font-size:1rem; }
+  .error-summary ul { margin:0; padding-left:1.2rem; }
+  .field { margin:.6rem 0; }
+  .field > label { display:block; font-weight:600; margin:0 0 .2rem; }
+  .field > .field-hint { margin:0 0 .25rem; font-size:.85rem; color:#666; }
+  .field > .field-required { font-weight:400; color:#666; }
+  table.record, table.before-after { border-collapse:collapse; width:100%;
+                                     margin:.6rem 0; }
+  table.record caption, table.before-after caption { text-align:left;
+       font-weight:600; padding:0 0 .3rem; }
+  table.record th, table.before-after th, table.record td, table.before-after td {
+       text-align:left; padding:.3rem .6rem .3rem 0; vertical-align:top;
+       border-bottom:1px solid #f0f0f0; }
+  table.record thead th, table.before-after thead th { font-size:.8rem;
+       color:#666; font-weight:500; border-bottom:1px solid #e2e2e2; }
+  .child-selection { border:1px solid #e2e2e2; border-radius:6px;
+                     padding:.7rem .9rem; margin:.8rem 0; }
+  .child-selection > ul { list-style:none; margin:.4rem 0 0; padding:0; }
+  .child-selection > ul > li { padding:.2rem 0; }
+  .child-selection label { font-weight:400; }
+  .child-selection .held-out { margin:.1rem 0 0 1.5rem; font-size:.85rem;
+                               color:#666; }
+  .sticky-actions { position:sticky; bottom:0; border-top:1px solid #e2e2e2;
+                    background:#fff; padding:.7rem 0; }
+  .sticky-actions .actions { display:flex; gap:.5rem; flex-wrap:wrap;
+                             align-items:center; }
+  .why { margin:0 0 1rem; }
+  .why > h2 { font-size:1.05rem; margin:0 0 .25rem; }
+  .why > p { margin:0; color:#666; font-size:.9rem; }
+  .evidence-reference { font-size:.9rem; color:#666; }
+</style>
+{% endmacro %}
+
+
+{#
+  The one element this response hands the keyboard and the screen reader.
+  `focus` is the id chosen by `ui_primitives.focus_target`, so exactly one
+  rendered anchor claims `autofocus` and the rest stay programmatically
+  focusable for a later return.
+#}
+{% macro anchor(id, focus="") %} id="{{ id }}" tabindex="-1"{% if id == focus %} autofocus{% endif %}{% endmacro %}
+
+
+{# One state or consequence: mark, then its own words. #}
+{% macro state(label) %}
+  {%- if label -%}
+    <span class="state state-{{ label.tone }}"><span class="mark" aria-hidden="true">{{ label.mark }} </span>{{ label.text }}</span>
+  {%- endif -%}
+{% endmacro %}
+
+
+{# A region bound to its own heading, so it is reachable by heading and by landmark. #}
+{% macro region(id, heading, focus="") %}
+<section class="region"{{ anchor(id, focus) }} aria-labelledby="{{ id }}-heading">
+  <h2 id="{{ id }}-heading">{{ heading }}</h2>
+  {{ caller() }}
+</section>
+{% endmacro %}
+
+
+{# Why this item is in front of the coordinator, before anything about it. #}
+{% macro reason_presented(headline, guidance="") %}
+<div class="why">
+  <h2>{{ headline }}</h2>
+  {%- if guidance %}<p>{{ guidance }}</p>{% endif -%}
+</div>
+{% endmacro %}
+
+
+{# Known facts as a description list: term and value, never a bare grid. #}
+{% macro fact_list(items) %}
+<dl class="facts">
+  {%- for term, value in items %}
+  <dt>{{ term }}</dt><dd>{{ value if value not in (none, "") else not_recorded }}</dd>
+  {%- endfor %}
+</dl>
+{% endmacro %}
+
+
+{# A captioned table with real column headers; rows come from the caller. #}
+{% macro record_table(caption, columns) %}
+<table class="record">
+  <caption>{{ caption }}</caption>
+  <thead><tr>{% for column in columns %}<th scope="col">{{ column }}</th>{% endfor %}</tr></thead>
+  <tbody>{{ caller() }}</tbody>
+</table>
+{% endmacro %}
+
+
+{#
+  The accepted value and the incoming value, side by side and readable in
+  order. A row is a real table row with its field as a row header, so a screen
+  reader announces "Promised for, current accepted value, 2026-04-01, incoming
+  value, 2026-06-15". Struck-through text would say none of that.
+
+  `rows` are objects or mappings carrying `field`, `before`, `after`, and an
+  optional `source` reference.
+#}
+{% macro before_after(caption, rows,
+                      before_heading="Current accepted value",
+                      after_heading="Incoming value") %}
+<table class="before-after">
+  <caption>{{ caption }}</caption>
+  <thead>
+    <tr>
+      <th scope="col">Field</th>
+      <th scope="col">{{ before_heading }}</th>
+      <th scope="col">{{ after_heading }}</th>
+      {%- if rows and rows[0].source is defined and rows[0].source %}<th scope="col">Source</th>{% endif %}
+    </tr>
+  </thead>
+  <tbody>
+    {%- for row in rows %}
+    <tr>
+      <th scope="row">{{ row.field }}</th>
+      <td>{{ row.before if row.before not in (none, "") else not_recorded }}</td>
+      <td>{{ row.after if row.after not in (none, "") else not_recorded }}</td>
+      {%- if row.source is defined and row.source %}<td>{{ row.source }}</td>{% endif %}
+    </tr>
+    {%- endfor %}
+  </tbody>
+</table>
+{% endmacro %}
+
+
+{#
+  A labelled control. The label is visible and bound by `for`, so it is both
+  read aloud and a click target; the hint has its own id for the caller to
+  name in `aria-describedby`.
+#}
+{% macro field(control_id, text, hint="", required=false) %}
+<div class="field">
+  <label for="{{ control_id }}">{{ text }}{% if required %} <span class="field-required">(required)</span>{% endif %}</label>
+  {%- if hint %}<p class="field-hint" id="{{ control_id }}-hint">{{ hint }}</p>{% endif %}
+  {{ caller() }}
+</div>
+{% endmacro %}
+
+
+{#
+  Child selection, complete from the keyboard. Every child is a native
+  checkbox inside its own label, so Tab reaches it and Space toggles it; a
+  child that cannot join the batch is disabled and says why in text rather
+  than being greyed out and left unexplained. The counts are rendered by the
+  server, so no script is needed to read them.
+#}
+{% macro child_selection(name, legend, children, described_by="") %}
+<fieldset class="child-selection"{% if described_by %} aria-describedby="{{ described_by }}"{% endif %}>
+  <legend>{{ legend }}</legend>
+  <ul>
+    {%- for child in children %}
+    <li>
+      <label for="{{ name }}-{{ child.id }}">
+        <input type="checkbox" id="{{ name }}-{{ child.id }}" name="{{ name }}"
+               value="{{ child.id }}"
+               {%- if child.held_out %} disabled aria-describedby="{{ name }}-{{ child.id }}-reason"{% endif %}
+               {%- if child.selected and not child.held_out %} checked{% endif %}>
+        {{ child.text }}
+      </label>
+      {%- if child.held_out %}
+      <p class="held-out" id="{{ name }}-{{ child.id }}-reason">Held out of this batch: {{ child.held_out }}</p>
+      {%- endif %}
+    </li>
+    {%- endfor %}
+  </ul>
+</fieldset>
+{% endmacro %}
+
+
+{#
+  The outcome of a write. `kind` is `saved` or `refused`; a refusal is
+  announced assertively because it means the coordinator's work was not
+  applied and must be resubmitted.
+#}
+{% macro outcome(kind, heading, focus="") %}
+{%- set id = focus_ids["refusal"] if kind == "refused" else focus_ids["outcome"] -%}
+<section class="outcome outcome-{{ kind }}"{{ anchor(id, focus) }}
+         role="{{ "alert" if kind == "refused" else "status" }}"
+         aria-live="{{ "assertive" if kind == "refused" else "polite" }}">
+  <p class="outcome-head">{{ state(state_label("refused" if kind == "refused" else "settled", heading)) }}</p>
+  {{ caller() }}
+</section>
+{% endmacro %}
+
+
+{#
+  Every refused field in one place, each a link to the control that holds it.
+  The summary takes focus, so the first thing announced is how many fields
+  were refused and which; each link then moves focus to the field itself.
+#}
+{% macro error_summary(errors, focus="", heading="This was not saved") %}
+{%- if errors %}
+<div class="error-summary"{{ anchor(focus_ids["errors"], focus) }} role="alert">
+  <h2>{{ heading }} — {{ errors|length }} field{{ "" if errors|length == 1 else "s" }} need{{ "s" if errors|length == 1 else "" }} attention</h2>
+  <ul>
+    {%- for error in errors %}
+    <li><a href="#{{ error.field_id }}">{{ error.message }}</a></li>
+    {%- endfor %}
+  </ul>
+</div>
+{%- endif %}
+{% endmacro %}
+
+
+{#
+  A reference to the exact source behind a value, as words rather than a
+  thumbnail alone. The evidence pane itself is `_evidence.html`; this is the
+  line that names it in the reading order beside the claim.
+#}
+{% macro evidence_reference(document_name, page_no, quote="", href="") %}
+<p class="evidence-reference">
+  {%- if href %}<a href="{{ href }}">{{ document_name }}, page {{ page_no }}</a>
+  {%- else %}{{ document_name }}, page {{ page_no }}{% endif %}
+  {%- if quote %} — {{ label("cited_passage") }}: “{{ quote }}”{% endif %}
+</p>
+{% endmacro %}
+
+
+{#
+  A keyboard shortcut hint that a screen reader can also read. The glyph is
+  hidden and the same key is spelled out in the accessible text, so the hint
+  is not announced as a stray letter beside the action.
+#}
+{% macro shortcut(key, action) %}
+<span class="keyhint"><kbd aria-hidden="true">{{ key }}</kbd> {{ action }}<span class="visually-hidden"> (keyboard shortcut: {{ key }})</span></span>
+{% endmacro %}
+
+
+{# The actions for the current item, kept together and named as one group. #}
+{% macro sticky_actions(aria_label="Actions for this item") %}
+<div class="sticky-actions">
+  <div class="actions" role="group" aria-label="{{ aria_label }}">{{ caller() }}</div>
+</div>
+{% endmacro %}
