@@ -147,6 +147,11 @@ class ObjectStore(Protocol):
 
     def delete_under_policy(self, key: str, *, permit: DeletionPermit) -> None: ...
 
+    # Prove the store answers, without reading or writing an object. Each
+    # backend knows what unreachable means for it: a missing directory is not
+    # an empty listing, and a missing bucket is not a missing key.
+    def probe(self) -> None: ...
+
 
 def _verified(data: bytes, sha256: str) -> None:
     if digest_bytes(data) != sha256:
@@ -288,6 +293,12 @@ class LocalFilesystemStore:
             raise ObjectConflict(f"{key} no longer holds the permitted bytes")
         target.unlink()
 
+    def probe(self) -> None:
+        """The root directory is the store; a missing one is not an empty one."""
+
+        if not self.root.is_dir():
+            raise StorageError(f"{self.root} is not a readable store root")
+
 
 class S3ObjectStore:
     """An S3-compatible bucket; keys keep the same layout under an optional prefix.
@@ -427,6 +438,16 @@ class S3ObjectStore:
         if current != permit.sha256:
             raise ObjectConflict(f"{key} no longer holds the permitted bytes")
         self.client.delete_object(Bucket=self.bucket, Key=self._name(key))
+
+    def probe(self) -> None:
+        """One bounded list: it fails on a missing bucket or a denied credential."""
+
+        try:
+            self.client.list_objects_v2(
+                Bucket=self.bucket, Prefix=self.prefix, MaxKeys=1
+            )
+        except Exception as exc:
+            raise StorageError(f"bucket {self.bucket} is not reachable") from exc
 
 
 def _check_permit(key: str, permit: DeletionPermit) -> None:

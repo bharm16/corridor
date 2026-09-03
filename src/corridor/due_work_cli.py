@@ -32,6 +32,7 @@ from corridor.due_work import (
     supervise_due_work,
 )
 from corridor.models import Project
+from corridor.telemetry import ROLE_WORKER, configure_logging
 
 
 class SystemClock:
@@ -237,6 +238,7 @@ def main(
     stop_requested=None,
     wait=time.sleep,
 ) -> int:
+    configure_logging(role=ROLE_WORKER)
     try:
         args = _parser().parse_args(argv)
     except SystemExit as exc:
