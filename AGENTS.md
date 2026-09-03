@@ -27,12 +27,25 @@ and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
 - Normal PR CI runs `make check` on every pull request, and the same tests
-  `make test` and the non-migration `make test-slow` select, partitioned across
-  four runners each by `make test-shard` and `make test-slow-shard`, unless
-  every changed file is documentation (`**.md`, `docs/**`). No test is
+  `make test` and the non-migration `make test-slow` select, partitioned by
+  `make test-shard` across six runners and `make test-slow-shard` across four,
+  unless every changed file is documentation (`**.md`, `docs/**`). No test is
   deselected by path: the full suites stay required and parallelism keeps the
-  wall clock inside the feedback budget (ADR-0088). A merge to `main` does not
-  repeat that suite.
+  wall clock inside the feedback budget (ADR-0088). Each gate's runner count
+  is its own: the non-slow work spreads over 171 files and keeps dividing,
+  while the slow gate's floor is one file no division can split.
+- The partition comes from `tests/durations.json` and `tests/durations-slow.json`.
+  Regenerate both after any change that moves the numbers — a file missing
+  from them is weighted as *average*, not free, which unbalances the gate:
+
+  ```bash
+  make test-timing            # writes out/timing/non-slow.xml
+  uv run python scripts/test_timing.py out/timing/non-slow.xml --write tests/durations.json
+  make test-slow-timing       # writes out/timing/slow.xml
+  uv run python scripts/test_timing.py out/timing/slow.xml --write tests/durations-slow.json
+  ```
+
+- A merge to `main` does not repeat that suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate
   post-merge test workflow.
 - A change to migrations, schema models, or the database test harness also runs

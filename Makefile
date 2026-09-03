@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -70,12 +70,25 @@ test-slow-shard:
 	exit $$status
 
 # Per-file timing for the feedback budget (#548). Writes a JUnit report so a
-# revision can be compared against its base branch before any test is cut.
-# Example: make test-timing && uv run python scripts/test_timing.py out/timing/non-slow.xml
+# revision can be compared against its base branch before any test is cut, and
+# so the shard partition is recomputed from measured seconds:
+#   make test-timing
+#   uv run python scripts/test_timing.py out/timing/non-slow.xml
+#   uv run python scripts/test_timing.py out/timing/non-slow.xml --write tests/durations.json
 test-timing:
 	@mkdir -p out/timing
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
 	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
+
+# The same measurement for the slow gate. `tests/durations-slow.json` had no
+# producer, so it went stale and the balancer counted ten unrecorded files as
+# imaginary average work — which is how one slow shard ran no tests (#548):
+#   make test-slow-timing
+#   uv run python scripts/test_timing.py out/timing/slow.xml --write tests/durations-slow.json
+test-slow-timing:
+	@mkdir -p out/timing
+	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
+	  --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
 
 # Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
 test-migrations:

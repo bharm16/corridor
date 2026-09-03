@@ -9,6 +9,7 @@ derivative manifests.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import datetime, timezone
 import hashlib
 import json
@@ -237,12 +238,46 @@ def render_page_derivative(
     clip_page_box: PageBox | None = None,
     worker_project: Path | str = DEFAULT_WORKER_PROJECT,
 ) -> RenderDerivative:
+    return render_page_derivatives(
+        pdf_path=pdf_path,
+        page_number=page_number,
+        profile_names=(profile_name,),
+        output_dir=output_dir,
+        clip_page_box=clip_page_box,
+        worker_project=worker_project,
+    )[0]
+
+
+def render_page_derivatives(
+    *,
+    pdf_path: Path | str,
+    page_number: int,
+    profile_names: Sequence[str],
+    output_dir: Path | str,
+    clip_page_box: PageBox | None = None,
+    worker_project: Path | str = DEFAULT_WORKER_PROJECT,
+) -> list[RenderDerivative]:
+    """Render several profiles of one page in a single worker process.
+
+    Each worker start re-imports OpenCV, Pillow, PyMuPDF and NumPy, which
+    measured 0.27s against 0.38s for the whole invocation on an ordinary page:
+    process startup, not rasterising, was most of what ingest paid. Ingest
+    wants three profiles of every page, so asking for them together turns
+    three process starts into one and left every manifest byte-identical
+    (#548). The derivatives come back in the order requested.
+    """
+
+    if not profile_names:
+        raise ValueError("render requires at least one profile")
     bundle = load_render_profile_bundle()
-    if profile_name not in bundle.profiles:
-        raise ValueError(f"unknown render profile {profile_name!r}")
-    profile = bundle.profiles[profile_name]
-    if profile.requires_clip and clip_page_box is None:
-        raise ValueError(f"render profile {profile.name} requires a page clip")
+    profiles = []
+    for profile_name in profile_names:
+        if profile_name not in bundle.profiles:
+            raise ValueError(f"unknown render profile {profile_name!r}")
+        profile = bundle.profiles[profile_name]
+        if profile.requires_clip and clip_page_box is None:
+            raise ValueError(f"render profile {profile.name} requires a page clip")
+        profiles.append(profile)
     # Callers such as `docs ingest` may change cwd to the corpus root. The
     # worker runs from the repository root, so every IPC/artifact path crossing
     # that process boundary must already be absolute.
@@ -251,16 +286,19 @@ def render_page_derivative(
     identity = uuid4().hex
     request_path = output / f".{identity}.request.json"
     manifest_path = output / f".{identity}.manifest.json"
-    request = {
-        "pdf_path": str(Path(pdf_path).resolve()),
-        "page_number": page_number,
-        "profile": profile.model_dump(mode="json"),
-        "output_dir": str(output.resolve()),
-        "clip_page_box": (
-            clip_page_box.model_dump(mode="json") if clip_page_box else None
-        ),
-    }
-    request_path.write_text(json.dumps(request, sort_keys=True))
+    requests = [
+        {
+            "pdf_path": str(Path(pdf_path).resolve()),
+            "page_number": page_number,
+            "profile": profile.model_dump(mode="json"),
+            "output_dir": str(output.resolve()),
+            "clip_page_box": (
+                clip_page_box.model_dump(mode="json") if clip_page_box else None
+            ),
+        }
+        for profile in profiles
+    ]
+    request_path.write_text(json.dumps({"requests": requests}, sort_keys=True))
     project = Path(worker_project)
     try:
         completed = subprocess.run(
@@ -287,7 +325,10 @@ def render_page_derivative(
             raise RuntimeError(
                 "render worker failed: " + (completed.stderr or completed.stdout)
             )
-        return RenderDerivative.model_validate_json(manifest_path.read_text())
+        manifests = json.loads(manifest_path.read_text())["manifests"]
+        return [
+            RenderDerivative.model_validate(manifest) for manifest in manifests
+        ]
     finally:
         request_path.unlink(missing_ok=True)
         manifest_path.unlink(missing_ok=True)

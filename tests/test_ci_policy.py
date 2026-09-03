@@ -90,14 +90,15 @@ def test_every_test_file_lands_in_exactly_one_shard():
     import subprocess
     import sys
 
-    shards = _shard_count()
     expected = {
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
     }
 
-    # Each gate balances on its own recorded seconds, so each has its own
-    # partition; both must cover the suite exactly.
-    for profile in ([], ["--slow"]):
+    # Each gate balances on its own recorded seconds and carries its own
+    # runner count, so each has its own partition; both must cover the suite
+    # exactly.
+    for job, profile in (("pytest", []), ("slow", ["--slow"])):
+        shards = _shard_count(job)
         assigned: list[str] = []
         for shard in range(1, shards + 1):
             completed = subprocess.run(
@@ -116,17 +117,38 @@ def test_every_test_file_lands_in_exactly_one_shard():
             )
             assigned.extend(completed.stdout.split())
 
-        label = profile[0] if profile else "--fast"
-        assert len(assigned) == len(set(assigned)), f"{label}: a file landed twice"
+        assert len(assigned) == len(set(assigned)), f"{job}: a file landed twice"
         assert set(assigned) == expected, (
-            f"{label}: shards do not cover the suite: "
+            f"{job}: shards do not cover the suite: "
             f"{sorted(expected.symmetric_difference(assigned))}"
         )
 
 
-def _shard_count() -> int:
+def test_each_gate_asks_for_the_shard_count_its_matrix_runs():
+    """A `SHARDS=` that disagrees with the matrix drops or repeats files.
+
+    The two gates carry different runner counts — the non-slow work divides
+    across 171 files, the slow gate's floor is one file — so the count is read
+    from each job rather than assumed equal (#548).
+    """
+
+    jobs = _workflow("test.yml")["jobs"]
+
+    for job, target in (("pytest", "test-shard"), ("slow", "test-slow-shard")):
+        shards = _shard_count(job)
+        command = next(
+            step["run"]
+            for step in jobs[job]["steps"]
+            if "run" in step and f"make {target} " in step["run"]
+        )
+        assert f"SHARDS={shards}" in command, (
+            f"{job}: matrix runs {shards} shards but the command says {command!r}"
+        )
+
+
+def _shard_count(job: str = "pytest") -> int:
     workflow = _workflow("test.yml")
-    return len(workflow["jobs"]["pytest"]["strategy"]["matrix"]["shard"])
+    return len(workflow["jobs"][job]["strategy"]["matrix"]["shard"])
 
 
 def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():

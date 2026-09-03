@@ -10,15 +10,20 @@ added.
 Usage:
     uv run python scripts/test_timing.py out/timing/non-slow.xml
     uv run python scripts/test_timing.py out/timing/non-slow.xml --against base.xml
+    uv run python scripts/test_timing.py out/timing/slow.xml --write tests/durations-slow.json
 """
 
 from __future__ import annotations
 
 import argparse
 from collections import defaultdict
+import json
 from pathlib import Path
 import sys
 from xml.etree import ElementTree
+
+
+ROOT = Path(__file__).resolve().parents[1]
 
 
 def per_file_seconds(report: Path) -> dict[str, float]:
@@ -29,8 +34,35 @@ def per_file_seconds(report: Path) -> dict[str, float]:
         # `file` is the path pytest recorded; `classname` is the fallback for
         # reports that omit it.
         name = case.get("file") or case.get("classname", "").replace(".", "/")
+        if not name.endswith(".py"):
+            name = f"{name}.py"
         totals[name] += float(case.get("time", 0.0))
     return dict(totals)
+
+
+def write_durations(totals: dict[str, float], destination: Path) -> None:
+    """Record per-file seconds for every test file, zero included.
+
+    `scripts/test_shard.py` treats a file with no recorded duration as
+    *average*, so an omitted file is not free — it is imaginary work that
+    unbalances the partition. Ten files added after the last hand-written
+    recording were each counted as 52.8 imaginary slow seconds, which is how
+    one slow shard ended up running no tests at all (#548). Every file gets an
+    entry, and a file the gate does not select gets an explicit 0.0.
+    """
+
+    recorded = {
+        str(path.relative_to(ROOT)): round(
+            totals.get(str(path.relative_to(ROOT)), 0.0), 1
+        )
+        for path in sorted((ROOT / "tests").glob("test_*.py"))
+    }
+    unknown = sorted(set(totals) - set(recorded))
+    if unknown:
+        raise SystemExit(f"report names files that are not test files: {unknown}")
+    destination.write_text(
+        json.dumps(recorded, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def _render(totals: dict[str, float], limit: int) -> str:
@@ -66,6 +98,12 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("report", type=Path)
     parser.add_argument("--against", type=Path, default=None)
     parser.add_argument("--limit", type=int, default=25)
+    parser.add_argument(
+        "--write",
+        type=Path,
+        default=None,
+        help="record per-file seconds for scripts/test_shard.py",
+    )
     arguments = parser.parse_args(argv)
 
     if not arguments.report.exists():
@@ -73,6 +111,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     current = per_file_seconds(arguments.report)
+    if arguments.write is not None:
+        write_durations(current, arguments.write)
     if arguments.against is None:
         print(_render(current, arguments.limit))
         return 0
