@@ -18,16 +18,21 @@ and need `OPENAI_API_KEY` in `.env`.
 ## Testing
 
 Use non-overlapping gates appropriate to the exact revision
-([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md)):
+([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md),
+as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md)
+and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md)):
 
 - During implementation, run `make check` and `make test-focused ARGS="..."`
   for the changed seam. Do not run the broad suite after every edit.
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
-- Normal PR CI runs `make check` on every pull request, and `make test` plus
-  the non-migration `make test-slow` selection unless every changed file is
-  documentation (`**.md`, `docs/**`). A merge to `main` does not repeat that
-  suite.
+- Normal PR CI runs `make check` on every pull request, and the same tests
+  `make test` and the non-migration `make test-slow` select, partitioned across
+  four runners each by `make test-shard` and `make test-slow-shard`, unless
+  every changed file is documentation (`**.md`, `docs/**`). No test is
+  deselected by path: the full suites stay required and parallelism keeps the
+  wall clock inside the feedback budget (ADR-0088). A merge to `main` does not
+  repeat that suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate
   post-merge test workflow.
 - A change to migrations, schema models, or the database test harness also runs
