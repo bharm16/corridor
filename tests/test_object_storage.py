@@ -146,6 +146,24 @@ def test_stage_refuses_a_corrupted_object_and_leaves_no_partial_file(store, tmp_
     assert not destination.parent.is_dir() or list(destination.parent.iterdir()) == []
 
 
+def test_the_probe_answers_for_a_provisioned_store(store):
+    store.put(KEY, BODY, sha256=DIGEST)
+
+    assert store.probe() is None
+
+
+def test_the_probe_refuses_a_store_that_was_never_provisioned(tmp_path):
+    """A missing root and a missing bucket are unreachable, not empty (#491A)."""
+
+    with pytest.raises(StorageError):
+        LocalFilesystemStore(tmp_path / "never-created").probe()
+
+    with mock_aws():
+        client = boto3.client("s3", region_name="us-east-1")
+        with pytest.raises(StorageError):
+            S3ObjectStore(bucket="corridor-never-created", client=client).probe()
+
+
 def test_missing_objects_are_reported_not_invented(store):
     with pytest.raises(ObjectMissing):
         store.get(KEY, sha256=DIGEST)

@@ -48,7 +48,11 @@ def _configure_argv(project_slug: str) -> list[str]:
 
 def _payload(capsys):
     captured = capsys.readouterr()
-    assert captured.err == ""
+    # Standard error is the worker's structured log stream (#491A); the
+    # command's own contract is the JSON on standard output. A refusal still
+    # arrives as a bare line, which is what this refuses to parse.
+    for line in captured.err.splitlines():
+        assert json.loads(line)["logger"].startswith("corridor")
     return json.loads(captured.out)
 
 

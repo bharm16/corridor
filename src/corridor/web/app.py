@@ -18,7 +18,7 @@ from __future__ import annotations
 from hashlib import sha256
 import json
 import secrets
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
@@ -65,6 +65,13 @@ from corridor.candidate_statement_facts import (
     prepare_candidate_statement_facts,
 )
 from corridor.db import WebSession as SessionFactory
+from corridor.object_storage import ObjectStore, content_store
+from corridor.operational_health import runtime_report
+from corridor.telemetry import (
+    ROLE_WEB,
+    RequestCorrelationMiddleware,
+    configure_logging,
+)
 from corridor import access
 from corridor.web import auth
 from corridor.check_configuration import (
@@ -422,6 +429,11 @@ TEMPLATES.env.globals.update(
     csrf_field=_csrf_field,
 )
 app = FastAPI(title="Corridor — coordination records")
+# Configured where the process is defined rather than in an entry point, so
+# every way this application is served — uvicorn, a test client, a smoke
+# test — produces the same structured stream (#491A).
+configure_logging(role=ROLE_WEB)
+app.add_middleware(RequestCorrelationMiddleware)
 
 _WORK_REASON_COPY = {
     "past_due": "The organization's commitment passed its stated date.",
@@ -471,6 +483,35 @@ _WORK_REASON_COPY = {
 def get_session():
     with SessionFactory() as session:
         yield session
+
+
+def get_content_store() -> ObjectStore:
+    """The deployment's object store, as a seam a health probe can substitute."""
+
+    return content_store()
+
+
+@app.get("/health")
+def health(
+    session: Session = Depends(get_session),
+    store: ObjectStore = Depends(get_content_store),
+) -> Response:
+    """Report application, database, object-storage, and worker-heartbeat state.
+
+    Unauthenticated on purpose: a platform probe has no principal. It therefore
+    answers with component names, bounded reason codes, and counts only — no
+    project, no principal, and no driver message (#491A).
+    """
+
+    report = runtime_report(
+        session,
+        now=datetime.now(timezone.utc),
+        store=store,
+        role=ROLE_WEB,
+    )
+    return JSONResponse(
+        report.as_dict(), status_code=200 if report.healthy else 503
+    )
 
 
 def get_coordination_summary_client_factory():

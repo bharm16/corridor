@@ -7,20 +7,38 @@ and operator runbooks. This document holds the operational detail so that an
 operational counter never needs an ADR. Change thresholds and contacts here;
 change what is measured only with the ADR.
 
-Status on 2026-09-01: none of this is instrumented. No structured logging,
-application container, staging or production environment, inbound-mail
-provider, or outbound email adapter exists. Every metric name below is the
-name the implementation must use so dashboards and alerts can be written once.
+Status on 2026-09-03: operational telemetry only is instrumented (#491A) —
+structured JSON logs with a request or Due Work correlation identifier
+(`corridor.telemetry`), the `/health` endpoint, and the signals marked
+**instrumented** below (`corridor.operational_health`). No application
+container, staging or production environment, inbound-mail provider, or
+outbound email adapter exists, and no product or pilot measure is instrumented
+(#532). Every metric name below is the name the implementation must use so
+dashboards and alerts can be written once.
 
 ## Label discipline
 
-Metric labels are low-cardinality only: `customer`, `project`, `connector`, `policy`, `field`, `stage`, `role`, `outcome`, `reason`. No per-event, per-document, per-message, or per-actor label is ever a metric label; those belong in the structured log line under the correlation identifiers. Events outside a customer or project context (control-plane, migration, maintenance runs, ADR-0083) carry `customer="control-plane"` and no `project` label.
+Metric labels are low-cardinality only: `connector`, `policy`, `field`, `stage`, `role`, `outcome`, `reason`, `queue`. **A customer, project, principal, or document identifier is never a metric label.** It belongs in the structured log line under the correlation identifiers, and `corridor.analytics.validate_metric_labels` refuses it on emission (#491A, #558). Rows below that still name `customer` or `project` in their label column predate that rule and are corrected with the measures they belong to (#532). An event outside a customer or project context (control-plane, migration, maintenance runs, ADR-0083) is distinguished in the log line, not by a label.
 
 ## Correlation
 
-Every log line carries `environment`, `customer`, `project`, `request_id` (web)
-or `job_id` (worker), and the ADR-0079 run provenance when inside a run:
-`run_id`, `purpose`, `authoritative`.
+Every structured line carries `timestamp`, `level`, `logger`, `role` (`web` or
+`worker`), `environment`, and `event`. A web line adds `request_id`, `method`,
+the `route` template, `status`, and `duration_ms`; a Due Work line adds `job_id`
+(the occurrence), `attempt_id`, `attempt_number`, `runtime_owner`, and the
+`project_id` the attempt belongs to. The ADR-0079 run provenance — `run_id`,
+`purpose`, `authoritative` — binds the same way once inside a run. The route
+template is logged, never the request path, because a path carries slugs.
+
+## Health
+
+`GET /health` is unauthenticated and answers with component names, bounded
+reason codes, and counts only. It distinguishes `application` (the process is
+serving), `database` (the configured credential completed a round trip),
+`object_storage` (the backend's own probe answered), and `worker_heartbeat`
+(an attempt was claimed or retained within the tightest enabled schedule's
+cadence, twice over). Any unhealthy component answers `503` with
+`status: degraded`; the body also carries the Due Work signals below.
 
 ## Metrics
 
@@ -30,7 +48,12 @@ or `job_id` (worker), and the ADR-0079 run provenance when inside a run:
 | `corridor_intake_unrouted` | gauge | customer | Items held without a project binding awaiting human triage (ADR-0078 tier 4). |
 | `corridor_extraction_latency_seconds` | histogram | stage, source_kind | Wall time per document from stored bytes to captured facts. |
 | `corridor_ocr_latency_seconds` | histogram | provider | Wall time per page for OCR. |
-| `corridor_processing_backlog` | gauge | queue | Jobs waiting in the worker queue. |
+| `corridor_processing_backlog` | gauge | queue | Ready Due Work occurrences not yet claimed, by handler. **Instrumented** (#491A). |
+| `corridor_due_work_queue_lag_seconds` | gauge | queue | Age of the oldest ready occurrence. **Instrumented** (#491A). |
+| `corridor_due_work_retries_total` | counter | queue | Attempts retained as `retry_due`. **Instrumented** (#491A). |
+| `corridor_due_work_failures_total` | counter | queue, reason | Attempts retained as `failed`, by the receipt's retained error code. **Instrumented** (#491A). |
+| `corridor_due_work_last_success_age_seconds` | gauge | queue | Seconds since the last completed attempt. **Instrumented** (#491A). |
+| `corridor_worker_heartbeat_age_seconds` | gauge | — | Seconds since the newest durable worker act — a held claim or a retained receipt. **Instrumented** (#491A). |
 | `corridor_model_cost_usd_total` | counter | provider, model, purpose | LLM and OCR spend. |
 | `corridor_policy_abstentions_total` | counter | policy, reason | Released-policy abstentions by reason code. |
 | `corridor_policy_failures_total` | counter | policy | Policy runs that ended in a Processing Failure. |
@@ -90,7 +113,7 @@ Thresholds are initial values; adjust here with the date and reason.
 2. Nothing binds: leave it held and tell the customer contact. Do not discard.
 
 ### Backlog stalled
-1. Check the worker container is running and can reach PostgreSQL and object storage.
+1. Read `/health`: it says whether the database, the object store, and the worker heartbeat are the cause.
 2. Inspect the oldest job's last log line by `job_id`.
 3. A poisoned job: mark it failed with the reason; it becomes a Processing Failure, visible in the product. Never delete it.
 

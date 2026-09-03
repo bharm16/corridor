@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
+import logging
 import re
 from types import MappingProxyType
 from typing import Any, Protocol
@@ -37,7 +38,17 @@ from corridor.notifications import (
     ASSIGNMENT_NOTIFICATION_HANDLER,
     DUE_ACTION_NOTIFICATION_HANDLER,
 )
+from corridor.telemetry import correlation_scope, log_event
 
+
+_LOG = logging.getLogger("corridor.due_work")
+
+# The nominal interval between one schedule's occurrence slots. An operational
+# reader judges worker freshness against it (`corridor.operational_health`);
+# where a slot actually falls stays with `_due_slot`.
+CADENCE_INTERVAL_SECONDS: Mapping[str, int] = MappingProxyType(
+    {"hourly": 3600, "weekly": 604_800}
+)
 
 HANDLER_PROCESSING_HEALTH = "processing_health"
 HANDLER_PROJECT_PROCESSING = "project_processing"
@@ -2021,59 +2032,96 @@ def run_due_work_once(
     if claim is None:
         return None
 
-    try:
-        with session_factory() as reading:
-            schedule = reading.get(DueWorkSchedule, claim.schedule_id)
-            if schedule is None or schedule.handler_key not in registry:
-                raise DueWorkRefusal("claimed handler is not server-owned")
-            contract = registry[schedule.handler_key]
-            if contract.run_effectful is None:
-                # Read-only handler: run inside the reading transaction and
-                # let the runtime finalize its result.
-                handler_result = contract.run(reading, schedule, started_at)
-        if contract.run_effectful is not None:
-            # Effectful handler: it owns its durable commits, run outside any
-            # runtime-held transaction so no domain lock spans the finalize.
-            handler_result = contract.run_effectful(
-                EffectfulContext(
-                    session_factory=session_factory,
-                    schedule=schedule,
-                    claim=claim,
-                    clock=clock,
-                    registry=registry,
-                )
-            )
-        finished_at = _aware_utc(clock.now())
-        with session_factory() as finalizing:
-            with finalizing.begin():
-                if finished_at > claim.deadline_at:
-                    # The domain work already committed durably and is
-                    # idempotent, so recovering and re-running this occurrence
-                    # is safe.
-                    return fail_due_work(
-                        finalizing,
-                        claim,
-                        error_code="deadline_exceeded",
-                        now=finished_at,
+    # Everything this attempt logs — the handler's own lines included — is
+    # bound to the occurrence and attempt the receipt will name, so a log line
+    # and the durable receipt can be read together (#491A).
+    with correlation_scope(
+        job_id=claim.occurrence_public_id,
+        attempt_id=claim.attempt_id,
+        attempt_number=claim.attempt_number,
+        runtime_owner=claim.runtime_owner,
+    ):
+        try:
+            with session_factory() as reading:
+                schedule = reading.get(DueWorkSchedule, claim.schedule_id)
+                if schedule is None or schedule.handler_key not in registry:
+                    raise DueWorkRefusal("claimed handler is not server-owned")
+                contract = registry[schedule.handler_key]
+                if contract.run_effectful is None:
+                    # Read-only handler: run inside the reading transaction and
+                    # let the runtime finalize its result.
+                    handler_result = contract.run(reading, schedule, started_at)
+            if contract.run_effectful is not None:
+                # Effectful handler: it owns its durable commits, run outside any
+                # runtime-held transaction so no domain lock spans the finalize.
+                handler_result = contract.run_effectful(
+                    EffectfulContext(
+                        session_factory=session_factory,
+                        schedule=schedule,
+                        claim=claim,
+                        clock=clock,
+                        registry=registry,
                     )
-                return complete_due_work(
-                    finalizing,
-                    claim,
-                    handler_result=handler_result,
-                    now=finished_at,
                 )
-    except StaleDueWorkClaim:
-        raise
-    except Exception:
-        failed_at = _aware_utc(clock.now())
-        with session_factory() as finalizing:
-            with finalizing.begin():
-                return fail_due_work(
-                    finalizing,
-                    claim,
-                    error_code="handler_execution_failed",
-                    now=failed_at,
-                )
+            finished_at = _aware_utc(clock.now())
+            with session_factory() as finalizing:
+                with finalizing.begin():
+                    if finished_at > claim.deadline_at:
+                        # The domain work already committed durably and is
+                        # idempotent, so recovering and re-running this
+                        # occurrence is safe.
+                        return _logged_attempt(
+                            fail_due_work(
+                                finalizing,
+                                claim,
+                                error_code="deadline_exceeded",
+                                now=finished_at,
+                            )
+                        )
+                    return _logged_attempt(
+                        complete_due_work(
+                            finalizing,
+                            claim,
+                            handler_result=handler_result,
+                            now=finished_at,
+                        )
+                    )
+        except StaleDueWorkClaim:
+            raise
+        except Exception:
+            failed_at = _aware_utc(clock.now())
+            with session_factory() as finalizing:
+                with finalizing.begin():
+                    return _logged_attempt(
+                        fail_due_work(
+                            finalizing,
+                            claim,
+                            error_code="handler_execution_failed",
+                            now=failed_at,
+                        )
+                    )
+
+
+def _logged_attempt(result: DueWorkRunResult) -> DueWorkRunResult:
+    """Emit the one operational line for a finalized attempt, and pass it on."""
+
+    log_event(
+        _LOG,
+        "due_work_attempt",
+        level=(
+            logging.INFO
+            if result.execution_outcome == "completed"
+            else logging.WARNING
+        ),
+        handler=result.handler_key,
+        project_id=result.project_id,
+        configuration_version=result.configuration_version,
+        execution_outcome=result.execution_outcome,
+        error_code=result.error_code,
+        safe_next_step=result.safe_next_step,
+        receipt_id=result.receipt_public_id,
+    )
+    return result
 
 
 def due_work_status(session: Session, *, project_id: int | None = None) -> dict[str, Any]:

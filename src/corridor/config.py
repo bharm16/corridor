@@ -67,6 +67,13 @@ class Settings(BaseSettings):
         default="", validation_alias="CORRIDOR_HUMAN_PRINCIPAL"
     )
 
+    # The deployment this process runs in. It labels every structured log line
+    # (docs/operations/observability-runbook.md) and names nothing else, so a
+    # local clone that configures nothing still produces attributable output.
+    environment: str = Field(
+        default="development", validation_alias="CORRIDOR_ENVIRONMENT"
+    )
+
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     # Recorded on every candidate. Changing this without an eval run makes
