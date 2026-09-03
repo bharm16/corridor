@@ -20,8 +20,30 @@ boundary (``tests/test_database_authority.py``) proves the append boundary
 against the real logins.
 
 The legacy ``candidates`` table stays where it is: it is the frozen legacy
-Extracted Proposal representation (ADR-0081), not the spine.  Support
-assessments do not exist yet; #530 extends this matrix when it adds them.
+Extracted Proposal representation (ADR-0081), not the spine.
+
+The same transition also carries the Support Assessment relation (#530,
+ADR-0082), folded in here because the migration window holds one unreleased
+transition and this is it.  ``support_assessments`` binds one typed
+proposition, a Source Fact or an Extracted Proposal, to one or more Source
+Segments of the same project and rendition through
+``support_assessment_sources``, and records the evidence role, the assessment,
+and exactly one authority: a human principal, or a released policy with its
+ruleset identity.  The rows are append-only; a correction is a new row that
+supersedes its predecessor once, so current and as-of readings walk the
+history instead of overwriting it.  The fifth command,
+``append_support_assessment``, is the only writer: it proves the proposition
+and every segment lie in the project and rendition, derives the content
+digest so a replay returns the row it already wrote, and lets a competing
+writer either converge on the same row or be refused, never duplicate an
+effective assessment.  A guard trigger refuses any write that does not arrive
+as the source-append role, so not even the schema owner can insert one raw.
+
+Proposed Delta and accepted-field propositions do not exist yet (#518, #509).
+When they do, they join ``ck_support_assessments_proposition`` as a new kind
+with their own typed column and composite foreign key; the relation never
+accepts an unchecked object-type/object-id pair.  Locator validity (#493) is
+a separate mechanical fact this relation never reads.
 """
 
 from __future__ import annotations
@@ -52,6 +74,13 @@ SOURCE_TABLES = (
     "source_fact_append_receipts",
 )
 
+# The Support Assessment relation (#530): created here, appended only through
+# its command, readable by the runtime capabilities.
+SUPPORT_TABLES = (
+    "support_assessments",
+    "support_assessment_sources",
+)
+
 # Tables the commands read to prove a typed reference lies in scope.
 REFERENCED_TABLES = (
     "documents",
@@ -74,7 +103,17 @@ COMMANDS = {
     "append_source_fact_receipt": (
         "(bigint, bigint, bigint, character varying, character varying)"
     ),
+    "append_support_assessment": (
+        "(bigint, character varying, bigint, bigint, bigint[], character varying, "
+        "character varying, character varying, character varying, "
+        "character varying, timestamp with time zone, bigint)"
+    ),
 }
+
+EVIDENCE_ROLES_SQL = "'value_support', 'attribution', 'timing', 'scope', 'context'"
+ASSESSMENTS_SQL = (
+    "'supported', 'partially_supported', 'contradicted', 'unclear', 'not_assessed'"
+)
 
 
 APPEND_SOURCE_SEGMENTS = """
@@ -512,24 +551,458 @@ create function public.append_source_fact_receipt(
 """
 
 
+# --- The Support Assessment relation (#530, ADR-0082) ----------------------
+
+SUPPORT_ASSESSMENT_SCHEMA = f"""
+alter table public.extracted_proposals
+    add constraint uq_extracted_proposals_project_id unique (project_id, id);
+alter table public.extracted_proposals
+    add constraint uq_extracted_proposals_document_scope_id
+    unique (project_id, document_id, id);
+
+create table public.support_assessments (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    -- The proposition's rendition, copied so the composite keys below can
+    -- hold every segment to the same document; null only for a
+    -- document-less verbal Fact, where the project-scoped keys still hold.
+    document_id bigint,
+    proposition_kind character varying(32) not null,
+    fact_id bigint,
+    extracted_proposal_id bigint,
+    evidence_role character varying(32) not null,
+    assessment character varying(32) not null,
+    human_principal character varying(128),
+    released_policy character varying(128),
+    ruleset_version character varying(64),
+    superseded_by bigint references public.support_assessments (id)
+        deferrable initially deferred,
+    content_sha256 character varying(64) not null,
+    assessed_at timestamp with time zone not null,
+    recorded_at timestamp with time zone not null default now(),
+    constraint uq_support_assessments_project_id unique (project_id, id),
+    constraint uq_support_assessments_scope_id unique (project_id, document_id, id),
+    constraint uq_support_assessments_content unique (content_sha256),
+    constraint uq_support_assessments_superseded_by unique (superseded_by),
+    constraint fk_support_assessments_fact_scope
+        foreign key (project_id, document_id, fact_id)
+        references public.facts (project_id, document_id, id),
+    constraint fk_support_assessments_fact_project
+        foreign key (project_id, fact_id)
+        references public.facts (project_id, id),
+    constraint fk_support_assessments_proposal_scope
+        foreign key (project_id, document_id, extracted_proposal_id)
+        references public.extracted_proposals (project_id, document_id, id),
+    constraint fk_support_assessments_proposal_project
+        foreign key (project_id, extracted_proposal_id)
+        references public.extracted_proposals (project_id, id),
+    -- Exactly one typed proposition. A new proposition class (Proposed
+    -- Delta, accepted field) adds a kind, a column, and a composite key
+    -- here; it never becomes an unchecked object-type/object-id pair.
+    constraint ck_support_assessments_proposition check (
+        (proposition_kind = 'source_fact'
+         and fact_id is not null and extracted_proposal_id is null)
+        or (proposition_kind = 'extracted_proposal'
+         and extracted_proposal_id is not null and fact_id is null
+         and document_id is not null)
+    ),
+    constraint ck_support_assessments_evidence_role check (
+        evidence_role in ({EVIDENCE_ROLES_SQL})
+    ),
+    constraint ck_support_assessments_assessment check (
+        assessment in ({ASSESSMENTS_SQL})
+    ),
+    constraint ck_support_assessments_authority_xor check (
+        (human_principal is null) <> (released_policy is null)
+    ),
+    constraint ck_support_assessments_human_principal check (
+        human_principal is null or length(trim(human_principal)) > 0
+    ),
+    constraint ck_support_assessments_released_policy check (
+        released_policy is null or length(trim(released_policy)) > 0
+    ),
+    constraint ck_support_assessments_ruleset check (
+        (released_policy is null) = (ruleset_version is null)
+        and (ruleset_version is null or length(trim(ruleset_version)) > 0)
+    ),
+    constraint ck_support_assessments_content_sha256 check (
+        content_sha256 ~ '^[0-9a-f]{{64}}$'
+    ),
+    constraint ck_support_assessments_not_self check (superseded_by <> id)
+);
+create index ix_support_assessments_project_id
+    on public.support_assessments (project_id);
+create index ix_support_assessments_fact_id
+    on public.support_assessments (fact_id);
+create index ix_support_assessments_extracted_proposal_id
+    on public.support_assessments (extracted_proposal_id);
+-- One EFFECTIVE assessment per proposition and role; a correction
+-- supersedes it rather than sitting beside it.
+create unique index uq_support_assessments_effective_fact
+    on public.support_assessments (fact_id, evidence_role)
+    where superseded_by is null and fact_id is not null;
+create unique index uq_support_assessments_effective_proposal
+    on public.support_assessments (extracted_proposal_id, evidence_role)
+    where superseded_by is null and extracted_proposal_id is not null;
+
+create table public.support_assessment_sources (
+    id bigserial primary key,
+    project_id bigint not null references public.projects (id),
+    document_id bigint,
+    support_assessment_id bigint not null,
+    source_segment_id bigint not null,
+    ordinal integer not null,
+    constraint uq_support_assessment_sources_segment
+        unique (support_assessment_id, source_segment_id),
+    constraint uq_support_assessment_sources_ordinal
+        unique (support_assessment_id, ordinal),
+    constraint fk_support_assessment_sources_assessment_scope
+        foreign key (project_id, document_id, support_assessment_id)
+        references public.support_assessments (project_id, document_id, id),
+    constraint fk_support_assessment_sources_assessment_project
+        foreign key (project_id, support_assessment_id)
+        references public.support_assessments (project_id, id),
+    constraint fk_support_assessment_sources_segment_scope
+        foreign key (project_id, document_id, source_segment_id)
+        references public.source_segments (project_id, document_id, id),
+    constraint fk_support_assessment_sources_segment_project
+        foreign key (project_id, source_segment_id)
+        references public.source_segments (project_id, id),
+    constraint ck_support_assessment_sources_ordinal check (ordinal > 0)
+);
+create index ix_support_assessment_sources_project_id
+    on public.support_assessment_sources (project_id);
+create index ix_support_assessment_sources_assessment_id
+    on public.support_assessment_sources (support_assessment_id);
+create index ix_support_assessment_sources_segment_id
+    on public.support_assessment_sources (source_segment_id);
+
+-- Not even the schema owner writes these raw: every row arrives through the
+-- command, and the only change a row ever sees is becoming superseded once.
+create function public.enforce_support_assessment_write() returns trigger
+    language plpgsql
+    as $$
+        begin
+            if current_user <> 'corridor_source_append' then
+                raise exception 'Support Assessment requires the append command'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'DELETE' or tg_op = 'TRUNCATE' then
+                raise exception 'Support Assessments are append-only'
+                    using errcode = '23514';
+            end if;
+            if tg_op = 'UPDATE' then
+                if new.id is distinct from old.id
+                   or new.project_id is distinct from old.project_id
+                   or new.document_id is distinct from old.document_id
+                   or new.proposition_kind is distinct from old.proposition_kind
+                   or new.fact_id is distinct from old.fact_id
+                   or new.extracted_proposal_id is distinct from old.extracted_proposal_id
+                   or new.evidence_role is distinct from old.evidence_role
+                   or new.assessment is distinct from old.assessment
+                   or new.human_principal is distinct from old.human_principal
+                   or new.released_policy is distinct from old.released_policy
+                   or new.ruleset_version is distinct from old.ruleset_version
+                   or new.content_sha256 is distinct from old.content_sha256
+                   or new.assessed_at is distinct from old.assessed_at
+                   or new.recorded_at is distinct from old.recorded_at
+                   or old.superseded_by is not null
+                   or new.superseded_by is null then
+                    raise exception 'Support Assessment may only become superseded once'
+                        using errcode = '23514';
+                end if;
+            end if;
+            return new;
+        end; $$;
+create function public.enforce_support_assessment_sources_write() returns trigger
+    language plpgsql
+    as $$
+        begin
+            if current_user <> 'corridor_source_append' then
+                raise exception 'Support Assessment requires the append command'
+                    using errcode = '23514';
+            end if;
+            if tg_op <> 'INSERT' then
+                raise exception 'Support Assessment sources are append-only'
+                    using errcode = '23514';
+            end if;
+            return new;
+        end; $$;
+create trigger trg_support_assessments_guard
+    before insert or update or delete on public.support_assessments
+    for each row execute function public.enforce_support_assessment_write();
+create trigger trg_support_assessments_no_truncate
+    before truncate on public.support_assessments
+    for each statement execute function public.enforce_support_assessment_write();
+create trigger trg_support_assessment_sources_guard
+    before insert or update or delete on public.support_assessment_sources
+    for each row execute function public.enforce_support_assessment_sources_write();
+create trigger trg_support_assessment_sources_no_truncate
+    before truncate on public.support_assessment_sources
+    for each statement execute function public.enforce_support_assessment_sources_write();
+"""
+
+SUPPORT_ASSESSMENT_SCHEMA_DOWN = """
+drop trigger trg_support_assessment_sources_no_truncate on public.support_assessment_sources;
+drop trigger trg_support_assessment_sources_guard on public.support_assessment_sources;
+drop trigger trg_support_assessments_no_truncate on public.support_assessments;
+drop trigger trg_support_assessments_guard on public.support_assessments;
+drop function public.enforce_support_assessment_sources_write();
+drop function public.enforce_support_assessment_write();
+drop table public.support_assessment_sources;
+drop table public.support_assessments;
+alter table public.extracted_proposals
+    drop constraint uq_extracted_proposals_document_scope_id;
+alter table public.extracted_proposals
+    drop constraint uq_extracted_proposals_project_id;
+"""
+
+
+APPEND_SUPPORT_ASSESSMENT = f"""
+create function public.append_support_assessment(
+    p_project_id bigint,
+    p_proposition_kind character varying,
+    p_fact_id bigint,
+    p_extracted_proposal_id bigint,
+    p_source_segment_ids bigint[],
+    p_evidence_role character varying,
+    p_assessment character varying,
+    p_human_principal character varying,
+    p_released_policy character varying,
+    p_ruleset_version character varying,
+    p_assessed_at timestamp with time zone,
+    p_supersedes_id bigint
+) returns bigint
+    language plpgsql security definer
+    set search_path to 'public'
+    as $$
+        declare
+            proposition record;
+            predecessor record;
+            segment record;
+            existing_id bigint;
+            new_id bigint;
+            member bigint;
+            slot integer := 0;
+            digest text;
+            decided timestamp with time zone;
+        begin
+            -- Exactly one typed proposition, in this project.
+            if p_proposition_kind = 'source_fact' then
+                if p_fact_id is null or p_extracted_proposal_id is not null then
+                    raise exception 'Support Assessment of a Source Fact names exactly one Fact'
+                        using errcode = '23514';
+                end if;
+                select id, project_id, document_id into proposition
+                  from facts where id = p_fact_id;
+            elsif p_proposition_kind = 'extracted_proposal' then
+                if p_extracted_proposal_id is null or p_fact_id is not null then
+                    raise exception 'Support Assessment of an Extracted Proposal names exactly one proposal'
+                        using errcode = '23514';
+                end if;
+                select id, project_id, document_id into proposition
+                  from extracted_proposals where id = p_extracted_proposal_id;
+            else
+                raise exception 'unrecognized Support Assessment proposition kind'
+                    using errcode = '23514';
+            end if;
+            if not found or proposition.project_id <> p_project_id then
+                raise exception 'Support Assessment proposition is outside its project'
+                    using errcode = '23514';
+            end if;
+
+            if p_evidence_role is null
+                or p_evidence_role not in ({EVIDENCE_ROLES_SQL}) then
+                raise exception 'unrecognized Support Assessment evidence role'
+                    using errcode = '23514';
+            end if;
+            if p_assessment is null or p_assessment not in ({ASSESSMENTS_SQL}) then
+                raise exception 'unrecognized Support Assessment assessment'
+                    using errcode = '23514';
+            end if;
+
+            -- Exactly one authority: a human principal, or a released policy
+            -- with the ruleset it applied.
+            if (p_human_principal is null) = (p_released_policy is null) then
+                raise exception 'Support Assessment authority is one human principal or one released policy'
+                    using errcode = '23514';
+            end if;
+            if p_human_principal is not null and length(trim(p_human_principal)) = 0 then
+                raise exception 'Support Assessment requires an attributed principal'
+                    using errcode = '23514';
+            end if;
+            if p_released_policy is not null and (
+                length(trim(p_released_policy)) = 0
+                or p_ruleset_version is null
+                or length(trim(p_ruleset_version)) = 0
+            ) then
+                raise exception 'Support Assessment by a released policy needs its ruleset identity'
+                    using errcode = '23514';
+            end if;
+            if p_released_policy is null and p_ruleset_version is not null then
+                raise exception 'Support Assessment ruleset identity belongs to a released policy'
+                    using errcode = '23514';
+            end if;
+
+            -- One or more Source Segments, each in the project and the
+            -- proposition's rendition, none named twice.
+            if p_source_segment_ids is null or cardinality(p_source_segment_ids) = 0 then
+                raise exception 'Support Assessment needs at least one Source Segment'
+                    using errcode = '23514';
+            end if;
+            if (select count(distinct s) from unnest(p_source_segment_ids) as s)
+                <> cardinality(p_source_segment_ids) then
+                raise exception 'Support Assessment names a Source Segment twice'
+                    using errcode = '23514';
+            end if;
+            foreach member in array p_source_segment_ids loop
+                select id, project_id, document_id into segment
+                  from source_segments where id = member;
+                if not found or segment.project_id <> p_project_id then
+                    raise exception 'Support Assessment source segment is outside its project'
+                        using errcode = '23514';
+                end if;
+                if segment.document_id is distinct from proposition.document_id then
+                    raise exception 'Support Assessment source belongs to another rendition'
+                        using errcode = '23514';
+                end if;
+            end loop;
+
+            -- The digest is derived here, from every value that makes this
+            -- the same assessment, so a replay cannot forge or omit it.
+            digest := encode(sha256(convert_to(concat_ws('|',
+                'support_assessment_v1',
+                p_project_id::text,
+                p_proposition_kind,
+                coalesce(p_fact_id::text, ''),
+                coalesce(p_extracted_proposal_id::text, ''),
+                p_evidence_role,
+                p_assessment,
+                coalesce(p_human_principal, ''),
+                coalesce(p_released_policy, ''),
+                coalesce(p_ruleset_version, ''),
+                coalesce(p_supersedes_id::text, ''),
+                array_to_string(p_source_segment_ids, ',')
+            ), 'UTF8')), 'hex');
+            select id into existing_id from support_assessments
+             where content_sha256 = digest;
+            if found then
+                return existing_id;
+            end if;
+
+            decided := coalesce(p_assessed_at, now());
+            new_id := nextval('support_assessments_id_seq');
+
+            if p_supersedes_id is not null then
+                select id, project_id, proposition_kind, fact_id,
+                       extracted_proposal_id, evidence_role, superseded_by,
+                       assessed_at
+                  into predecessor
+                  from support_assessments
+                 where id = p_supersedes_id
+                   for update;
+                if not found
+                    or predecessor.project_id <> p_project_id
+                    or predecessor.proposition_kind <> p_proposition_kind
+                    or predecessor.fact_id is distinct from p_fact_id
+                    or predecessor.extracted_proposal_id is distinct from p_extracted_proposal_id
+                    or predecessor.evidence_role <> p_evidence_role then
+                    raise exception 'Support Assessment predecessor is not an assessment of the same proposition and role'
+                        using errcode = '23514';
+                end if;
+                if predecessor.superseded_by is not null then
+                    -- A competing writer got here first. If it recorded this
+                    -- very assessment, converge on its row; otherwise the
+                    -- predecessor this caller read is stale.
+                    select id into existing_id from support_assessments
+                     where content_sha256 = digest;
+                    if found then
+                        return existing_id;
+                    end if;
+                    raise exception 'Support Assessment predecessor is stale'
+                        using errcode = '23514';
+                end if;
+                if decided < predecessor.assessed_at then
+                    raise exception 'Support Assessment cannot precede the assessment it supersedes'
+                        using errcode = '23514';
+                end if;
+                -- Retire the predecessor before its successor exists (the
+                -- foreign key is deferred), so the effective index never
+                -- sees both at once.
+                update support_assessments set superseded_by = new_id
+                 where id = p_supersedes_id;
+            end if;
+
+            begin
+                insert into support_assessments (
+                    id, project_id, document_id, proposition_kind, fact_id,
+                    extracted_proposal_id, evidence_role, assessment,
+                    human_principal, released_policy, ruleset_version,
+                    content_sha256, assessed_at
+                ) values (
+                    new_id, p_project_id, proposition.document_id,
+                    p_proposition_kind, p_fact_id, p_extracted_proposal_id,
+                    p_evidence_role, p_assessment, p_human_principal,
+                    p_released_policy, p_ruleset_version, digest, decided
+                );
+            exception when unique_violation then
+                -- Two writers raced on the same effective slot. The same
+                -- assessment converges on the row that won; a different one
+                -- must read the winner and supersede it deliberately.
+                select id into existing_id from support_assessments
+                 where content_sha256 = digest;
+                if found then
+                    return existing_id;
+                end if;
+                raise exception 'an effective Support Assessment already exists for this proposition and role; supersede it'
+                    using errcode = '23505';
+            end;
+
+            foreach member in array p_source_segment_ids loop
+                slot := slot + 1;
+                insert into support_assessment_sources (
+                    project_id, document_id, support_assessment_id,
+                    source_segment_id, ordinal
+                ) values (
+                    p_project_id, proposition.document_id, new_id, member, slot
+                );
+            end loop;
+            return new_id;
+        end; $$;
+"""
+
+
 def upgrade() -> None:
     """Create the append commands and take back the raw source-table writes."""
+
+    op.execute(SUPPORT_ASSESSMENT_SCHEMA)
+    # A table created here carries no grants at all; the runtime
+    # capabilities read the relation, and only the command writes it.
+    for table in SUPPORT_TABLES:
+        op.execute(f"grant select on public.{table} to {RUNTIME_LOGINS}")
 
     op.execute(f"grant usage on schema public to {SOURCE_APPEND_ROLE}")
     for table in REFERENCED_TABLES:
         op.execute(f"grant select on public.{table} to {SOURCE_APPEND_ROLE}")
-    for table in SOURCE_TABLES:
+    for table in SOURCE_TABLES + SUPPORT_TABLES:
         op.execute(f"grant select, insert on public.{table} to {SOURCE_APPEND_ROLE}")
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
             f"to {SOURCE_APPEND_ROLE}"
         )
+    # Supersession is the one change an assessment ever sees, and the guard
+    # trigger holds it to that column, once.
+    op.execute(
+        "grant update (superseded_by) on public.support_assessments "
+        f"to {SOURCE_APPEND_ROLE}"
+    )
 
     for body in (
         APPEND_SOURCE_SEGMENTS,
         APPEND_FACT,
         APPEND_EXTRACTED_PROPOSAL,
         APPEND_SOURCE_FACT_RECEIPT,
+        APPEND_SUPPORT_ASSESSMENT,
     ):
         op.execute(body)
     for name, signature in COMMANDS.items():
@@ -544,7 +1017,7 @@ def upgrade() -> None:
             f"grant execute on function public.{name}{signature} to {RUNTIME_LOGINS}"
         )
 
-    for table in SOURCE_TABLES:
+    for table in SOURCE_TABLES + SUPPORT_TABLES:
         op.execute(
             f"revoke insert, update, delete, truncate on public.{table} "
             f"from {RUNTIME_LOGINS}"
@@ -552,7 +1025,11 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    """Drop the commands and hand the raw source-table writes back."""
+    """Drop the commands and hand the raw source-table writes back.
+
+    The Support Assessment relation was born in this transition, so the
+    downgrade removes it whole rather than opening it to raw writes.
+    """
 
     for table in SOURCE_TABLES:
         op.execute(
@@ -560,12 +1037,19 @@ def downgrade() -> None:
         )
     for name, signature in COMMANDS.items():
         op.execute(f"drop function public.{name}{signature}")
-    for table in SOURCE_TABLES:
+    for table in SOURCE_TABLES + SUPPORT_TABLES:
         op.execute(
             f"revoke usage, select on sequence public.{table}_id_seq "
             f"from {SOURCE_APPEND_ROLE}"
         )
         op.execute(f"revoke select, insert on public.{table} from {SOURCE_APPEND_ROLE}")
+    op.execute(
+        "revoke update (superseded_by) on public.support_assessments "
+        f"from {SOURCE_APPEND_ROLE}"
+    )
     for table in REFERENCED_TABLES:
         op.execute(f"revoke select on public.{table} from {SOURCE_APPEND_ROLE}")
     op.execute(f"revoke usage on schema public from {SOURCE_APPEND_ROLE}")
+    for table in SUPPORT_TABLES:
+        op.execute(f"revoke select on public.{table} from {RUNTIME_LOGINS}")
+    op.execute(SUPPORT_ASSESSMENT_SCHEMA_DOWN)

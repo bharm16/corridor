@@ -8,6 +8,7 @@ that runs as the owner proves nothing: the owner can do everything.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
@@ -20,7 +21,17 @@ from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
-from corridor.models import Document, FactDecision, Project, SourceSegment
+from corridor.models import (
+    ActiveExtractionRun,
+    Document,
+    ExtractionRun,
+    Fact,
+    FactDecision,
+    FactSource,
+    Project,
+    SourceSegment,
+    SupportAssessment,
+)
 
 
 # The configured URL, never a private copy of it: AGENTS.md records that a
@@ -81,12 +92,16 @@ SOURCE_TABLES = (
     "extracted_proposals",
     "extracted_proposal_facts",
     "source_fact_append_receipts",
+    # The Support Assessment relation joins the same matrix (#530).
+    "support_assessments",
+    "support_assessment_sources",
 )
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",
     "append_fact",
     "append_extracted_proposal",
     "append_source_fact_receipt",
+    "append_support_assessment",
 )
 
 
@@ -459,6 +474,184 @@ def test_a_runtime_capability_cannot_append_a_source_segment_through_the_orm(run
             session.flush()
 
     assert "permission denied for table source_segments" in str(refused.value)
+
+
+def test_a_runtime_capability_cannot_append_a_support_assessment_through_the_orm(
+    runtime,
+):
+    """The relation is written by its command alone; the mapped class is refused."""
+
+    _role, connection = runtime
+    with Session(bind=connection) as session:
+        session.add(
+            SupportAssessment(
+                project_id=1,
+                document_id=1,
+                proposition_kind="source_fact",
+                fact_id=1,
+                evidence_role="value_support",
+                assessment="supported",
+                human_principal="local:probe",
+                content_sha256="0" * 64,
+                assessed_at=datetime.now(timezone.utc),
+            )
+        )
+
+        with pytest.raises(ProgrammingError) as refused:
+            session.flush()
+
+    assert "permission denied for table support_assessments" in str(refused.value)
+
+
+@pytest.mark.parametrize("table", ("support_assessments", "support_assessment_sources"))
+def test_a_runtime_capability_cannot_correct_or_remove_a_support_assessment_raw(
+    runtime, table
+):
+    """Supersession is the command's to write; a capability holds no update or delete."""
+
+    _role, connection = runtime
+
+    with pytest.raises(ProgrammingError) as refused:
+        connection.execute(text(f"update {table} set project_id = project_id"))
+    connection.rollback()
+    assert f"permission denied for table {table}" in str(refused.value)
+
+    with pytest.raises(ProgrammingError) as refused:
+        connection.execute(text(f"delete from {table}"))
+    connection.rollback()
+    assert f"permission denied for table {table}" in str(refused.value)
+
+
+def test_the_web_capability_records_a_support_assessment_only_through_the_command(
+    runtime_database,
+):
+    """The positive half for the relation, as the web login on committed rows.
+
+    A human's assessment arrives through the web capability; the same login
+    that cannot insert the row appends it through ``append_support_assessment``
+    and reads it back with its segment.
+    """
+
+    with runtime_database.session_factory.begin() as owner:
+        project = Project(slug="support-boundary", name="Support Boundary", is_synthetic=True)
+        owner.add(project)
+        owner.flush()
+        document = Document(
+            project_id=project.id,
+            sha256="2" * 64,
+            filename="boundary.xlsx",
+            doc_type="matrix",
+            numbering_scheme="project-unique",
+            pages=1,
+            parse_status="parsed",
+        )
+        owner.add(document)
+        owner.flush()
+        run = ExtractionRun(
+            document_id=document.id,
+            prompt_version="boundary_v1",
+            outcome="completed",
+            candidate_count=0,
+            page_errors=0,
+        )
+        owner.add(run)
+        owner.flush()
+        owner.add(ActiveExtractionRun(document_id=document.id, extraction_run_id=run.id))
+        segment = SourceSegment(
+            project_id=project.id,
+            document_id=document.id,
+            kind="spreadsheet_cell",
+            exact_text="UC-1",
+            content_sha256=sha256(b"UC-1").hexdigest(),
+            ordinal=1,
+            sheet_name="Conflicts",
+            cell_range="A2",
+        )
+        owner.add(segment)
+        owner.flush()
+        fact = Fact(
+            project_id=project.id,
+            document_id=document.id,
+            extraction_run_id=run.id,
+            fact_type="utility_id",
+            subject_kind="source_row",
+            subject_key="Conflicts!2",
+            text_value="UC-1",
+            transformation="trim_cell_text_v1",
+            recorded_by="extractor:boundary_v1",
+            content_sha256=sha256(b"boundary:UC-1").hexdigest(),
+        )
+        owner.add(fact)
+        owner.flush()
+        owner.add(
+            FactSource(
+                project_id=project.id,
+                document_id=document.id,
+                fact_id=fact.id,
+                source_segment_id=segment.id,
+                role="value_source",
+                ordinal=1,
+            )
+        )
+        project_id, document_id, segment_id, fact_id = (
+            project.id, document.id, segment.id, fact.id
+        )
+
+    web_url = (
+        make_url(ADMIN_URL)
+        .set(
+            database=runtime_database.name,
+            username="corridor_web",
+            password=LOGIN_PASSWORDS["corridor_web"],
+        )
+        .render_as_string(hide_password=False)
+    )
+    engine = create_engine(web_url, poolclass=NullPool, future=True)
+    try:
+        with engine.begin() as web:
+            appended = web.execute(
+                text(
+                    "select append_support_assessment(:project_id, 'source_fact', "
+                    ":fact_id, null, cast(:segments as bigint[]), 'value_support', "
+                    "'supported', 'local:alice', null, null, null, null)"
+                ),
+                {"project_id": project_id, "fact_id": fact_id, "segments": [segment_id]},
+            ).scalar_one()
+            stored = web.execute(
+                text(
+                    "select a.project_id, a.document_id, a.proposition_kind, a.fact_id, "
+                    "a.evidence_role, a.assessment, a.human_principal, s.source_segment_id "
+                    "from support_assessments a "
+                    "join support_assessment_sources s on s.support_assessment_id = a.id "
+                    "where a.id = :id"
+                ),
+                {"id": appended},
+            ).one()
+            assert tuple(stored) == (
+                project_id, document_id, "source_fact", fact_id,
+                "value_support", "supported", "local:alice", segment_id,
+            )
+
+        with engine.connect() as web:
+            with pytest.raises(ProgrammingError) as refused:
+                web.execute(
+                    text(
+                        "insert into support_assessments (project_id, document_id, "
+                        "proposition_kind, fact_id, evidence_role, assessment, "
+                        "human_principal, content_sha256, assessed_at) values "
+                        "(:project_id, :document_id, 'source_fact', :fact_id, "
+                        "'attribution', 'supported', 'local:alice', :digest, now())"
+                    ),
+                    {
+                        "project_id": project_id,
+                        "document_id": document_id,
+                        "fact_id": fact_id,
+                        "digest": "1" * 64,
+                    },
+                )
+            assert "permission denied for table support_assessments" in str(refused.value)
+    finally:
+        engine.dispose()
 
 
 def test_a_runtime_capability_appends_source_segments_only_through_the_command(

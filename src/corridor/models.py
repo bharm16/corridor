@@ -1186,6 +1186,18 @@ class ExtractedProposal(Base):
             "id",
             name="uq_extracted_proposal_scope_id",
         ),
+        # Project- and rendition-scoped identities so a Support Assessment
+        # can hold its proposal and its segments to one project and one
+        # document by foreign key (#530).
+        UniqueConstraint(
+            "project_id", "id", name="uq_extracted_proposals_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "document_id",
+            "id",
+            name="uq_extracted_proposals_document_scope_id",
+        ),
         ForeignKeyConstraint(
             ["document_id", "extraction_run_id"],
             ["extraction_runs.document_id", "extraction_runs.id"],
@@ -1258,6 +1270,213 @@ class ExtractedProposalFact(Base):
     extraction_run_id: Mapped[int] = mapped_column(BigInteger)
     proposal_id: Mapped[int] = mapped_column(BigInteger, index=True)
     fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
+
+
+SUPPORT_ASSESSMENT_EVIDENCE_ROLES = (
+    "value_support",
+    "attribution",
+    "timing",
+    "scope",
+    "context",
+)
+SUPPORT_ASSESSMENT_OUTCOMES = (
+    "supported",
+    "partially_supported",
+    "contradicted",
+    "unclear",
+    "not_assessed",
+)
+_SUPPORT_ASSESSMENT_EVIDENCE_ROLES_SQL = ", ".join(
+    f"'{value}'" for value in SUPPORT_ASSESSMENT_EVIDENCE_ROLES
+)
+_SUPPORT_ASSESSMENT_OUTCOMES_SQL = ", ".join(
+    f"'{value}'" for value in SUPPORT_ASSESSMENT_OUTCOMES
+)
+
+
+class SupportAssessment(Base):
+    """One attributable judgment that Source Segments support a proposition.
+
+    The relation ADR-0082 decided: exactly one typed proposition (a Source
+    Fact or an Extracted Proposal today; a Proposed Delta or accepted field
+    joins ``ck_support_assessments_proposition`` with its own column and
+    composite key, never an unchecked object-type/object-id pair), one or
+    more segments through ``SupportAssessmentSource``, the evidence role,
+    the assessment, and exactly one authority.  Rows are append-only and
+    written only by ``append_support_assessment``; a correction supersedes
+    its predecessor once, so the effective reading is the row with no
+    successor and an as-of reading walks ``assessed_at`` (#530).
+    """
+
+    __tablename__ = "support_assessments"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "id", name="uq_support_assessments_project_id"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "document_id",
+            "id",
+            name="uq_support_assessments_scope_id",
+        ),
+        UniqueConstraint("content_sha256", name="uq_support_assessments_content"),
+        UniqueConstraint(
+            "superseded_by", name="uq_support_assessments_superseded_by"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "fact_id"],
+            ["facts.project_id", "facts.document_id", "facts.id"],
+            name="fk_support_assessments_fact_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "fact_id"],
+            ["facts.project_id", "facts.id"],
+            name="fk_support_assessments_fact_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "extracted_proposal_id"],
+            [
+                "extracted_proposals.project_id",
+                "extracted_proposals.document_id",
+                "extracted_proposals.id",
+            ],
+            name="fk_support_assessments_proposal_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "extracted_proposal_id"],
+            ["extracted_proposals.project_id", "extracted_proposals.id"],
+            name="fk_support_assessments_proposal_project",
+        ),
+        CheckConstraint(
+            "(proposition_kind = 'source_fact' and fact_id is not null "
+            "and extracted_proposal_id is null) or "
+            "(proposition_kind = 'extracted_proposal' "
+            "and extracted_proposal_id is not null and fact_id is null "
+            "and document_id is not null)",
+            name="ck_support_assessments_proposition",
+        ),
+        CheckConstraint(
+            f"evidence_role in ({_SUPPORT_ASSESSMENT_EVIDENCE_ROLES_SQL})",
+            name="ck_support_assessments_evidence_role",
+        ),
+        CheckConstraint(
+            f"assessment in ({_SUPPORT_ASSESSMENT_OUTCOMES_SQL})",
+            name="ck_support_assessments_assessment",
+        ),
+        CheckConstraint(
+            "(human_principal is null) <> (released_policy is null)",
+            name="ck_support_assessments_authority_xor",
+        ),
+        CheckConstraint(
+            "human_principal is null or length(trim(human_principal)) > 0",
+            name="ck_support_assessments_human_principal",
+        ),
+        CheckConstraint(
+            "released_policy is null or length(trim(released_policy)) > 0",
+            name="ck_support_assessments_released_policy",
+        ),
+        CheckConstraint(
+            "(released_policy is null) = (ruleset_version is null) "
+            "and (ruleset_version is null or length(trim(ruleset_version)) > 0)",
+            name="ck_support_assessments_ruleset",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_support_assessments_content_sha256",
+        ),
+        CheckConstraint("superseded_by <> id", name="ck_support_assessments_not_self"),
+        Index(
+            "uq_support_assessments_effective_fact",
+            "fact_id",
+            "evidence_role",
+            unique=True,
+            postgresql_where=text("superseded_by is null and fact_id is not null"),
+        ),
+        Index(
+            "uq_support_assessments_effective_proposal",
+            "extracted_proposal_id",
+            "evidence_role",
+            unique=True,
+            postgresql_where=text(
+                "superseded_by is null and extracted_proposal_id is not null"
+            ),
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    # The proposition's rendition; null only for a document-less verbal Fact.
+    document_id: Mapped[int | None] = mapped_column(BigInteger)
+    proposition_kind: Mapped[str] = mapped_column(String(32))
+    fact_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    extracted_proposal_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    evidence_role: Mapped[str] = mapped_column(String(32))
+    assessment: Mapped[str] = mapped_column(String(32))
+    human_principal: Mapped[str | None] = mapped_column(String(128))
+    released_policy: Mapped[str | None] = mapped_column(String(128))
+    ruleset_version: Mapped[str | None] = mapped_column(String(64))
+    superseded_by: Mapped[int | None] = mapped_column(
+        ForeignKey("support_assessments.id", deferrable=True, initially="DEFERRED")
+    )
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    assessed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SupportAssessmentSource(Base):
+    """One Source Segment a Support Assessment weighed, in the same rendition."""
+
+    __tablename__ = "support_assessment_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "support_assessment_id",
+            "source_segment_id",
+            name="uq_support_assessment_sources_segment",
+        ),
+        UniqueConstraint(
+            "support_assessment_id",
+            "ordinal",
+            name="uq_support_assessment_sources_ordinal",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "support_assessment_id"],
+            [
+                "support_assessments.project_id",
+                "support_assessments.document_id",
+                "support_assessments.id",
+            ],
+            name="fk_support_assessment_sources_assessment_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "support_assessment_id"],
+            ["support_assessments.project_id", "support_assessments.id"],
+            name="fk_support_assessment_sources_assessment_project",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_support_assessment_sources_segment_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "source_segment_id"],
+            ["source_segments.project_id", "source_segments.id"],
+            name="fk_support_assessment_sources_segment_project",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_support_assessment_sources_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int | None] = mapped_column(BigInteger)
+    support_assessment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
     ordinal: Mapped[int] = mapped_column(Integer)
 
 

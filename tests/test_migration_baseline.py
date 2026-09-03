@@ -47,7 +47,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "4de701fa5d5b50a1455c13ce634ee267141024d93cd9e83c2292c9e033181c54"
+    "f78bc2a40ee9f0712f9fe343ee75a11bc111dbb88174ad8e7e69af186e55f778"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -170,10 +170,12 @@ def test_fresh_database_matches_the_released_schema_exactly():
 def test_the_supported_database_upgrades_to_the_current_head_and_back():
     """The one supported transition, proved on its exact transformed rows.
 
-    b2d5f8a1c4e7 transforms privileges, not data: it takes the raw
-    source-table writes back from the runtime capabilities and hands the
-    source-append role its four commands (#492).  A database standing at the
-    supported revision must cross that transition in both directions.
+    b2d5f8a1c4e7 transforms privileges and adds one relation, not data: it
+    takes the raw source-table writes back from the runtime capabilities and
+    hands the source-append role its commands (#492), and it creates the
+    Support Assessment tables that only the fifth command writes (#530).  A
+    database standing at the supported revision must cross that transition
+    in both directions.
     """
 
     configured = make_url(settings.database_url)
@@ -430,22 +432,42 @@ SOURCE_TABLES = (
     "extracted_proposal_facts",
     "source_fact_append_receipts",
 )
+# Born in b2d5f8a1c4e7 (#530): absent before it, appended only through the
+# command after it.
+SUPPORT_TABLES = (
+    "support_assessments",
+    "support_assessment_sources",
+)
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",
     "append_fact",
     "append_extracted_proposal",
     "append_source_fact_receipt",
+    "append_support_assessment",
 )
-# Before b2d5f8a1c4e7: the runtime capabilities write the source tables raw
-# and no append command exists.
+# Before b2d5f8a1c4e7: the runtime capabilities write the source tables raw,
+# no append command exists, and the Support Assessment relation does not
+# exist (None, as distinct from a table nobody may write).
 SOURCE_APPEND_OPEN = {
-    "runtime_insert": {table: ("corridor_web", "corridor_worker") for table in SOURCE_TABLES},
+    "runtime_insert": {
+        **{table: ("corridor_web", "corridor_worker") for table in SOURCE_TABLES},
+        **{table: None for table in SUPPORT_TABLES},
+    },
+    "runtime_select": {
+        **{table: ("corridor_web", "corridor_worker") for table in SOURCE_TABLES},
+        **{table: None for table in SUPPORT_TABLES},
+    },
     "commands": {},
 }
-# After it: nobody writes them raw, and every command is owned by the
-# source-append role, hidden from PUBLIC, and callable by both capabilities.
+# After it: nobody writes them raw, both capabilities read them all, and
+# every command is owned by the source-append role, hidden from PUBLIC, and
+# callable by both capabilities.
 SOURCE_APPEND_SECURED = {
-    "runtime_insert": {table: () for table in SOURCE_TABLES},
+    "runtime_insert": {table: () for table in SOURCE_TABLES + SUPPORT_TABLES},
+    "runtime_select": {
+        table: ("corridor_web", "corridor_worker")
+        for table in SOURCE_TABLES + SUPPORT_TABLES
+    },
     "commands": {
         command: {
             "owner": "corridor_source_append",
@@ -457,19 +479,31 @@ SOURCE_APPEND_SECURED = {
 }
 
 
+def _runtime_table_privilege(session, table: str, privilege: str):
+    """Which runtime capabilities hold one privilege, or None if no such table."""
+
+    if session.scalar(text("select to_regclass(:table)"), {"table": table}) is None:
+        return None
+    return tuple(
+        session.scalars(
+            text(
+                "select r from unnest(array['corridor_web', 'corridor_worker']) as r "
+                "where has_table_privilege(r, :table, :privilege) order by r"
+            ),
+            {"table": table, "privilege": privilege},
+        ).all()
+    )
+
+
 def _source_append_security(session_factory) -> dict:
     with session_factory() as session:
         runtime_insert = {
-            table: tuple(
-                session.scalars(
-                    text(
-                        "select r from unnest(array['corridor_web', 'corridor_worker']) as r "
-                        "where has_table_privilege(r, :table, 'insert') order by r"
-                    ),
-                    {"table": table},
-                ).all()
-            )
-            for table in SOURCE_TABLES
+            table: _runtime_table_privilege(session, table, "insert")
+            for table in SOURCE_TABLES + SUPPORT_TABLES
+        }
+        runtime_select = {
+            table: _runtime_table_privilege(session, table, "select")
+            for table in SOURCE_TABLES + SUPPORT_TABLES
         }
         commands = {}
         for name in SOURCE_APPEND_COMMANDS:
@@ -500,7 +534,11 @@ def _source_append_security(session_factory) -> dict:
                     if granted
                 ),
             }
-    return {"runtime_insert": runtime_insert, "commands": commands}
+    return {
+        "runtime_insert": runtime_insert,
+        "runtime_select": runtime_select,
+        "commands": commands,
+    }
 
 
 def _statement_retirement_security(session_factory) -> dict:
