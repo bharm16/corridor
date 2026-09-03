@@ -1,9 +1,15 @@
 from datetime import date, timedelta
 
 import pytest
-from sqlalchemy import select
+from sqlalchemy import select, text
+from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.changes import diff_since_last, record_run, snapshot
+from corridor.changes import (
+    accepted_revision_id,
+    diff_since_last,
+    record_run,
+    snapshot,
+)
 from corridor.check_configuration import effective_thresholds, save_configuration
 from corridor.db import Session, engine
 from corridor.external_statements import (
@@ -21,6 +27,7 @@ from corridor.models import (
     EvidenceLink,
     ExternalOrg,
     Project,
+    ProjectRecordRevision,
     ReportRun,
 )
 from corridor.principals import HumanPrincipal
@@ -656,3 +663,164 @@ def test_no_configuration_boundary_when_thresholds_are_unchanged(
     assert diff.configuration_unknown is False
     # A genuine new exception within one configuration still reports.
     assert any("MISSING_OWNER" in c.detail for c in diff.changes)
+
+
+# --- The accepted revision a run is bound to (#602) -------------------------
+#
+# A Report Run used to carry only ``snapshot_json``: a copy of state with
+# nothing saying which accepted Project Record revision it was taken against,
+# so it could only ever be compared with itself. These cover the reference
+# that replaces that, and the two independent guards that keep it honest.
+
+
+def _accepted_revision(session, project, key: str) -> ProjectRecordRevision:
+    """One accepted revision of ``project``, written as the decision role.
+
+    A revision is written only by the record-decision role's own commands, and
+    reaching one here would mean adopting a baseline to prove a property of the
+    report binding rather than of the adoption.  The role is taken for this
+    statement and handed back immediately.
+    """
+
+    # Flush anything still pending as the ordinary role: the decision role is
+    # taken for this one insert and nothing else.
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    revision = ProjectRecordRevision(
+        project_id=project.id,
+        command_type="record_verbal_statement",
+        human_principal="local:changes-reviewer",
+        idempotency_key=key,
+    )
+    session.add(revision)
+    session.flush()
+    session.execute(text("reset role"))
+    return revision
+
+
+def _insert_report_run_directly(session, project_id, *, revision_id):
+    """Insert straight into the relation, past every Python writer."""
+
+    return session.execute(
+        text(
+            "insert into report_runs ("
+            "project_id, revision_id, ruleset_version, snapshot_json, "
+            "document_only"
+            ") values ("
+            ":project_id, :revision_id, 'r1', '{}'::jsonb, false"
+            ") returning id"
+        ),
+        {"project_id": project_id, "revision_id": revision_id},
+    ).scalar_one()
+
+
+def test_a_recorded_run_names_the_accepted_revision_it_was_produced_against(
+    session, project, document
+):
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    revision = _accepted_revision(session, project, "changes:bound-run")
+
+    run = _record(session, project)
+
+    assert run.revision_id == revision.id
+    assert accepted_revision_id(session, project.id) == revision.id
+
+
+def test_a_second_run_names_the_revision_standing_when_it_was_written(
+    session, project, document
+):
+    """The binding moves with the record, and an earlier run keeps its own."""
+
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    first_revision = _accepted_revision(session, project, "changes:first")
+    first_run = _record(session, project)
+
+    second_revision = _accepted_revision(session, project, "changes:second")
+    second_run = _record(session, project)
+
+    assert second_revision.id > first_revision.id
+    assert first_run.revision_id == first_revision.id
+    assert second_run.revision_id == second_revision.id
+
+
+def test_a_project_with_no_accepted_revision_records_an_explicit_absence(
+    session, project, document
+):
+    """Absence is an answer, not a missing value.
+
+    A legacy project whose accepted record is not on the spine has no revision
+    identity to name.  Naming one anyway — a zero, or some other project's
+    newest — would be exactly the false reference this binding exists to
+    prevent, so the run records none and the database accepts it.
+    """
+
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+
+    assert accepted_revision_id(session, project.id) is None
+
+    run = _record(session, project)
+
+    assert run.revision_id is None
+    assert session.scalar(
+        select(ReportRun.revision_id).where(ReportRun.id == run.id)
+    ) is None
+
+
+def test_the_database_refuses_a_new_run_that_names_no_accepted_revision(
+    session, project
+):
+    """The rule lives in PostgreSQL, not in the one Python writer.
+
+    ``record_run`` resolves the binding itself, so this reaches past it and
+    inserts the row directly.  Nothing else in the statement can be refused:
+    every other column is supplied and valid, and a null binding trips no
+    foreign key.
+    """
+
+    _accepted_revision(session, project, "changes:refusal")
+
+    with pytest.raises(DBAPIError) as refusal:
+        _insert_report_run_directly(session, project.id, revision_id=None)
+
+    assert "names the accepted Project Record revision" in str(refusal.value)
+
+
+def test_the_database_refuses_a_run_bound_to_another_projects_revision(
+    session, project
+):
+    """The second, independent guard: the composite key, not the trigger."""
+
+    other = Project(slug="chg-foreign-revision", name="Foreign", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    foreign = _accepted_revision(session, other, "changes:foreign")
+    _accepted_revision(session, project, "changes:own")
+
+    with pytest.raises(IntegrityError) as refusal:
+        _insert_report_run_directly(session, project.id, revision_id=foreign.id)
+
+    assert "fk_report_runs_revision" in str(refusal.value)
+
+
+def test_a_recorded_binding_is_not_rewritten(session, project, document):
+    """A run says which revision it was produced against, once and for good."""
+
+    dep = make_dep(session, project, "DEP-1")
+    add_evidence(session, dep, document)
+    revision = _accepted_revision(session, project, "changes:immutable")
+    run = _record(session, project)
+    later = _accepted_revision(session, project, "changes:immutable-later")
+    assert run.revision_id == revision.id
+
+    with pytest.raises(DBAPIError) as refusal:
+        session.execute(
+            text(
+                "update report_runs set revision_id = :later where id = :run_id"
+            ),
+            {"later": later.id, "run_id": run.id},
+        )
+
+    assert "is not rewritten" in str(refusal.value)

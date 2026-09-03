@@ -17,6 +17,14 @@ digest, Evaluation, provenance mode, and covered identities are bound the same
 way a manual preparation binds them — and only a separate designated-human act
 can release it (ADR-0040).
 
+Each retained reading also names the accepted Project Record revision it was
+taken against (#602).  That reference is what the reading is bound to;
+``snapshot_json`` beside it is a **rebuildable compatibility cache**, retained
+only until #603 proves that rebuilding a reading from its revision gives the
+same answer.  The revision is read in the same writing transaction as the
+reading itself, so a retained row can never name one taken a moment apart from
+the state it recorded.
+
 This module owns no schedule, timer, or clock.  The one supervised Due Work
 runtime (#332) discovers, claims, and retries occurrences; this is the bounded,
 idempotent work one claimed occurrence performs.  A repeated trigger, a
@@ -34,7 +42,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from corridor.changes import last_released_report, snapshot
+from corridor.changes import accepted_revision_id, last_released_report, snapshot
 from corridor.export import to_pdf_bytes
 from corridor.models import (
     DueWorkOccurrence,
@@ -53,7 +61,10 @@ from corridor.report_release import RenderedExternalReport, prepare_external_rep
 # reverse.
 HANDLER_KEY = "report_publication"
 
-_RESULT_SCHEMA_VERSION = "report-publication-result-v1"
+# v2 names the accepted Project Record revision the reading was produced
+# against (#602); v1 receipts named none, and are readable exactly as they
+# were written.
+_RESULT_SCHEMA_VERSION = "report-publication-result-v2"
 
 
 class ReportPublicationRefusal(ValueError):
@@ -73,6 +84,7 @@ class RetainedPublication:
     predecessor_release_id: int | None
     window_start: date | None
     comparison_window_days: int | None
+    revision_id: int | None
     prepared_artifact_id: int | None
     prepared_artifact_name: str | None
     prepared_artifact_sha256: str | None
@@ -207,6 +219,11 @@ def execute_report_publication(
                     occurrence_id=occurrence_id,
                     schedule_id=schedule_id,
                     project_id=project_id,
+                    # Read in this same writing transaction, beside the reading
+                    # it binds, so the retained row names the accepted revision
+                    # its own snapshot was taken against rather than whichever
+                    # one a later reader happens to find (#602).
+                    revision_id=accepted_revision_id(writing, project_id),
                     configuration_version=configuration_version,
                     provenance_mode=provenance_mode,
                     predecessor_release_id=(
@@ -247,6 +264,9 @@ def summarize_publication(publication: ScheduledReportPublication) -> dict:
         "evaluated_on": publication.evaluated_on.isoformat(),
         "outcome": "retained",
         "snapshot_public_id": publication.public_id,
+        # The reference the reading is bound to, so the receipt an operator
+        # reads says which accepted revision it was produced against (#602).
+        "accepted_revision_id": publication.revision_id,
         "prepared": publication.prepared_artifact_id is not None,
         "prepared_artifact_id": publication.prepared_artifact_id,
         "has_prior_release": publication.predecessor_release_id is not None,
@@ -320,6 +340,7 @@ def project_publication_history(
                 observed_at=publication.observed_at,
                 ruleset_version=publication.ruleset_version,
                 predecessor_release_id=publication.predecessor_release_id,
+                revision_id=publication.revision_id,
                 window_start=publication.window_start,
                 comparison_window_days=publication.comparison_window_days,
                 prepared_artifact_id=publication.prepared_artifact_id,
