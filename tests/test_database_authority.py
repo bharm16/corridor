@@ -111,6 +111,13 @@ SOURCE_TABLES = (
     "delta_supersessions",
     "delta_deferrals",
 )
+# The push-intake boundary (#511): the application inserts a credential and a
+# delivery and may revoke a credential, and nothing else. Neither an alias's
+# project binding nor the record of a taken delivery is rewritable at runtime.
+PUSH_INTAKE_TABLES = (
+    "push_intake_credentials",
+    "push_deliveries",
+)
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",
     "append_fact",
@@ -766,3 +773,47 @@ def test_a_runtime_capability_appends_source_segments_only_through_the_command(
             assert "permission denied for table source_segments" in str(refused.value)
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("table", PUSH_INTAKE_TABLES)
+def test_a_runtime_capability_appends_push_intake_rows_but_never_rewrites_one(
+    runtime, table
+):
+    role, connection = runtime
+
+    for privilege in ("select", "insert"):
+        granted = connection.execute(
+            text("select has_table_privilege(:role, :table, :privilege)"),
+            {"role": role, "table": table, "privilege": privilege},
+        ).scalar_one()
+        assert granted is True, f"{role} cannot {privilege} {table}"
+    for privilege in ("update", "delete"):
+        granted = connection.execute(
+            text("select has_table_privilege(:role, :table, :privilege)"),
+            {"role": role, "table": table, "privilege": privilege},
+        ).scalar_one()
+        assert granted is False, f"{role} can {privilege} {table}"
+
+
+def test_only_the_web_capability_may_revoke_a_push_intake_credential(admin):
+    """Revocation is the one column a runtime capability may write, and it is
+    the human-facing capability that holds it (#511)."""
+
+    for role, expected in (("corridor_web", True), ("corridor_worker", False)):
+        granted = admin.execute(
+            text(
+                "select has_column_privilege(:role, 'push_intake_credentials', "
+                "'state', 'update')"
+            ),
+            {"role": role},
+        ).scalar_one()
+        assert granted is expected, role
+    for role in ("corridor_web", "corridor_worker"):
+        granted = admin.execute(
+            text(
+                "select has_column_privilege(:role, 'push_intake_credentials', "
+                "'project_id', 'update')"
+            ),
+            {"role": role},
+        ).scalar_one()
+        assert granted is False, f"{role} can re-point a bound alias"

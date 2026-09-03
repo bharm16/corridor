@@ -1,16 +1,32 @@
-"""Receive untrusted mail at Corridor's one configured intake address.
+"""Receive untrusted mail and register it inside the project it was delivered to.
 
 Email is evidence, not an instruction channel.  This module stores an RFC 5322
 message byte-for-byte, preserves the headers that establish its deterministic
-thread, and routes only by exact registered evidence (ADR-0058, ADR-0059,
-ADR-0062).  It deliberately does not parse a command from a subject/body, infer
-Supersession, mint an organization, or call an extractor or model in the request.
+thread, and routes only by exact registered evidence (ADR-0058, ADR-0062).  It
+deliberately does not parse a command from a subject/body, infer Supersession,
+mint an organization, or call an extractor or model in the request.  The
+transaction which stores a message also stores its route/triage residue, so a
+crash cannot turn a received message into an untraceable fact.
 
-The public seam is ``receive_message``.  A deployment webhook or a service-mailbox
-poller authenticates *before* calling it; this module accepts only the server
-received raw bytes and refuses mail not addressed to the configured service
-address.  The transaction which stores a message also stores its route/triage
-residue, so a crash cannot turn a received message into an untraceable fact.
+There are two front doors, and only one of them is the current design.
+
+``receive_pushed_message`` is it (#511).  A ``PushCredential`` — the alias the
+transport actually delivered to, or a webhook secret — binds one customer and
+one project through ``corridor.push_intake`` *before* a single byte of the
+message is parsed, and the parse then runs inside that ``PushBinding``.  A
+crafted message therefore cannot move itself between customers or projects: the
+thread its headers name, the bytes it duplicates, and the rows its body cites
+are all looked up inside the bound project and nowhere else.  Content-based
+inference survives exactly where ADR-0078 left it, choosing among rows already
+inside the boundary or leaving the choice as bounded triage.
+
+``receive_message`` is the frozen global-address path ADR-0059 defined and
+ADR-0078 superseded: one service address, and the project inferred from the
+message's own content.  It is kept while deployments migrate their transports
+onto bound aliases, and it gains no new capability.  Its rows are the same rows
+the bound path writes, so migrating a project costs no raw MIME and no thread
+history — a reply to a legacy thread continues that thread once the alias binds
+the project the thread already resolved to.
 """
 
 from __future__ import annotations
@@ -40,6 +56,14 @@ from corridor.models import (
 )
 from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.push_intake import (
+    MAIL_CHANNELS,
+    PushBinding,
+    PushCredential,
+    PushPayload,
+    accept_delivery,
+    bind_credential,
+)
 from corridor.source_intake import IntakeRefused, validate_and_stage
 
 
@@ -142,7 +166,7 @@ def receive_message(
     body = _body_text(message)
     attachments = _attachment_parts(message)
     attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
-    thread = _thread_for_headers(session, headers)
+    thread = _thread_for_headers(session, headers, project_id=None)
     if thread is None:
         thread = InboundThread()
         session.add(thread)
@@ -213,6 +237,266 @@ def receive_message(
         route_evidence=evidence,
         created=True,
     )
+
+
+def receive_pushed_message(
+    session: Session,
+    *,
+    credential: PushCredential,
+    raw_bytes: bytes,
+    transport_delivery_id: str | None = None,
+) -> ReceivedMessage:
+    """Receive one mail delivery inside the boundary its credential establishes.
+
+    The order is the whole security property, so it is worth stating plainly:
+    bind, persist, then parse.  ``bind_credential`` resolves the alias the
+    transport delivered to — never a ``To``, ``Cc``, or ``Delivered-To`` header,
+    which the sender wrote — to one customer and one project.  Only then are the
+    bytes stored and the message parsed, and every later lookup is scoped to the
+    bound project: the thread its headers claim, the bytes it may duplicate, and
+    the rows its body cites.  A message that arrives on one project's alias
+    cannot end up in another project or another customer whatever it contains.
+
+    Replay is idempotent by delivery identity (ADR-0083).  A transport that
+    retries after a crash reaches the delivery already taken and the message
+    already registered, not a second copy of either.
+    """
+
+    binding = bind_credential(session, credential)
+    if binding.channel not in MAIL_CHANNELS:
+        raise InboundMailRefused("this push credential does not carry mail")
+    if not raw_bytes:
+        raise InboundMailRefused("empty mail cannot enter intake")
+    receipt = accept_delivery(
+        session,
+        binding,
+        PushPayload(
+            body=raw_bytes,
+            filename="message.eml",
+            transport_delivery_id=transport_delivery_id,
+        ),
+    )
+    already = session.scalars(
+        select(InboundMessage).where(
+            InboundMessage.push_delivery_id == receipt.delivery_id
+        )
+    ).first()
+    if already is not None:
+        return ReceivedMessage(
+            message_id=already.id,
+            thread_id=already.thread_id,
+            project_id=already.project_id,
+            route_status=already.route_status,
+            route_evidence=already.route_evidence_json,
+            created=False,
+        )
+    return _register_bound_message(
+        session, binding=binding, receipt=receipt, raw_bytes=raw_bytes
+    )
+
+
+def _register_bound_message(
+    session: Session,
+    *,
+    binding: PushBinding,
+    receipt,
+    raw_bytes: bytes,
+) -> ReceivedMessage:
+    """Parse and register one delivery, entirely inside an established binding."""
+
+    # The first parse in the whole path, and it happens with the customer and
+    # project already decided by the credential.
+    message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
+    digest = receipt.envelope.content_digest
+
+    same_bytes = session.scalars(
+        select(InboundMessage).where(
+            InboundMessage.raw_sha256 == digest,
+            InboundMessage.project_id == binding.project_id,
+        )
+    ).first()
+    if same_bytes is not None:
+        return ReceivedMessage(
+            message_id=same_bytes.id,
+            thread_id=same_bytes.thread_id,
+            project_id=same_bytes.project_id,
+            route_status=same_bytes.route_status,
+            route_evidence=same_bytes.route_evidence_json,
+            created=False,
+        )
+
+    message_id = _header_id(message.get("Message-ID"))
+    if message_id:
+        same_id = session.scalars(
+            select(InboundMessage).where(
+                InboundMessage.message_id == message_id,
+                InboundMessage.project_id == binding.project_id,
+            )
+        ).first()
+        if same_id is not None:
+            # Same Message-ID with different bytes is not a resend.  The check
+            # is inside the boundary, so a guessed identifier cannot refuse a
+            # delivery in a project the sender cannot see.
+            raise InboundMailRefused(
+                "Message-ID was already received with different bytes"
+            )
+
+    headers = _retained_headers(message)
+    body = _body_text(message)
+    attachments = _attachment_parts(message)
+    attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
+    thread = _thread_for_headers(session, headers, project_id=binding.project_id)
+    if thread is None:
+        thread = InboundThread(project_id=binding.project_id)
+        session.add(thread)
+        session.flush()
+
+    sender = _first_address(message.get("From"))
+    evidence, dependency_id = _resolve_within_boundary(
+        session,
+        project_id=binding.project_id,
+        body=body,
+        attachment_hashes=attachment_hashes,
+        attachment_names=tuple(name for name, _payload in attachments),
+        sender=sender,
+    )
+    evidence = {
+        "boundary": "push_credential",
+        "customer": binding.customer,
+        "channel": binding.channel,
+        "credential_id": binding.credential_id,
+        "delivery_identity": receipt.envelope.delivery_identity,
+        # The bound project is the only candidate there has ever been; the key
+        # keeps its shape for the readback the global-address path also feeds.
+        "candidate_project_ids": [binding.project_id],
+        **evidence,
+    }
+    if thread.dependency_id is None and dependency_id is not None:
+        thread.dependency_id = dependency_id
+
+    inbound = InboundMessage(
+        raw_sha256=digest,
+        storage_path=str(receipt.staged_path),
+        message_id=message_id,
+        sender=sender,
+        subject=str(message.get("Subject") or ""),
+        sent_at=_parsed_date(message.get("Date")),
+        headers_json=headers,
+        body_text=body,
+        thread_id=thread.id,
+        project_id=binding.project_id,
+        route_status="routed",
+        route_evidence_json=evidence,
+        push_delivery_id=receipt.delivery_id,
+    )
+    session.add(inbound)
+    session.flush()
+    if thread.bound_by_message_id is None and dependency_id is not None:
+        thread.bound_by_message_id = inbound.id
+        session.flush()
+    _register_routed_content(session, inbound, message)
+    return ReceivedMessage(
+        message_id=inbound.id,
+        thread_id=thread.id,
+        project_id=binding.project_id,
+        route_status="routed",
+        route_evidence=evidence,
+        created=True,
+    )
+
+
+def _resolve_within_boundary(
+    session: Session,
+    *,
+    project_id: int,
+    body: str,
+    attachment_hashes: tuple[str, ...],
+    attachment_names: tuple[str, ...],
+    sender: str | None,
+) -> tuple[dict, int | None]:
+    """Choose a row inside the bound project, never a project.
+
+    Every tier ADR-0059 defined survives here as ADR-0078 left it: an exact
+    match *inside* an already bound customer.  Evidence that resolves outside
+    the boundary decides nothing and is counted rather than named, because a
+    message in one customer's record must not carry another customer's
+    identifiers even as a rejected candidate.
+
+    ``in_project_resolution`` is the honest outcome of the inference the
+    boundary still permits: ``row_bound`` when exactly one Constraint in the
+    project matched, ``ambiguous`` when several did — the bounded triage
+    ADR-0078 allows, left visible with the row unbound — and ``unmatched``
+    when the message cites no row this project holds.
+    """
+
+    outside = 0
+    tier = "none"
+
+    matched_documents = (
+        list(
+            session.scalars(
+                select(Document.project_id).where(Document.sha256.in_(attachment_hashes))
+            ).all()
+        )
+        if attachment_hashes
+        else []
+    )
+    if not matched_documents and attachment_names:
+        joined_names = " ".join(attachment_names)
+        matched_documents = [
+            document.project_id
+            for document in session.scalars(
+                select(Document).where(Document.registry_id.is_not(None))
+            ).all()
+            if _contains_exact_identifier(
+                joined_names, normalize_identifier(document.registry_id)
+            )
+        ]
+    outside += sum(1 for owner in matched_documents if owner != project_id)
+    if any(owner == project_id for owner in matched_documents):
+        tier = "document_identity"
+
+    identifier_owners = [
+        item.project_id
+        for item in session.scalars(select(IntakeProjectIdentifier)).all()
+        if _contains_exact_identifier(body, item.value_normalized)
+    ]
+    outside += sum(1 for owner in identifier_owners if owner != project_id)
+    if tier == "none" and any(owner == project_id for owner in identifier_owners):
+        tier = "project_identifier"
+
+    matched_dependencies = [
+        item
+        for item in session.scalars(select(Dependency)).all()
+        if _dependency_mentions(body, item)
+    ]
+    outside += sum(1 for item in matched_dependencies if item.project_id != project_id)
+    in_project = sorted(
+        item.id for item in matched_dependencies if item.project_id == project_id
+    )
+    if tier == "none" and in_project:
+        tier = "record_identifier"
+
+    sender_owners = _sender_contact_project_ids(session, sender)
+    if tier == "none" and project_id in sender_owners:
+        tier = "sender_contact"
+
+    if len(in_project) == 1:
+        resolution, dependency_id = "row_bound", in_project[0]
+    elif in_project:
+        resolution, dependency_id = "ambiguous", None
+    else:
+        resolution, dependency_id = "unmatched", None
+
+    return {
+        "tier": tier,
+        "in_project_resolution": resolution,
+        "candidate_dependency_ids": in_project,
+        "out_of_boundary_evidence": outside,
+        "sender_registered_contact_project_ids": sorted(
+            sender_owners & {project_id}
+        ),
+    }, dependency_id
 
 
 def resolve_route_triage(
@@ -476,20 +760,37 @@ def _contains_exact_identifier(text: str, value: str) -> bool:
     return re.search(pattern, normalize_identifier(text)) is not None
 
 
-def _thread_for_headers(session: Session, headers: dict) -> InboundThread | None:
+def _thread_for_headers(
+    session: Session, headers: dict, *, project_id: int | None
+) -> InboundThread | None:
+    """Resolve a reply's thread from its headers alone, inside one boundary.
+
+    ``project_id`` is the bound project of a pushed delivery, or ``None`` on the
+    frozen global-address path.  When it is given, a reference is only followed
+    to a message and a thread already in that project, so a forged In-Reply-To
+    or References chain naming another customer's conversation resolves to
+    nothing and starts a new thread rather than joining theirs.
+    """
+
     references = [headers.get("in_reply_to"), *headers.get("references", [])]
     references = [value for value in references if value]
     if not references:
         return None
-    thread_ids = set(
-        session.scalars(
-            select(InboundMessage.thread_id).where(InboundMessage.message_id.in_(references))
-        ).all()
+    referenced = select(InboundMessage.thread_id).where(
+        InboundMessage.message_id.in_(references)
     )
+    if project_id is not None:
+        referenced = referenced.where(InboundMessage.project_id == project_id)
+    thread_ids = set(session.scalars(referenced).all())
     # A References chain claiming two known Corridor threads is malformed
     # provenance.  Starting a new thread keeps both original conversations
     # intact instead of selecting one by incidental database ordering.
-    return session.get(InboundThread, next(iter(thread_ids))) if len(thread_ids) == 1 else None
+    if len(thread_ids) != 1:
+        return None
+    thread = session.get(InboundThread, next(iter(thread_ids)))
+    if project_id is not None and (thread is None or thread.project_id != project_id):
+        return None
+    return thread
 
 
 def _ensure_triage(session: Session, thread: InboundThread, candidate_ids: list[int]) -> None:

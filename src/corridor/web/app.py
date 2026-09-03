@@ -41,6 +41,7 @@ from starlette.requests import Request
 from corridor import audit
 from corridor import email_intake
 from corridor import notifications
+from corridor import push_intake
 from corridor.config import settings
 from corridor.adjudicate import (
     AlreadyAdjudicated,
@@ -6796,27 +6797,55 @@ _UPLOAD_STATUS_LABELS = {
 async def receive_inbound_mail(
     request: Request,
     inbound_token: str | None = Header(default=None, alias="X-Corridor-Inbound-Token"),
+    delivered_to: str | None = Header(default=None, alias="X-Corridor-Delivered-To"),
+    delivery_id: str | None = Header(default=None, alias="X-Corridor-Delivery-Id"),
     session: Session = Depends(get_session),
 ):
-    """Server-to-server receipt boundary for the one configured intake address.
+    """Server-to-server receipt boundary for one authenticated mail transport.
 
-    This is not an ordinary customer route: it refuses unless deployment supplied
-    both server-owned configuration values and the sender authentication secret.
-    It does not accept a project id, actor, or route from a client.
+    This is not an ordinary customer route: it refuses unless deployment
+    supplied the sender authentication secret. It does not accept a project id,
+    actor, or route from a client.
+
+    Two things are authenticated here and they are not the same thing. The
+    shared secret authenticates the *transport*; ``X-Corridor-Delivered-To``
+    carries the envelope recipient that transport actually delivered to, and
+    that alias is what binds the customer and project (#511, ADR-0078). The
+    header is the MTA's report of the SMTP recipient, not a header from the
+    message — the message's own ``To``/``Cc`` are inside the untrusted body and
+    bind nothing.
+
+    A delivery arriving without that alias falls back to the frozen
+    global-address path (ADR-0059), which infers the project from content and
+    exists only while deployments move their transports onto bound aliases.
     """
     if (
-        not settings.inbound_service_address
-        or not settings.inbound_webhook_secret
+        not settings.inbound_webhook_secret
         or inbound_token is None
         or not secrets.compare_digest(inbound_token, settings.inbound_webhook_secret)
     ):
         raise HTTPException(401, "inbound sender is not authorized")
+    raw_bytes = await request.body()
     try:
-        received = email_intake.receive_message(
-            session,
-            raw_bytes=await request.body(),
-            service_address=settings.inbound_service_address,
-        )
+        if delivered_to:
+            received = email_intake.receive_pushed_message(
+                session,
+                credential=push_intake.PushCredential(
+                    channel="project_alias", material=delivered_to
+                ),
+                raw_bytes=raw_bytes,
+                transport_delivery_id=delivery_id,
+            )
+        elif settings.inbound_service_address:
+            received = email_intake.receive_message(
+                session,
+                raw_bytes=raw_bytes,
+                service_address=settings.inbound_service_address,
+            )
+        else:
+            raise HTTPException(401, "inbound sender is not authorized")
+    except push_intake.PushIntakeRefused as exc:
+        raise HTTPException(403, str(exc)) from exc
     except email_intake.InboundMailRefused as exc:
         raise HTTPException(400, str(exc)) from exc
     session.commit()
