@@ -433,6 +433,46 @@ def test_before_the_first_issue_the_section_states_that_there_is_no_predecessor(
     )
 
 
+def test_a_replaced_candidate_stays_on_the_page_as_history_and_carries_no_act(
+    session, adopted, client, store
+):
+    """The promise `FRESH_PREPARATION` makes, kept past the replacement.
+
+    "It stays listed here as it was prepared" held only while the candidate was
+    the current one; the moment the fresh candidate it asks for existed, the one
+    the coordinator had been reading about left the screen with nothing to say
+    where it went. It is history now, read-only, and the section offers exactly
+    one approval — against the current candidate and never against this one.
+    """
+
+    configure(session, adopted)
+    first = prepare(session, adopted, store)
+    assert approve(client, adopted, first.id).status_code == 201
+    session.expire_all()
+    second = prepare(
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
+    )
+
+    view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
+    assert [one.candidate_id for one in view.superseded] == [first.id]
+    assert view.superseded[0].outcome == "approved and sent as issue 1"
+    assert view.superseded[0].coverage_identity == first.coverage_identity
+
+    rendered = week(client, adopted)
+    body = prose(rendered)
+    assert "Earlier candidates for this issue" in body
+    assert first.coverage_identity in body
+    # And nothing in that history is an act: the one approval control on the
+    # page names the current candidate, which is ADR-0085's exactly-once rule
+    # at the surface a duplicate would appear on.
+    assert re.findall(r'name="candidate_id" value="(\d+)"', rendered) == [
+        str(second.id)
+    ]
+
+
 def test_the_second_candidate_names_the_first_issue_as_its_predecessor(
     session, adopted, client, store
 ):

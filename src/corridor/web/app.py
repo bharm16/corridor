@@ -428,6 +428,7 @@ from corridor.issue_profile import effective_issue_inventory
 from corridor.project_workflow import read_project_workflow
 from corridor.release_preparation import (
     PreparationRequestRefused,
+    preparation_idempotency_key,
     request_preparation,
 )
 from corridor.release_authorization import (
@@ -4829,7 +4830,16 @@ def prepare_project_issue(
                 accepted_revision_id=accepted_revision_id,
                 requested_by=principal,
                 requested_at=now,
-                idempotency_key=f"prepare:{declaration.declaration_digest}",
+                # Derived rather than generated, and derived from the finished
+                # attempt as well as the confirmed reading: a resubmitted form
+                # converges on the request already recorded, and a retry after
+                # a preparation that produced nothing is a second request a
+                # worker can run (`preparation_idempotency_key`).
+                idempotency_key=preparation_idempotency_key(
+                    session,
+                    project_id=project.id,
+                    declaration=declaration,
+                ),
             )
     except (CoverageRefused, PreparationRequestRefused) as refusal:
         return _project_workflow_response(
