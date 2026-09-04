@@ -1022,8 +1022,23 @@ VALUE_COPYING_CARRIERS = {
     ("evidence_links", "quote"),
     ("key_date_draft_row_receipts", "source_quote"),
     ("unreadable_cell_resolutions", "corroboration_quote"),
-    # Report snapshots. #602 bound both readings to a revision and demoted
-    # these to a rebuildable cache; #603's equivalence proof expires them.
+    # The two report reading payloads left this list in #633, and the reason
+    # is not that a carrier migrated. #602 listed them as copies and #603
+    # measured them: a revision reproduces the record fields and the Ledger
+    # identity, and cannot answer the population a report covered, the
+    # documentation requirement and Constraint Alerts of one dated reading, or
+    # the statement-projected Promised For. ADR-0092 makes those the Report
+    # Reading occurrence's own evidence, so they were never a copy of state
+    # another row owns and the ratchet has nothing to count. They are named in
+    # REPORT_READING_PAYLOADS below rather than deleted silently, so a reader
+    # cannot mistake the removal for progress on the historical rows — which
+    # have not changed at all.
+}
+
+# Not carriers, and not exempt: these columns are the thing itself (ADR-0092).
+# The ratchet skips them because they copy nothing, and it still refuses any
+# *other* new snapshot-shaped column.
+REPORT_READING_PAYLOADS = {
     ("report_runs", "snapshot_json"),
     ("scheduled_report_publications", "snapshot_json"),
 }
@@ -1044,6 +1059,12 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
     because it is new; a listed one that no longer exists fails because the
     entry outlived the copy, so the list can only shrink. Neither says the
     historical rows have been migrated — they have not.
+
+    ``REPORT_READING_PAYLOADS`` is subtracted rather than listed: those two
+    columns are a dated occurrence's own published evidence, not a copy of any
+    other row's state (ADR-0092), so there is nothing there for this ratchet to
+    measure. Every other snapshot-shaped column still has to be a listed
+    carrier.
     """
 
     from corridor.models import Base
@@ -1053,7 +1074,7 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
         for table in Base.metadata.sorted_tables
         for column in table.columns
         if _VALUE_COPYING_COLUMN.search(column.name)
-    }
+    } - REPORT_READING_PAYLOADS
     introduced = sorted(
         f"{table}.{column}"
         for table, column in present - VALUE_COPYING_CARRIERS

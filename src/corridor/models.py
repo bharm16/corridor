@@ -4518,9 +4518,10 @@ class ReportRun(Base):
     unless the report remembers which ruleset produced each number.
 
     `revision_id` is the accepted Project Record revision the reading was
-    taken against (#602). It is the run's authority: `snapshot_json` beside it
-    is a copy of derivable state, and a copy with nothing to derive it from is
-    a second source of truth that can only be compared with itself.
+    taken against (#602). It is the authority for every value the *record*
+    owns. `snapshot_json` beside it is the immutable Report Reading payload:
+    what this dated occurrence published, which is a different ownership and
+    not a copy of the revision (ADR-0092).
     """
 
     __tablename__ = "report_runs"
@@ -4547,10 +4548,14 @@ class ReportRun(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     ruleset_version: Mapped[str] = mapped_column(String(32))
-    # One entry per dependency: the state the report was published against.
-    # A rebuildable compatibility cache since #602 — `revision_id` above is
-    # what the reading is bound to.  It is retained, and still read by the
-    # legacy diff, until #603 proves what rebuilds it.
+    # The immutable Report Reading payload (ADR-0092): the population this
+    # report covered, its derived documentation-requirement results and
+    # Constraint Alerts, the statement-projected Promised For, and the rules
+    # and thresholds that produced them.  None of those is a revision's to
+    # answer, so this is the occurrence's own evidence rather than a cache of
+    # `revision_id` above; it is retained as long as the run is and expires on
+    # no cache TTL.  `report_reading` owns its schema version, content digest
+    # and the translation that keeps a version 1 payload readable.
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     output_path: Mapped[str | None] = mapped_column(Text)
     # Document-only reports are a separate comparison lineage: comparing one
@@ -5665,8 +5670,10 @@ class ScheduledReportPublication(Base):
     comparison_window_days: Mapped[int | None] = mapped_column(Integer)
     ruleset_version: Mapped[str] = mapped_column(String(64))
     thresholds_json: Mapped[dict] = mapped_column(JSONB)
-    # A rebuildable compatibility cache since #602, exactly as on ``ReportRun``:
-    # retained until #603 proves what rebuilds it, never the authority.
+    # The immutable Report Reading payload, exactly as on ``ReportRun``: the
+    # occurrence's own population, derived outcomes and projected Promised For,
+    # retained for as long as this row and its released package are, and never
+    # a cache of ``revision_id`` (ADR-0092).
     snapshot_json: Mapped[dict] = mapped_column(JSONB)
     observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(

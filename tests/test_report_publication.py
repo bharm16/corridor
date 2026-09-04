@@ -638,10 +638,11 @@ def test_a_retained_reading_names_the_accepted_revision_it_stands_on(
 ):
     """The reference #602 adds, read back from the retained row and the receipt.
 
-    ``snapshot_json`` beside it is a rebuildable compatibility cache; this is
-    what the reading is actually bound to, and it is resolved in the same
-    writing transaction as the snapshot so the two can never name states taken
-    a moment apart.
+    ``snapshot_json`` beside it is the immutable Report Reading payload this
+    occurrence published (ADR-0092), not a cache of the revision; the revision
+    is what the record-owned values are read through, and it is resolved in the
+    same writing transaction as the reading so the two can never name states
+    taken a moment apart.
     """
 
     factory = runtime_database.session_factory
@@ -663,7 +664,8 @@ def test_a_retained_reading_names_the_accepted_revision_it_stands_on(
             )
         ).one()
         assert publication.revision_id == revision_id
-        # The cache is still written, and is still only a cache.
+        # The reading is retained beside the reference, and is its own
+        # evidence rather than a copy of it.
         assert publication.snapshot_json["dependencies"] is not None
         history = project_publication_history(verify, project_id)
         assert history.retained[0].revision_id == revision_id

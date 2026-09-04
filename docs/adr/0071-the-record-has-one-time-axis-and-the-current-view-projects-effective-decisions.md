@@ -4,6 +4,7 @@ domain: project-record
 scope: current product
 amended_by:
   - ADR-0076
+  - ADR-0092
 ---
 
 # The record has one time axis, and the current view projects effective decisions

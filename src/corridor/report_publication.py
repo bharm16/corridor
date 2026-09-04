@@ -18,12 +18,17 @@ way a manual preparation binds them — and only a separate designated-human act
 can release it (ADR-0040).
 
 Each retained reading also names the accepted Project Record revision it was
-taken against (#602).  That reference is what the reading is bound to;
-``snapshot_json`` beside it is a **rebuildable compatibility cache**, retained
-only until #603 proves that rebuilding a reading from its revision gives the
-same answer.  The revision is read in the same writing transaction as the
-reading itself, so a retained row can never name one taken a moment apart from
-the state it recorded.
+taken against (#602).  That reference is the authority for every value the
+*record* owns.  ``snapshot_json`` beside it is the immutable **Report Reading
+payload** — the population this occurrence covered, its derived
+documentation-requirement results and Constraint Alerts, the statement-projected
+Promised For, and the rules and thresholds used.  #603 measured that none of
+those is a revision's to answer, so the payload is this occurrence's own
+evidence rather than a cache of the revision, and ADR-0092 retains it for as
+long as the publication and its released package are retained, on no cache TTL.
+The revision is read in the same writing transaction as the reading itself, so
+a retained row can never name one taken a moment apart from the state it
+recorded.
 
 This module owns no schedule, timer, or clock.  The one supervised Due Work
 runtime (#332) discovers, claims, and retries occurrences; this is the bounded,

@@ -36,6 +36,12 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal
+from corridor.report_reading import (
+    PAYLOAD_SCHEMA_VERSION,
+    PROMISED_FOR_PROJECTION_RULE_VERSION,
+    digest_is_intact,
+    payload_schema_version,
+)
 from corridor.report_diff_reference import (
     REFERENCE_FIELDS,
     BaselineReading,
@@ -384,9 +390,9 @@ def test_the_baseline_keeps_the_fields_no_revision_can_answer(session, corpus):
     entry = reading.dependencies["DEP-00001"]
     for field in UNREBUILDABLE_FIELDS:
         assert field in entry
-    assert entry["exceptions"] == run.snapshot_json["dependencies"]["DEP-00001"][
-        "exceptions"
-    ]
+    assert entry["constraint_alerts"] == run.snapshot_json["dependencies"][
+        "DEP-00001"
+    ]["constraint_alerts"]
 
 
 def test_a_legacy_write_that_reaches_no_fact_is_reported_as_drift(
@@ -680,14 +686,15 @@ def test_the_diff_is_unchanged_by_reading_the_reference(
     assert referenced.configuration_changed == copied.configuration_changed
 
 
-def test_the_retained_copy_remains_the_only_witness_of_a_reading(
+def test_the_retained_reading_is_the_only_witness_of_what_was_published(
     session, corpus
 ):
-    """Why the compatibility cache is not expired by this pass.
+    """Why the retained payload is the occurrence's own (ADR-0092).
 
-    Nothing derives readiness, the evaluated exceptions, or the projected
-    Committed Date from a revision, so a run stripped of its copy cannot be
-    rebuilt from its reference and the cache stays.
+    Nothing derives the documentation requirement, the evaluated Constraint
+    Alerts, or the statement-projected Promised For from a revision, so a run
+    stripped of its payload cannot be rebuilt from its reference — which is
+    why the payload is evidence rather than a cache.
     """
 
     run = publish(session, corpus)
@@ -698,24 +705,152 @@ def test_the_retained_copy_remains_the_only_witness_of_a_reading(
 
     assert reading.dependencies == {}
     assert reading.covered_fields == len(REFERENCE_FIELDS) * 3
-    assert set(UNREBUILDABLE_FIELDS) == {"ready", "exceptions", "committed_date"}
+    assert set(UNREBUILDABLE_FIELDS) == {
+        "documentation_requirement_met",
+        "constraint_alerts",
+        "published_promised_for",
+    }
 
 
-def test_the_stored_snapshot_column_is_still_marked_a_rebuildable_cache(
-    session,
+def _rewrite_as_version_one(session, run):
+    """The retained payload as it was written before #633, keys and all."""
+
+    payload = dict(run.snapshot_json)
+    payload.pop("payload_schema_version", None)
+    payload.pop("content_sha256", None)
+    payload.pop("promised_for_projection_rule_version", None)
+    payload["dependencies"] = {
+        ref: {
+            "id": entry.get("id"),
+            "resolution_strategy": entry.get("resolution_strategy"),
+            "need_date": entry.get("need_date"),
+            "committed_date": entry["published_promised_for"],
+            "ready": entry["documentation_requirement_met"],
+            "exceptions": entry["constraint_alerts"],
+        }
+        for ref, entry in payload["dependencies"].items()
+    }
+    run.snapshot_json = payload
+    session.flush()
+    return run
+
+
+def test_a_version_one_payload_still_diffs_without_being_rewritten(
+    session, corpus
 ):
-    """#602 demoted it; #603 does not expire it, so the marking must stand."""
+    """Retained readings are evidence, so the reader moves, not the rows.
 
-    comment = session.scalar(
-        text(
-            "select col_description('report_runs'::regclass, attnum) "
-            "from pg_attribute where attrelid = 'report_runs'::regclass "
-            "and attname = 'snapshot_json'"
-        )
+    Every payload written before #633 uses ``ready``, ``exceptions`` and
+    ``committed_date``. Rewriting them to the governed names would edit what a
+    past report published; translating on read costs one function and leaves
+    the evidence alone.
+    """
+
+    run = _rewrite_as_version_one(session, publish(session, corpus))
+    assert payload_schema_version(run.snapshot_json) == "report-reading-v1"
+
+    reading = baseline_for_run(session, run)
+
+    entry = reading.dependencies["DEP-00001"]
+    for field in UNREBUILDABLE_FIELDS:
+        assert field in entry
+    assert set(entry).isdisjoint({"ready", "exceptions", "committed_date"})
+    # And the row is untouched on disk: the translation is a read, not a write.
+    session.expire(run)
+    assert "ready" in run.snapshot_json["dependencies"]["DEP-00001"]
+
+
+def test_a_change_against_a_version_one_baseline_is_still_reported(
+    session, corpus
+):
+    """The translation must not lose a change, which is the only risk in it."""
+
+    _rewrite_as_version_one(session, publish(session, corpus))
+    set_resolution_strategy(
+        session, corpus.dependencies[0], "relocate", actor=ACTOR
     )
 
-    assert comment is not None
-    assert "cache" in comment.lower()
+    reported = diff(session, corpus)
+
+    assert reported.of_kind("escalated")
+    assert {change.ref_code for change in reported.of_kind("escalated")} == {
+        "DEP-00001"
+    }
+
+
+def test_a_recorded_reading_is_sealed_and_survives_the_database_intact(
+    session, corpus
+):
+    """The digest is evidence, so it has to hold after a JSONB round trip.
+
+    A digest that only matched the in-memory dict would prove nothing about
+    the retained row, which is the only thing anyone reads a year later.
+    """
+
+    run = publish(session, corpus)
+    session.expire(run)
+
+    payload = run.snapshot_json
+    assert payload_schema_version(payload) == PAYLOAD_SCHEMA_VERSION
+    assert digest_is_intact(payload) is True
+    assert payload["promised_for_projection_rule_version"] == (
+        PROMISED_FOR_PROJECTION_RULE_VERSION
+    )
+
+
+def test_a_recorded_reading_names_the_statement_its_promised_for_came_from(
+    session, corpus
+):
+    """The projected date is bound to the identity it was projected from.
+
+    Without the binding, ``published_promised_for`` is a bare date that reads
+    like the record's own ``committed_date`` Fact again — the exact confusion
+    the rename exists to end.
+    """
+
+    run = publish(session, corpus)
+    session.expire(run)
+
+    [entry] = list(run.snapshot_json["dependencies"].values())[:1]
+    assert "committed_date" not in entry
+    assert "ready" not in entry
+    assert "exceptions" not in entry
+    assert "published_promised_for" in entry
+    assert "documentation_requirement_met" in entry
+    assert "constraint_alerts" in entry
+    # No statement was recorded for this corpus, so the binding is an explicit
+    # absence rather than an invented lineage.
+    assert entry["promised_for_statement"] is None
+
+
+def test_the_stored_payload_column_is_marked_a_retained_reading_not_a_cache(
+    session,
+):
+    """#602 called it a cache; #633 corrects the database's own description.
+
+    The comment is the instruction a future implementer reads. Left saying
+    "rebuildable compatibility cache ... retained only until #603", it reads
+    as permission to delete published evidence once a proof it never covered
+    passed.
+    """
+
+    comments = {
+        table: session.scalar(
+            text(
+                f"select col_description('{table}'::regclass, attnum) "
+                f"from pg_attribute where attrelid = '{table}'::regclass "
+                "and attname = 'snapshot_json'"
+            )
+        )
+        for table in ("report_runs", "scheduled_report_publications")
+    }
+
+    for table, comment in comments.items():
+        assert comment is not None, table
+        assert "Report Reading payload" in comment, table
+        assert "not a cache" in comment.lower(), table
+        assert "cache TTL" in comment, table
+        assert "rebuildable compatibility cache" not in comment.lower(), table
 
 
 def test_the_baseline_is_only_ever_read(session, corpus):

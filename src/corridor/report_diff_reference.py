@@ -2,16 +2,17 @@
 
 ``changes.diff_since_last`` compares this week's reading against the previous
 Report Run.  Until #602 the only thing it could compare against was that run's
-``snapshot_json``: a copy of state with nothing beside it saying *which*
-accepted Project Record revision the state was.  A copy with no reference can
-only ever be checked against itself, so drift between it and the record was
+retained payload, with nothing beside it saying *which* accepted Project Record
+revision the record-owned parts of it were.  A record value with no reference
+can only ever be checked against itself, so drift between it and the record was
 unobservable by construction.  #602 bound each run to ``revision_id``; this
 module is the other half of #598's criterion — the diff reading that reference
-rather than the copy, and the measurement proving the two say the same thing.
+for the fields the record owns, and the measurement proving the two say the
+same thing.
 
-**What a revision reference can rebuild, and what it cannot.**  A Report Run's
-retained entry per dependency holds six things, and they are not one kind of
-value:
+**What a revision reference can rebuild, and what it cannot.**  A Report
+Reading's retained entry per dependency holds six things, and they are not one
+kind of value:
 
 - ``resolution_strategy`` and ``need_date`` are project record values.  The
   spine carries both as typed structured-cell Facts
@@ -21,24 +22,26 @@ value:
 - ``id`` is a Ledger identity, not state.  It is resolved from the Ledger by
   ``ref_code`` — ``(project_id, ref_code)`` is unique — so the copy is not
   needed to know which record a change is about.
-- ``committed_date`` has the same name on both sides and is **not the same
-  quantity**.  The spine's ``committed_date`` Fact is the source cell; the
-  retained copy holds ``evaluation.committed_dates``, the date projected from
-  the external party's current statement, which is ``None`` where no statement
-  has been recorded no matter what the cell says.  Comparing them, or letting
-  one stand in for the other, would change the diff because its inputs changed
-  shape — the single failure #598 names.  So it is excluded and named here
-  rather than quietly included.
-- ``ready`` and ``exceptions`` are not record state at all.  They are a
-  *reading* of the record under one ruleset version, one threshold
-  configuration and one date, computed at publication (ADR-0002 keeps
-  readiness derived, ADR-0044 keeps the evaluation derived).  No revision
-  carries them, because a revision is what the record says and these are what
-  a rule said about it on a day.  With ``committed_date`` this is the reason
-  the compatibility cache cannot simply be expired, and it is a property of
-  the values rather than a gap in this pass.
+- ``published_promised_for`` had the same name as a Fact on both sides until
+  #633 and was **not the same quantity**.  The spine's ``committed_date`` Fact
+  is the source cell; the retained reading holds
+  ``evaluation.committed_dates``, the date projected from the external party's
+  current statement, which is ``None`` where no statement has been recorded no
+  matter what the cell says.  Comparing them, or letting one stand in for the
+  other, would change the diff because its inputs changed shape — the single
+  failure #598 names.  So it keeps its own name, and is excluded here rather
+  than quietly included.
+- ``documentation_requirement_met`` and ``constraint_alerts`` are not record
+  state at all.  They are a *reading* of the record under one ruleset version,
+  one threshold configuration and one date, computed at publication (ADR-0002
+  keeps the documentation requirement derived, ADR-0044 keeps the evaluation
+  derived).  No revision carries them, because a revision is what the record
+  says and these are what a rule said about it on a day.  With
+  ``published_promised_for`` and the population, this is why the retained
+  payload is the occurrence's own evidence rather than a cache of the record
+  (ADR-0092) — a property of the values, not a gap in this pass.
 
-**Why the reference does not overrule a disagreeing copy.**  A project in
+**Why the reference does not overrule a disagreeing reading.**  A project in
 ``legacy`` operating mode (``operating_mode``) still has its accepted values in
 the legacy relations, and two released legacy commands move one without writing
 any Fact: ``adjudicate.set_resolution_strategy`` writes the Dependency column,
@@ -76,6 +79,7 @@ from sqlalchemy.orm import Session
 
 from corridor.record_projection import read_project_record_as_of_revision
 from corridor.models import Dependency, ReportRun
+from corridor.report_reading import read_entries
 
 
 # The record fields a revision reference answers in the same shape the retained
@@ -85,21 +89,25 @@ REFERENCE_FIELDS: Mapping[str, str] = {
     "need_date": "date",
 }
 
-# What the retained copy is the only witness of, and why. ``ready`` (ADR-0002)
-# and ``exceptions`` (ADR-0044) are a reading of the record under a ruleset,
-# thresholds and a date, none of which a revision records. ``committed_date``
-# is a record value under a name the copy uses for the *projection* of that
-# value through the external party's current statement, which is a different
-# quantity.
+# What the retained reading is the only witness of, and why — the occurrence's
+# own values under ADR-0092, not a cache of anything a revision holds.
+# ``documentation_requirement_met`` (ADR-0002) and ``constraint_alerts``
+# (ADR-0044) are a reading of the record under a ruleset, thresholds and a
+# date, none of which a revision records. ``published_promised_for`` is the
+# statement projection of a record value, which is a different quantity from
+# the record's own ``committed_date`` Fact and now carries a different name.
 UNREBUILDABLE_FIELDS: Mapping[str, str] = {
-    "ready": "readiness is computed per reading, never stored (ADR-0002)",
-    "exceptions": (
-        "the evaluated exceptions of one ruleset, threshold configuration "
-        "and date (ADR-0044)"
+    "documentation_requirement_met": (
+        "the documentation requirement is computed per reading, never "
+        "stored (ADR-0002)"
     ),
-    "committed_date": (
-        "the retained copy holds the statement-projected date, not the "
-        "record's own committed_date Fact"
+    "constraint_alerts": (
+        "the evaluated Constraint Alerts of one ruleset, threshold "
+        "configuration and date (ADR-0044)"
+    ),
+    "published_promised_for": (
+        "the reading holds the statement-projected date, not the record's "
+        "own committed_date Fact"
     ),
 }
 
@@ -130,7 +138,7 @@ class ReferenceBaseline:
 
 @dataclass(frozen=True)
 class BaselineDrift:
-    """One field where the retained copy and the revision reference disagree."""
+    """One field where the retained reading and the revision reference differ."""
 
     ref_code: str
     field: str
@@ -139,7 +147,7 @@ class BaselineDrift:
 
     def sentence(self) -> str:
         return (
-            f"{self.ref_code}.{self.field}: the retained copy says "
+            f"{self.ref_code}.{self.field}: the retained reading says "
             f"{self.retained!r} and the revision says {self.referenced!r}"
         )
 
@@ -222,14 +230,19 @@ def ledger_identities(session: Session, project_id: int) -> Mapping[str, int]:
 def baseline_for_run(session: Session, run: ReportRun) -> BaselineReading:
     """The ``before`` map for ``run``, built from the revision it names.
 
-    The population and the two reading-only fields come from the retained copy,
-    because neither is revision state: the Ledger population at publication is
-    not derivable from a record revision, and readiness and exceptions are a
-    reading rather than a value. Everything else is the reference's, with a
-    disagreement recorded rather than silently resolved.
+    The population and the reading-only fields come from the retained Report
+    Reading payload, because neither is revision state: the population a report
+    covered is not derivable from a record revision, and the documentation
+    requirement and the Constraint Alerts are a reading rather than a value
+    (ADR-0092). Everything else is the reference's, with a disagreement
+    recorded rather than silently resolved.
+
+    The payload is read through ``report_reading.read_entries``, so a version 1
+    payload written under the old key names is compared under the governed ones
+    without being rewritten.
     """
 
-    retained = dict((run.snapshot_json or {}).get("dependencies", {}))
+    retained = read_entries(run.snapshot_json)
     reference = reference_baseline(
         session, run.project_id, revision_id=run.revision_id
     )
@@ -238,8 +251,8 @@ def baseline_for_run(session: Session, run: ReportRun) -> BaselineReading:
     compared = 0
     identities_resolved = 0
     dependencies: dict[str, dict[str, Any]] = {}
-    for ref_code, copied in retained.items():
-        entry = dict(copied)
+    for ref_code, published in retained.items():
+        entry = dict(published)
         # Identity is a correspondence, not state: the Ledger answers it, and
         # a run written before #96 stored none at all.
         resolved = identities.get(ref_code)
@@ -294,7 +307,7 @@ class RunEquivalence:
 
 @dataclass(frozen=True)
 class DiffEquivalenceProof:
-    """The measured answer to #603: does the reference say what the copy said?"""
+    """The measured answer to #603: does the reference say what was published?"""
 
     project_id: int
     runs: tuple[RunEquivalence, ...]
@@ -338,7 +351,7 @@ class DiffEquivalenceProof:
         ]
         lines.extend(item.sentence() for item in self.drift)
         if not self.drift:
-            lines.append("no disagreement between the copy and the reference")
+            lines.append("no disagreement between the reading and the reference")
         return "\n".join(lines)
 
 
@@ -349,7 +362,9 @@ def prove_diff_equivalence(
 
     The corpus is the project's own retained Report Runs — the exact rows the
     diff would read — so the proof is over matched pairs rather than over
-    re-derived state that never published anything.
+    re-derived state that never published anything.  It measures the record
+    fields a revision owns; it never claims to reproduce the occurrence's own
+    values, which ADR-0092 places outside a revision's reach.
     """
 
     runs = session.scalars(
@@ -360,7 +375,7 @@ def prove_diff_equivalence(
     measured = []
     for run in runs:
         reading = baseline_for_run(session, run)
-        retained = (run.snapshot_json or {}).get("dependencies", {})
+        retained = read_entries(run.snapshot_json)
         reference_only = sum(
             1
             for ref_code, fields in reference_baseline(
