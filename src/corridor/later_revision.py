@@ -127,6 +127,7 @@ from corridor.models import (
     Fact,
     Project,
     ProjectRecordRevision,
+    SourceDelivery,
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -411,7 +412,7 @@ def capture_later_revision(
     """
 
     actor = require_human_principal(principal)
-    _refuse_unbound_delivery(session, project, staged, envelope)
+    delivery = _refuse_unbound_delivery(session, project, staged, envelope)
     manifest = _registered_mapping(session, project, manifest)
 
     path = staged_file(staged.sha256)
@@ -448,7 +449,7 @@ def capture_later_revision(
         row_accounting_sealed=row_accounting_sealed,
     )
 
-    document_id = _register(session, project, staged, actor, images_dir)
+    document_id = _register(session, project, staged, actor, images_dir, delivery)
     run_id, fact_ids, captured = _capture_facts(
         session,
         project=project,
@@ -538,12 +539,19 @@ def _refuse_unbound_delivery(
     project: Project,
     staged: StagedSource,
     envelope: SourceEnvelope,
-) -> None:
+) -> SourceDelivery:
     """The exact bytes, digest, source identity, and external version are held.
 
     Checked rather than trusted: the ledger row is what retains the customer's
     own identity for the source and the external version it arrived at, and a
     capture that cannot name one has no revision identity to compare under.
+
+    The proven row is returned rather than discarded, because it is also the
+    delivery this revision's Document came in on (#687). Every check a caller
+    would otherwise have to repeat has already happened here: the disposition
+    is ``stored``, the digest is the staged revision's own, and the project is
+    this one. Re-deriving that link downstream would be a second rule that
+    could disagree with this one.
     """
 
     if adopted_baseline_source(session, project.id) is None:
@@ -570,6 +578,7 @@ def _refuse_unbound_delivery(
         raise LaterRevisionRefused(
             "this delivery was taken for another project"
         )
+    return delivery
 
 
 def _registered_mapping(
@@ -906,8 +915,15 @@ def _register(
     staged: StagedSource,
     actor: HumanPrincipal,
     images_dir: Path | str | None,
+    delivery: SourceDelivery,
 ) -> int:
-    """Register the exact revision bytes as this project's own Document."""
+    """Register the exact revision bytes as this project's own Document.
+
+    The Document carries the delivery it came in on, in this same transaction,
+    so a Proposed Delta appended from it can be compared by identity against
+    the append-only boundary an issue's coverage was confirmed against (#675,
+    #687). Nothing here reads a clock or an arrival order to establish that.
+    """
 
     intake = preview_intake(session, project, staged, REVISION_DOC_TYPE)
     try:
@@ -920,6 +936,7 @@ def _register(
             binding_fingerprint=intake.binding_fingerprint,
             principal=actor,
             images_dir=images_dir,
+            source_delivery_id=int(delivery.id),
         )
     except IntakeConflict as exc:
         raise LaterRevisionRefused(str(exc)) from exc

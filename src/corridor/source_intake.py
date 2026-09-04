@@ -366,6 +366,7 @@ def confirm_intake(
     binding_fingerprint: str,
     principal: HumanPrincipal,
     images_dir: Path | str | None = None,
+    source_delivery_id: int | None = None,
 ) -> IntakeConfirmation:
     """Bind the exact previewed source to the acting person and register it.
 
@@ -384,6 +385,14 @@ def confirm_intake(
     (idempotent on identical bytes, never overwriting an earlier file) and records
     one attributable confirmation in the append-only audit log. It never touches
     supersession, organization identity, sequencing, or release.
+
+    ``source_delivery_id`` is the ledger row of the delivery these exact bytes
+    arrived on, where the caller holds one (#687). An ordinary upload holds
+    none — paper handed over at a meeting arrived through no transport — and
+    leaves the link unknown rather than guessing one. `later_revision` and
+    `key_date_table` do hold one: both refuse a capture whose bytes no *stored*
+    delivery of this project holds, so the row they pass is proven before this
+    is called, not inferred afterwards.
     """
 
     principal = require_human_principal(principal)
@@ -435,6 +444,7 @@ def confirm_intake(
         images_dir=Path(images_dir) if images_dir is not None else _images_dir(),
         filename=filename,
         expected_sha256=sha256,
+        source_delivery_id=source_delivery_id,
     )
     created = existing is None
 
@@ -450,6 +460,7 @@ def confirm_intake(
             "filename": filename,
             "created": created,
             "binding_fingerprint": binding_fingerprint,
+            "source_delivery_id": source_delivery_id,
         },
     )
     return IntakeConfirmation(
