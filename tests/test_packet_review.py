@@ -8,6 +8,11 @@ shows — accepted value and revision, incoming value, exact source, affected
 fields and Utility Conflicts, and the customer artifacts that would change — is
 read from stored identities rather than guessed.
 
+#659 adds the other half of what a lone exception needs: a held-out change is
+answered on its own, so Needs coordination is offered for it and records a
+Follow-up Plan without accepting anything. Those tests are at the foot of this
+module.
+
 Nothing here reads a clock. Every cutoff and decision instant is declared.
 """
 
@@ -22,19 +27,37 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events, default_binding
 from corridor.db import engine
-from corridor.models import FactDecision, Project, ProjectRecordRevision
+from corridor.delta_resolution import live_delta_status
+from corridor.follow_up_bundles import (
+    ASK_ANSWER_OPEN_QUESTION,
+    read_follow_up_bundles,
+)
+from corridor.models import (
+    DeltaDisposition,
+    DeltaFollowUpPlan,
+    DeltaFollowUpPlanEvidence,
+    FactDecision,
+    Project,
+    ProjectRecordRevision,
+)
 from corridor.packet_review import (
     ARTIFACT_IMPACT_RULE_VERSION,
+    BATCH_OUTCOMES,
     CUSTOMER_WORKBOOK,
+    FOCUSED_OUTCOMES,
+    NOT_A_BATCH,
     NOT_READY_NO_SUPPORT,
     WEEKLY_REPORT,
+    FocusedAnswer,
     ReviewScreenRefused,
     emit_packet_opening,
     emit_packet_surfacing,
+    focused_request,
     packet_request,
     read_review_items,
 )
 from corridor.principals import HumanPrincipal
+from corridor.project_workflow import FOLLOW_UP, read_project_workflow
 from corridor.review_packet_reading import (
     COORDINATION_QUESTION,
     HELD_OUT_APPARENT_REMOVAL,
@@ -44,7 +67,14 @@ from corridor.review_packet_reading import (
     PARTITION_RULE_VERSION,
     SOURCE_REVISION,
 )
-from corridor.review_packets import APPLY, DEFER, KEEP_CURRENT, resolve_review_packet
+from corridor.review_packets import (
+    APPLY,
+    DEFER,
+    KEEP_CURRENT,
+    NEEDS_COORDINATION,
+    resolve_review_packet,
+    reverse_review_packet,
+)
 
 from packet_review_support import (
     Rendition,
@@ -1019,3 +1049,321 @@ def test_a_project_with_no_registered_template_is_promised_no_workbook(
     item = read_review_items(session, project_id=project.id, as_of=CUTOFF).items[0]
 
     assert item.customer_artifacts == (WEEKLY_REPORT,)
+
+
+# --- Needs coordination on a focused single-source item (#659) -------------
+#
+# A held-out change is one delta a coordinator has to answer alone, and the
+# question it raises is very often not "which value is right" but "who can tell
+# me?". Before #659 the only answers offered for one were Apply, Keep current,
+# and a dated Defer, so the ask a coordinator actually needed had to be spelled
+# as a date and every Follow-up Plan the product could create was a Source
+# Discrepancy raised from a cross-source contradiction. These tests fix the four
+# single-source shapes the partition already holds out.
+
+
+HELD_OUT_REASONS = (
+    HELD_OUT_APPARENT_REMOVAL,
+    HELD_OUT_POSSIBLE_NEW_CONFLICT,
+    HELD_OUT_OWNER_MISMATCH,
+    HELD_OUT_UNCERTAIN_SCOPE,
+)
+
+
+def _held_out(reading, reason: str):
+    """The one item the partition held out of the batch for this reason."""
+
+    (item,) = [row for row in reading.items if row.held_out_reason == reason]
+    return item
+
+
+def _coordination(reading, item, *, question: str, **overrides):
+    """The focused act recording one Follow-up Plan on this item's one change."""
+
+    (child,) = item.children
+    answer = FocusedAnswer(
+        delta_id=child.delta_id,
+        outcome=NEEDS_COORDINATION,
+        question=question,
+        responsible_organization="AT&T Texas",
+        return_date=RETURNS_AT,
+        **overrides,
+    )
+    return focused_request(
+        reading, item, principal=ALICE, decided_at=DECIDED_AT, answers=(answer,)
+    )
+
+
+@pytest.mark.parametrize("reason", HELD_OUT_REASONS)
+def test_a_held_out_change_is_answered_child_by_child_not_as_a_batch(
+    session: Session, project: Project, reason: str
+):
+    """A one-delta hold-out is a focused item, so it carries every outcome."""
+
+    _burst(session, project, routine=3)
+
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, reason)
+
+    assert item.focused is True
+    assert item.batched is False
+    assert item.child_count == 1
+    assert NEEDS_COORDINATION in FOCUSED_OUTCOMES
+    # The batch that carries the revision's routine changes is unchanged.
+    assert _batch_item(reading).batched is True
+
+
+def test_needs_coordination_is_never_offered_over_a_batch(
+    session: Session, project: Project
+):
+    """Forty unrelated routine changes can never be planned away in one act."""
+
+    _burst(session, project, routine=40)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    batch = _batch_item(reading)
+
+    assert NEEDS_COORDINATION not in BATCH_OUTCOMES
+    with pytest.raises(ReviewScreenRefused) as refused:
+        packet_request(
+            reading,
+            batch,
+            outcome=NEEDS_COORDINATION,
+            principal=ALICE,
+            decided_at=DECIDED_AT,
+            delta_ids=[child.delta_id for child in batch.children],
+        )
+    assert "batch decisions" in str(refused.value)
+
+
+@pytest.mark.parametrize("reason", HELD_OUT_REASONS)
+def test_a_held_out_change_is_not_reachable_through_the_batch_act(
+    session: Session, project: Project, reason: str
+):
+    """The one route to a held-out change is the focused act, so there is one."""
+
+    _burst(session, project, routine=3)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, reason)
+
+    with pytest.raises(ReviewScreenRefused) as refused:
+        packet_request(
+            reading,
+            item,
+            outcome=KEEP_CURRENT,
+            principal=ALICE,
+            decided_at=DECIDED_AT,
+            delta_ids=[child.delta_id for child in item.children],
+        )
+    assert str(refused.value) == NOT_A_BATCH
+
+
+@pytest.mark.parametrize("reason", HELD_OUT_REASONS)
+def test_needs_coordination_plans_the_question_and_accepts_nothing(
+    session: Session, project: Project, reason: str
+):
+    """The plan records what the ask needs; the record and the delta do not move."""
+
+    _burst(session, project, routine=3)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, reason)
+    (child,) = item.children
+    before = session.scalars(
+        select(ProjectRecordRevision.id).where(
+            ProjectRecordRevision.project_id == project.id
+        )
+    ).all()
+    decisions_before = session.scalars(
+        select(FactDecision.id).where(FactDecision.project_id == project.id)
+    ).all()
+
+    act = _coordination(reading, item, question=f"Who can confirm {reason}?")
+    result = resolve_review_packet(session, act)
+
+    assert result.status == "saved"
+    (recorded,) = result.children
+    assert recorded.outcome == NEEDS_COORDINATION
+    assert recorded.follow_up_plan_id is not None
+    assert recorded.decision_id is None
+
+    (plan,) = session.scalars(
+        select(DeltaFollowUpPlan).where(DeltaFollowUpPlan.project_id == project.id)
+    ).all()
+    assert plan.delta_id == child.delta_id
+    assert plan.open_question == f"Who can confirm {reason}?"
+    assert plan.responsible_organization == "AT&T Texas"
+    assert plan.return_date == RETURNS_AT
+    assert plan.affected_scope["subject_identity"] == child.subject_identity
+    assert plan.affected_scope["field"] == child.field
+    assert plan.revision_id == result.revision_id
+
+    # No accepted value: the packet's revision carries the plan and nothing
+    # effective, and the delta is still open and still offered.
+    assert not session.scalars(
+        select(DeltaDisposition).where(
+            DeltaDisposition.project_id == project.id,
+            DeltaDisposition.delta_id == child.delta_id,
+        )
+    ).all()
+    assert live_delta_status(session, child.delta_id) == "open"
+    assert (
+        session.scalars(
+            select(FactDecision.id).where(FactDecision.project_id == project.id)
+        ).all()
+        == decisions_before
+    )
+    assert result.revision_id not in before
+    after = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    assert child.delta_id in after.reading.actionable_delta_ids
+
+
+def test_the_plan_cites_its_evidence_and_leaves_that_value_unaccepted(
+    session: Session, project: Project
+):
+    """An owner mismatch has a captured, supported incoming value; the plan cites it.
+
+    This is the shape where "no accepted value" is a real guard rather than a
+    vacuous one: there *is* a Source Fact this act could have made effective,
+    and Needs coordination must not make it effective. The four-way parametrized
+    test above cannot prove that, because the partition's other hold-out shapes
+    carry no captured incoming fact at all.
+    """
+
+    baseline = Baseline(session, project, rows=1)
+    fact, segment = baseline.incoming.capture(
+        fact_type="external_org", value="AT&T Texas (SWBT)", subject_key=subject(1)
+    )
+    assessment = support(session, project, fact, segment)
+    append_deltas(
+        session,
+        project,
+        baseline.incoming,
+        source_revision="2026-09",
+        values=[
+            modify(
+                subject_key=subject(1),
+                field_name="external_org",
+                accepted_value="AT&T Texas",
+                proposed_value="AT&T Texas (SWBT)",
+                baseline_revision=None,
+            )
+        ],
+    )
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, HELD_OUT_OWNER_MISMATCH)
+
+    act = _coordination(
+        reading,
+        item,
+        question="Does this correct the name, or did ownership move?",
+    )
+    resolve_review_packet(session, act)
+
+    (plan,) = session.scalars(
+        select(DeltaFollowUpPlan).where(DeltaFollowUpPlan.project_id == project.id)
+    ).all()
+    cited = session.scalars(
+        select(DeltaFollowUpPlanEvidence.support_assessment_id).where(
+            DeltaFollowUpPlanEvidence.plan_id == plan.id
+        )
+    ).all()
+    assert cited == [assessment.id]
+    # The supported value stays unaccepted, and the change stays in Review.
+    (child,) = item.children
+    assert child.incoming_fact_id == fact.id
+    assert not session.scalars(
+        select(FactDecision.id).where(
+            FactDecision.project_id == project.id, FactDecision.fact_id == fact.id
+        )
+    ).all()
+    assert not session.scalars(
+        select(DeltaDisposition).where(
+            DeltaDisposition.project_id == project.id,
+            DeltaDisposition.delta_id == child.delta_id,
+        )
+    ).all()
+    assert live_delta_status(session, child.delta_id) == "open"
+
+
+@pytest.mark.parametrize("reason", HELD_OUT_REASONS)
+def test_a_single_source_plan_reaches_the_chase_list_and_the_week(
+    session: Session, project: Project, reason: str
+):
+    """#425's bundle and #536's Follow-up section both read the plan, not a delta."""
+
+    _burst(session, project, routine=3)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, reason)
+    (child,) = item.children
+
+    resolve_review_packet(
+        session, _coordination(reading, item, question="Who owes us this answer?")
+    )
+
+    chase = read_follow_up_bundles(session, project_id=project.id, as_of=CUTOFF)
+    (bundle,) = chase.bundles
+    (plan,) = session.scalars(
+        select(DeltaFollowUpPlan).where(DeltaFollowUpPlan.project_id == project.id)
+    ).all()
+    assert bundle.item_identities == (f"follow_up_plan:{plan.id}",)
+    assert bundle.open_questions == ("Who owes us this answer?",)
+    # One conflict, named by whatever identity the record actually printed for
+    # it: the customer's own business identity where a baseline row registered
+    # one, and the subject key where the source proposed a conflict the record
+    # does not hold yet.
+    assert len(bundle.affected_conflicts) == 1
+    assert bundle.affected_conflicts[0] in (
+        child.subject_identity,
+        child.subject_name,
+        child.subject_name.split(" (")[0],
+    )
+    # Nothing contradicts anything here, so the ask is the plain open question
+    # rather than #425's Source Discrepancy.
+    assert bundle.ask == ASK_ANSWER_OPEN_QUESTION
+    assert bundle.recipient.organization == "AT&T Texas"
+    assert bundle.due_date == RETURNS_AT.date()
+
+    week = read_project_workflow(session, project_id=project.id, as_of=CUTOFF)
+    (need,) = week.follow_up
+    assert need.delta_id == child.delta_id
+    assert need.open_question == "Who owes us this answer?"
+    assert week.section(FOLLOW_UP).outstanding == 1
+    # The change is described under Follow-up rather than counted as still
+    # waiting on the coordinator's own judgement.
+    assert child.delta_id not in week.changes_awaiting_decision
+
+
+@pytest.mark.parametrize("reason", HELD_OUT_REASONS)
+def test_undo_removes_the_plan_and_returns_the_change_to_review(
+    session: Session, project: Project, reason: str
+):
+    """An act that never stood raises no ask, and its change is offered again."""
+
+    _burst(session, project, routine=3)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(reading, reason)
+    (child,) = item.children
+    saved = resolve_review_packet(
+        session, _coordination(reading, item, question="Who owes us this answer?")
+    )
+
+    undone = reverse_review_packet(
+        session,
+        project_id=project.id,
+        receipt_id=saved.receipt_id,
+        principal=ALICE,
+        reversed_at=DECIDED_AT,
+        idempotency_key=f"undo:{uuid4().hex[:10]}",
+    )
+
+    assert undone.status == "reversed"
+    assert read_project_workflow(
+        session, project_id=project.id, as_of=CUTOFF
+    ).follow_up == ()
+    assert (
+        read_follow_up_bundles(session, project_id=project.id, as_of=CUTOFF).bundles
+        == ()
+    )
+    # The change is back on its own item, decidable again, with nothing accepted.
+    again = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    assert child.delta_id in _held_out(again, reason).actionable.delta_ids
+    assert live_delta_status(session, child.delta_id) == "open"

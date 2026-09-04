@@ -22,17 +22,22 @@ from uuid import uuid4
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events
 from corridor.db import engine
-from corridor.models import Project
+from corridor.models import DeltaDisposition, DeltaFollowUpPlan, Project
 from corridor.packet_review import (
     CUSTOMER_WORKBOOK,
     read_review_items,
 )
 from corridor.principals import HumanPrincipal
-from corridor.review_packet_reading import SOURCE_REVISION
+from corridor.review_packet_reading import (
+    HELD_OUT_OWNER_MISMATCH,
+    SOURCE_REVISION,
+)
+from corridor.review_packets import NEEDS_COORDINATION
 from corridor.web.app import (
     app,
     get_human_principal,
@@ -636,3 +641,83 @@ def test_a_burst_of_forty_changes_is_one_bounded_item_on_the_screen(
     )
     # Each exception is still its own item, listed and openable on its own.
     assert body.count("Open this item") == 2
+
+
+# --- Needs coordination on a held-out single-source item (#659) ------------
+
+
+def test_a_held_out_change_offers_needs_coordination_and_records_the_plan(
+    session: Session, project: Project, client
+):
+    """#659: the coordinator's real answer for a lone exception is reachable.
+
+    A held-out change is one delta answered on its own, so the screen renders
+    the per-change answer form rather than a one-row batch, and the ask a
+    coordinator actually has — "somebody owes me an answer before this can be
+    accepted" — is one of the outcomes offered for it.
+    """
+
+    _revision(session, project, changes=3, exceptions=True)
+    reading = read_review_items(session, project_id=project.id, as_of=NOW)
+    (item,) = [
+        row for row in reading.items if row.held_out_reason == HELD_OUT_OWNER_MISMATCH
+    ]
+    (child,) = item.children
+
+    body = _open(client, project, item.item_key).text
+    assert f'action="/review/{project.slug}/answers"' in body
+    assert "Needs coordination" in body
+
+    saved = client.post(
+        f"/review/{project.slug}/answers",
+        data={
+            "item_key": item.item_key,
+            "answer_delta": str(child.delta_id),
+            "answer_outcome": NEEDS_COORDINATION,
+            "answer_source": "",
+            "answer_question": "Does this correct the name, or did ownership move?",
+            "answer_person": "",
+            "answer_organization": "AT&T Texas",
+            "answer_return": "2026-09-24",
+        },
+        follow_redirects=False,
+    )
+
+    assert saved.status_code in (200, 303), saved.text[:2000]
+    (plan,) = session.scalars(
+        select(DeltaFollowUpPlan).where(DeltaFollowUpPlan.project_id == project.id)
+    ).all()
+    assert plan.delta_id == child.delta_id
+    assert plan.responsible_organization == "AT&T Texas"
+    # Nothing was accepted: the answer is a question, not a resolution.
+    assert not session.scalars(
+        select(DeltaDisposition).where(
+            DeltaDisposition.project_id == project.id,
+            DeltaDisposition.delta_id == child.delta_id,
+        )
+    ).all()
+
+
+def test_a_held_out_single_source_change_is_not_described_as_several_sources(
+    session: Session, project: Project, client
+):
+    """The focused screen stopped meaning "sources disagree" (#659).
+
+    A single change held out of its batch is focused now, so wording written
+    for a cross-source question — "sources that answer it differently", "answer
+    the others" — names a disagreement that is not there. The counts are
+    unchanged; only the sentences naming them are.
+    """
+
+    _revision(session, project, changes=3, exceptions=True)
+    reading = read_review_items(session, project_id=project.id, as_of=NOW)
+    (item,) = [
+        row for row in reading.items if row.held_out_reason == HELD_OUT_OWNER_MISMATCH
+    ]
+
+    body = _open(client, project, item.item_key).text
+
+    assert len(item.children) == 1
+    assert "Sources that answer it differently" not in body
+    assert "Sources answering it" in body
+    assert "answer the others with" not in body

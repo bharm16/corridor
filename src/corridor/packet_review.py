@@ -43,6 +43,22 @@ reason and the item that owns them, so the coordinator can see that the
 revision's accounting is complete without ever finding a second control for the
 same delta (ADR-0085's exactly-once rule).
 
+**A held-out item is focused, not a one-row batch (#659).**  It was held out
+because it does *not* fail the way the batch fails, so answering it with the
+batch's three outcomes was always the wrong offer.  Its real answer is very
+often neither "apply" nor "keep" nor a date, but "somebody owes me an answer
+before this can be accepted" — an apparent removal nobody has confirmed, a
+Utility Conflict the record does not hold yet, an organization change that has
+not said whether it corrects a name or records a transfer, a scope nobody has
+settled.  Each of those is a coordination question with a single source and no
+contradiction anywhere, and until #659 the only route to Needs coordination was
+the cross-source item, which is contradicted by construction: every Follow-up
+Plan the product could create was therefore a Source Discrepancy.  ``focused``
+now covers the held-out item, so the per-child controls answer it and #526
+records the plan.  ``BATCH_OUTCOMES`` was deliberately *not* widened — the
+failure mode it excludes is forty unrelated routine changes planned away in one
+act, and that is still excluded.
+
 **Which customer artifacts would change** is answered from what the project has
 actually registered, never guessed.  ``ARTIFACT_IMPACT_RULE_VERSION`` names the
 rule: a field the customer's own workbook carries changes that workbook when an
@@ -195,7 +211,9 @@ NOT_READY_NO_SUPPORT = (
 
 # The batch outcomes the source-revision screen offers.  Edit and apply and
 # Needs coordination are per-child answers rather than batch ones, so they
-# belong to the focused item below (#528) and never to a batch.
+# belong to the focused item below (#528, #659) and never to a batch: planning
+# forty unrelated routine changes away in one act is exactly the failure this
+# tuple exists to exclude, and #659 did not widen it.
 BATCH_OUTCOMES = (APPLY, KEEP_CURRENT, DEFER)
 
 # The focused item's outcomes: ADR-0085's four primary decisions in project
@@ -227,6 +245,11 @@ NEEDS_CHOSEN_SOURCE = (
 RIVAL_ANSWERS = (
     "Only one of these sources can become the accepted value for a field. "
     "Choose one to apply and answer the others."
+)
+NOT_A_BATCH = (
+    "this change is answered on its own, not as one outcome over a batch: a "
+    "cross-source question is answered against every source that raised it, "
+    "and a change held out of its source revision is answered by itself"
 )
 
 # Only a link a browser can follow read-only is rendered as a link.
@@ -506,21 +529,46 @@ class ItemReading:
 
         Only a source revision's own changes are alike enough for that: they
         arrived together, they fail the same way, and Apply means the same
-        thing for each.
+        thing for each.  A delta the partition *held out* of that batch is by
+        construction the one that does not fail the same way, so it is not a
+        one-row batch — it is a focused item, below.
         """
 
-        return self.grouping_key_kind == SOURCE_REVISION
+        return (
+            self.grouping_key_kind == SOURCE_REVISION
+            and self.held_out_reason is None
+        )
 
     @property
     def focused(self) -> bool:
-        """Whether each child carries its own answer (#528).
+        """Whether each child carries its own answer (#528, #659).
 
         A cross-source coordination question and a shared commitment are both
         answered child by child — one source's value may become the accepted
         one while another's is kept out, and that is one act, not two.
+
+        A **held-out single-source item** is focused for a different reason and
+        reaches the same controls.  It carries exactly one change, and the
+        partition held it out precisely because the change raises a question an
+        exact cell comparison cannot settle: the row is apparently gone, the
+        source proposes a Utility Conflict the record does not hold, an
+        organization changed without saying whether that corrects a name or
+        records a transfer, or the scope is not settled.  Each of those is a
+        coordination question with no contradiction anywhere, and before #659
+        the only answer the screen offered for one was Apply, Keep current, or
+        Defer — so the coordinator's real answer, "somebody owes me an answer
+        before this can be accepted", had to be spelled as a date.  That is why
+        every Follow-up Plan the product could create was a Source Discrepancy.
+
+        Answering it per child is not a widening of the batch: it is one delta,
+        and ``BATCH_OUTCOMES`` still excludes Needs coordination so that forty
+        unrelated routine changes can never be planned away in one act.
         """
 
-        return self.grouping_key_kind in (COORDINATION_QUESTION, SHARED_COMMITMENT)
+        return (
+            self.grouping_key_kind in (COORDINATION_QUESTION, SHARED_COMMITMENT)
+            or self.held_out_reason is not None
+        )
 
     @property
     def decidable(self) -> bool:
@@ -1352,10 +1400,7 @@ def packet_request(
             f"{outcome!r} is not one of this screen's batch decisions"
         )
     if not item.batched:
-        raise ReviewScreenRefused(
-            "a cross-source coordination question is decided per child against "
-            "both sources, not as a batch"
-        )
+        raise ReviewScreenRefused(NOT_A_BATCH)
     offered = {child.delta_id: child for child in item.children}
     outside = [value for value in delta_ids if value not in offered]
     if outside:

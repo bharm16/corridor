@@ -4938,8 +4938,23 @@ def _review_counts(item) -> tuple[tuple[str, object], ...]:
                 "What the record says today",
                 position.text if position else "not recorded",
             ),
-            ("Sources that answer it differently", item.child_count),
-            ("Sources whose value could be applied now", item.ready_count),
+            # A focused item is no longer always several sources disagreeing:
+            # since #659 a single source held out of its batch is focused too,
+            # and "sources that answer it differently" reads as 1 for a change
+            # nothing disagrees with. The count is the same number either way;
+            # only the sentence naming it changes.
+            (
+                "Sources answering it"
+                if item.child_count == 1
+                else "Sources that answer it differently",
+                item.child_count,
+            ),
+            (
+                "Whether its value could be applied now"
+                if item.child_count == 1
+                else "Sources whose value could be applied now",
+                item.ready_count,
+            ),
         )
     return (
         ("Source revision", f"{item.source_family} {item.source_revision}"),
