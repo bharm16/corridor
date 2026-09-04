@@ -144,14 +144,32 @@ The label must never be read as, and nothing in the product may present it as, a
 
 Unchanged by this proposal: the retained rule identifier `MISSING_EVIDENCE`; the released legacy ruleset in `src/corridor/exceptions.py` (`RULESET_VERSION = "v0.4"`), which keeps computing the legacy predicate over `dependencies` for a legacy project until ADR-0081 stage 6 retires those tables; and the legacy label "No supporting document passed the source passage check", which stays exactly as it is because it still describes the legacy predicate under it. The two check sets are allowed to differ and the report declares the set it ran. The new wording lives only in the accepted record's set.
 
-## 5. Open item for the maintainer
+## 5. Open item for the maintainer, settled 2026-09-03
+
+**The maintainer approved the proposed wording on 2026-09-03** ([#613](https://github.com/bharm16/corridor/issues/613)), in these words:
+
+> I approve the customer label **"No supporting document in use for this value."**
+>
+> It describes only the absence of effective Supporting Documentation for the accepted value. It does not imply that the value, the underlying work, or the source itself failed, and it is distinct from Source Passage Check outcomes. Keep the legacy label unchanged, because its legacy predicate remains different.
+>
+> This satisfies step 6 of the terminology procedure — the research found no established industry counterpart for this negative condition and correctly left the plain-language wording to the maintainer. No successor ADR is needed.
+
+| Retained rule identifier (unchanged) | Approved customer label |
+|---|---|
+| `MISSING_EVIDENCE` on the accepted record | **No supporting document in use for this value** |
+
+So section 3's proposal stands as written, unlike the [#600 precedent](source-passage-check-state-labels-2026-09-03.md#5-open-item-for-the-maintainer-settled-2026-09-03) where the placeholder was rejected and replaced. Section 2's negative finding is unchanged and is the reason the approval was needed at all: this is scoped plain-language product wording carrying explicit maintainer approval, not an adopted industry term. The approval also restates two of section 4's boundaries as conditions of the words themselves — the label reports an absence, not a failure of the value, the work, or the source; and it is a different finding from any Source Passage Check outcome.
+
+Step 7 is therefore taken as section 3 describes it and no further: the [Project Record glossary](../../CONTEXT.md) entry for **Supporting Documentation in Use** now carries the approved label with a cross-reference to this note, and nothing else in the canonical vocabulary changes. The legacy `exception_name` label "No supporting document passed the source passage check" stays exactly as it is, because the released legacy ruleset still computes the legacy predicate under it.
+
+### The record of why the approval was sought
 
 Procedure step 6 requires that where the sources supply no exact equivalent, the proposed product wording be stated as such and carry **explicit user agreement** before it enters the canonical vocabulary. Section 2 reached that outcome: the domain has a phrase for the positive condition and audit practice has an accusatory name for the negative, and neither is adoptable here.
 
-**Status: proposed, pending explicit maintainer agreement**, following the [#600 precedent](source-passage-check-state-labels-2026-09-03.md#5-open-item-for-the-maintainer-settled-2026-09-03) — where a placeholder was recorded, then rejected and replaced by the maintainer's own words on the same day. The label below is therefore scoped plain-language product wording, not an adopted industry term, and it is presentation-only:
+**Status: approved by the maintainer on 2026-09-03** (recorded above; the wording below was the proposal put to them). It is scoped plain-language product wording, not an adopted industry term, and it is presentation-only:
 
 > `MISSING_EVIDENCE` on the accepted record → **No supporting document in use for this value**
 
-If the maintainer wants different customer words, the constraints any replacement must satisfy are the four tests in section 3 and the seven boundaries in section 4 — in particular, it must not read as a verdict on the value (the ground on which "Passed"/"Failed" and "Unsupported value" both fail), and it must share no content word with #600's *cited location* family.
+The constraints put to the maintainer, binding on any replacement wording had they wanted different words, were the four tests in section 3 and the seven boundaries in section 4 — in particular, it must not read as a verdict on the value (the ground on which "Passed"/"Failed" and "Unsupported value" both fail), and it must share no content word with #600's *cited location* family.
 
-No successor ADR is proposed. ADR-0090 already decided the port and its predicate and named this label change as its own consequence; the procedure permits a wording correction, once the missing-counterpart decision is explicitly approved, provided it alters neither authority nor lifecycle. This alters neither: the stored identifier, the ruleset version mechanics, the Support Assessment relation, and the boundary against reading support out of locator validation are all untouched. If the wording is approved, step 7 updates the [Project Record glossary](../../CONTEXT.md) entry for Supporting Documentation in Use with the alert's wording as a cross-reference, and nothing else.
+No successor ADR is proposed. ADR-0090 already decided the port and its predicate and named this label change as its own consequence; the procedure permits a wording correction, once the missing-counterpart decision is explicitly approved, provided it alters neither authority nor lifecycle. This alters neither: the stored identifier, the ruleset version mechanics, the Support Assessment relation, and the boundary against reading support out of locator validation are all untouched. Step 7 updated the [Project Record glossary](../../CONTEXT.md) entry for Supporting Documentation in Use with the alert's wording as a cross-reference, and nothing else.

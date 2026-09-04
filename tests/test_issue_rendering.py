@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
+from pathlib import Path
 from uuid import uuid4
 
 import pytest
@@ -1119,6 +1120,71 @@ def test_the_ported_evidence_check_no_longer_names_the_source_passage_check(
     for rule in ACCEPTED_RECORD_CHECK_RULES:
         if rule != "MISSING_EVIDENCE":
             assert accepted_record_exception_name(rule) == exception_name(rule)
+
+
+# The maintainer's own words, approved 2026-09-03 (#613) after the terminology
+# research found no industry counterpart to adopt, and the legacy wording they
+# expressly kept.  Both are written out here rather than read from the code, so
+# that editing either string in ``presentation.py`` turns this test red instead
+# of silently redefining a customer term.
+APPROVED_SUPPORT_ALERT_LABEL = "No supporting document in use for this value"
+LEGACY_SUPPORT_ALERT_LABEL = "No supporting document passed the source passage check"
+
+
+def test_the_approved_support_alert_label_is_the_one_word_for_word():
+    """One approved string, in the code, the glossary, and the research note.
+
+    Terminology procedure step 6 made this wording a maintainer decision, not
+    an implementer's: the sources supply a phrase for the positive condition
+    ("supported by adequate records", 23 CFR 645.117(b)) and audit practice an
+    accusatory name for the negative ("unsupported", 2 CFR 200.1), and neither
+    is a status a coordination record can carry.  So the string is only as good
+    as the record of its approval, and drift in any one of the three places
+    would leave the product saying something nobody agreed to.
+    """
+    repo_root = Path(__file__).parents[1]
+
+    assert (
+        accepted_record_exception_name("MISSING_EVIDENCE")
+        == APPROVED_SUPPORT_ALERT_LABEL
+    )
+
+    # Step 7 put the approved label in the Project Record glossary, on the
+    # entry for the term whose absence it reports.
+    glossary = (repo_root / "CONTEXT.md").read_text()
+    entry = glossary.split("**Supporting Documentation in Use**:")[1].split("\n\n")[0]
+    assert APPROVED_SUPPORT_ALERT_LABEL in entry
+    # And the wordings rejected on the way there stay rejected.
+    for rejected in ("Unsupported value", "Missing evidence"):
+        assert rejected in entry.split("_Avoid_:")[1]
+
+    # The negative research finding and the approval that resolved it are kept
+    # together, so a later reader can see why plain-language wording was
+    # allowed here at all.
+    note = (
+        repo_root / "docs" / "research" / "missing-evidence-alert-label-2026-09-03.md"
+    ).read_text()
+    assert "## 5. Open item for the maintainer, settled 2026-09-03" in note
+    assert "The maintainer approved the proposed wording on 2026-09-03" in note
+    assert APPROVED_SUPPORT_ALERT_LABEL in note
+
+
+def test_the_legacy_support_alert_label_is_a_different_label_for_a_different_rule():
+    """The two check sets are allowed to differ, and here they must.
+
+    The released legacy ruleset keeps computing the Source Passage Check
+    predicate over ``dependencies`` for a legacy project until ADR-0081 stage 6
+    retires those tables.  Its label still describes that predicate, so
+    replacing it with the accepted record's wording would make the legacy
+    report describe a check it did not run.
+    """
+    assert exception_name("MISSING_EVIDENCE") == LEGACY_SUPPORT_ALERT_LABEL
+    assert LEGACY_SUPPORT_ALERT_LABEL != APPROVED_SUPPORT_ALERT_LABEL
+    # Neither label may be readable as the other's finding: the accepted
+    # record's rule never looks at a passage, a citation, or a location, and
+    # #600's Source Passage Check states are the only place those words belong.
+    for forbidden in ("passage", "citation", "location", "cited"):
+        assert forbidden not in APPROVED_SUPPORT_ALERT_LABEL.lower()
 
 
 def test_an_assessment_that_contradicts_the_value_is_not_supporting_documentation(

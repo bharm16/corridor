@@ -189,9 +189,9 @@ The exact part of a source Document shown beside a recorded fact, with its docum
 _Avoid_: an entire attachment, a Documentation Review judgment
 
 **Supporting Documentation in Use**:
-The Source Segments currently designated, by purpose, for a published value or Documentation Review. Their designation, locator validation, and Support Assessments remain separately identifiable; selected support may still refer to a superseded Document Revision.
-_Customer label_: Used for this value or Used for this review
-_Avoid_: every historical citation, locator validity treated as support, automatically the current Document Revision
+The Source Segments currently designated, by purpose, for a published value or Documentation Review. Their designation, locator validation, and Support Assessments remain separately identifiable; selected support may still refer to a superseded Document Revision. A published value that has none is reported on the accepted record's own check set as **No supporting document in use for this value**, which states an absent designation and never a verdict on the value, on the underlying work, or on a Source Passage Check outcome ([alert-label research](docs/research/missing-evidence-alert-label-2026-09-03.md), approved 2026-09-03; [ADR-0090](docs/adr/0090-the-accepted-record-has-its-own-alerts-not-the-legacy-task-systems.md)).
+_Customer label_: Used for this value or Used for this review; where none is designated, No supporting document in use for this value
+_Avoid_: every historical citation, locator validity treated as support, automatically the current Document Revision, Unsupported value, Missing evidence, Documentation requirement not met, wording that demands documentation rather than reporting its absence
 
 **Derivation**:
 A result produced from identified Project Record inputs by a stated calculation or rule for the date being assessed, including a nonnumeric rule result.

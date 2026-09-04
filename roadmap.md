@@ -255,8 +255,9 @@ earlier.
     under ADR-0090, porting `MISSING_EVIDENCE` and `SUPERSEDED_CITATION`,
     declaring the seven rules ADR-0090 supersedes or retires rather than
     dropping them silently, and advancing the declared set to
-    `accepted_record_checks_v2`. #613 still owes the replacement
-    `MISSING_EVIDENCE` customer label a maintainer's approval. #529 release
+    `accepted_record_checks_v2`. **#613** is **done**: the maintainer
+    approved the replacement `MISSING_EVIDENCE` customer label on
+    2026-09-03, and the glossary now carries it. #529 release
     candidate
     and #533 release authorization seal and authorize whichever artifacts the
     project is configured to issue (ADR-0091). Delivery to the partner's
