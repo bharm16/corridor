@@ -1,4 +1,4 @@
-.PHONY: boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -217,6 +217,11 @@ storage-baseline:
 #   make storage ARGS="migrate"
 #   make storage ARGS="reconcile --repair"
 #   make storage ARGS="reconcile --remove-unreferenced"
+# Dry run by default; --apply drops. Never touches the configured development
+# database, a database with an open connection, or a name it does not recognise.
+clean-test-databases:
+	uv run python scripts/clean_test_databases.py $(ARGS)
+
 storage:
 	uv run python -m corridor.storage_cli $(ARGS)
 
