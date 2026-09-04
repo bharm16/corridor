@@ -278,9 +278,21 @@ def diff_since_last(
         ReportRun.document_only.is_(document_only),
     )
     if retirement_boundary is not None:
+        # An eligibility filter, not the ordering: the archive receipt records
+        # only a time, so which runs survive the retirement is still asked of
+        # the clock. Which of the survivors is the predecessor is not.
         previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
+    # The predecessor is the previous *row*, not the newest wall-clock reading.
+    # `ts` stays — it is the reading's own recorded time — but it was never a
+    # safe ordering: two runs written out of clock order, from a clock
+    # adjustment, a replayed or backfilled run, or two writers on different
+    # hosts, made the newest `ts` name a run that is not the one before this,
+    # and the resulting diff is well-formed against the wrong pair, so nothing
+    # downstream can detect it. `report_runs.id` is append-only and is the same
+    # watermark `report_preparation` and `issue_rendering` already select on
+    # (#488, #634).
     previous = session.scalars(
-        previous_query.order_by(ReportRun.ts.desc(), ReportRun.id.desc()).limit(1)
+        previous_query.order_by(ReportRun.id.desc()).limit(1)
     ).first()
 
     current = snapshot(

@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text
@@ -521,6 +521,56 @@ def test_the_diff_reads_the_most_recent_run(session, project, document):
     # Diffed against the July snapshot, not the June one.
     [change] = _diff(session, project).of_kind("committed_date_change")
     assert "2026-07-01" in change.detail
+
+
+def test_the_predecessor_is_the_id_watermark_not_the_wall_clock(
+    session, project, document
+):
+    """Two runs whose recorded times disagree with the order they were written.
+
+    A clock adjustment, a replayed or backfilled run, or two writers on
+    different hosts can leave the newer row carrying the older ``ts``. Ordering
+    by ``ts`` then diffs this week's reading against a run that is not the one
+    before it, and the result is a well-formed diff about the wrong pair, which
+    nothing downstream can detect. The id is append-only, so it is what names
+    the predecessor (#634).
+
+    Every timestamp here is set explicitly: a test about clock independence
+    that read the clock would prove nothing.
+    """
+
+    dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 6, 3))
+    add_evidence(session, dep, document)
+    first = _record(session, project)
+    first.ts = datetime(2026, 7, 20, tzinfo=timezone.utc)
+
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 6, 15),
+        committed_date=date(2026, 7, 1),
+    )
+    second = _record(session, project)
+    second.ts = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    session.flush()
+
+    # The second run is the later row and carries the earlier recorded time.
+    assert second.id > first.id
+    assert second.ts < first.ts
+
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 15),
+        committed_date=date(2026, 8, 1),
+    )
+
+    diff = _diff(session, project)
+    assert diff.previous_run_id == second.id
+    [change] = diff.of_kind("committed_date_change")
+    assert "2026-07-01" in change.detail and "2026-08-01" in change.detail
 
 
 # ------------------------------------------- the configuration guard (#339)
