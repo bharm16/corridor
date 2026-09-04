@@ -1,17 +1,16 @@
-# Infrastructure CI for infra/, and the deployable image.
+# Manual infrastructure deployment. Nothing here runs on a pull request.
 #
-# Three deliberate separations:
+# The pull-request half of this work lives in `release-gate.yml`: the CDK
+# assertions and strict synth ride in its `check` job, because every gate job
+# that installs packages is a concurrent download and eleven is this account's
+# measured ceiling (#548, #595). The image build and container smoke run in
+# `full-suite.yml`. This file therefore has no `pull_request` trigger at all
+# and can never leave a required check pending (#697).
 #
-#   `plan` runs on pull requests, authenticates to nothing, and creates
-#   nothing. It has no id-token permission because it never assumes a role.
-#
-#   `image` builds the container and exercises all three task roles against a
-#   real PostgreSQL. It never pushes from a pull request.
-#
-#   `diff` and `deploy` are separate manual dispatches, not two steps of one
-#   approved job. An environment approval granted before a job produces its own
-#   diff is an approval of nothing: you approve, then the job tells you what it
-#   was going to do. Run `diff`, read it, then dispatch `deploy`.
+# `diff` and `deploy` are separate manual dispatches, not two steps of one
+# approved job. An environment approval granted before a job produces its own
+# diff is an approval of nothing: you approve, then the job tells you what it
+# was going to do. Run `diff`, read it, then dispatch `deploy`.
 #
 # In every job the whole toolchain is installed, verified and synthesised
 # *before* `configure-aws-credentials`. Nothing resolves or installs a
@@ -19,16 +18,9 @@
 #
 # Actions are pinned to commit SHAs. A tag is mutable, so `@v4` is a promise
 # from someone else about what runs with access to this account.
-name: infra-nonproduction
+name: infra-deploy
 
 on:
-  pull_request:
-    paths:
-      - "infra/**"
-      - "Dockerfile"
-      - "scripts/container_entrypoint.py"
-      - ".github/workflows/infra-nonproduction.yml"
-      - ".github/scripts/validate-deployment-config.sh"
   workflow_dispatch:
     inputs:
       action:
@@ -66,146 +58,6 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  plan:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    # No id-token: this job assumes no role and reaches no AWS API.
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with:
-          python-version: "3.12"
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
-        with:
-          node-version: "22"
-      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
-        with:
-          version: "0.10.3"
-      - name: Install the locked toolchain
-        working-directory: infra
-        run: |
-          uv sync --frozen
-          npm ci
-      - name: Tests
-        working-directory: infra
-        run: uv run python -m pytest tests -q
-      - name: Synth (strict, with cdk-nag)
-        working-directory: infra
-        run: |
-          export PATH="$PWD/.venv/bin:$PATH"
-          ./node_modules/.bin/cdk synth --strict --quiet \
-            --context corridor:certificateArn=arn:aws:acm:us-east-2:${{ env.AWS_ACCOUNT }}:certificate/00000000-0000-0000-0000-000000000000 \
-            --context corridor:imageTag=${{ github.sha }} \
-            --context corridor:publicHostname=pilot.example.com \
-            --context corridor:signInSender=no-reply@example.com
-
-  image:
-    if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    services:
-      postgres:
-        image: postgres:16
-        env:
-          POSTGRES_USER: corridor
-          POSTGRES_PASSWORD: smoke
-          POSTGRES_DB: corridor
-        ports: ["5432:5432"]
-        options: >-
-          --health-cmd "pg_isready -U corridor -d corridor"
-          --health-interval 5s --health-timeout 5s --health-retries 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-
-      - name: Build
-        run: |
-          docker build --build-arg "GIT_REVISION=${{ github.sha }}" \
-            -t "corridor:${{ github.sha }}" .
-
-      - name: Smoke - the image records the commit it was built from
-        run: |
-          REVISION=$(docker inspect --format \
-            '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
-            "corridor:${{ github.sha }}")
-          [ "$REVISION" = "${{ github.sha }}" ] || {
-            echo "::error::image revision label is '$REVISION'"; exit 1; }
-
-      # The migration is the only schema writer, and it is what creates the two
-      # runtime logins from the passwords it is given.
-      - name: Smoke - migration
-        run: |
-          docker run --rm --network host \
-            -e CORRIDOR_TASK_ROLE=migration \
-            -e CORRIDOR_DB_SSLMODE=disable \
-            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
-            -e CORRIDOR_DB_NAME=corridor \
-            -e CORRIDOR_DB_ADMIN_USERNAME=corridor \
-            -e CORRIDOR_DB_ADMIN_PASSWORD=smoke \
-            -e CORRIDOR_WEB_DB_PASSWORD=web-smoke-pw \
-            -e CORRIDOR_WORKER_DB_PASSWORD=worker-smoke-pw \
-            "corridor:${{ github.sha }}" alembic upgrade head
-
-      - name: Smoke - the runtime logins the migration created can authenticate
-        run: |
-          for role in corridor_web:web-smoke-pw corridor_worker:worker-smoke-pw; do
-            login="${role%%:*}"; password="${role##*:}"
-            PGPASSWORD="$password" psql -h 127.0.0.1 -U "$login" -d corridor \
-              -tAc "select current_user" | grep -qx "$login"
-            echo "  $login authenticated"
-          done
-
-      - name: Smoke - web answers readyz
-        run: |
-          docker run -d --name web --network host \
-            -e CORRIDOR_TASK_ROLE=web \
-            -e CORRIDOR_DB_SSLMODE=disable \
-            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
-            -e CORRIDOR_DB_NAME=corridor \
-            -e CORRIDOR_WEB_DB_PASSWORD=web-smoke-pw \
-            -e CORRIDOR_LIVE_PILOT_WEB_BOUNDARY=true \
-            -e CORRIDOR_EMAIL_BACKEND=ses \
-            -e CORRIDOR_SIGN_IN_SENDER=no-reply@example.com \
-            -e CORRIDOR_PUBLIC_ORIGIN=https://pilot.example.com \
-            "corridor:${{ github.sha }}" \
-            uvicorn corridor.web.app:app --host 0.0.0.0 --port 8412 \
-            --proxy-headers --forwarded-allow-ips 10.20.0.0/16
-          for _ in $(seq 1 30); do
-            if curl -fsS http://127.0.0.1:8412/livez >/dev/null 2>&1; then break; fi
-            sleep 2
-          done
-          curl -fsS http://127.0.0.1:8412/livez
-          curl -fsS http://127.0.0.1:8412/readyz
-          docker logs web | tail -20
-
-      - name: Smoke - batch composes its own URL and holds no other password
-        run: |
-          docker run --rm --network host \
-            -e CORRIDOR_TASK_ROLE=batch \
-            -e CORRIDOR_DB_SSLMODE=disable \
-            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
-            -e CORRIDOR_DB_NAME=corridor \
-            -e CORRIDOR_WORKER_DB_PASSWORD=worker-smoke-pw \
-            -e DATABASE_URL=postgresql://injected@evil/x \
-            "corridor:${{ github.sha }}" python -c "
-          import os
-          assert 'WORKER_DATABASE_URL' in os.environ
-          assert 'DATABASE_URL' not in os.environ, 'an injected owner URL survived'
-          assert not [k for k in os.environ if k.endswith('_PASSWORD')], 'raw password survived'
-          print('batch role ok')
-          "
-
-      - name: Smoke - the render environment resolves offline
-        run: |
-          docker run --rm --network none \
-            -e CORRIDOR_TASK_ROLE=batch \
-            -e CORRIDOR_DB_HOST=h -e CORRIDOR_DB_PORT=5432 \
-            -e CORRIDOR_DB_NAME=corridor -e CORRIDOR_WORKER_DB_PASSWORD=x \
-            "corridor:${{ github.sha }}" \
-            uv run --project workers/render --frozen python -c "import cv2; print(cv2.__version__)"
-
   diff:
     # main only, like deploy. A dispatch runs the *selected ref's* YAML, and
     # this job assumes corridor-nonprod-cdk-deploy -- which can assume the CDK

@@ -64,6 +64,33 @@ jobs:
           enable-cache: true
       - run: uv sync --locked
       - run: make check
+      # The infrastructure project rides in this job rather than taking one of
+      # its own. Every gate job that installs packages is a concurrent
+      # download, and eleven is the measured ceiling for this account -- ten
+      # took a run from 3m28s to 11m55s (#548, #595). `check` already installs,
+      # so these steps cost setup time inside an existing job instead of a
+      # twelfth and thirteenth download. The image build, which is the
+      # expensive half, runs in the scheduled suite.
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install the locked infrastructure toolchain
+        working-directory: infra
+        run: |
+          uv sync --frozen
+          npm ci
+      - name: Infrastructure assertions
+        working-directory: infra
+        run: uv run python -m pytest tests -q
+      - name: Synth (strict, with cdk-nag)
+        working-directory: infra
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          ./node_modules/.bin/cdk synth --strict --quiet \
+            --context corridor:certificateArn=arn:aws:acm:us-east-2:810100779593:certificate/00000000-0000-0000-0000-000000000000 \
+            --context corridor:imageTag=${{ github.sha }} \
+            --context corridor:publicHostname=pilot.example.com \
+            --context corridor:signInSender=no-reply@example.com
 
   pytest:
     # Sharded across runners: the job is CPU-bound on one four-core runner,

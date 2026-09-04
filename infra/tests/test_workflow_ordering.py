@@ -40,7 +40,7 @@ def _step_text(step: dict) -> str:
 
 
 @pytest.mark.parametrize(
-    "workflow", ["infra-nonproduction.yml", "app-release.yml"]
+    "workflow", ["infra-deploy.yml", "app-release.yml"]
 )
 def test_nothing_installs_after_credentials_are_configured(workflow):
     for job_name, job in _jobs(workflow).items():
@@ -65,7 +65,7 @@ def test_nothing_installs_after_credentials_are_configured(workflow):
 
 
 @pytest.mark.parametrize(
-    "workflow", ["infra-nonproduction.yml", "app-release.yml"]
+    "workflow", ["infra-deploy.yml", "app-release.yml"]
 )
 def test_every_credentialed_job_installs_before_it_authenticates(workflow):
     """The converse: a job that assumes a role must already have its
@@ -91,7 +91,7 @@ def test_every_credentialed_job_installs_before_it_authenticates(workflow):
 
 def test_the_pull_request_jobs_never_authenticate():
     """`plan` and `image` create nothing and must hold no id-token."""
-    for job_name, job in _jobs("infra-nonproduction.yml").items():
+    for job_name, job in _jobs("infra-deploy.yml").items():
         if job_name not in ("plan", "image"):
             continue
         permissions = job.get("permissions") or {}
@@ -110,7 +110,7 @@ def test_both_dispatch_jobs_pass_every_required_context():
         "corridor:imageTag",
     )
     for job_name in ("diff", "deploy"):
-        job = _jobs("infra-nonproduction.yml")[job_name]
+        job = _jobs("infra-deploy.yml")[job_name]
         commands = " ".join(str(step.get("run", "")) for step in job["steps"])
         for context in required:
             assert context in commands, f"{job_name} does not pass {context}"
@@ -118,7 +118,7 @@ def test_both_dispatch_jobs_pass_every_required_context():
 
 def test_both_dispatch_jobs_validate_before_authenticating():
     for job_name in ("diff", "deploy"):
-        steps = _jobs("infra-nonproduction.yml")[job_name]["steps"]
+        steps = _jobs("infra-deploy.yml")[job_name]["steps"]
         validate_at = next(
             index
             for index, step in enumerate(steps)
@@ -161,7 +161,7 @@ def test_every_external_image_is_pinned_by_digest():
 
 
 @pytest.mark.parametrize(
-    "workflow", ["infra-nonproduction.yml", "app-release.yml"]
+    "workflow", ["infra-deploy.yml", "app-release.yml"]
 )
 def test_no_credentialed_job_runs_from_an_unreviewed_ref(workflow):
     """`workflow_dispatch` runs the *selected ref's* YAML, so a job that
