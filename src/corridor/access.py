@@ -32,7 +32,19 @@ covers it (``PARTITIONED_RELATIONS`` and the three lists beside it).
   the roster entry and then declare, for this transaction only, which projects
   the connection may see; row-level security on the project-scoped spine
   relations does the rest.  A reader that forgets its ``where`` clause reads
-  nothing rather than another project's rows.
+  nothing rather than another project's rows.  Both seals — the effective
+  scope and #657's declaration — cover PostgreSQL's own top-level transaction
+  id, so a capability that keeps a genuine setting-and-seal pair cannot replay
+  it in a later transaction on the same pooled connection (#676).
+
+  **The cost of that, accepted rather than avoided:** sealing calls
+  ``pg_current_xact_id()``, so opening a project partition assigns a real
+  transaction id even for a request that goes on to read only.  PostgreSQL
+  documents that assignment, and it means every partitioned web request
+  consumes an id and appears in ``pg_xact`` instead of running id-less.  The
+  alternative was sealing over a clock reading, which two transactions can
+  share and which is therefore not an identity at all; a seal that does not
+  name its transaction is a seal that can be replayed.
 - **Deprovisioning** — ``deprovision_principal`` is the whole offboarding act:
   every membership deactivated, every live session revoked, every pending
   sign-in link spent, in one transaction.  What it deliberately does *not*
@@ -1677,7 +1689,9 @@ def open_project_partition(
     rolling the savepoint back also takes back any scope the attempt had
     installed and restores whatever scope was declared before it.  So a failed
     attempt installs no unauthorized partition and does not cost the caller a
-    valid one it already held.
+    valid one it already held.  The transaction id the seal covers (#676) is
+    the *top-level* one, which a subtransaction neither owns nor gives back, so
+    the restored scope's seal still verifies after the savepoint is discarded.
     """
     try:
         with session.begin_nested():
