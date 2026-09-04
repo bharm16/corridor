@@ -54,8 +54,12 @@ from corridor.issue_content import (
     UNSUPPORTED_DECISION_SELECTOR,
     WEEKLY_REPORT_IDENTITY,
     WEEKLY_REPORT_VERSION,
+    ATTENTION_REASONS,
     CANONICAL_FIELDS,
+    DIFFERENCE_KINDS,
+    SELECTOR_KINDS,
     ChangeFacts,
+    DecisionSelector,
     UnsupportedSelector,
     _PRESENTATION_LABELS,
     _fields_shown_as,
@@ -449,6 +453,113 @@ def test_a_selector_naming_a_field_that_does_not_exist_is_refused():
     assert parse_selector("field:promissed_for") is None
     assert parse_selector("difference:removal") is None
     assert parse_selector("reason:very_urgent") is None
+
+
+# --- the type itself refuses an unbacked pair (#682) -----------------------
+
+
+def test_an_unsupported_selector_object_cannot_be_constructed():
+    """The invariant belongs to the type, not to the functions beside it.
+
+    ``DecisionSelector("field", "promised_for")`` used to build cleanly and
+    would then have matched a delta whose field was literally ``promised_for``
+    — #670's alias, reached by skipping the two doors that check. The
+    constructor is now the runtime authority, so the object cannot exist.
+    """
+
+    with pytest.raises(UnsupportedSelector):
+        DecisionSelector(SELECT_FIELD, "promised_for")
+    for kind, value in (
+        (SELECT_FIELD, None),
+        (SELECT_DIFFERENCE, "unknown"),
+        (SELECT_REASON, ""),
+        (SELECT_ALL_ISSUE_AFFECTING, "extra"),
+        ("unknown", None),
+    ):
+        with pytest.raises(UnsupportedSelector):
+            DecisionSelector(kind, value)
+
+
+def test_every_form_the_vocabulary_backs_still_constructs():
+    """The guard refuses what is unbacked and nothing else.
+
+    Each kind is swept over its whole vocabulary rather than one example of
+    it, because a validator that accepted only the value a test happened to
+    name would pass a single-example check and fail a customer.
+    """
+
+    assert (
+        DecisionSelector(SELECT_FIELD, PROMISED_FOR_FIELD).token
+        == f"field:{PROMISED_FOR_FIELD}"
+    )
+    assert DecisionSelector(SELECT_DIFFERENCE, "modify").token == "difference:modify"
+    assert (
+        DecisionSelector(SELECT_REASON, "promised_timing_change").token
+        == "reason:promised_timing_change"
+    )
+    assert DecisionSelector(SELECT_ALL_ISSUE_AFFECTING).value is None
+    assert (
+        DecisionSelector(SELECT_ALL_ISSUE_AFFECTING).token
+        == SELECT_ALL_ISSUE_AFFECTING
+    )
+    for kind, vocabulary in (
+        (SELECT_FIELD, CANONICAL_FIELDS),
+        (SELECT_DIFFERENCE, DIFFERENCE_KINDS),
+        (SELECT_REASON, ATTENTION_REASONS),
+    ):
+        assert vocabulary
+        for value in sorted(vocabulary):
+            assert DecisionSelector(kind, value).token == f"{kind}:{value}"
+
+
+def test_every_selector_kind_has_matching_semantics():
+    """A validated kind may not select nothing (#682).
+
+    Each kind is asked twice, about a difference it must select and one it
+    must not, so a kind whose rule went missing — and fell to the fallback —
+    cannot pass by answering the same way to both.
+    """
+
+    selected = ChangeFacts(
+        field=PROMISED_FOR_FIELD,
+        change_type="modify",
+        attention_reasons=("promised_timing_change",),
+    )
+    passed_over = ChangeFacts(
+        field=REQUIRED_BY_FIELD,
+        change_type="apparent_removal",
+        attention_reasons=("apparent_removal",),
+    )
+    by_kind = {
+        SELECT_FIELD: DecisionSelector(SELECT_FIELD, PROMISED_FOR_FIELD),
+        SELECT_DIFFERENCE: DecisionSelector(SELECT_DIFFERENCE, "modify"),
+        SELECT_REASON: DecisionSelector(SELECT_REASON, "promised_timing_change"),
+        SELECT_ALL_ISSUE_AFFECTING: DecisionSelector(SELECT_ALL_ISSUE_AFFECTING),
+    }
+
+    assert sorted(by_kind) == sorted(SELECTOR_KINDS)
+    for kind, selector in by_kind.items():
+        assert selector.selects(selected, issue_affecting=True) is True, kind
+        assert selector.selects(passed_over, issue_affecting=False) is False, kind
+
+
+def test_the_composition_helper_still_names_the_field_and_its_label():
+    """#670's diagnostic survives the constructor becoming the authority.
+
+    ``decision_selector`` composes a token and calls ``parse_selector``, which
+    now constructs; the typed refusal still arrives as ``None`` there, so the
+    helper still raises its own sentence naming the canonical field and the
+    label a coordinator reads. Nothing is accepted or rewritten.
+    """
+
+    with pytest.raises(UnsupportedSelector) as refused:
+        decision_selector(SELECT_FIELD, "promised_for")
+
+    message = str(refused.value)
+    assert repr("field:promised_for") in message
+    assert f"use {SELECT_FIELD}:{PROMISED_FOR_FIELD}" in message
+    assert f"shown as {field_label(PROMISED_FOR_FIELD)}" in message
+    assert parse_selector(f"{SELECT_FIELD}:promised_for") is None
 
 
 # --- naming the canonical field is display, never behaviour (#670) ---------
