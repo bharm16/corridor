@@ -15,6 +15,7 @@ from pathlib import Path
 import sys
 
 from sqlalchemy import and_, func, select, update
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from corridor import audit
@@ -36,6 +37,7 @@ from corridor.models import (
     Document,
     ExtractionRun,
     ExtractionRunCandidate,
+    ExtractorConfiguration,
     Fact,
     SourceFactAppendReceipt,
     SourceSegment,
@@ -314,7 +316,7 @@ def _record_extraction_run(
         outcome=outcome,
         candidate_count=candidate_count,
     )
-    lineage = _validated_lineage(
+    lineage, sealed_configuration = _validated_lineage(
         document=document,
         prompt_version=prompt_version,
         model=model,
@@ -353,6 +355,12 @@ def _record_extraction_run(
         else None
     )
 
+    if sealed_configuration is not None:
+        register_extractor_configuration(
+            session,
+            config_json=sealed_configuration,
+            config_sha256=lineage["extractor_config_sha256"],
+        )
     run = ExtractionRun(
         document_id=document.id,
         prompt_version=prompt_version,
@@ -394,6 +402,70 @@ def _record_extraction_run(
     return run
 
 
+def register_extractor_configuration(
+    session: Session,
+    *,
+    config_json: Mapping[str, object],
+    config_sha256: str,
+) -> ExtractorConfiguration:
+    """Store one sealed configuration once, keyed by its digest (#605).
+
+    Every run of one deployed extractor seals a byte-identical receipt, so the
+    second and thousandth run find the row the first one registered and
+    reference it.  Two workers that seal the same configuration at the same
+    moment race for that first insert; the loser converges on the winner's row
+    rather than failing an extraction over a value both of them computed
+    identically.
+    """
+
+    existing = session.get(ExtractorConfiguration, config_sha256)
+    if existing is None:
+        try:
+            with session.begin_nested():
+                registered = ExtractorConfiguration(
+                    config_sha256=config_sha256,
+                    config_json=dict(config_json),
+                )
+                session.add(registered)
+                session.flush([registered])
+                return registered
+        except IntegrityError:
+            existing = session.get(ExtractorConfiguration, config_sha256)
+            if existing is None:
+                raise
+    if existing.config_json != dict(config_json):
+        # The digest is over the receipt, so this is only reachable if a row
+        # was stored under a digest that is not its own. Refuse rather than
+        # silently binding the run to a configuration it did not run.
+        raise ValueError(
+            f"stored extractor configuration {config_sha256} does not match "
+            "the sealed receipt this run was produced under"
+        )
+    return existing
+
+
+def extractor_configuration(
+    session: Session, run: ExtractionRun
+) -> dict | None:
+    """The sealed receipt a run was produced under, or ``None`` if unknown.
+
+    ``None`` is a real answer, not a missing one: a run written before the
+    seal existed has no configuration recorded, and reconstructing one from
+    whatever is deployed today would read exactly like a measurement while
+    being an invention.
+    """
+
+    if run.extractor_config_sha256 is None:
+        return None
+    stored = session.get(ExtractorConfiguration, run.extractor_config_sha256)
+    if stored is not None:
+        return deepcopy(stored.config_json)
+    # A legacy row whose inline copy has not been registered. The foreign key
+    # makes this unreachable in a migrated database; reading the copy rather
+    # than raising keeps an unmigrated one honest instead of blank.
+    return deepcopy(run.extractor_config_json)
+
+
 def _validated_lineage(
     *,
     document: Document,
@@ -403,7 +475,7 @@ def _validated_lineage(
     extractor_config: ExtractorConfig | None,
     token_usage: Mapping[str, object] | None,
     allow_unsealed_legacy: bool,
-) -> dict:
+) -> tuple[dict, dict | None]:
     """Validate one all-or-nothing sealed receipt before database insertion."""
 
     if extractor_config is None and token_usage is None:
@@ -411,7 +483,7 @@ def _validated_lineage(
             # Explicit historical/synthetic construction remains
             # representable. A migration cannot infer exact prompt or rule
             # bytes for rows created before this contract.
-            return {}
+            return {}, None
         raise ValueError(
             "new Extraction Runs require exact extractor configuration and "
             "token usage; pass allow_unsealed_legacy=True only for an "
@@ -484,14 +556,19 @@ def _validated_lineage(
     else:
         raise ValueError("token usage measurement must be exact or unavailable")
 
-    return {
-        "prompt_sha256": extractor_config.prompt_sha256,
-        "schema_sha256": extractor_config.schema_sha256,
-        "postprocessor_sha256": extractor_config.postprocessor_sha256,
-        "extractor_config_json": config_json,
-        "extractor_config_sha256": extractor_config.config_sha256,
-        "token_usage_json": usage,
-    }
+    # The receipt is returned beside the lineage rather than in it: the run
+    # stores the digest, and the configuration itself is stored once in
+    # ``extractor_configurations`` (#605).
+    return (
+        {
+            "prompt_sha256": extractor_config.prompt_sha256,
+            "schema_sha256": extractor_config.schema_sha256,
+            "postprocessor_sha256": extractor_config.postprocessor_sha256,
+            "extractor_config_sha256": extractor_config.config_sha256,
+            "token_usage_json": usage,
+        },
+        config_json,
+    )
 
 
 def candidate_input_snapshot(candidate: Candidate) -> dict:

@@ -3064,6 +3064,43 @@ class DocumentRenditionDerivation(Base):
     )
 
 
+class ExtractorConfiguration(Base):
+    """One sealed extractor configuration, stored once and keyed by its digest.
+
+    The configuration a run was produced under is a value, not a possession:
+    every run of the same deployed extractor seals byte-identical prompts,
+    schemas, post-processor sources, request controls, and runtime, so a copy
+    per run is the same object written a thousand times.  This registry stores
+    it once; ``ExtractionRun.extractor_config_sha256`` is the reference (#605).
+
+    Rows are immutable — a trigger refuses every update and delete — because a
+    run that references a configuration is asserting what it actually ran, and
+    a configuration that could be edited afterwards would let that assertion
+    become false without anything appending a row to say so.
+    """
+
+    __tablename__ = "extractor_configurations"
+    __table_args__ = (
+        CheckConstraint(
+            "config_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_extractor_configurations_digest",
+        ),
+        # The receipt shape lives in one SQL function rather than being
+        # restated here and on extraction_runs: two copies of a shape rule are
+        # the same defect this table removes, one level up.
+        CheckConstraint(
+            "extractor_configuration_receipt_is_valid(config_json)",
+            name="ck_extractor_configurations_receipt",
+        ),
+    )
+
+    config_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    config_json: Mapped[dict] = mapped_column(JSONB)
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class ExtractionRun(Base):
     """One immutable extraction attempt for one document and prompt version.
 
@@ -3075,6 +3112,15 @@ class ExtractionRun(Base):
     __tablename__ = "extraction_runs"
     __table_args__ = (
         UniqueConstraint("document_id", "id"),
+        # The run references its sealed configuration; it no longer owns a
+        # copy of it (#605). Historical rows that predate the seal reference
+        # nothing, and stay explicitly unknown rather than being given today's
+        # deployed configuration as though it were theirs.
+        ForeignKeyConstraint(
+            ["extractor_config_sha256"],
+            ["extractor_configurations.config_sha256"],
+            name="fk_extraction_runs_extractor_configuration",
+        ),
         CheckConstraint(
             """
             (
@@ -3090,95 +3136,28 @@ class ExtractionRun(Base):
                 prompt_sha256 is not null
                 and schema_sha256 is not null
                 and postprocessor_sha256 is not null
-                and extractor_config_json is not null
                 and extractor_config_sha256 is not null
                 and token_usage_json is not null
                 and prompt_sha256 ~ '^[0-9a-f]{64}$'
                 and schema_sha256 ~ '^[0-9a-f]{64}$'
                 and postprocessor_sha256 ~ '^[0-9a-f]{64}$'
                 and extractor_config_sha256 ~ '^[0-9a-f]{64}$'
-                and jsonb_typeof(extractor_config_json) = 'object'
-                and extractor_config_json ?& array[
-                    'receipt_version', 'extractor', 'prompt_version', 'model',
-                    'schema_version', 'prompt_sha256', 'schema_sha256',
-                    'postprocessor_sha256', 'request_controls', 'runtime'
-                ]
-                and jsonb_typeof(
-                    extractor_config_json -> 'receipt_version'
-                ) = 'number'
-                and extractor_config_json ->> 'receipt_version' = '1'
-                and jsonb_typeof(
-                    extractor_config_json -> 'extractor'
-                ) = 'string'
-                and length(trim(extractor_config_json ->> 'extractor')) > 0
-                and jsonb_typeof(
-                    extractor_config_json -> 'prompt_version'
-                ) = 'string'
-                and jsonb_typeof(
-                    extractor_config_json -> 'schema_version'
-                ) = 'string'
-                and jsonb_typeof(
-                    extractor_config_json -> 'prompt_sha256'
-                ) = 'string'
-                and jsonb_typeof(
-                    extractor_config_json -> 'schema_sha256'
-                ) = 'string'
-                and jsonb_typeof(
-                    extractor_config_json -> 'postprocessor_sha256'
-                ) = 'string'
-                and jsonb_typeof(
-                    extractor_config_json -> 'request_controls'
-                ) = 'object'
-                and jsonb_typeof(
-                    extractor_config_json -> 'runtime'
-                ) = 'object'
-                and extractor_config_json -> 'runtime' ?& array[
-                    'python_implementation', 'python_version',
-                    'dependency_lock_sha256', 'packages'
-                ]
-                and jsonb_typeof(
-                    extractor_config_json -> 'runtime' ->
-                        'python_implementation'
-                ) = 'string'
-                and length(trim(
-                    extractor_config_json -> 'runtime' ->>
-                        'python_implementation'
-                )) > 0
-                and jsonb_typeof(
-                    extractor_config_json -> 'runtime' -> 'python_version'
-                ) = 'string'
-                and length(trim(
-                    extractor_config_json -> 'runtime' ->> 'python_version'
-                )) > 0
-                and jsonb_typeof(
-                    extractor_config_json -> 'runtime' ->
-                        'dependency_lock_sha256'
-                ) = 'string'
-                and extractor_config_json -> 'runtime' ->>
-                    'dependency_lock_sha256' ~ '^[0-9a-f]{64}$'
-                and jsonb_typeof(
-                    extractor_config_json -> 'runtime' -> 'packages'
-                ) = 'object'
-                and extractor_config_json ->> 'prompt_version' = prompt_version
-                and extractor_config_json ->> 'schema_version' = schema_version
-                and extractor_config_json ->> 'prompt_sha256' = prompt_sha256
-                and extractor_config_json ->> 'schema_sha256' = schema_sha256
-                and extractor_config_json ->> 'postprocessor_sha256' =
+                -- The sealed configuration is one row in
+                -- extractor_configurations, reached by the digest above
+                -- (#605). This proves the referenced receipt is well formed
+                -- and agrees with the run's own columns; a legacy row that
+                -- still carries its inline copy must additionally hold the
+                -- identical object, so the copy can never drift from the
+                -- registry row it duplicates.
+                and extraction_run_configuration_is_valid(
+                    extractor_config_sha256,
+                    extractor_config_json,
+                    prompt_version,
+                    schema_version,
+                    model,
+                    prompt_sha256,
+                    schema_sha256,
                     postprocessor_sha256
-                and (
-                    (
-                        model is null
-                        and jsonb_typeof(
-                            extractor_config_json -> 'model'
-                        ) = 'null'
-                    )
-                    or (
-                        model is not null
-                        and jsonb_typeof(
-                            extractor_config_json -> 'model'
-                        ) = 'string'
-                        and extractor_config_json ->> 'model' = model
-                    )
                 )
                 and jsonb_typeof(token_usage_json) = 'object'
                 and token_usage_json ?& array[
@@ -3378,11 +3357,15 @@ class ExtractionRun(Base):
     # review state and edited payloads remain mutable; this snapshot does not.
     candidate_inputs_json: Mapped[list | None] = mapped_column(JSONB)
     # Exact bytes and strict request controls are sealed when the extractor
-    # starts, then copied here. Historical rows remain null rather than being
-    # reconstructed from whatever source happens to be deployed today.
+    # starts. Historical rows remain null rather than being reconstructed from
+    # whatever source happens to be deployed today.
     prompt_sha256: Mapped[str | None] = mapped_column(String(64))
     schema_sha256: Mapped[str | None] = mapped_column(String(64))
     postprocessor_sha256: Mapped[str | None] = mapped_column(String(64))
+    # Superseded for new writes by extractor_config_sha256 (#605): the sealed
+    # receipt lives once in extractor_configurations. Rows written before that
+    # registry existed keep their inline copy, which is readable through
+    # ``extraction_runs.extractor_configuration``; no bulk rewrite removes it.
     extractor_config_json: Mapped[dict | None] = mapped_column(JSONB)
     extractor_config_sha256: Mapped[str | None] = mapped_column(String(64))
     token_usage_json: Mapped[dict | None] = mapped_column(JSONB)
@@ -6827,7 +6810,14 @@ StatementEvidence = DependencyEventEvidence
 
 class EvidenceLink(Base):
     __tablename__ = "evidence_links"
-    __table_args__ = (UniqueConstraint("dependency_id", "id"),)
+    __table_args__ = (
+        UniqueConstraint("dependency_id", "id"),
+        # The rendition key an EvidenceLinkSource resolves against, so a cited
+        # Source Segment cannot come from a different document (#605).
+        UniqueConstraint(
+            "document_id", "id", name="uq_evidence_links_document_id"
+        ),
+    )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     # Direct record Evidence owns one Dependency. Statement Evidence leaves
@@ -6836,11 +6826,70 @@ class EvidenceLink(Base):
     dependency_id: Mapped[int | None] = mapped_column(ForeignKey("dependencies.id"))
     document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
     page_no: Mapped[int] = mapped_column(Integer)
+    # Superseded for new writes by EvidenceLinkSource (ADR-0068, #605): the
+    # Source Segment owns its exact text once and this column copies it.
+    # Existing rows keep their copy and stay readable through
+    # ``corridor.evidence_citations.evidence_quotation``; nothing rewrites
+    # them in bulk until a sibling ticket proves the two texts equivalent.
     quote: Mapped[str] = mapped_column(Text)
     # The quote appears on the cited page. Nothing more.
     verified: Mapped[bool] = mapped_column(
         Boolean, default=False, server_default=false()
     )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class EvidenceLinkSource(Base):
+    """One Source Segment an Evidence Link cites, in the same rendition.
+
+    The reference ADR-0068 asked for: an Evidence Link names the segments that
+    own the words rather than carrying a second copy of them.  The row holds no
+    text at all, so the cited wording has exactly one owner and can be replayed
+    from the registered source bytes through the segment's typed locator.
+
+    It mirrors ``fact_sources`` and ``support_assessment_sources`` rather than
+    inventing a shape: link, segment, ordinal, and composite keys that make a
+    citation of another project's or another document's segment
+    unrepresentable.  Rows are append-only.
+    """
+
+    __tablename__ = "evidence_link_sources"
+    __table_args__ = (
+        UniqueConstraint(
+            "evidence_link_id",
+            "source_segment_id",
+            name="uq_evidence_link_sources_segment",
+        ),
+        UniqueConstraint(
+            "evidence_link_id",
+            "ordinal",
+            name="uq_evidence_link_sources_ordinal",
+        ),
+        ForeignKeyConstraint(
+            ["document_id", "evidence_link_id"],
+            ["evidence_links.document_id", "evidence_links.id"],
+            name="fk_evidence_link_sources_link_scope",
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "document_id", "source_segment_id"],
+            [
+                "source_segments.project_id",
+                "source_segments.document_id",
+                "source_segments.id",
+            ],
+            name="fk_evidence_link_sources_segment_scope",
+        ),
+        CheckConstraint("ordinal > 0", name="ck_evidence_link_sources_ordinal"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    evidence_link_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_segment_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    ordinal: Mapped[int] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

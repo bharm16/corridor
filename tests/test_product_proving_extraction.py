@@ -10,7 +10,10 @@ from sqlalchemy.orm import Session
 
 from corridor import product_proving_extraction
 from corridor.db import engine
-from corridor.extraction_runs import record_extraction_run
+from corridor.extraction_runs import (
+    extractor_configuration,
+    record_extraction_run,
+)
 from corridor.extractor_lineage import deployed_extractor_config
 from corridor.llm import Usage
 from corridor.models import DocPage, Document, ExtractionRun, Project
@@ -165,7 +168,9 @@ def test_it_derives_one_new_current_sealed_run_for_the_exact_document(
     run = session.get(ExtractionRun, run_id)
     assert run.document_id == document.id
     assert run.outcome == "completed"
-    assert run.extractor_config_json["extractor"] == extractor_name
+    # The receipt is stored once by digest and referenced (#605).
+    assert run.extractor_config_json is None
+    assert extractor_configuration(session, run)["extractor"] == extractor_name
     assert run.token_usage_json["document_ids"] == [document.id]
     assert client.closed is False
 
@@ -195,7 +200,8 @@ def test_minutes_path_uses_v5_page_wiring_without_committing_or_closing(
     run = session.get(ExtractionRun, run_id)
     assert run.prompt_version == "minutes_v5"
     assert run.schema_version == "minutes_v5"
-    assert run.extractor_config_json["extractor"] == "minutes"
+    assert run.extractor_config_json is None
+    assert extractor_configuration(session, run)["extractor"] == "minutes"
     assert run.candidate_count == 0
     assert len(client.calls) == 1
     assert client.closed is False

@@ -25,6 +25,7 @@ from typing import Any
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.extraction_runs import extractor_configuration
 from corridor.extractor_lineage import (
     ExtractorConfig,
     canonical_json_bytes,
@@ -231,7 +232,9 @@ def _validate_run(
             "bounded extraction did not create a completed zero-error run"
         )
 
-    config_json = run.extractor_config_json
+    # The configuration is stored once by digest and referenced by the run
+    # (#605); a legacy row's inline copy is read through the same seam.
+    config_json = extractor_configuration(session, run)
     if not isinstance(config_json, Mapping):
         raise ProductProvingExtractionError(
             "bounded extraction created an unsealed legacy run"

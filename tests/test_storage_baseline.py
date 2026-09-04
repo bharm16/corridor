@@ -232,7 +232,20 @@ def test_baseline_measures_known_copy_families_by_table_and_column(
         "released_pdf_copies",
         "report_snapshot_copies",
         "run_payload_snapshots",
+        "run_extractor_config_copies",
     }
+    config_members = {
+        (member["table"], member["column"]): member
+        for member in families["run_extractor_config_copies"]["members"]
+    }
+    # The registry is the single owner the per-run copies move to, so it is
+    # measured and deliberately outside the removable target.
+    assert config_members[("extraction_runs", "extractor_config_json")][
+        "target_included"
+    ] is True
+    assert config_members[("extractor_configurations", "config_json")][
+        "target_included"
+    ] is False
     quote_members = {
         (member["table"], member["column"]): member
         for member in families["cited_quote_copies"]["members"]
