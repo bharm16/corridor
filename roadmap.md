@@ -72,7 +72,7 @@ this list without a recorded reason:
 | **Adopted-baseline operating mode** — no legacy path silently replaces an accepted value | #520, #509 |
 | **Adaptive review, packet resolution, and one linear workflow** — the coordinator can review and resolve real volume, and the week's work is one path | #518, #519, #494, #559, #526, #527, #528, #536, #537 |
 | **Accepted-authority follow-up** — chase work derives from accepted decisions, not free text | #425 done; #658 renders it, #652 retains the correspondence that makes silence a fact |
-| **Complete customer release** — the artifact set each project is configured to issue (ADR-0086 as amended by ADR-0091), sealed and authorized as one unit | #495, #534, #596, #597 done; #640 models the configured set, #641 resolves it, #529 prepares one immutable candidate from it; #533 authorizes |
+| **Complete customer release** — the artifact set each project is configured to issue (ADR-0086 as amended by ADR-0091), sealed and authorized as one unit | #495, #534, #596, #597 done; #640 models the configured set, #641 resolves it, #529 prepares one immutable candidate from it, #533 authorizes one into an immutable package receipt bound to the accepted revision and the predecessor chain |
 | **Live-data activation gates** — real customer data is admitted only behind them | #561, #564, #535 in that order, and the gates #535 owns |
 | **Measurement readiness** — instrumentation exists before the first measured week | #491, #558, #532 |
 
@@ -139,7 +139,7 @@ model-provider processing posture (the approved posture is recorded), and
 issue-content seam and ADR-0085's consequence levels (both landed; #529 consumes
 `effective_issue_content` unchanged) → #529 candidate (landed; the
 `release_packages` identity relation it created is empty and #533 populates it)
-→ #533 authorization → #636 portfolio readiness → finish
+→ #533 authorization (landed) → #636 portfolio readiness → finish
 #536 → finish #537 → #532 measurement. That sequence completes the paid
 vertical slice; the one-unreleased-edge window means its migration-bearing
 steps run one at a time.

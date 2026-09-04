@@ -88,7 +88,7 @@ import json
 from typing import Any, Callable, Mapping, Sequence
 
 from sqlalchemy import func, select
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from corridor.analytics import (
     AnalyticsBinding,
@@ -550,13 +550,26 @@ def latest_authorized_package(
     baseline, which is the customer's own starting artifact and never an issue
     Corridor authorized and returned. ``None`` before a project's first
     authorized package is the honest answer and the one ADR-0086 requires.
+
+    **The chain head, not the newest timestamp** (#533, applying #634's
+    principle). #529 wrote this as ``order by authorized_at desc`` while the
+    relation was empty and had no chain to read. It now reads the package that
+    no other package names as its predecessor, which is the append-only release
+    identity #533's amendment requires. The difference is not theoretical: a
+    release recorded at an earlier declared instant than its predecessor is
+    still its successor, and ordering by the clock would hand the next
+    candidate the wrong comparison baseline and quietly reopen a window the
+    customer has already seen.
     """
 
+    later = aliased(ReleasePackage)
     return session.scalars(
-        select(ReleasePackage)
-        .where(ReleasePackage.project_id == project_id)
-        .order_by(ReleasePackage.authorized_at.desc(), ReleasePackage.id.desc())
-        .limit(1)
+        select(ReleasePackage).where(
+            ReleasePackage.project_id == project_id,
+            ~select(later.id)
+            .where(later.previous_package_id == ReleasePackage.id)
+            .exists(),
+        )
     ).first()
 
 

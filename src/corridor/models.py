@@ -3217,16 +3217,33 @@ _RELEASE_READINESS_SQL = ", ".join(
 
 
 class ReleasePackage(Base):
-    """One externally authorized issue, as an identity #533 populates (#529).
+    """One authorized external issue, and the receipt that binds it (#533).
 
-    Created empty and on purpose. A candidate's predecessor is a *typed
-    reference* to an authorized package (ADR-0086), so the relation has to
-    exist before anything can point at it, and nothing in #529 writes a row
-    here. Every column that makes a package a package is ``not null``, so a
-    later authorization cannot record a release that binds no accepted
-    revision — which is exactly what #635 found wrong with
-    ``external_report_releases``, and exactly why that table is never the
-    predecessor.
+    #529 created this relation empty so a candidate could name a predecessor;
+    #533 is what writes it, and #635 is why it carries so many columns. The
+    receipt binds the candidate, the accepted revision, the previous authorized
+    package or an explicit none, the source cutoff, the coverage identity and
+    digest, the issue-profile identity and version, the template and mapping
+    registrations, every artifact identity and digest, the releaser and the
+    release time (ADR-0086).
+
+    **The candidate binding is composite.** ``(candidate_id, project_id,
+    accepted_revision_id)`` references ``release_candidates (id, project_id,
+    accepted_revision_id)``, so the receipt states the revision it released
+    explicitly *and* proves it is the revision the candidate was prepared from.
+    A receipt whose revision disagrees with its candidate's is not a row this
+    schema can hold — which is precisely what ``external_report_releases``
+    could not say, and why that table is never a predecessor.
+
+    **The predecessor is a chain, never a clock.** ``sequence_number`` is the
+    predecessor's own number plus one, bound to the predecessor row by a
+    composite key. One root per project and one successor per package: a first
+    release has no predecessor and invents none, and a later release has
+    exactly one. Nothing orders releases by ``authorized_at``.
+
+    **The identity is the digest of the receipt bytes.** ``package_identity``
+    is the SHA-256 of ``receipt_declaration``, checked by the database, so a
+    receipt that does not digest to what it claims cannot be stored.
     """
 
     __tablename__ = "release_packages"
@@ -3234,6 +3251,16 @@ class ReleasePackage(Base):
         UniqueConstraint("id", "project_id", name="uq_release_packages_row"),
         UniqueConstraint(
             "project_id", "package_identity", name="uq_release_packages_identity"
+        ),
+        # One receipt per candidate: a candidate cannot be attached to two
+        # divergent releases, and a replay converges on the row that exists.
+        UniqueConstraint("candidate_id", name="uq_release_packages_candidate"),
+        UniqueConstraint(
+            "id", "project_id", "sequence_number", name="uq_release_packages_sequence"
+        ),
+        # One successor per package, so the history is a chain and not a fork.
+        UniqueConstraint(
+            "previous_package_id", name="uq_release_packages_successor"
         ),
         ForeignKeyConstraint(
             ["accepted_revision_id", "project_id"],
@@ -3243,6 +3270,65 @@ class ReleasePackage(Base):
             ],
             name="fk_release_packages_revision",
         ),
+        ForeignKeyConstraint(
+            ["candidate_id", "project_id", "accepted_revision_id"],
+            [
+                "release_candidates.id",
+                "release_candidates.project_id",
+                "release_candidates.accepted_revision_id",
+            ],
+            name="fk_release_packages_candidate",
+            # The candidate names its predecessor package and the package names
+            # its candidate, so the two relations reference each other. The
+            # migration creates them in order and this cycle exists only in the
+            # metadata graph; `use_alter` tells SQLAlchemy which edge to ignore
+            # when it sorts tables, so table-ordered readers (the committed
+            # scenario cleanup, the architecture ratchets) keep a usable order
+            # instead of silently dropping every foreign key between the two.
+            use_alter=True,
+        ),
+        ForeignKeyConstraint(
+            ["previous_package_id", "project_id", "previous_sequence_number"],
+            [
+                "release_packages.id",
+                "release_packages.project_id",
+                "release_packages.sequence_number",
+            ],
+            name="fk_release_packages_previous",
+        ),
+        ForeignKeyConstraint(
+            [
+                "issue_profile_id",
+                "project_id",
+                "issue_profile_identity",
+                "issue_profile_version",
+            ],
+            [
+                "project_issue_profiles.id",
+                "project_issue_profiles.project_id",
+                "project_issue_profiles.profile_identity",
+                "project_issue_profiles.profile_version",
+            ],
+            name="fk_release_packages_profile",
+        ),
+        ForeignKeyConstraint(
+            ["output_template_format_id", "project_id", "output_template_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_release_packages_template",
+        ),
+        ForeignKeyConstraint(
+            ["field_mapping_format_id", "project_id", "field_mapping_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_release_packages_mapping",
+        ),
         CheckConstraint(
             "length(btrim(package_identity)) > 0",
             name="ck_release_packages_identity",
@@ -3250,6 +3336,38 @@ class ReleasePackage(Base):
         CheckConstraint(
             "length(btrim(authorized_by_principal)) > 0",
             name="ck_release_packages_principal",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(receipt_declaration, 'utf8')), 'hex') "
+            "= package_identity",
+            name="ck_release_packages_receipt_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(receipt_schema_version)) > 0",
+            name="ck_release_packages_receipt_schema",
+        ),
+        CheckConstraint(
+            "length(btrim(coverage_identity)) > 0",
+            name="ck_release_packages_coverage",
+        ),
+        CheckConstraint(
+            "length(btrim(ucm_renderer_identity)) > 0 "
+            "and length(btrim(ucm_renderer_version)) > 0 "
+            "and length(btrim(ucm_storage_key)) > 0 "
+            "and ucm_byte_count > 0",
+            name="ck_release_packages_ucm",
+        ),
+        CheckConstraint(
+            "issue_profile_version >= 1",
+            name="ck_release_packages_profile_version",
+        ),
+        CheckConstraint(
+            "(previous_package_id is null and sequence_number = 1 "
+            "and previous_sequence_number is null) "
+            "or (previous_package_id is not null "
+            "and previous_sequence_number is not null "
+            "and sequence_number = previous_sequence_number + 1)",
+            name="ck_release_packages_succession",
         ),
     )
 
@@ -3259,9 +3377,91 @@ class ReleasePackage(Base):
     accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
     authorized_by_principal: Mapped[str] = mapped_column(String(128))
     authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    candidate_id: Mapped[int] = mapped_column(BigInteger)
+    candidate_identity: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    previous_package_id: Mapped[int | None] = mapped_column(BigInteger)
+    previous_sequence_number: Mapped[int | None] = mapped_column(Integer)
+    sequence_number: Mapped[int] = mapped_column(Integer)
+    source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    coverage_identity: Mapped[str] = mapped_column(String(160))
+    coverage_sha256: Mapped[str] = mapped_column(String(64))
+    issue_profile_id: Mapped[int] = mapped_column(BigInteger)
+    issue_profile_identity: Mapped[str] = mapped_column(String(160))
+    issue_profile_version: Mapped[int] = mapped_column(Integer)
+    issue_profile_sha256: Mapped[str] = mapped_column(String(64))
+    output_template_format_id: Mapped[int] = mapped_column(BigInteger)
+    output_template_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'output_template'", persisted=True)
+    )
+    field_mapping_format_id: Mapped[int] = mapped_column(BigInteger)
+    field_mapping_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'field_mapping'", persisted=True)
+    )
+    ucm_renderer_identity: Mapped[str] = mapped_column(String(160))
+    ucm_renderer_version: Mapped[str] = mapped_column(String(64))
+    ucm_content_sha256: Mapped[str] = mapped_column(String(64))
+    ucm_storage_key: Mapped[str] = mapped_column(String(160))
+    ucm_byte_count: Mapped[int] = mapped_column(BigInteger)
+    receipt_declaration: Mapped[str] = mapped_column(Text)
+    receipt_schema_version: Mapped[str] = mapped_column(String(64))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class ReleasePackageArtifact(Base):
+    """One configured member of an authorized package's artifact set (#533).
+
+    Copied from the candidate's own rows by the authorization command, never
+    supplied by a caller, so the receipt's enumeration cannot disagree with the
+    candidate it seals. ``updated_ucm`` is not an admitted type here for #529's
+    reason: the mandatory member is ``ReleasePackage``'s own columns, so a
+    package with no UCM and a package with two are both unrepresentable.
+    """
+
+    __tablename__ = "release_package_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "package_id", "artifact_type", name="uq_release_package_artifacts_type"
+        ),
+        UniqueConstraint(
+            "package_id", "position", name="uq_release_package_artifacts_position"
+        ),
+        ForeignKeyConstraint(
+            ["package_id", "project_id"],
+            ["release_packages.id", "release_packages.project_id"],
+            name="fk_release_package_artifacts_package",
+        ),
+        CheckConstraint(
+            f"artifact_type in ({_CONFIGURED_ARTIFACT_TYPES_SQL})",
+            name="ck_release_package_artifacts_type",
+        ),
+        CheckConstraint(
+            "length(btrim(renderer_identity)) > 0 "
+            "and length(btrim(renderer_version)) > 0",
+            name="ck_release_package_artifacts_renderer",
+        ),
+        CheckConstraint(
+            "length(btrim(storage_key)) > 0 and byte_count > 0",
+            name="ck_release_package_artifacts_bytes",
+        ),
+        CheckConstraint(
+            "position >= 1", name="ck_release_package_artifacts_position"
+        ),
+        Index("ix_release_package_artifacts_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    package_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    artifact_type: Mapped[str] = mapped_column(String(48))
+    renderer_identity: Mapped[str] = mapped_column(String(160))
+    renderer_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    storage_key: Mapped[str] = mapped_column(String(160))
+    byte_count: Mapped[int] = mapped_column(BigInteger)
+    position: Mapped[int] = mapped_column(Integer)
 
 
 class ReleaseCandidate(Base):

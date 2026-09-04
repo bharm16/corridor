@@ -7,7 +7,7 @@ amends:
   - ADR-0053
 amended_by:
   - ADR-0091
-migration: one coherent reading is bound and prepared into an immutable release candidate over the configured artifact set (#529), and the `release_packages` identity relation exists but is empty; the package receipt and the authorization gate are unimplemented (#533).
+migration: one coherent reading is bound and prepared into an immutable release candidate over the configured artifact set (#529), and one designated releaser authorizes a candidate into an immutable package receipt bound to the accepted revision, the predecessor chain, the coverage state and every artifact digest (#533). What remains open is the released class-specific projection policies and external delivery (#563).
 ---
 
 # One authorized release package is the external issue unit

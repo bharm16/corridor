@@ -1063,6 +1063,12 @@ MAPPING_REGISTRATION_REFERENCES = {
     # declaration binds it by value without a column duplicating it.
     ("release_candidates", "field_mapping_format_id"),
     ("release_candidates", "field_mapping_kind"),
+    # And the same two on the authorized package's receipt (#533): the receipt
+    # names the registered mapping revision the sealed artifacts rendered
+    # through, so "was this issue made through the mapping now in force" is one
+    # comparison of two ids and never a stored copy of the map itself.
+    ("release_packages", "field_mapping_format_id"),
+    ("release_packages", "field_mapping_kind"),
 }
 
 _VALUE_COPYING_COLUMN = re.compile(r"quote|snapshot|field_map|^(before|after)_json$")
