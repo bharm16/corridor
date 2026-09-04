@@ -43,6 +43,7 @@ from corridor.bounded_explanation import (
 )
 from corridor.extraction_runs import (
     current_active_run_declaration,
+    extractor_configuration,
     is_completed_run,
 )
 from corridor.models import (
@@ -332,7 +333,7 @@ def competing_runs_state_token(session: Session, document_id: int) -> str:
     )
 
 
-def _run_snapshot(run_ref: str, run: ExtractionRun) -> dict:
+def _run_snapshot(session: Session, run_ref: str, run: ExtractionRun) -> dict:
     sealed = run.extractor_config_sha256 is not None
 
     def _s(value: object) -> str:
@@ -358,11 +359,11 @@ def _run_snapshot(run_ref: str, run: ExtractionRun) -> dict:
         "postprocessor_sha256": _s(run.postprocessor_sha256),
         "token_measurement": _s(token_measurement),
     }
+    # The receipt is stored once by digest and referenced by the run (#605).
+    config_json = extractor_configuration(session, run)
     details = {
-        "request_controls": _details_value(
-            run.extractor_config_json, "request_controls"
-        ),
-        "runtime_python_version": _runtime_python_version(run.extractor_config_json),
+        "request_controls": _details_value(config_json, "request_controls"),
+        "runtime_python_version": _runtime_python_version(config_json),
         "row_accounting": _row_accounting_summary(run.row_accounting_json),
         "candidate_kind_counts": _candidate_kind_counts(run.candidate_inputs_json),
         "error_detail_present": run.error_detail is not None,
@@ -493,7 +494,7 @@ def prepare_run_explanation(
             "stale_input", "the production-run choices changed; refresh first"
         )
     runs = tuple(
-        _run_snapshot(f"R{index}", run)
+        _run_snapshot(session, f"R{index}", run)
         for index, run in enumerate(competing, start=1)
     )
     comparison_sha256 = _sha(_comparison_payload(document_id, runs))

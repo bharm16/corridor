@@ -29,6 +29,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import Session
 
 from corridor import dependency_admission, event_admission, policy
+from corridor.extraction_runs import extractor_configuration
 from corridor.extractor_lineage import canonical_json_bytes, validate_config_json_shape
 from corridor.facts import proposal_input_snapshots
 from corridor.models import (
@@ -540,7 +541,8 @@ def load_extraction_run_candidate_set(
         _require_candidate_input(run, value)
         for value in snapshot_values
     )
-    config_json = run.extractor_config_json
+    # Stored once by digest and referenced by the run (#605).
+    config_json = extractor_configuration(session, run)
     if (
         not isinstance(config_json, dict)
         or not run.prompt_sha256

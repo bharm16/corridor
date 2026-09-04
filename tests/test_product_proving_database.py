@@ -207,9 +207,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # since ADR-0089, with the append-only connector checkpoint advance and the
     # coverage that makes each advance safe (#599) — and the spine-native
     # Recorded Verbal origin with its temporary legacy mapping and the two
-    # receipt relations the #512 backfill reconciled through.
-    assert fingerprint.table_count == 179
-    assert fingerprint.sequence_count == 166
+    # receipt relations the #512 backfill reconciled through, and the stored
+    # extractor configuration a run references instead of copying, with the
+    # Evidence Link's citation of the Source Segment that owns its words
+    # (#605) — the second of which is keyed by a sequence and the first by
+    # its own digest, so the two tables add one sequence between them.
+    assert fingerprint.table_count == 181
+    assert fingerprint.sequence_count == 167
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

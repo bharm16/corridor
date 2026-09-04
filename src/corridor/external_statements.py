@@ -19,6 +19,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
+from corridor.evidence_citations import (
+    citable_segment_for_quote,
+    cite_source_segments,
+)
 from corridor.identity import is_project_side_party, normalize_party
 from corridor.models import (
     Candidate,
@@ -344,15 +348,30 @@ def _record_event_evidence(
     recorded_by: str,
 ) -> None:
     """Attach one already-validated citation to its one External Party event."""
+    quote = evidence.quote.strip()
     event_evidence = EvidenceLink(
         dependency_id=None,
         document_id=evidence.document_id,
         page_no=evidence.page_no,
-        quote=evidence.quote.strip(),
+        quote=quote,
         verified=True,
     )
     session.add(event_evidence)
     session.flush([event_evidence])
+    # ADR-0068 gives the exact words one owner. When this citation is exactly
+    # one segmented passage, the link names that segment (#605); when the
+    # source has not been segmented, or the quote is not one whole passage,
+    # nothing is cited and the copied column above stays the only owner. A
+    # citation minted from a partial or ambiguous match would be a guess
+    # wearing a reference's clothes.
+    citable = citable_segment_for_quote(
+        session,
+        document_id=evidence.document_id,
+        page_no=evidence.page_no,
+        quote=quote,
+    )
+    if citable is not None:
+        cite_source_segments(session, event_evidence, (citable,))
     session.add(
         StatementEvidence(
             evidence_link_id=event_evidence.id,

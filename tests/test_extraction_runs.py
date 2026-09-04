@@ -1,11 +1,17 @@
 """Extraction run lineage and Active Run declaration contracts."""
 
+import json
+
 import pytest
-from sqlalchemy import delete, select, text, update
+from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.db import Session, engine
-from corridor.extraction_runs import record_extraction_run
+from corridor.extraction_runs import (
+    extractor_configuration,
+    record_extraction_run,
+    register_extractor_configuration,
+)
 from corridor.extractor_lineage import injected_extractor_config
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.row_accounting import RowAccounting, RowAccountingFailure
@@ -15,6 +21,7 @@ from corridor.models import (
     Candidate,
     Document,
     ExtractionRun,
+    ExtractorConfiguration,
     Project,
 )
 from corridor.record_inclusion import record_inclusion_pending
@@ -345,8 +352,10 @@ def test_run_receipt_persists_extractor_time_configuration_and_usage(
     assert run.prompt_sha256 == config.prompt_sha256
     assert run.schema_sha256 == config.schema_sha256
     assert run.postprocessor_sha256 == config.postprocessor_sha256
-    assert run.extractor_config_json == config.config_json
     assert run.extractor_config_sha256 == config.config_sha256
+    # The receipt itself is stored once, by digest, and referenced (#605).
+    assert run.extractor_config_json is None
+    assert extractor_configuration(session, run) == config.config_json
     assert run.token_usage_json == usage
 
 
@@ -1002,3 +1011,250 @@ def test_a_role_label_is_not_a_declarer(session, project):
                 session, doc.id, run.id, principal=HumanPrincipal(label)
             )
     assert extraction_runs.active_run_for_document(session, doc.id) is None
+
+
+def _fixture_config(**overrides):
+    values = {
+        "extractor": "fixture",
+        "prompt_version": PROMPT_VERSION,
+        "model": "test-model",
+        "schema_version": "dependency-schema-v3",
+        "prompt_bytes": b"exact prompt\n",
+        "schema": {"type": "object"},
+        "postprocessor_bytes": b"exact rules\n",
+        "request_controls": {"strict": True, "store": False},
+    }
+    values.update(overrides)
+    return injected_extractor_config(**values)
+
+
+def _exact_usage(document):
+    return {
+        "scope": "run",
+        "document_ids": [document.id],
+        "measurement": "exact",
+        "prompt_tokens": 1,
+        "completion_tokens": 1,
+        "reasoning_tokens": 0,
+        "cached_tokens": 0,
+    }
+
+
+def test_two_runs_of_one_configuration_store_it_once(session, project):
+    first_document = add_matrix(session, project, "one.pdf", "1" * 64)
+    second_document = add_matrix(session, project, "two.pdf", "2" * 64)
+    config = _fixture_config()
+
+    runs = [
+        record_extraction_run(
+            session,
+            document,
+            prompt_version=PROMPT_VERSION,
+            candidate_count=0,
+            page_errors=0,
+            model="test-model",
+            schema_version="dependency-schema-v3",
+            extractor_config=config,
+            token_usage=_exact_usage(document),
+        )
+        for document in (first_document, second_document)
+    ]
+    session.flush()
+
+    stored = session.scalars(
+        select(ExtractorConfiguration).where(
+            ExtractorConfiguration.config_sha256 == config.config_sha256
+        )
+    ).all()
+    assert len(stored) == 1
+    assert stored[0].config_json == config.config_json
+    assert {run.extractor_config_sha256 for run in runs} == {config.config_sha256}
+    assert {run.extractor_config_json for run in runs} == {None}
+
+
+def test_a_registered_configuration_is_never_rewritten(session, project):
+    document = add_matrix(session, project, "immutable.pdf", "3" * 64)
+    config = _fixture_config()
+    record_extraction_run(
+        session,
+        document,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+        model="test-model",
+        schema_version="dependency-schema-v3",
+        extractor_config=config,
+        token_usage=_exact_usage(document),
+    )
+    session.flush()
+
+    with pytest.raises(Exception, match="immutable"):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    "update extractor_configurations "
+                    "set config_json = config_json || "
+                    "'{\"extractor\": \"other\"}' "
+                    "where config_sha256 = :digest"
+                ),
+                {"digest": config.config_sha256},
+            )
+    with pytest.raises(Exception, match="immutable"):
+        with session.begin_nested():
+            session.execute(
+                text(
+                    "delete from extractor_configurations "
+                    "where config_sha256 = :digest"
+                ),
+                {"digest": config.config_sha256},
+            )
+
+
+def test_an_unsealed_legacy_run_stays_explicitly_unknown(session, project):
+    document = add_matrix(session, project, "legacy.pdf", "4" * 64)
+
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version=PROMPT_VERSION,
+        candidate_count=0,
+        page_errors=0,
+        allow_unsealed_legacy=True,
+    )
+    session.flush()
+
+    # Not a blank waiting to be filled with today's deployed configuration:
+    # nothing was recorded, and nothing is invented to stand in for it.
+    assert run.extractor_config_sha256 is None
+    assert run.extractor_config_json is None
+    assert extractor_configuration(session, run) is None
+    assert (
+        session.scalar(
+            select(func.count())
+            .select_from(ExtractorConfiguration)
+            .where(
+                ExtractorConfiguration.config_sha256
+                == _fixture_config().config_sha256
+            )
+        )
+        == 0
+    )
+
+
+def test_a_run_cannot_reference_a_configuration_that_was_never_registered(
+    session, project
+):
+    document = add_matrix(session, project, "dangling.pdf", "5" * 64)
+    config = _fixture_config()
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "insert into extraction_runs (document_id, prompt_version, "
+                "outcome, candidate_count, page_errors, model, schema_version, "
+                "prompt_sha256, schema_sha256, postprocessor_sha256, "
+                "extractor_config_sha256, token_usage_json) "
+                "values (:document, :prompt_version, 'completed', 0, 0, "
+                ":model, :schema_version, :prompt_sha256, :schema_sha256, "
+                ":postprocessor_sha256, :digest, :usage)"
+            ),
+            {
+                "document": document.id,
+                "prompt_version": PROMPT_VERSION,
+                "model": "test-model",
+                "schema_version": "dependency-schema-v3",
+                "prompt_sha256": config.prompt_sha256,
+                "schema_sha256": config.schema_sha256,
+                "postprocessor_sha256": config.postprocessor_sha256,
+                "digest": config.config_sha256,
+                "usage": json.dumps(_exact_usage(document)),
+            },
+        )
+
+
+def test_a_run_cannot_reference_a_configuration_that_disagrees_with_it(
+    session, project
+):
+    document = add_matrix(session, project, "disagree.pdf", "6" * 64)
+    config = _fixture_config()
+    register_extractor_configuration(
+        session,
+        config_json=config.config_json,
+        config_sha256=config.config_sha256,
+    )
+    session.flush()
+
+    with pytest.raises(IntegrityError):
+        session.execute(
+            text(
+                "insert into extraction_runs (document_id, prompt_version, "
+                "outcome, candidate_count, page_errors, model, schema_version, "
+                "prompt_sha256, schema_sha256, postprocessor_sha256, "
+                "extractor_config_sha256, token_usage_json) "
+                "values (:document, :prompt_version, 'completed', 0, 0, "
+                ":model, :schema_version, :prompt_sha256, :schema_sha256, "
+                ":postprocessor_sha256, :digest, :usage)"
+            ),
+            {
+                "document": document.id,
+                # The registered receipt names a different model, so the run
+                # would be claiming a configuration it did not run under.
+                "prompt_version": PROMPT_VERSION,
+                "model": "another-model",
+                "schema_version": "dependency-schema-v3",
+                "prompt_sha256": config.prompt_sha256,
+                "schema_sha256": config.schema_sha256,
+                "postprocessor_sha256": config.postprocessor_sha256,
+                "digest": config.config_sha256,
+                "usage": json.dumps(_exact_usage(document)),
+            },
+        )
+
+
+def test_a_legacy_inline_copy_must_match_the_configuration_it_references(
+    session, project
+):
+    """A run may keep its historical copy, but never a divergent one (#605)."""
+
+    document = add_matrix(session, project, "inline.pdf", "7" * 64)
+    config = _fixture_config()
+    register_extractor_configuration(
+        session,
+        config_json=config.config_json,
+        config_sha256=config.config_sha256,
+    )
+    session.flush()
+    columns = (
+        "insert into extraction_runs (document_id, prompt_version, outcome, "
+        "candidate_count, page_errors, model, schema_version, prompt_sha256, "
+        "schema_sha256, postprocessor_sha256, extractor_config_sha256, "
+        "extractor_config_json, token_usage_json) values (:document, "
+        ":prompt_version, 'completed', 0, 0, :model, :schema_version, "
+        ":prompt_sha256, :schema_sha256, :postprocessor_sha256, :digest, "
+        ":config, :usage)"
+    )
+    values = {
+        "document": document.id,
+        "prompt_version": PROMPT_VERSION,
+        "model": "test-model",
+        "schema_version": "dependency-schema-v3",
+        "prompt_sha256": config.prompt_sha256,
+        "schema_sha256": config.schema_sha256,
+        "postprocessor_sha256": config.postprocessor_sha256,
+        "digest": config.config_sha256,
+        "usage": json.dumps(_exact_usage(document)),
+    }
+
+    with session.begin_nested() as identical:
+        session.execute(
+            text(columns), {**values, "config": json.dumps(config.config_json)}
+        )
+        identical.rollback()
+
+    drifted = dict(config.config_json)
+    drifted["model"] = "another-model"
+    with pytest.raises(IntegrityError):
+        with session.begin_nested():
+            session.execute(
+                text(columns), {**values, "config": json.dumps(drifted)}
+            )

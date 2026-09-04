@@ -23,11 +23,15 @@ from sqlalchemy.orm import Session
 from corridor.models import (
     ExternalReportRelease,
     ExtractionRun,
+    ExtractorConfiguration,
     ReportRun,
 )
 
 
-SCHEMA_VERSION = "corridor.storage-duplication-baseline.v1"
+# v2 adds the extractor-configuration family (#605). A v1 and a v2 body
+# measure different member sets, so they are not comparable line for line;
+# the version says so instead of leaving a reader to notice.
+SCHEMA_VERSION = "corridor.storage-duplication-baseline.v2"
 MINIMUM_REDUCTION_PERCENT = 50
 
 
@@ -272,6 +276,37 @@ _FAMILIES: tuple[tuple[str, tuple[_Member, ...]], ...] = (
             ),
         ),
     ),
+    (
+        # #605. Every run of one deployed extractor seals a byte-identical
+        # receipt, so a copy per run is one value written once per attempt.
+        # The registry is the single owner that replaces those copies and is
+        # therefore measured but excluded from the removable target: storing
+        # a configuration once is the destination, not the duplication.
+        "run_extractor_config_copies",
+        (
+            _Member(
+                "extraction_runs",
+                "extractor_config_json",
+                "$",
+                """
+                select count(extractor_config_json)::bigint as rows,
+                       coalesce(sum(pg_column_size(extractor_config_json)), 0)::bigint as bytes
+                from extraction_runs
+                """,
+            ),
+            _Member(
+                "extractor_configurations",
+                "config_json",
+                "$",
+                """
+                select count(config_json)::bigint as rows,
+                       coalesce(sum(pg_column_size(config_json)), 0)::bigint as bytes
+                from extractor_configurations
+                """,
+                False,
+            ),
+        ),
+    ),
 )
 
 
@@ -312,9 +347,11 @@ def build_storage_baseline(
         "metric_definition": (
             "Sum of measured removable duplicate-bearing values. Excludes "
             "nested Extraction Run quote and field paths already counted by "
-            "the whole candidate_inputs_json snapshot member, and excludes "
+            "the whole candidate_inputs_json snapshot member, excludes "
             "artifact-owned PDF bytes because the artifact is the one durable "
-            "content owner retained by the single-store release design."
+            "content owner retained by the single-store release design, and "
+            "excludes registry-owned extractor configuration because storing "
+            "one configuration once is the destination, not the duplication."
         ),
         "representative_outputs": representative_outputs,
         "target": {
@@ -442,6 +479,14 @@ def _freeze_extraction_run(
     row = session.get(ExtractionRun, source_id) if source_id is not None else None
     if row is None:
         return _unavailable(source_id)
+    # The sealed configuration is stored once by digest and referenced by the
+    # run (#605), so the frozen semantics read it from wherever it lives
+    # rather than only from the per-run copy that is going away.
+    stored_config = (
+        session.get(ExtractorConfiguration, row.extractor_config_sha256)
+        if row.extractor_config_sha256 is not None
+        else None
+    )
     content = {
         "document_id": row.document_id,
         "prompt_version": row.prompt_version,
@@ -456,7 +501,11 @@ def _freeze_extraction_run(
         "schema_sha256": row.schema_sha256,
         "postprocessor_sha256": row.postprocessor_sha256,
         "extractor_config_sha256": row.extractor_config_sha256,
-        "extractor_config": row.extractor_config_json,
+        "extractor_config": (
+            stored_config.config_json
+            if stored_config is not None
+            else row.extractor_config_json
+        ),
         "token_usage": row.token_usage_json,
         "row_accounting": row.row_accounting_json,
     }

@@ -967,6 +967,11 @@ def test_a_referenced_audit_action_is_never_written_as_a_field_map():
     decision's own state into the trail, where it is free to disagree with it
     and answerable to nothing — the defect this ticket removed. Historical
     entries keep their field maps forever; this rule is about new writes.
+
+    One half of #598's value-copying ratchet. The other half —
+    ``test_no_new_relation_copies_quote_field_map_or_snapshot_state`` — refuses
+    a new column for a copy to live in; this one refuses a new write into a
+    column that already exists.
     """
 
     from corridor import audit
@@ -994,3 +999,75 @@ def test_a_referenced_audit_action_is_never_written_as_a_field_map():
             )
 
     assert findings == []
+
+
+# The relations that already store a copy of state another row owns. A cited
+# quote is owned by the Source Segment (ADR-0068); a before/after field map is
+# owned by the decision that produced the change (#604); a published snapshot
+# is owned by the accepted Project Record revision it was taken against
+# (#602). #598 stops *new* writers from copying those; it makes no claim that
+# the rows below have migrated, so each one is recorded here with the ticket
+# that owns retiring it rather than quietly deleted to keep a check green.
+VALUE_COPYING_CARRIERS = {
+    # Audit before/after maps. #604 stopped the referenced actions from
+    # writing them; the historical entries keep theirs forever.
+    ("audit_log", "before_json"),
+    ("audit_log", "after_json"),
+    ("automatic_carry_forward_receipts", "before_json"),
+    ("automatic_carry_forward_receipts", "after_json"),
+    ("reconfirmation_receipts", "before_json"),
+    ("reconfirmation_receipts", "after_json"),
+    # Cited quotes. #605 gives new evidence a Source Segment reference; the
+    # equivalence proof that would let these be rewritten is a sibling ticket.
+    ("evidence_links", "quote"),
+    ("key_date_draft_row_receipts", "source_quote"),
+    ("unreadable_cell_resolutions", "corroboration_quote"),
+    # Report snapshots. #602 bound both readings to a revision and demoted
+    # these to a rebuildable cache; #603's equivalence proof expires them.
+    ("report_runs", "snapshot_json"),
+    ("scheduled_report_publications", "snapshot_json"),
+}
+
+_VALUE_COPYING_COLUMN = re.compile(r"quote|snapshot|field_map|^(before|after)_json$")
+
+
+def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
+    """The other half of the same ratchet as the audit rule above (#598).
+
+    ``test_a_referenced_audit_action_is_never_written_as_a_field_map`` refuses
+    a new *write* of a copy into a column that already exists. This refuses the
+    column: a new relation cannot give quote, field-map or snapshot copying
+    somewhere fresh to live, which is the form the defect takes when the
+    existing carriers are closed off one at a time.
+
+    The registry is frozen in both directions. An unlisted carrier fails
+    because it is new; a listed one that no longer exists fails because the
+    entry outlived the copy, so the list can only shrink. Neither says the
+    historical rows have been migrated — they have not.
+    """
+
+    from corridor.models import Base
+
+    present = {
+        (table.name, column.name)
+        for table in Base.metadata.sorted_tables
+        for column in table.columns
+        if _VALUE_COPYING_COLUMN.search(column.name)
+    }
+    introduced = sorted(
+        f"{table}.{column}"
+        for table, column in present - VALUE_COPYING_CARRIERS
+    )
+    retired = sorted(
+        f"{table}.{column}"
+        for table, column in VALUE_COPYING_CARRIERS - present
+    )
+
+    assert introduced == [], (
+        "a new relation copies quote, field-map or snapshot state that another "
+        "row already owns; reference the owner instead (#598)"
+    )
+    assert retired == [], (
+        "VALUE_COPYING_CARRIERS names a column that no longer exists; remove "
+        "the entry so the ratchet keeps measuring what is left"
+    )

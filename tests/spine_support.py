@@ -34,7 +34,11 @@ SPINE_TABLE_PATTERN = re.compile(
     # they were produced against (#602). They are deleted with the spine
     # because a cleanup that removed a revision and left one behind would
     # leave it pointing at a revision that no longer exists.
-    r"report_runs|scheduled_report_publications)$"
+    r"report_runs|scheduled_report_publications|"
+    # Not spine state either: a legacy Evidence Link's citation of the Source
+    # Segment that owns its words (#605), deleted with the spine for the same
+    # reason — a citation outliving its segment points at nothing.
+    r"evidence_link_sources)$"
 )
 SPINE_ROOTS = frozenset({"facts", "source_segments", "project_record_revisions"})
 

@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.extraction_runs import extractor_configuration
 from corridor.frontend_request_receipts import (
     ROUTE_CONTRACTS as REGISTERED_FRONTEND_ROUTE_CONTRACTS,
     SCHEMA_VERSION as FRONTEND_REQUEST_SCHEMA,
@@ -2514,7 +2515,9 @@ def _observe_extraction_run_receipts(
                 "prompt_sha256": run.prompt_sha256,
                 "schema_sha256": run.schema_sha256,
                 "postprocessor_sha256": run.postprocessor_sha256,
-                "extractor_config": dict(run.extractor_config_json or {}),
+                "extractor_config": dict(
+                    extractor_configuration(session, run) or {}
+                ),
                 "extractor_config_sha256": run.extractor_config_sha256,
                 "token_usage": dict(run.token_usage_json),
             }

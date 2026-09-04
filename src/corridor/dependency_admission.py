@@ -55,6 +55,7 @@ from corridor.adjudicate import (
     OrganizationIdentityUnresolved,
     admit_dependency_by_policy,
 )
+from corridor.extraction_runs import extractor_configuration
 from corridor.models import (
     ActiveExtractionRun,
     Assertion,
@@ -691,6 +692,13 @@ def _same_document_replay_index(
             )
         )
     }
+    # The sealed receipt is stored once by digest and referenced by the run
+    # (#605). Resolve it here, once, so the receipt builders below stay pure
+    # functions of the rows they were handed.
+    configurations = {
+        run_id: extractor_configuration(session, run)
+        for run_id, run in runs.items()
+    }
     active_snapshot_is_exact = {
         candidate.id: _candidate_matches_run_snapshot(candidate, runs)
         for candidate in active_candidates
@@ -910,6 +918,7 @@ def _same_document_replay_index(
                     dependency_id=dependency_ids[0],
                     facts=facts,
                     runs=runs,
+                    configurations=configurations,
                     association_source=association_sources[predecessor.id][0],
                     support=legacy_project_record_support,
                 )
@@ -961,7 +970,9 @@ def _same_document_replay_index(
             "source_document_id": candidate.source_document_id,
             "successor_candidate_id": candidate.id,
             "successor_extraction_run_id": candidate.extraction_run_id,
-            "successor_configuration": _extraction_configuration(candidate, runs),
+            "successor_configuration": _extraction_configuration(
+                candidate, runs, configurations
+            ),
             "successor_run_snapshot_matches_candidate": (
                 active_snapshot_is_exact.get(candidate.id) is True
             ),
@@ -969,7 +980,9 @@ def _same_document_replay_index(
             "predecessor_configurations": [
                 {
                     "candidate_id": predecessor.id,
-                    "configuration": _extraction_configuration(predecessor, runs),
+                    "configuration": _extraction_configuration(
+                        predecessor, runs, configurations
+                    ),
                 }
                 for predecessor in matching
             ],
@@ -1266,6 +1279,7 @@ def _legacy_project_record_proof(
     dependency_id: int,
     facts: dict,
     runs: dict[int, ExtractionRun],
+    configurations: dict[int, dict | None],
     association_source: dict,
     support: dict,
 ) -> dict | None:
@@ -1286,7 +1300,9 @@ def _legacy_project_record_proof(
         or run.outcome != "completed"
         or run.page_errors != 0
         or run.candidate_inputs_json is not None
-        or _extraction_configuration(predecessor, runs).get("lineage_status")
+        or _extraction_configuration(
+            predecessor, runs, configurations
+        ).get("lineage_status")
         != "historical_unsealed"
         or association_source.get("kind") != "admission"
     ):
@@ -1364,14 +1380,19 @@ def _legacy_project_record_proof(
 
 
 def _extraction_configuration(
-    candidate: Candidate, runs: dict[int, ExtractionRun]
+    candidate: Candidate,
+    runs: dict[int, ExtractionRun],
+    configurations: dict[int, dict | None],
 ) -> dict:
     run = runs.get(candidate.extraction_run_id)
+    configuration = (
+        configurations.get(candidate.extraction_run_id) if run is not None else None
+    )
     sealed_values = (
         run.prompt_sha256,
         run.schema_sha256,
         run.postprocessor_sha256,
-        run.extractor_config_json,
+        configuration,
         run.extractor_config_sha256,
         run.token_usage_json,
     ) if run is not None else ()
@@ -1398,9 +1419,7 @@ def _extraction_configuration(
         "extractor_config_sha256": (
             run.extractor_config_sha256 if run is not None else None
         ),
-        "extractor_config_json": (
-            deepcopy(run.extractor_config_json) if run is not None else None
-        ),
+        "extractor_config_json": deepcopy(configuration),
         "token_usage_json": (
             deepcopy(run.token_usage_json) if run is not None else None
         ),

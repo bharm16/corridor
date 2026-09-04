@@ -12,7 +12,11 @@ from sqlalchemy import select
 from corridor.db import Session, engine
 from corridor.extract_matrix import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
-from corridor.extraction_runs import active_run_for_document, record_extraction_run
+from corridor.extraction_runs import (
+    active_run_for_document,
+    extractor_configuration,
+    record_extraction_run,
+)
 from corridor.geometry import NoMatrixFound
 from corridor.extract_project import (
     Outcome,
@@ -896,7 +900,9 @@ def test_a_route_records_schema_version_independently_from_prompt(session, proje
     [run] = _runs(session, document)
     assert run.prompt_version == "prompt-v3"
     assert run.schema_version == "candidate-shape-v7"
-    assert run.extractor_config_json["prompt_version"] == "prompt-v3"
+    # The receipt is stored once by digest and referenced (#605).
+    assert run.extractor_config_json is None
+    assert extractor_configuration(session, run)["prompt_version"] == "prompt-v3"
     assert run.token_usage_json == {
         "scope": "run",
         "document_ids": [document.id],

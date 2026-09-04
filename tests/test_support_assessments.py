@@ -831,8 +831,20 @@ def test_the_relation_never_reads_locator_validity():
     migration = (
         root / "migrations" / "baseline_versions" / "b2d5f8a1c4e7_source_append_commands.py"
     ).read_text()
-    command = migration[migration.index("APPEND_SUPPORT_ASSESSMENT = "):]
-    command = command[: command.index("def upgrade")]
+    # The command's own SQL, taken from the assignment rather than by slicing
+    # to the next `def`: the revision carries other folded-in blocks after it,
+    # and a text slice would silently start reading them (#605).
+    assignment = next(
+        node
+        for node in ast.parse(migration).body
+        if isinstance(node, ast.Assign)
+        and any(
+            isinstance(target, ast.Name)
+            and target.id == "APPEND_SUPPORT_ASSESSMENT"
+            for target in node.targets
+        )
+    )
+    command = ast.get_source_segment(migration, assignment.value)
 
     for name, source in (("module", module), ("command", command)):
         body = "\n".join(
