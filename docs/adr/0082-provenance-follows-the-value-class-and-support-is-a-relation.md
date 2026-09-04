@@ -7,7 +7,7 @@ supersedes:
 amends:
   - ADR-0003
   - ADR-0017
-migration: the support-assessment relation exists as support_assessments with its append command (#530), and Adopt Baseline (#509) and Resolve Delta (#519) cite it, but no policy or screen does yet; locator_validation_status is computed rather than stored, and EvidenceLink.verified is still the only locator column and is still shown to customers as "verified".
+migration: the support-assessment relation exists as support_assessments with its append command (#530), and Adopt Baseline (#509) and Resolve Delta (#519) cite it, but no policy does yet and the read-only record history view (#642) is the first screen to show an assessment to a person; locator_validation_status is computed rather than stored, and EvidenceLink.verified is still the only locator column and is still shown to customers as "verified".
 ---
 
 # Provenance follows the value class, and semantic support is a relation between a proposition and its sources

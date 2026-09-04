@@ -1,0 +1,377 @@
+{% import "_primitives.html" as ui -%}
+{#
+  One adopted project's accepted record and everything behind it (#642).
+
+  This page decides nothing. It carries no Apply, Keep current, Needs
+  coordination, Defer, Correct, or Approve control, and its only form is a GET
+  search that changes the URL and nothing else. Every act named here links back
+  to the one surface that owns it — the review screen for a proposed change,
+  the source register for a delivery — because a second door is how two paths
+  drift apart (ADR-0085's exactly-once rule).
+
+  Nothing is derived here either. The current and as-of values are the spine's
+  own projections, the Support Assessments are the relation's own reading, and
+  the release history is the release reader's. This template only lays them
+  out.
+
+  There is no script. Exactly one region carries `autofocus`: the search when
+  nothing has been asked yet, and the accepted values once something has, so a
+  keyboard user and a screen reader both land on the answer rather than at the
+  document title.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>Record history — {{ project.name }}</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:66rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  h3 { font-size:1rem; margin:1.1rem 0 .3rem; }
+  h4 { font-size:.92rem; margin:.7rem 0 .2rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .region { border:1px solid var(--line); border-radius:7px;
+            padding:.9rem 1.1rem; margin:1rem 0; }
+  .region > h2 { font-size:1.15rem; margin:0 0 .35rem; }
+  .region dl.facts { display:grid; grid-template-columns:auto 1fr;
+                     gap:.15rem .8rem; margin:.4rem 0 .6rem; }
+  .region dl.facts dt { color:var(--muted); }
+  .region dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+  .search { display:flex; flex-wrap:wrap; gap:.8rem; align-items:flex-end; }
+  .search .field { margin:0; }
+  .search input { padding:.3rem .4rem; min-width:11rem; }
+  .value { border-top:1px solid var(--line); padding:.6rem 0; }
+  .value:first-of-type { border-top:0; }
+  .passage { margin:.15rem 0 .4rem 1.1rem; font-size:.9rem; }
+  .passage q { font-style:italic; }
+  ol.steps { list-style:none; margin:0 0 1rem; padding:0; }
+  ol.steps li { display:inline; }
+  ol.steps li + li::before { content:" \00B7 "; color:var(--muted); }
+  table.record td, table.record th { word-break:break-word; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>{{ project.name }}</b>
+  <span><a href="/work/{{ project.slug }}">This project's work &rarr;</a></span>
+</header>
+
+<main>
+  <h1>Record history — {{ project.name }}</h1>
+  <p class="lead">
+    What this project's record says, what it said at an earlier revision, and
+    who changed it. Nothing on this page decides anything: every decision stays
+    on the screen that already owns it, and looking here records nothing.
+  </p>
+
+  <nav aria-label="Sections of this record history">
+    <ol class="steps">
+      <li><a href="#search-heading">Look something up</a></li>
+      <li><a href="#values-heading">Accepted values</a></li>
+      <li><a href="#deltas-heading">Proposed changes and how they were settled</a></li>
+      <li><a href="#revisions-heading">Revisions of this record</a></li>
+      <li><a href="#releases-heading">What was released to the customer</a></li>
+      <li><a href="#audit-heading">Audit trail</a></li>
+    </ol>
+  </nav>
+
+  {% call ui.region("search", "Look something up", focus) %}
+    <form class="search" method="get" action="/record/{{ project.slug }}"
+          role="search" aria-label="Search this project's record">
+      {% call ui.field("q-conflict", "Utility conflict",
+                       "The customer's own identifier, or part of it.") %}
+        <input type="search" id="q-conflict" name="conflict"
+               value="{{ history.terms.conflict }}"
+               aria-describedby="q-conflict-hint">
+      {% endcall %}
+      {% call ui.field("q-source", "Source",
+                       "A delivered file name, or the source family and revision a change came from.") %}
+        <input type="search" id="q-source" name="source"
+               value="{{ history.terms.source }}" aria-describedby="q-source-hint">
+      {% endcall %}
+      {% call ui.field("q-field", "Field",
+                       "Promised for, Required by, Assigned to, and so on.") %}
+        <input type="search" id="q-field" name="field"
+               value="{{ history.terms.field }}" aria-describedby="q-field-hint">
+      {% endcall %}
+      {% call ui.field("q-revision", "Revision",
+                       "A Project Record revision number. The record is then also shown as it stood at it.") %}
+        <input type="text" inputmode="numeric" id="q-revision" name="revision"
+               value="{{ history.as_of_revision_id if history.as_of_revision_id else '' }}"
+               aria-describedby="q-revision-hint">
+      {% endcall %}
+      <p><button type="submit">Show matching records</button></p>
+    </form>
+    <p class="quiet">
+      This search only changes what is listed below. It is a question, not a
+      decision, and asking it records nothing.
+    </p>
+    {%- if refused_revision %}
+    <p>{{ ui.state(state_label("attention",
+        "Revision " ~ refused_revision ~ " does not belong to this project, so the record is shown as it stands now.")) }}</p>
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("values", "Accepted values", focus) %}
+    <p>
+      {%- if history.as_of_revision_id -%}
+      What the record says now, beside what it said as of revision
+      {{ history.as_of_revision_id }}.
+      {%- else -%}
+      What the record says now. Enter a revision above to see the same values as
+      they stood at it.
+      {%- endif %}
+    </p>
+    {{ ui.fact_list([
+        ("Accepted values shown", history.values|length),
+        ("Accepted values matching", history.values_total),
+        ("Current accepted revision", history.current_revision_id),
+      ]) }}
+    {%- if history.truncated %}
+    <p>{{ ui.state(state_label("attention",
+        "Only the first " ~ history.values|length ~ " matching values are shown; narrow the search above to see the rest.")) }}</p>
+    {%- endif %}
+
+    {%- if history.values %}
+    {% call ui.record_table(
+         "Every matching accepted value, with the revision that made it effective",
+         ["Utility conflict", "Field", "Value now",
+          ("Value as of revision " ~ history.as_of_revision_id) if history.as_of_revision_id else "As of",
+          "Made effective at revision"]) %}
+      {%- for row in history.values %}
+      <tr>
+        <th scope="row">{{ row.subject_name }}</th>
+        <td>{{ row.field_name }}</td>
+        <td>{{ row.current.value_text if row.current and row.current.value_text else not_recorded }}</td>
+        <td>
+          {%- if not history.as_of_revision_id %}{{ not_recorded }}
+          {%- elif row.as_of and row.as_of.value_text %}{{ row.as_of.value_text }}
+          {%- else %}{{ not_recorded }}{% endif %}
+          {%- if history.as_of_revision_id and row.changed %}
+          {{ ui.state(state_label("attention", "changed since that revision")) }}
+          {%- endif %}
+        </td>
+        <td>{{ row.current.revision_id if row.current else not_recorded }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+
+    <h3>What each value was captured from</h3>
+    <p class="quiet">
+      The Source Fact the accepted value was made effective from, the exact
+      passages it was captured from, and every Support Assessment recorded
+      against it. A superseded assessment is kept and marked, never removed.
+    </p>
+    {%- for row in history.values %}
+    {%- set reading = row.current or row.as_of %}
+    <div class="value">
+      <h4>{{ row.subject_name }} — {{ row.field_name }}</h4>
+      {%- if reading and reading.fact %}
+      {{ ui.fact_list([
+          ("Source Fact", reading.fact.fact_id),
+          ("Captured by", reading.fact.recorded_by),
+          ("Captured at", reading.fact.recorded_at),
+        ]) }}
+      {%- if reading.sources %}
+      <h5>Where it came from</h5>
+      <ul>
+        {%- for source in reading.sources %}
+        <li>
+          {{ source.filename }} — {{ source.locator }} ({{ source.role }})
+          <p class="passage">Exact text: <q>{{ source.exact_text }}</q></p>
+        </li>
+        {%- endfor %}
+      </ul>
+      {%- else %}
+      <p class="quiet">No exact passage is recorded for this Source Fact.</p>
+      {%- endif %}
+      {%- if reading.assessments %}
+      {% call ui.record_table(
+           "Support Assessments recorded for this value",
+           ["Evidence role", "Assessment", "Recorded by", "Recorded at", "Standing"]) %}
+        {%- for assessment in reading.assessments %}
+        <tr>
+          <th scope="row">{{ assessment.evidence_role }}</th>
+          <td>{{ assessment.assessment }}</td>
+          <td>{{ assessment.authority if assessment.authority else not_recorded }}</td>
+          <td>{{ assessment.assessed_at }}</td>
+          <td>
+            {%- if assessment.effective %}
+            {{ ui.state(state_label("settled", "effective")) }}
+            {%- else %}
+            {{ ui.state(state_label("neutral", "superseded by a later assessment")) }}
+            {%- endif %}
+          </td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- else %}
+      <p class="quiet">No Support Assessment has been recorded for this value.</p>
+      {%- endif %}
+      {%- else %}
+      <p class="quiet">
+        This value's Source Fact is no longer readable, so nothing is claimed
+        about where it came from.
+      </p>
+      {%- endif %}
+    </div>
+    {%- endfor %}
+    {%- else %}
+    <p>No accepted value matches this search.</p>
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("deltas", "Proposed changes and how they were settled", focus) %}
+    <p>
+      Every Proposed Delta this project has ever held, including the ones a
+      coordinator answered Keep current and the ones a later source revision
+      superseded before anyone decided them.
+    </p>
+    {{ ui.fact_list([("Proposed changes matching", history.deltas_total)]) }}
+    {%- if history.deltas %}
+    {% call ui.record_table(
+         "Every matching proposed change, oldest first",
+         ["Utility conflict", "Field", "Accepted value", "Proposed value",
+          "Source", "Standing", "Decided by", "Revision"]) %}
+      {%- for delta in history.deltas %}
+      <tr>
+        <th scope="row">{{ delta.subject_name }}</th>
+        <td>{{ delta.field_name }}</td>
+        <td>{{ delta.accepted_value_text if delta.accepted_value_text else not_recorded }}</td>
+        <td>{{ delta.proposed_value_text if delta.proposed_value_text else not_recorded }}</td>
+        <td>{{ delta.source_family }} {{ delta.source_revision }}</td>
+        <td>
+          {%- if delta.settled %}
+          {{ ui.state(state_label("settled", delta.standing)) }}
+          {%- else %}
+          {{ ui.state(state_label("attention", delta.standing)) }}
+          {%- endif %}
+          {%- if delta.superseded_by_delta_id %}
+          <p class="quiet">Superseded by proposed change {{ delta.superseded_by_delta_id }}.</p>
+          {%- endif %}
+          {%- if delta.deferred_until %}
+          <p class="quiet">Deferred until {{ delta.deferred_until }}.</p>
+          {%- endif %}
+          {%- for packet in delta.packets %}
+          <p class="quiet">
+            Answered {{ packet.outcome }} in packet act {{ packet.receipt_id }}
+            by {{ packet.decided_by_principal }} on {{ packet.decided_at }}
+            {%- if packet.undone %}, and that act was undone on {{ packet.reversed_at }}{% endif %}.
+          </p>
+          {%- endfor %}
+        </td>
+        <td>{{ delta.decided_by if delta.decided_by else not_recorded }}</td>
+        <td>{{ delta.revision_id if delta.revision_id else not_recorded }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    <p class="quiet">
+      Deciding a proposed change happens on the review screen, where each one is
+      offered exactly once. Nothing here offers, re-offers, or reverses one.
+    </p>
+    <p><a href="/review/{{ project.slug }}">Open the review screen</a></p>
+    {%- else %}
+    <p>No proposed change matches this search.</p>
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("revisions", "Revisions of this record", focus) %}
+    <p>
+      Every atomic change to this project's accepted record, oldest first, with
+      the one authority behind it. This is what answers "who changed it".
+    </p>
+    {%- if history.revisions %}
+    {% call ui.record_table(
+         "Every Project Record revision, with its authority",
+         ["Revision", "What was done", "Authority", "Recorded at", "Follows"]) %}
+      {%- for revision in history.revisions %}
+      <tr>
+        <th scope="row">{{ revision.revision_id }}</th>
+        <td>{{ revision.command_type }}</td>
+        <td>{{ revision.authority if revision.authority else not_recorded }}</td>
+        <td>{{ revision.recorded_at }}</td>
+        <td>{{ revision.predecessor_revision_id if revision.predecessor_revision_id else not_recorded }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- else %}
+    <p>Nothing has been accepted into this project's record yet.</p>
+    {%- endif %}
+
+    {%- if history.as_of_revision_id %}
+    <h3>What revision {{ history.as_of_revision_id }} settled</h3>
+    {%- if history.revision_changes %}
+    <ul>
+      {%- for delta in history.revision_changes %}
+      <li>
+        {{ delta.subject_name }} — {{ delta.field_name }}:
+        {{ delta.standing }}
+        {%- if delta.decided_by %} by {{ delta.decided_by }}{% endif %}.
+      </li>
+      {%- endfor %}
+    </ul>
+    {%- else %}
+    <p class="quiet">
+      No proposed change matching this search was settled at that revision.
+    </p>
+    {%- endif %}
+    {%- endif %}
+  {% endcall %}
+
+  {% call ui.region("releases", "What was released to the customer", focus) %}
+    {%- if history.releases %}
+    {% call ui.record_table(
+         "Every release of this project's report, most recent first",
+         ["Released at", "File", "Released by", "Evaluated on",
+          "Records covered", "Digest"]) %}
+      {%- for release in history.releases %}
+      <tr>
+        <th scope="row">{{ release.released_at }}</th>
+        <td>{{ release.artifact_name }}</td>
+        <td>{{ release.released_by_display }}</td>
+        <td>{{ release.evaluated_on }}</td>
+        <td>{{ release.covered_dependency_count }}</td>
+        <td>{{ release.pdf_sha256[:12] }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- else %}
+    <p>Nothing has been released to the customer from this project yet.</p>
+    {%- endif %}
+    <p class="quiet">
+      Approving a release happens where releases are approved. This is the
+      record of what was already approved, and it cannot approve anything.
+    </p>
+  {% endcall %}
+
+  {% call ui.region("audit", "Audit trail", focus) %}
+    <p class="quiet">
+      The audit trail is kept per record, not per project, so what a project
+      owns is what was recorded against the project itself and against the
+      source files registered to it. The revisions above are the accepted
+      record's own authority history.
+    </p>
+    {%- if history.audit %}
+    {% call ui.record_table(
+         "Project-scoped audit entries, most recent first",
+         ["Recorded at", "What was done", "What it was done to", "Who"]) %}
+      {%- for entry in history.audit %}
+      <tr>
+        <th scope="row">{{ entry.recorded_at }}</th>
+        <td>{{ entry.action }}</td>
+        <td>{{ entry.entity_type }} {{ entry.entity_id }}</td>
+        <td>{{ entry.human_principal if entry.human_principal else entry.actor }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- else %}
+    <p>No project-scoped audit entry has been recorded yet.</p>
+    {%- endif %}
+    <p><a href="/projects/{{ project.slug }}/sources">Source history — every document delivered to this project</a></p>
+  {% endcall %}
+</main>

@@ -15,6 +15,7 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 import json
 import secrets
@@ -416,6 +417,11 @@ from corridor.project_portfolio import (
     read_portfolio,
 )
 from corridor.project_workflow import read_project_workflow
+from corridor.record_history import (
+    UnknownRevision,
+    read_record_history,
+    readable_terms,
+)
 from corridor.review_packet_reading import SHARED_COMMITMENT
 from corridor.review_packets import (
     APPLY,
@@ -4711,6 +4717,69 @@ def coordinator_home(
     )
     session.commit()
     return response
+
+
+# --- The read-only record and history investigation view (#642) ------------
+#
+# "What does this Utility Conflict say today, what did it say in July, and who
+# changed it" had no home: #536's ordered week is a work surface and the source
+# register lists deliveries. This is the reading half, and it is *only* a
+# reading.
+#
+# Two properties hold it in place. It exposes one method, GET, so there is no
+# route here that can accept, resolve, correct, refuse, or authorize anything —
+# every one of those acts keeps the single home it already has, and this page
+# links to that home rather than growing a second door (ADR-0085). And it
+# writes nothing at all, not even a frontend-request receipt: looking at the
+# record is not an act, and a receipt for having looked would be the one row
+# this surface could be accused of adding.
+#
+# Authorization is the project's plain read boundary. `_project` without a
+# designation is exactly that: whoever may read the project may read its
+# history, and a non-member gets the same 404 as a missing project. It is
+# deliberately not `access.COORDINATION`, which #537 uses to decide whose
+# *work* a project is; reading history is not coordinating.
+
+
+@app.get("/record/{slug}", response_class=HTMLResponse)
+def record_history_screen(
+    request: Request,
+    slug: str,
+    conflict: str = "",
+    source: str = "",
+    field: str = "",
+    revision: str = "",
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+):
+    """One adopted project's accepted record, its sources, and its history."""
+
+    project = _project(session, slug, principal)
+    terms = readable_terms(
+        conflict=conflict, source=source, field=field, revision=revision
+    )
+    refused_revision: int | None = None
+    try:
+        history = read_record_history(session, project_id=project.id, terms=terms)
+    except UnknownRevision:
+        # A revision this project does not hold is answered, not guessed at:
+        # the record is shown as it stands now and the page says why.
+        refused_revision = terms.revision
+        terms = replace(terms, revision=None)
+        history = read_record_history(session, project_id=project.id, terms=terms)
+    return TEMPLATES.TemplateResponse(
+        request,
+        "record_history.html",
+        {
+            "project": project,
+            "history": history,
+            "refused_revision": refused_revision,
+            # Exactly one region carries `autofocus`: the answer once one has
+            # been asked for, and the question itself before that.
+            "focus": "values" if history.terms.any_term else "search",
+        },
+    )
+
 
 
 # --- The source-revision review screen (#527) -----------------------------
