@@ -540,6 +540,10 @@ def test_a_successor_template_that_changes_the_mapping_is_refused_until_approved
         ),
         principal=PRINCIPAL,
         idempotency_key="register-successor-template",
+        # An output template is registered over its exact bytes (#690), which
+        # are retained and verified against the digest before the
+        # registration is committed.
+        template_bytes=successor,
     )
 
     with pytest.raises(UnapprovedFieldMapping):
@@ -1339,6 +1343,7 @@ def _approve_template(session, project, template: bytes) -> None:
         ),
         principal=PRINCIPAL,
         idempotency_key=f"approve-{hashlib.sha256(template).hexdigest()[:16]}",
+        template_bytes=template,
     )
 
 

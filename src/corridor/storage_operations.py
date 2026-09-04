@@ -28,6 +28,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
+    BaselineFormatObject,
     Document,
     PageRenderDerivative,
     ProcessingArtifact,
@@ -163,6 +164,13 @@ def referenced_digests(session: Session) -> dict[str, list[Path]]:
         promise(derivative.artifact_sha256, derivative.artifact_path)
     for layer in session.scalars(select(TokenLayerManifest)):
         promise(layer.artifact_sha256, layer.artifact_path)
+    # A retained output-template registration is a reference like any other
+    # (#690). Before it was, the bytes a customer's own template was
+    # registered over were expected by nothing here: a template retained for
+    # no other reason would have been reported as unreferenced and, with
+    # `remove_unreferenced`, deleted out from under the next preparation.
+    for retained in session.scalars(select(BaselineFormatObject)):
+        promise(retained.content_sha256, None)
     return expected
 
 

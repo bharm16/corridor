@@ -78,6 +78,14 @@ HANDLER_DOCUMENT_NOTIFICATION = DOCUMENT_NOTIFICATION_HANDLER
 # The four recurring passes a live pilot needs (#488). Each string matches its
 # lower module's ``HANDLER_KEY``; the execution lives there and the runtime
 # imports it lazily so no import cycle forms.
+# Run one confirmed preparation request through #529's three phases (#690).
+# Unlike every handler above it, this one is *published* rather than
+# scheduled: a cadence slot cannot say which request it is for, and one
+# opaque occurrence processing fifty requests would give the fifty one shared
+# lease, one shared retry budget and one shared receipt. Its execution lives
+# in ``release_preparation_supervisor``, which the runtime imports lazily so
+# no import cycle forms.
+HANDLER_RELEASE_PREPARATION = "release_preparation"
 HANDLER_CONNECTOR_POLLING = "connector_polling"
 HANDLER_DELTA_GENERATION = "delta_generation"
 HANDLER_REPORT_PREPARATION = "report_preparation"
@@ -991,6 +999,64 @@ class RetentionSweepDeclaration:
 
 
 @dataclass(frozen=True)
+class ReleasePreparationDeclaration:
+    """One project's enabled preparation supervisor (#690).
+
+    ``cadence`` is ``on_request`` and that is not a cosmetic name: this
+    schedule owns the lease, retry and deadline terms one preparation runs
+    under, and produces no occurrence of its own. Occurrences are published,
+    one per ``ReleasePreparationRequest``, by ``enqueue_due_work`` calling the
+    contract's publisher — so a claim, a lease expiry and a retry all apply to
+    a single coordinator's request.
+
+    The lease is long because #529 renders a customer workbook between its
+    transactions, and the deadline sits inside it for the reason every other
+    effectful handler's does: work already committed is idempotent, and a
+    deadline overrun is recovered rather than duplicated.
+    """
+
+    project_id: int
+    configuration_version: str
+    starts_at: datetime
+    cadence: str
+    timezone_name: str
+    missed_run_policy: str
+    retention_days: int
+    max_attempts: int
+    backoff_seconds: int
+    claim_ttl_seconds: int
+    deadline_seconds: int
+    concurrency_limit: int
+    model_token_budget: int
+    notification_budget: int
+
+    @classmethod
+    def released_on_request(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+    ) -> "ReleasePreparationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            starts_at=starts_at,
+            cadence="on_request",
+            timezone_name="UTC",
+            missed_run_policy="every_occurrence",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1500,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+@dataclass(frozen=True)
 class DueWorkClaim:
     occurrence_id: int
     occurrence_public_id: str
@@ -1037,6 +1103,13 @@ class HandlerContract:
     # commits and instead takes an `EffectfulContext`; exactly one is set.
     run: Callable[[Session, DueWorkSchedule, datetime], dict[str, Any]] | None = None
     run_effectful: Callable[["EffectfulContext"], dict[str, Any]] | None = None
+    # A published handler has no cadence slot: its occurrences are created one
+    # per durable request by this hook, which `enqueue_due_work` calls instead
+    # of computing a due slot. The hook returns the occurrence keys it has, so
+    # the enqueue result names them exactly as a cadence occurrence is named.
+    publish: (
+        Callable[[Session, DueWorkSchedule, datetime], tuple[str, ...]] | None
+    ) = None
 
 
 @dataclass(frozen=True)
@@ -1541,6 +1614,43 @@ def _retention_sweep_effectful(context: EffectfulContext) -> dict[str, Any]:
     )
 
 
+def _release_preparation_effectful(context: EffectfulContext) -> dict[str, Any]:
+    """Prepare the one issue this claimed occurrence names (#690).
+
+    The occurrence names exactly one ``ReleasePreparationRequest`` through its
+    publication, so the lease, the retry budget and the receipt all belong to
+    one coordinator's request. The supervisor resolves that request's retained
+    authorities, invokes #529's three phases through the session factory, and
+    records the finished attempt durably before the runtime finalizes the
+    claim; a worker that dies leaves the occurrence reclaimable and the retry
+    reuses the reading the request was already bound to.
+    """
+
+    from corridor.release_preparation_supervisor import (
+        execute_release_preparation,
+    )
+
+    return execute_release_preparation(
+        context.session_factory,
+        occurrence_id=context.claim.occurrence_id,
+        schedule_id=context.claim.schedule_id,
+        clock=context.clock,
+        runtime_owner=context.claim.runtime_owner,
+    )
+
+
+def _release_preparation_publish(
+    session: Session, schedule: DueWorkSchedule, now: datetime
+) -> tuple[str, ...]:
+    """Publish one occurrence for each of this project's unworked requests."""
+
+    from corridor.release_preparation_supervisor import (
+        publish_pending_preparation_requests,
+    )
+
+    return publish_pending_preparation_requests(session, schedule, now=now)
+
+
 HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
     {
         HANDLER_PROCESSING_HEALTH: HandlerContract(
@@ -1711,6 +1821,20 @@ HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
                 session, declaration, now=now
             ),
             run=_report_preparation,
+        ),
+        HANDLER_RELEASE_PREPARATION: HandlerContract(
+            key=HANDLER_RELEASE_PREPARATION,
+            scope_kind="one_confirmed_preparation_request",
+            idempotency_contract="at_least_once_reconcilable",
+            max_result_bytes=4096,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=ReleasePreparationDeclaration,
+            configure=lambda session, declaration, now: configure_release_preparation(
+                session, declaration, now=now
+            ),
+            run_effectful=_release_preparation_effectful,
+            publish=_release_preparation_publish,
         ),
         HANDLER_RETENTION_SWEEP: HandlerContract(
             key=HANDLER_RETENTION_SWEEP,
@@ -2164,6 +2288,30 @@ def configure_report_preparation(
     )
 
 
+def configure_release_preparation(
+    session: Session,
+    declaration: ReleasePreparationDeclaration,
+    *,
+    now: datetime,
+) -> DueWorkSchedule:
+    """Validate and retain one project's enabled preparation supervisor."""
+
+    configuration = _validated_release_preparation_declaration(declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=HANDLER_RELEASE_PREPARATION,
+        configuration=configuration,
+        scope={"project_id": declaration.project_id},
+        input_identity={
+            "handler": HANDLER_RELEASE_PREPARATION,
+            "project_id": declaration.project_id,
+            "source": "confirmed_preparation_requests-v1",
+        },
+    )
+
+
 def configure_retention_sweep(
     session: Session,
     declaration: RetentionSweepDeclaration,
@@ -2294,6 +2442,13 @@ def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurre
     keys: list[str] = []
     for schedule in schedules:
         _validate_stored_schedule(schedule)
+        contract = HANDLER_REGISTRY[schedule.handler_key]
+        if contract.publish is not None:
+            # A published handler has no slot to coalesce onto: it creates one
+            # occurrence per durable request, so a request that arrived while
+            # an earlier one was running is worked rather than folded into it.
+            keys.extend(contract.publish(session, schedule, now))
+            continue
         due_at = _due_slot(schedule, now)
         if due_at is None:
             continue
@@ -3836,6 +3991,75 @@ def _validated_report_preparation_declaration(
     }
 
 
+def _validated_release_preparation_declaration(
+    declaration: ReleasePreparationDeclaration,
+) -> dict[str, Any]:
+    starts_at = _aware_utc(declaration.starts_at)
+    if starts_at.minute or starts_at.second or starts_at.microsecond:
+        raise DueWorkRefusal(
+            "release-preparation starts_at must align to a UTC hour"
+        )
+    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
+        raise DueWorkRefusal("Due Work configuration version is invalid")
+    if (
+        declaration.cadence != "on_request"
+        or declaration.timezone_name != "UTC"
+        or declaration.missed_run_policy != "every_occurrence"
+    ):
+        raise DueWorkRefusal(
+            "release-preparation runs one published occurrence per confirmed "
+            "request; it has no cadence and coalesces nothing"
+        )
+    if not (
+        1 <= declaration.max_attempts <= 5
+        and 0 <= declaration.backoff_seconds <= 3600
+        and 300 <= declaration.claim_ttl_seconds <= 3600
+        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
+        and declaration.concurrency_limit == 1
+        and declaration.retention_days >= 365
+        and declaration.model_token_budget == 0
+        and declaration.notification_budget == 0
+    ):
+        raise DueWorkRefusal(
+            "release-preparation gate-7 resource declaration is invalid"
+        )
+    return {
+        "schema_version": "due-work-gate-7-v1",
+        "handler": HANDLER_RELEASE_PREPARATION,
+        "project_id": declaration.project_id,
+        "scope": {"project_id": declaration.project_id},
+        "configuration_version": declaration.configuration_version,
+        "input_identity": {
+            "kind": "confirmed_preparation_requests-v1",
+            "project_id": declaration.project_id,
+        },
+        # One occurrence per request, so nothing is ever coalesced away and a
+        # request that waited is worked rather than skipped.
+        "publication_policy": "one_occurrence_per_preparation_request",
+        "starts_at": _iso(starts_at),
+        "cadence": declaration.cadence,
+        "timezone": declaration.timezone_name,
+        "missed_run_policy": declaration.missed_run_policy,
+        "retention": {
+            "policy": "retain_all_terminal_receipts",
+            "minimum_days": declaration.retention_days,
+        },
+        "retry": {
+            "max_attempts": declaration.max_attempts,
+            "backoff_seconds": declaration.backoff_seconds,
+        },
+        "resources": {
+            "claim_ttl_seconds": declaration.claim_ttl_seconds,
+            "deadline_seconds": declaration.deadline_seconds,
+            "concurrency_limit": declaration.concurrency_limit,
+            "model_token_budget": declaration.model_token_budget,
+            "notification_budget": declaration.notification_budget,
+        },
+        "authorized_destinations": [],
+        "idempotency_contract": "at_least_once_reconcilable",
+    }
+
+
 def _validated_retention_sweep_declaration(
     declaration: RetentionSweepDeclaration,
 ) -> dict[str, Any]:
@@ -4369,6 +4593,33 @@ def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
                 "source": "proposed_delta_lifecycle-v1",
             }
         )
+    elif schedule.handler_key == HANDLER_RELEASE_PREPARATION:
+        expected_config = _validated_release_preparation_declaration(
+            ReleasePreparationDeclaration(
+                project_id=schedule.project_id,
+                configuration_version=schedule.configuration_version,
+                starts_at=schedule.starts_at,
+                cadence=schedule.cadence,
+                timezone_name=schedule.timezone_name,
+                missed_run_policy=schedule.missed_run_policy,
+                retention_days=schedule.retention_days,
+                max_attempts=schedule.max_attempts,
+                backoff_seconds=schedule.backoff_seconds,
+                claim_ttl_seconds=schedule.claim_ttl_seconds,
+                deadline_seconds=schedule.deadline_seconds,
+                concurrency_limit=schedule.concurrency_limit,
+                model_token_budget=schedule.model_token_budget,
+                notification_budget=schedule.notification_budget,
+            )
+        )
+        expected_scope = expected_config["scope"]
+        expected_input_identity = _sha256(
+            {
+                "handler": schedule.handler_key,
+                "project_id": schedule.project_id,
+                "source": "confirmed_preparation_requests-v1",
+            }
+        )
     elif schedule.handler_key == HANDLER_RETENTION_SWEEP:
         authorized_by = schedule.scope_json.get("authorized_by", "")
         expected_config = _validated_retention_sweep_declaration(
@@ -4476,6 +4727,8 @@ def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -
         return "adopt_project_baseline"
     if contract.key == HANDLER_REPORT_PREPARATION:
         return "adopt_project_baseline"
+    if contract.key == HANDLER_RELEASE_PREPARATION:
+        return "inspect_preparation_attempt"
     if contract.key == HANDLER_RETENTION_SWEEP:
         return "inspect_retention_refusal"
     return "inspect_failed_document_processing"
@@ -4751,6 +5004,30 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         or int(result.get("deleted", 0)) > int(result.get("planned", 0))
     ):
         raise DueWorkRefusal("retention-sweep handler result is invalid")
+    if contract.key == HANDLER_RELEASE_PREPARATION and (
+        set(result)
+        != {
+            "schema_version",
+            "project_id",
+            "configuration_version",
+            "observed_at",
+            "health",
+            "request_id",
+            "attempt_id",
+            "outcome",
+            "candidate_id",
+            "refusal_code",
+            "report_receipt_id",
+        }
+        or result.get("health")
+        not in {"healthy", "preparation_attention_required"}
+        # #529's three outcomes and nothing else, and a receipt that named a
+        # candidate for anything but a prepared attempt would be a fourth.
+        or result.get("outcome") not in {"prepared", "refused", "failed"}
+        or (result.get("candidate_id") is not None)
+        != (result.get("outcome") == "prepared")
+    ):
+        raise DueWorkRefusal("release-preparation handler result is invalid")
 
 
 def _locked_live_claim(

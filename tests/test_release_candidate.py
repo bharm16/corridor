@@ -486,6 +486,10 @@ DECLARED_INPUTS = {
     "product_revision",
     "enabled_feature_flags",
     "derived_state",
+    # #690: which retained report-preparation reading this candidate measured,
+    # by receipt identity and result digest. The counts alone could not say
+    # which receipt produced them, and the next issue's floor is read off this.
+    "report_preparation",
 }
 
 
@@ -1353,6 +1357,11 @@ def test_every_release_relation_is_partitioned_by_project(session):
         # The authorized package's own enumeration, added with #533 and
         # partitioned for the same reason as everything above it.
         "p_release_package_artifacts_project_partition",
+        # The reading one request was bound to and the occurrence published to
+        # run it, added with #690. Both name which exact authorities one
+        # customer's issue was prepared from.
+        "p_release_preparation_readings_project_partition",
+        "p_release_preparation_publications_project_partition",
     }
 
 

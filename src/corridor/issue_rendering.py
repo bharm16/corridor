@@ -134,6 +134,12 @@ from corridor.support_assessments import FactProposition, current_support_assess
 CURRENT_STATE_SUMMARY = "current_state_summary"
 NO_PRIOR_COMPARISON_STATEMENT = "no_prior_comparison_statement"
 FIRST_ISSUE_BEHAVIORS = (CURRENT_STATE_SUMMARY, NO_PRIOR_COMPARISON_STATEMENT)
+# What the released contract does for a project's first issue. A worker may
+# never choose between the two (#690): if `current_state_summary` is ever
+# wanted for another renderer or partner it becomes an explicit versioned
+# project or renderer configuration, and the supervisor reads that. Until then
+# there is one released answer and this is it.
+RELEASED_FIRST_ISSUE_BEHAVIOR = NO_PRIOR_COMPARISON_STATEMENT
 
 # The report regions a partner template may declare.  The set is closed
 # because a template that named an unknown region would silently render
@@ -151,6 +157,18 @@ SUPPORTED_SECTIONS = (
     SECTION_FOLLOW_UP_PLANS,
     SECTION_PENDING_COORDINATION,
 )
+
+# The released renderer contract (#690). The sections and their headings are a
+# property of the deployed renderer this version of the product ships, exactly
+# as `SUPPORTED_SECTIONS` above is; what a *project* configures is which
+# artifacts participate (ADR-0091), never what the weekly report's regions are
+# called. Naming them here is what lets a background supervisor assemble a
+# `TemplateBinding` from registered contracts rather than from a test
+# constant: the identities and versions come from the project's registered
+# output-template and field-mapping registrations, and the regions come from
+# here. A partner template that declares a different set is a second contract
+# version, not a value a worker chooses per run.
+RENDERER_CONTRACT_VERSION = "issue-renderer-contract-v1"
 
 # The declared coverage vocabulary.  "Read" and "late" are not the same
 # statement and a customer reading a bounded coverage sentence has to be able
@@ -366,6 +384,19 @@ class TemplateBinding:
             if candidate.key == key:
                 return candidate
         return None
+
+
+# The regions the released renderer contract declares, in the order a reader
+# meets them. See `RENDERER_CONTRACT_VERSION` above for why they live here.
+RELEASED_TEMPLATE_SECTIONS: tuple[ReportSection, ...] = (
+    ReportSection(key=SECTION_CONSTRAINT_ALERTS, heading="Items needing attention"),
+    ReportSection(key=SECTION_COMMITMENTS, heading="Utility commitments"),
+    ReportSection(key=SECTION_KEY_DATES, heading="Dates we need work by"),
+    ReportSection(key=SECTION_FOLLOW_UP_PLANS, heading="Our next steps"),
+    ReportSection(
+        key=SECTION_PENDING_COORDINATION, heading="Open questions with owners"
+    ),
+)
 
 
 @dataclass(frozen=True, slots=True)
