@@ -91,7 +91,7 @@ from corridor.web.app import (
     get_session,
 )
 
-from access_support import seed_membership
+from access_support import request_scoped, seed_membership
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import Rendition, append_deltas, modify, subject, support
 # The candidate fixtures come from #533's own test module for the same reason
@@ -148,9 +148,15 @@ def session():
 
 @pytest.fixture
 def client(session):
-    """The app shares the test's transaction and the test's declared instant."""
+    """One request, one transaction, over the test's own, at the declared instant.
 
-    app.dependency_overrides[get_session] = lambda: session
+    Every request here reads, so the request boundary ``request_scoped`` gives
+    each one costs nothing and buys the property the deployment has: a request
+    declares its own project-authorization scope rather than inheriting the
+    scope the previous request declared (#657, #662).
+    """
+
+    app.dependency_overrides[get_session] = request_scoped(session)
     app.dependency_overrides[get_human_principal] = lambda: COORDINATOR
     app.dependency_overrides[get_review_clock] = lambda: (lambda: NOW)
     with TestClient(app) as made:
