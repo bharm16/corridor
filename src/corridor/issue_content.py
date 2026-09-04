@@ -72,6 +72,21 @@ evaluator uses, so a configuration screen stores its ``token`` and displays
 ``presentation.field_label`` beside it. The label is what a person reads; the
 token is what is stored, digested and matched, and the two never swap places.
 
+**The selector type itself refuses an unbacked pair (#682).** The docstring
+above used to claim a proof that only the two functions beside the type
+performed, so ``DecisionSelector("field", "promised_for")`` could be built
+directly and would then match a delta whose field was literally
+``promised_for`` — the alias by construction. ``__post_init__`` now proves the
+kind and value against the same closed vocabulary, so an unsupported selector
+object cannot exist to be matched at all. There is still one executable
+vocabulary rather than two checks: ``parse_selector`` reads a token's *shape*
+and then constructs, reporting the typed refusal as its existing ``None``, and
+``decision_selector`` still composes a token and calls ``parse_selector``.
+``__post_init__`` deliberately does not call ``parse_selector`` — the
+constructor is the invariant, parsing is what feeds it, and the other direction
+would recurse. A kind the vocabulary backs but ``selects`` has no rule for
+raises loudly instead of quietly waiting on nothing.
+
 **No clock.** Everything here is derived from an ``IssueInventory`` the caller
 already read as at a declared cutoff (#640). This module never reads the wall
 clock and never opens a second reading of the profile.
@@ -363,17 +378,70 @@ class ConfigurationProblem:
 # --- the typed selector ----------------------------------------------------
 
 
+class UnsupportedSelector(ValueError):
+    """A caller composed a selector this release cannot execute."""
+
+
+# The value vocabulary each selector kind is proved against, in one mapping so
+# that adding a kind to ``SELECTOR_KINDS`` without saying what its values are
+# is a refusal rather than a silent acceptance. ``None`` is the whole
+# vocabulary of ``all_issue_affecting``: it selects by the reading and not by a
+# stored identity, so a value attached to it would be a word nothing compares.
+_SELECTOR_VALUES: Mapping[str, frozenset[str] | None] = {
+    SELECT_FIELD: CANONICAL_FIELDS,
+    SELECT_DIFFERENCE: DIFFERENCE_KINDS,
+    SELECT_REASON: ATTENTION_REASONS,
+    SELECT_ALL_ISSUE_AFFECTING: None,
+}
+
+
+def _validate_selector_parts(kind: str, value: str | None) -> None:
+    """Raise unless ``kind`` and ``value`` are a pair the vocabulary backs.
+
+    The one place the parts are proved. Both public doors reach it — the
+    constructor runs it, and ``parse_selector`` runs it by constructing — so
+    there is no second vocabulary to widen, forget, or disagree with.
+    """
+
+    if kind not in _SELECTOR_VALUES:
+        raise UnsupportedSelector(
+            f"{kind!r} is not a decision selector kind this release executes; "
+            f"the kinds are {', '.join(SELECTOR_KINDS)}."
+        )
+    permitted = _SELECTOR_VALUES[kind]
+    if permitted is None:
+        if value is not None:
+            raise UnsupportedSelector(
+                f"{kind} selects by whether the difference affects the "
+                f"configured issue and takes no value, so {value!r} would be "
+                "matched against nothing."
+            )
+        return
+    if value not in permitted:
+        raise UnsupportedSelector(
+            f"{value!r} is not a {kind} this release can match against a "
+            "proposed change, so a policy waiting on it would wait forever."
+        )
+
+
 @dataclass(frozen=True, slots=True)
 class DecisionSelector:
     """Which proposed differences one customer policy waits on.
 
-    It is a token and a value proved against a closed vocabulary, never a
+    It is a kind and a value proved against a closed vocabulary, never a
     phrase compared against a delta. ``selects`` therefore answers from stored
     identities alone and gives the same answer every time it is asked.
+
+    The proof is the constructor's (#682), so no instance exists whose parts
+    the vocabulary does not back and a holder never has to ask whether this
+    one was checked on the way in.
     """
 
     kind: str
     value: str | None = None
+
+    def __post_init__(self) -> None:
+        _validate_selector_parts(self.kind, self.value)
 
     @property
     def token(self) -> str:
@@ -388,7 +456,11 @@ class DecisionSelector:
             return change.change_type == self.value
         if self.kind == SELECT_REASON:
             return self.value in change.attention_reasons
-        return False
+        raise AssertionError(
+            f"{self.kind!r} is a selector kind the vocabulary backs but this "
+            "method has no matching rule for, so every policy configured "
+            "against it would wait on nothing. Give it a rule here."
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -411,26 +483,25 @@ def parse_selector(required_decision: str) -> DecisionSelector | None:
     ``None`` for anything that is not one — including well-formed prose. There
     is deliberately no free-text branch: a sentence is a ``statement``, and a
     statement explains a policy to a person rather than executing it.
+
+    It reads the token's *shape* and then asks the type, converting the typed
+    refusal to that same ``None`` (#682). The vocabulary is therefore checked
+    in one place a caller cannot get round rather than here, and a stored
+    ``required_decision`` no selector backs stays what it already was: a
+    configuration problem the reader prints, not a policy that executes.
     """
 
     text = (required_decision or "").strip()
     if text == SELECT_ALL_ISSUE_AFFECTING:
-        return DecisionSelector(SELECT_ALL_ISSUE_AFFECTING)
-    kind, separator, value = text.partition(":")
-    if not separator or not value:
+        kind, value = SELECT_ALL_ISSUE_AFFECTING, None
+    else:
+        kind, separator, value = text.partition(":")
+        if not separator or not value:
+            return None
+    try:
+        return DecisionSelector(kind, value)
+    except UnsupportedSelector:
         return None
-    permitted = {
-        SELECT_FIELD: CANONICAL_FIELDS,
-        SELECT_DIFFERENCE: DIFFERENCE_KINDS,
-        SELECT_REASON: ATTENTION_REASONS,
-    }.get(kind)
-    if permitted is None or value not in permitted:
-        return None
-    return DecisionSelector(kind, value)
-
-
-class UnsupportedSelector(ValueError):
-    """A caller composed a selector this release cannot execute."""
 
 
 def decision_selector(kind: str, value: str | None = None) -> DecisionSelector:
