@@ -211,8 +211,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # extractor configuration a run references instead of copying, with the
     # Evidence Link's citation of the Source Segment that owns its words
     # (#605) — the second of which is keyed by a sequence and the first by
-    # its own digest, so the two tables add one sequence between them.
-    assert fingerprint.table_count == 181
+    # its own digest, so the two tables add one sequence between them, and the
+    # project-partition seal key (#531), whose single row is keyed by a checked
+    # constant rather than a sequence, so it adds a table and no sequence.
+    assert fingerprint.table_count == 182
     assert fingerprint.sequence_count == 167
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64

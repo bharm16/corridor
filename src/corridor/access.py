@@ -22,6 +22,21 @@ with explicit expiry and revocation checked on every request, so a revoked
 session or membership takes effect immediately.  The HTTP adapter owns cookies
 and request-forgery tokens; this module owns the records and the rules.
 
+Two further boundaries live here (#531, ratifying #503).
+
+- **Partition** — membership is also a *data* boundary, not only a rule the
+  readers agree to keep.  ``open_project_partition`` asks PostgreSQL to prove
+  the roster entry and then declare, for this transaction only, which projects
+  the connection may see; row-level security on the project-scoped spine
+  relations does the rest.  A reader that forgets its ``where`` clause reads
+  nothing rather than another project's rows.
+- **Deprovisioning** — ``deprovision_principal`` is the whole offboarding act:
+  every membership deactivated, every live session revoked, every pending
+  sign-in link spent, in one transaction.  What it deliberately does *not*
+  remove is the identity binding, because an accepted decision keeps the human
+  principal who made it and a record that could no longer name that person
+  would be a worse record, not a safer one.
+
 Everything here accepts a caller-supplied ``Session``; it opens no engine and
 sends no email.  ``now`` is injectable so expiry, reuse, and backoff are
 testable without real clocks or real mail.
@@ -36,6 +51,7 @@ from hashlib import sha256
 import secrets
 
 from sqlalchemy import func, select, update
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor import audit
@@ -491,6 +507,17 @@ def create_web_session(
         )
     )
     session.flush()
+    # The sign-in entry is written in the same transaction as the session
+    # record, so an export can never claim a sign-in that was rolled back, and
+    # a session can never exist without one (#531).
+    audit.record(
+        session,
+        principal=principal,
+        action=audit.SIGN_IN,
+        entity_type=audit.PERSON_IDENTITY,
+        entity_id=_identity_id(session, email_normalized),
+        after={"email_normalized": email_normalized},
+    )
     return NewWebSession(
         raw_session_id=raw_session_id,
         raw_csrf_token=raw_csrf_token,
@@ -517,19 +544,36 @@ def resolve_web_session(
 def revoke_web_session(
     session: Session, raw_session_id: str, *, now: datetime | None = None
 ) -> bool:
-    """Revoke on logout; a second logout or an unknown id changes nothing."""
+    """Revoke on logout; a second logout or an unknown id changes nothing.
+
+    A revocation that changed nothing records nothing: the audit entry follows
+    the row count, so a replayed logout cannot manufacture a second event in
+    the identity export.
+    """
     if not raw_session_id:
         return False
     moment = _now(now)
-    updated = session.execute(
+    revoked = session.execute(
         update(WebSession)
         .where(
             WebSession.session_sha256 == _sha256_hex(raw_session_id),
             WebSession.revoked_at.is_(None),
         )
         .values(revoked_at=moment)
+        .returning(WebSession.principal_subject, WebSession.email_normalized)
+    ).first()
+    if revoked is None:
+        return False
+    principal_subject, email_normalized = revoked
+    audit.record(
+        session,
+        principal=HumanPrincipal(principal_subject),
+        action=audit.SIGN_OUT,
+        entity_type=audit.PERSON_IDENTITY,
+        entity_id=_identity_id(session, email_normalized),
+        after={"email_normalized": email_normalized},
     )
-    return bool(updated.rowcount)
+    return True
 
 
 def csrf_token_matches(web_session: WebSession, submitted: str | None) -> bool:
@@ -537,3 +581,222 @@ def csrf_token_matches(web_session: WebSession, submitted: str | None) -> bool:
     if not submitted:
         return False
     return secrets.compare_digest(web_session.csrf_sha256, _sha256_hex(submitted))
+
+
+def _identity_id(session: Session, email_normalized: str) -> int:
+    """The identity row an act names, or the unbound marker.
+
+    Sign-in always has one, because a link can only be consumed for a bound
+    email.  A session opened directly — by a test harness, or by a future
+    non-email credential — has none, and says so rather than borrowing an
+    unrelated row's id.
+    """
+    identity_id = session.scalar(
+        select(PersonIdentity.id).where(
+            PersonIdentity.email_normalized == email_normalized
+        )
+    )
+    return int(identity_id) if identity_id is not None else audit.UNBOUND_IDENTITY
+
+
+# --- Offboarding ----------------------------------------------------------
+
+@dataclass(frozen=True, slots=True)
+class Deprovisioning:
+    """What one offboarding act actually took away."""
+
+    principal_subject: str
+    email_normalized: str | None
+    projects_left: tuple[int, ...]
+    sessions_revoked: int
+    tokens_invalidated: int
+
+
+def deprovision_principal(
+    session: Session,
+    *,
+    principal: HumanPrincipal,
+    operator: HumanPrincipal,
+    now: datetime | None = None,
+) -> Deprovisioning:
+    """Take one person off the system, in one transaction (#531, #503).
+
+    Three things end together, because ending them separately leaves a window
+    in which the person is off the roster but still holding a live cookie, or
+    off the roster with an unspent link in their inbox:
+
+    - every active membership is deactivated *and* stripped of its
+      designations, so a later re-enrollment has to grant each one again
+      rather than reviving authority nobody re-decided;
+    - every live session is revoked, which the request path checks on every
+      request, so the next click is refused rather than the next hour's;
+    - every unspent, unexpired sign-in link is marked consumed, so a link
+      already sent cannot open a session after the fact.
+
+    What survives on purpose is the identity binding and every historical act.
+    The person's principal still names them on the decisions they made; ADR-0081
+    is explicit that a migration executor is never the semantic author, and the
+    same holds for an offboarding operator.  Deprovisioning removes *access*,
+    never authorship.
+
+    Idempotent: a second call finds nothing active and reports zeros, recording
+    the act but inventing no second revocation.
+    """
+    require_human_principal(principal)
+    require_human_principal(operator)
+    moment = _now(now)
+
+    entries = list(
+        session.scalars(
+            select(ProjectRosterEntry)
+            .where(
+                ProjectRosterEntry.principal_subject == principal.subject,
+                ProjectRosterEntry.active.is_(True),
+            )
+            .order_by(ProjectRosterEntry.project_id)
+        ).all()
+    )
+    projects_left = tuple(entry.project_id for entry in entries)
+    for entry in entries:
+        before = {
+            "active": True,
+            "designations": sorted(
+                name
+                for name, column in _DESIGNATION_COLUMNS.items()
+                if getattr(entry, column)
+            ),
+        }
+        entry.active = False
+        for column in _DESIGNATION_COLUMNS.values():
+            setattr(entry, column, False)
+        session.flush()
+        audit.record(
+            session,
+            principal=operator,
+            action=audit.DEPROVISION_PROJECT_MEMBER,
+            entity_type=audit.PROJECT,
+            entity_id=entry.project_id,
+            before=before,
+            after={
+                "principal_subject": principal.subject,
+                "active": False,
+                "designations": [],
+            },
+        )
+
+    sessions_revoked = int(
+        session.execute(
+            update(WebSession)
+            .where(
+                WebSession.principal_subject == principal.subject,
+                WebSession.revoked_at.is_(None),
+            )
+            .values(revoked_at=moment)
+        ).rowcount
+    )
+
+    identity = session.scalars(
+        select(PersonIdentity).where(
+            PersonIdentity.principal_subject == principal.subject
+        )
+    ).first()
+    email_normalized = identity.email_normalized if identity is not None else None
+    tokens_invalidated = 0
+    if email_normalized is not None:
+        tokens_invalidated = int(
+            session.execute(
+                update(SignInToken)
+                .where(
+                    SignInToken.email_normalized == email_normalized,
+                    SignInToken.consumed_at.is_(None),
+                    SignInToken.expires_at > moment,
+                )
+                .values(consumed_at=moment)
+            ).rowcount
+        )
+
+    audit.record(
+        session,
+        principal=operator,
+        action=audit.DEPROVISION_PRINCIPAL,
+        entity_type=audit.PERSON_IDENTITY,
+        entity_id=(
+            identity.id if identity is not None else audit.UNBOUND_IDENTITY
+        ),
+        after={
+            "principal_subject": principal.subject,
+            "email_normalized": email_normalized,
+            "projects_left": list(projects_left),
+            "sessions_revoked": sessions_revoked,
+            "tokens_invalidated": tokens_invalidated,
+            "identity_binding_retained": identity is not None,
+        },
+    )
+    return Deprovisioning(
+        principal_subject=principal.subject,
+        email_normalized=email_normalized,
+        projects_left=projects_left,
+        sessions_revoked=sessions_revoked,
+        tokens_invalidated=tokens_invalidated,
+    )
+
+
+# --- The project data partition -------------------------------------------
+
+class PartitionRefused(AccessError):
+    """The database would not declare this partition."""
+
+
+def open_project_partition(
+    session: Session, *, principal_subject: str, project_id: int
+) -> int:
+    """Declare, for this transaction, the one project this connection may read.
+
+    The declaration is PostgreSQL's, not ours: the command re-proves the active
+    roster entry as its own owner and seals the scope with a secret no runtime
+    login can read, so an application that set the setting by hand would
+    produce a scope that verifies as empty.  Under row-level security a reader
+    that forgets ``project_id ==`` then reads nothing instead of another
+    project's rows (#531, ADR-0083).
+    """
+    try:
+        scoped = session.scalar(
+            select(func.open_project_partition(principal_subject, project_id))
+        )
+    except DBAPIError as error:
+        raise PartitionRefused(
+            f"no active membership of project {project_id}"
+        ) from error
+    return int(scoped)
+
+
+def open_member_project_partition(
+    session: Session, *, principal_subject: str
+) -> tuple[int, ...]:
+    """Declare the partition a cross-project reading may see: this person's projects.
+
+    A principal with no active membership left declares the empty partition,
+    which is what an offboarded person's still-open connection should be able
+    to read: nothing.
+    """
+    scoped = session.scalar(
+        select(func.open_member_project_partition(principal_subject))
+    )
+    return tuple(int(value) for value in (scoped or ()))
+
+
+def close_project_partition(session: Session) -> None:
+    """Give up the declared partition; what remains is the empty one."""
+    session.execute(select(func.close_project_partition()))
+
+
+def current_project_partition(session: Session) -> tuple[int, ...] | None:
+    """The projects this connection may currently read, as the database sees it.
+
+    ``None`` means no verified partition is declared at all, which reads
+    exactly like the empty one; both are told apart only for diagnosis.
+    """
+    scoped = session.scalar(select(func.current_project_partition()))
+    if scoped is None:
+        return None
+    return tuple(int(value) for value in scoped)

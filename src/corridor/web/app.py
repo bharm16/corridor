@@ -907,6 +907,12 @@ def _authorize(
         raise HTTPException(404, f"no project {project.slug!r}")
     if designation is not None and not membership.has(designation):
         raise HTTPException(403, "not authorized for this project action")
+    # The same authorization, declared to PostgreSQL for this transaction, so
+    # that the reading below is partitioned by the database rather than by
+    # every reader remembering its `project_id ==` (#531, ADR-0083).
+    access.open_project_partition(
+        session, principal_subject=principal.subject, project_id=project.id
+    )
     return membership
 
 
@@ -2390,6 +2396,11 @@ def root(request: Request, session: Session = Depends(get_session)):
     web_session = auth.load_session(request, session)
     if web_session is None:
         return RedirectResponse("/sign-in", status_code=303)
+    # A cross-project surface still reads inside a partition: this person's
+    # active projects, and no others (#531).
+    access.open_member_project_partition(
+        session, principal_subject=web_session.principal_subject
+    )
     return TEMPLATES.TemplateResponse(
         request,
         "projects.html",
@@ -4583,6 +4594,11 @@ def portfolio(
     """Every adopted project this coordinator holds, each shown exactly once."""
 
     web_session = auth.load_session(request, session)
+    # The cross-project reading (#537) is partitioned by the same rule: every
+    # project this coordinator is actively on, and nothing else (#531).
+    access.open_member_project_partition(
+        session, principal_subject=principal.subject
+    )
     reading = read_portfolio(
         session, principal_subject=principal.subject, as_of=clock()
     )
