@@ -199,7 +199,28 @@ class CorridorApplicationStack(Stack):
         # that matters. Deletion stays with the batch retention capability,
         # which is the thing that actually runs the policy.
         artifact_bucket.grant_read(web_role)
-        artifact_bucket.grant_put(web_role)
+
+        # Write-once, enforced by IAM rather than by the application.
+        # `S3ObjectStore.put` already sends `IfNoneMatch="*"`, but that is the
+        # web process's own code: a compromised one simply omits it and
+        # overwrites an existing key. Versioning does not save the reader --
+        # a reader that names no version gets the new bytes, fails digest
+        # verification, and the artifact becomes unreadable despite any
+        # retention hold.
+        #
+        # `Null: {"s3:if-none-match": "false"}` means the header must be
+        # present, so this role can create a key and can never replace one.
+        # grant_put is not used because it also carries PutObjectLegalHold and
+        # PutObjectRetention, and an internet-facing process has no business
+        # setting or clearing a retention control.
+        web_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="WebMayCreateAnArtifactButNeverReplaceOne",
+                actions=["s3:PutObject"],
+                resources=[artifact_bucket.arn_for_objects("*")],
+                conditions={"Null": {"s3:if-none-match": "false"}},
+            )
+        )
 
         # The sign-in link is delivered by the web process itself, so this is
         # the one role that needs SES. Scoped by the from-address rather than

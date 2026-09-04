@@ -15,6 +15,7 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -24,7 +25,17 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -70,6 +81,7 @@ from corridor.db import WebSession as SessionFactory
 from corridor.db import WorkerSession as MachineSessionFactory
 from corridor.object_storage import ObjectStore, content_store
 from corridor.operational_health import ComponentHealth, runtime_report, serving_report
+from corridor import telemetry
 from corridor.telemetry import (
     ROLE_WEB,
     RequestCorrelationMiddleware,
@@ -2609,9 +2621,30 @@ def sign_in_form(request: Request, next: str = "", session: Session = Depends(ge
     )
 
 
+def _deliver_sign_in_link(
+    sender: auth.EmailSender, email: str, link: str
+) -> None:
+    """Send the link, and let no outcome reach the caller.
+
+    Runs after the response has been returned. A delivery failure is a real
+    operational event and is logged as one, with the recipient and the bounded
+    reason -- never the link, which is a live credential.
+    """
+
+    try:
+        sender.send_sign_in_link(email=email, link=link)
+    except auth.EmailDeliveryUnavailable as error:
+        telemetry.log_event(
+            logging.getLogger("corridor.auth"),
+            "sign_in_link_delivery_failed",
+            reason=str(error),
+        )
+
+
 @app.post("/sign-in/request", response_class=HTMLResponse)
 def request_sign_in(
     request: Request,
+    background: BackgroundTasks,
     email: str = Form(...),
     next: str = Form(""),
     session: Session = Depends(get_session),
@@ -2657,7 +2690,13 @@ def request_sign_in(
             # local clone is allowed to fall back to the request.
             origin = auth.PUBLIC_ORIGIN or str(request.base_url).rstrip("/")
             link = origin + "/sign-in/consume?token=" + quote(issued.raw_token)
-            sender.send_sign_in_link(email=normalized, link=link)
+            # Delivered after the response, not during it. A synchronous send
+            # happens only for an enrolled address, so its latency -- and a
+            # provider failure, which would otherwise surface as a 500 -- would
+            # tell an unauthenticated caller which addresses are enrolled. That
+            # is exactly what this endpoint's identical answer exists to
+            # prevent, and it would undo it through the side door.
+            background.add_task(_deliver_sign_in_link, sender, normalized, link)
     session.commit()
     return TEMPLATES.TemplateResponse(
         request,

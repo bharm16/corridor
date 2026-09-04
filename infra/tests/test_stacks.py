@@ -957,3 +957,61 @@ def test_the_web_task_is_told_its_own_public_origin(stacks):
         # And it agrees with what a release verifies.
         outputs = stacks["application"].to_json()["Outputs"]
         assert outputs["ApplicationUrl"]["Value"] == env["CORRIDOR_PUBLIC_ORIGIN"]
+
+
+def test_the_web_role_can_create_an_artifact_but_never_replace_one(stacks):
+    """S3ObjectStore.put sends IfNoneMatch="*", but that is the web process's
+    own code: a compromised one omits it and overwrites an existing key.
+    Versioning does not save the reader -- one that names no version gets the
+    new bytes and fails digest verification, so the artifact is unreadable
+    despite any retention hold. IAM has to carry the condition."""
+    template = stacks["application"].to_json()["Resources"]
+    puts = []
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "WebTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            actions = [action] if isinstance(action, str) else action
+            if any(a.startswith("s3:PutObject") for a in actions):
+                puts.append(statement)
+
+    assert puts, "the web role cannot write an artifact at all"
+    for statement in puts:
+        condition = statement.get("Condition", {})
+        assert condition.get("Null", {}).get("s3:if-none-match") == "false", (
+            f"unconditional PutObject on the web role: {statement}"
+        )
+
+
+def test_the_web_role_holds_no_retention_control(stacks):
+    """grant_put also carries PutObjectLegalHold and PutObjectRetention. An
+    internet-facing process has no business setting or clearing those."""
+    template = stacks["application"].to_json()["Resources"]
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "WebTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        document = json.dumps(policy["Properties"]["PolicyDocument"])
+        assert "PutObjectLegalHold" not in document
+        assert "PutObjectRetention" not in document
+
+
+def test_the_batch_role_may_still_replace_and_delete(stacks):
+    """The retention capability runs the deletion policy, so it keeps the
+    authority the web role gives up."""
+    template = stacks["application"].to_json()["Resources"]
+    granted: set[str] = set()
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "BatchTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            granted.update([action] if isinstance(action, str) else action)
+    assert any(a.lower().startswith("s3:deleteobject") for a in granted), granted
+    assert any(a.startswith("s3:PutObject") for a in granted), granted

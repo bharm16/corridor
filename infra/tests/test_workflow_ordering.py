@@ -130,3 +130,19 @@ def test_both_dispatch_jobs_validate_before_authenticating():
             if CREDENTIAL_ACTION in str(step.get("uses", ""))
         )
         assert validate_at < credential_at, job_name
+
+
+def test_the_build_toolchain_is_pinned_by_digest():
+    """A tag is a mutable pointer. These bytes run during both sync steps, in
+    the image that later receives the migration credential -- and the
+    lockfiles do not cover the tool that reads them."""
+    import re
+
+    dockerfile = (
+        pathlib.Path(__file__).parents[2] / "Dockerfile"
+    ).read_text()
+
+    copies = re.findall(r"^COPY --from=(\S+)", dockerfile, re.M)
+    assert copies, "no build stage is copied from"
+    for source in copies:
+        assert "@sha256:" in source, f"{source} is pinned by tag, not digest"

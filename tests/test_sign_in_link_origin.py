@@ -197,3 +197,70 @@ def test_the_configured_origin_is_used_even_when_the_host_is_legitimate(
     for link in sender.links:
         assert link.startswith("https://pilot.example.com/")
         assert "elb.amazonaws.com" not in link
+
+
+# --- delivery must not distinguish an enrolled address ------------------
+class _FailingSender:
+    """A provider that is down, or rejecting the message."""
+
+    def send_sign_in_link(self, *, email: str, link: str) -> None:
+        from corridor.web.auth import EmailDeliveryUnavailable
+
+        raise EmailDeliveryUnavailable(f"could not deliver to {email}")
+
+
+class _SlowSender:
+    def __init__(self, seconds: float):
+        self.seconds = seconds
+        self.sent = 0
+
+    def send_sign_in_link(self, *, email: str, link: str) -> None:
+        import time
+
+        time.sleep(self.seconds)
+        self.sent += 1
+
+
+def test_a_delivery_failure_does_not_change_the_answer(session, enrolled):
+    """The send happens only for an enrolled address, so a provider failure
+    surfacing as a 500 would tell an unauthenticated caller which addresses are
+    enrolled -- undoing the indistinguishability this endpoint is built around,
+    through the side door."""
+    client = _client(session, _FailingSender())
+
+    enrolled_response = client.post(
+        "/sign-in/request", data={"email": ENROLLED, "next": ""}
+    )
+    unknown_response = client.post(
+        "/sign-in/request", data={"email": "nobody@example.com", "next": ""}
+    )
+
+    assert enrolled_response.status_code == unknown_response.status_code == 200
+    assert enrolled_response.text == unknown_response.text
+
+
+def test_the_link_is_still_delivered(session, enrolled):
+    """Moving the send off the response path must not drop it. TestClient runs
+    background tasks as part of the request, so this proves delivery happens;
+    the *ordering* is asserted structurally below, because a timing assertion
+    against TestClient could only measure itself."""
+    slow = _SlowSender(seconds=0.0)
+    client = _client(session, slow)
+
+    response = client.post("/sign-in/request", data={"email": ENROLLED, "next": ""})
+
+    assert response.status_code == 200
+    assert slow.sent == 1
+
+
+def test_delivery_is_scheduled_as_a_background_task(session, enrolled):
+    """Structural, because a timing assertion is flaky under load: the route
+    must hand the send to BackgroundTasks rather than awaiting it inline."""
+    import inspect
+
+    from corridor.web import app as app_module
+
+    source = inspect.getsource(app_module.request_sign_in)
+
+    assert "background.add_task(_deliver_sign_in_link" in source
+    assert "sender.send_sign_in_link" not in source
