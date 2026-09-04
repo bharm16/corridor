@@ -31,12 +31,8 @@ from corridor.baseline_adoption import (
 from corridor.due_work import (
     HANDLER_RELEASE_PREPARATION,
     HANDLER_REPORT_PREPARATION,
-    ReleasePreparationDeclaration,
-    ReportPreparationDeclaration,
     claim_due_work,
-    configure_due_work,
     enqueue_due_work,
-    run_due_work_once,
 )
 from corridor.models import (
     BaselineFormatObject,
@@ -76,86 +72,23 @@ store = issue_path.store
 week = issue_path.week
 prose = issue_path.prose
 _form = issue_path._form
+# The deployed runtime, driven the way #536's end-to-end proofs drive it: the
+# two released schedules, one declared tick, the retained weekly reading and
+# the coordinator's own confirmation. This file proves the supervisor those
+# proofs now run on, so it has to be turning the same handle.
+Ticker = issue_path.Ticker
+_enable = issue_path.enable_runtime
+_tick = issue_path.tick
+_take_weekly_reading = issue_path.take_weekly_reading
+_confirm_coverage = issue_path.confirm_coverage
+WORKER_AT = issue_path.WORKER_AT
 
 
 OPERATOR = HumanPrincipal("local:operator")
 
-# One declared timeline. The weekly reading is taken before the coordinator
-# confirms coverage, the coordinator confirms at NOW, and the supervisor ticks
-# afterwards -- which is the order a real week happens in.
-SCHEDULES_FROM = datetime(2026, 3, 2, 7, 0, tzinfo=timezone.utc)
-READING_AT = datetime(2026, 3, 2, 7, 30, tzinfo=timezone.utc)
-NOW = datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)
-WORKER_AT = datetime(2026, 3, 2, 8, 5, tzinfo=timezone.utc)
+# The instants this file declares on top of that shared timeline.
 LATER_READING_AT = datetime(2026, 3, 9, 8, 0, tzinfo=timezone.utc)
 AFTER_LEASE_AT = datetime(2026, 3, 2, 9, 0, tzinfo=timezone.utc)
-
-
-class Ticker:
-    """The runtime's clock seam, holding one declared instant at a time."""
-
-    def __init__(self, moment: datetime) -> None:
-        self.moment = moment
-
-    def now(self) -> datetime:
-        return self.moment
-
-
-def _enable(
-    factory, adopted: Adopted, *, weekly: bool = True, supervisor: bool = True
-) -> None:
-    """Turn on the two schedules a deployed project runs this path with."""
-
-    with factory() as setup:
-        if weekly:
-            configure_due_work(
-                setup,
-                ReportPreparationDeclaration.released_weekly(
-                    project_id=adopted.project_id,
-                    configuration_version="report-preparation-v1",
-                    starts_at=SCHEDULES_FROM,
-                ),
-                now=SCHEDULES_FROM,
-            )
-        if supervisor:
-            configure_due_work(
-                setup,
-                ReleasePreparationDeclaration.released_on_request(
-                    project_id=adopted.project_id,
-                    configuration_version="release-preparation-v1",
-                    starts_at=SCHEDULES_FROM,
-                ),
-                now=SCHEDULES_FROM,
-            )
-        setup.commit()
-
-
-def _tick(factory, clock: Ticker, *, owner: str = "runtime:test-supervisor"):
-    """One supervisor cycle: publish what is due, then work one occurrence."""
-
-    with factory() as ticking:
-        with ticking.begin():
-            enqueue_due_work(ticking, now=clock.now())
-    return run_due_work_once(factory, clock=clock, owner=owner)
-
-
-def _take_weekly_reading(factory) -> None:
-    clock = Ticker(READING_AT)
-    result = _tick(factory, clock)
-    assert result is not None
-    assert result.handler_key == HANDLER_REPORT_PREPARATION
-    assert result.execution_outcome == "completed", result.error_code
-
-
-def _confirm_coverage(client, adopted: Adopted) -> None:
-    body = week(client, adopted)
-    confirmation = _form(body, "/issue/prepare")
-    assert confirmation is not None
-    requested = client.post(
-        f"/work/{adopted.slug}/issue/prepare", data=confirmation
-    )
-    assert requested.status_code == 202, requested.text
-    assert "Preparing this issue" in prose(requested.text)
 
 
 def _one(factory, model, adopted: Adopted):
