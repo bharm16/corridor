@@ -29,6 +29,13 @@
 
 <main>
   <h1>Your projects</h1>
+  {#
+    One reading over every adopted project this person coordinates (#537), so
+    a quiet project can be seen to be quiet without being opened. It is a link
+    rather than this page's own content because a person may be enrolled to
+    read a project without coordinating it, and the two scopes are different.
+  #}
+  <p><a href="/portfolio">See what every project you coordinate needs this week</a></p>
   {% for project in projects %}
     <ul>
       <li>

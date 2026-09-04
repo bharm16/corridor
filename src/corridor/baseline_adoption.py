@@ -49,7 +49,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
@@ -668,15 +668,35 @@ def effective_baseline_formats(
 ) -> dict[str, BaselineFormat]:
     """The output-template and field-mapping identities in force right now."""
 
-    return {
-        row.format_kind: row
-        for row in session.scalars(
-            select(BaselineFormat).where(
-                BaselineFormat.project_id == project_id,
-                BaselineFormat.superseded_by.is_(None),
-            )
-        ).all()
+    return effective_baseline_formats_by_project(session, (project_id,)).get(
+        project_id, {}
+    )
+
+
+def effective_baseline_formats_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, dict[str, BaselineFormat]]:
+    """The same reading for several projects in one statement (#537).
+
+    A cross-project reading may not ask this once per project, and it may not
+    answer it by a second rule either, so the single-project reader above is
+    this function over one project.
+    """
+
+    ids = tuple(dict.fromkeys(int(value) for value in project_ids))
+    found: dict[int, dict[str, BaselineFormat]] = {
+        project_id: {} for project_id in ids
     }
+    if not ids:
+        return found
+    for row in session.scalars(
+        select(BaselineFormat).where(
+            BaselineFormat.project_id.in_(ids),
+            BaselineFormat.superseded_by.is_(None),
+        )
+    ).all():
+        found[int(row.project_id)][row.format_kind] = row
+    return found
 
 
 def stored_mapping_revision(

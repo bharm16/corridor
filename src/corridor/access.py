@@ -185,6 +185,33 @@ def member_projects(session: Session, principal_subject: str) -> list[Project]:
     )
 
 
+def coordinated_projects(
+    session: Session, principal_subject: str
+) -> list[Project]:
+    """Projects this principal may currently *coordinate*, not merely read.
+
+    Membership is the read boundary and coordination is a separate explicit
+    designation, so a cross-project coordination reading (#537) is scoped by
+    the designation rather than by membership: a person enrolled to read a
+    project is not shown that project's coordination work.
+    """
+    return list(
+        session.scalars(
+            select(Project)
+            .join(
+                ProjectRosterEntry,
+                ProjectRosterEntry.project_id == Project.id,
+            )
+            .where(
+                ProjectRosterEntry.principal_subject == principal_subject,
+                ProjectRosterEntry.active.is_(True),
+                ProjectRosterEntry.can_coordinate.is_(True),
+            )
+            .order_by(Project.name, Project.id)
+        ).all()
+    )
+
+
 def enroll_member(
     session: Session,
     *,

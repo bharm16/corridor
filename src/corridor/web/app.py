@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -408,6 +408,13 @@ from corridor.packet_review import (
     select_children,
 )
 from corridor.operating_mode import is_adopted_baseline
+from corridor.project_portfolio import (
+    PORTFOLIO,
+    derive_standings,
+    emit_portfolio_reading,
+    emit_project_selection,
+    read_portfolio,
+)
 from corridor.project_workflow import read_project_workflow
 from corridor.review_packet_reading import SHARED_COMMITMENT
 from corridor.review_packets import (
@@ -4547,6 +4554,53 @@ def _project_workflow_response(
     return response
 
 
+# --- The coordinator's cross-project week (#537) ---------------------------
+#
+# One reading over every adopted project the signed-in person may coordinate,
+# derived from the same records each project's own week is derived from (#536).
+# There is no portfolio-work table, no completion flag, no owner, no cadence,
+# and no deferral of its own, so this route writes nothing at all: a project
+# row changes because a decision, plan, source, or template changed.
+#
+# The page's own measurement events go through the #558 contract rather than a
+# frontend-request receipt, because a receipt is bound to one project and this
+# reading is bound to none.
+
+
+@app.get("/portfolio", response_class=HTMLResponse)
+def portfolio(
+    request: Request,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Every adopted project this coordinator holds, each shown exactly once."""
+
+    web_session = auth.load_session(request, session)
+    reading = read_portfolio(
+        session, principal_subject=principal.subject, as_of=clock()
+    )
+    focus = (reading.waiting or reading.standings or (None,))[0]
+    response = TEMPLATES.TemplateResponse(
+        request,
+        "portfolio.html",
+        {
+            "portfolio": reading,
+            # Exactly one element carries `autofocus`: the first project still
+            # holding work, or the first project at all when none does.
+            "focus": focus.slug if focus is not None else "",
+            "cutoff": reading.cutoff.date().isoformat(),
+            "email": web_session.email_normalized if web_session else "",
+        },
+    )
+    # The presentation itself, with the state derived for each project shown.
+    # Nothing further is emitted for a project that was shown and left alone,
+    # which is what makes the absence of a `project_selection` naming it
+    # evidence that it cost no click.
+    emit_portfolio_reading(reading)
+    return response
+
+
 @app.get("/work/{slug}", response_class=HTMLResponse)
 def coordinator_home(
     request: Request,
@@ -4558,6 +4612,7 @@ def coordinator_home(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
     clock=Depends(get_review_clock),
+    came_from: str = Query("", alias="from"),
 ):
     """The coordinator's short, project-language entry point.
 
@@ -4567,8 +4622,20 @@ def coordinator_home(
     """
     project = _project(session, slug, principal)
     if is_adopted_baseline(session, project.id):
+        now = clock()
+        if came_from == PORTFOLIO:
+            # A project opened *from* the portfolio is the one act that page
+            # can produce (#537, under the #558 contract). It is recorded here
+            # rather than on the portfolio because being listed is not being
+            # opened, and only this request proves the click happened.
+            standing = derive_standings(
+                session, projects=(project,), as_of=now
+            )[0]
+            emit_project_selection(
+                standing, principal_subject=principal.subject, at=now
+            )
         return _project_workflow_response(
-            request, project, principal, session, now=clock()
+            request, project, principal, session, now=now
         )
     work_list = build_work_list(
         session,
