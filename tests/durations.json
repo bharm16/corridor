@@ -142,6 +142,7 @@
   "tests/test_render_profiles.py": 4.2,
   "tests/test_render_retention.py": 6.1,
   "tests/test_report.py": 13.2,
+  "tests/test_report_diff_reference.py": 4.8,
   "tests/test_report_preparation_runtime.py": 2.9,
   "tests/test_report_publication.py": 10.3,
   "tests/test_report_release.py": 13.0,
