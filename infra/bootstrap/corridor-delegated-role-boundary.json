@@ -39,6 +39,7 @@
         "s3:PutObject*",
         "secretsmanager:DescribeSecret",
         "secretsmanager:GetSecretValue",
+        "ses:SendEmail",
         "ssm:GetParameter",
         "ssm:GetParameters",
         "sts:AssumeRole",

@@ -194,6 +194,23 @@ class CorridorApplicationStack(Stack):
         artifact_bucket.grant_read(web_role)
         artifact_bucket.grant_put(web_role)
 
+        # The sign-in link is delivered by the web process itself, so this is
+        # the one role that needs SES. Scoped by the from-address rather than
+        # only the identity ARN: a verified *domain* identity would otherwise
+        # let this role send as any address under it.
+        web_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="SendTheSignInLinkAsTheVerifiedSender",
+                actions=["ses:SendEmail"],
+                resources=[
+                    f"arn:aws:ses:{Aws.REGION}:{Aws.ACCOUNT_ID}:identity/*"
+                ],
+                conditions={
+                    "StringEquals": {"ses:FromAddress": sign_in_sender}
+                },
+            )
+        )
+
         self.web_service = ecs.FargateService(
             self,
             "WebService",
@@ -551,6 +568,13 @@ class CorridorApplicationStack(Stack):
                         ),
                         "appliesTo": [
                             "Resource::*",
+                            {
+                                # A verified identity may be a domain or an
+                                # address, so the identity ARN is not knowable
+                                # at synthesis. The ses:FromAddress condition
+                                # is the real bound and it names one address.
+                                "regex": "/^Resource::arn:aws:ses:.*:identity\\/\\*$/g"
+                            },
                             "Action::s3:GetBucket*",
                             "Action::s3:GetObject*",
                             "Action::s3:List*",

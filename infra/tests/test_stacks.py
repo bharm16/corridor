@@ -903,3 +903,40 @@ def test_the_application_url_is_the_certificate_covered_hostname(stacks):
     assert outputs["ApplicationUrl"]["Value"] == "https://pilot.example.com"
     # The raw name is still reported, for operators; it is never probed.
     assert "LoadBalancerDns" in outputs
+
+
+def test_the_web_role_can_send_as_the_verified_sender_and_no_other(stacks):
+    """Selecting the SES adapter without granting the call produces an
+    AccessDenied on the first sign-in, which looks the same from outside as
+    having no adapter at all."""
+    template = stacks["application"].to_json()["Resources"]
+    statements = []
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "WebTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        statements.extend(policy["Properties"]["PolicyDocument"]["Statement"])
+
+    ses = [
+        statement
+        for statement in statements
+        if "ses:SendEmail" in json.dumps(statement.get("Action"))
+    ]
+    assert len(ses) == 1, "the web role cannot send the sign-in link"
+    condition = ses[0]["Condition"]["StringEquals"]["ses:FromAddress"]
+    assert condition == "no-reply@example.com"
+
+
+def test_no_other_role_can_send_mail(stacks):
+    """Only the web process issues sign-in links."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, policy in template.items():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        roles = json.dumps(policy["Properties"].get("Roles"))
+        if "WebTaskRole" in roles:
+            continue
+        assert "ses:" not in json.dumps(policy["Properties"]["PolicyDocument"]), (
+            logical_id
+        )
