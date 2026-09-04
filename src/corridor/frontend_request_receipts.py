@@ -92,6 +92,14 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
     "authorize_project_issue": (
         "/work/{slug}/issue/authorize", "POST", frozenset({201, 403, 409})
     ),
+    # The act that makes the candidate the one above approves (#675). A 202
+    # says the coverage was confirmed and the preparation was queued -- the
+    # work itself happens in a worker, so the response cannot claim it is
+    # done. A 409 says the profile, revision, cutoff or coverage digest moved
+    # after the coordinator was shown them, and nothing was appended.
+    "prepare_project_issue": (
+        "/work/{slug}/issue/prepare", "POST", frozenset({202, 409})
+    ),
     "queue": ("/queue/{slug}", "GET", frozenset({200})),
     "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
     "internal_report_full": (

@@ -91,6 +91,7 @@ from corridor.release_candidate import (
     render_candidate_artifacts,
 )
 
+from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
     Rendition,
@@ -139,15 +140,12 @@ TEMPLATE = TemplateBinding(
     ),
 )
 
-COVERAGE = CoverageDeclaration(
-    identity="weekly-coverage-2026-03-02",
-    lines=(
-        SourceCoverage(
-            source_name="Weekly utility conflict matrix",
-            requirement="required",
-            state="read",
-            detail="the 2026-03-01 revision was read in full",
-        ),
+COVERAGE_LINES = (
+    SourceCoverage(
+        source_name="Weekly utility conflict matrix",
+        requirement="required",
+        state="read",
+        detail="the 2026-03-01 revision was read in full",
     ),
 )
 
@@ -257,13 +255,33 @@ def _configure(
     )
 
 
+def _declare(session, adopted, *, lines=COVERAGE_LINES, variant="week"):
+    """One confirmed coverage declaration this project may be prepared under.
+
+    #675 made the declaration a persisted row a candidate names by foreign key
+    rather than a value handed to ``bind_preparation``, so every preparation
+    below starts from a confirmation somebody made.
+    """
+
+    return declare_coverage(
+        session,
+        adopted.project,
+        cutoff=CUTOFF,
+        principal=COORDINATOR,
+        confirmed_at=PREPARED_AT,
+        lines=lines,
+        variant=variant,
+    )
+
+
 def _bind(session, adopted, **overrides):
+    if "coverage_declaration_id" not in overrides:
+        overrides["coverage_declaration_id"] = _declare(session, adopted).id
     arguments = {
         "project_id": adopted.project.id,
         "preparation": _preparation(adopted.project.id, adopted.revision_id),
         "source_cutoff": CUTOFF,
         "prepared_at": PREPARED_AT,
-        "coverage": COVERAGE,
         "templates": TEMPLATE,
         "first_issue_behavior": NO_PRIOR_COMPARISON_STATEMENT,
         "template_bytes": adopted.template_bytes,
@@ -483,7 +501,10 @@ def test_the_input_declaration_binds_every_input_one_issue_shares(
     assert payload["accepted_revision_id"] == adopted.revision_id
     # ADR-0086's explicit none, spelled rather than omitted.
     assert payload["previous_authorized_package"] is None
-    assert payload["coverage"]["content_sha256"] == COVERAGE.content_sha256
+    assert payload["coverage"]["content_sha256"] == bound.coverage.content_sha256
+    # #675: the confirmed declaration is bound by identity, not only by what
+    # it said, so two confirmations of the same lines are two candidates.
+    assert payload["coverage"]["declaration_id"] == bound.coverage.declaration_id
     assert payload["issue_profile"]["version"] == 1
     assert payload["configured_artifact_types"] == list(bound.artifact_types)
     assert {entry["renderer_version"] for entry in payload["renderers"]} == {
@@ -828,9 +849,11 @@ def test_a_candidate_with_disclosed_exceptions_is_prepared_and_authorizable(
     """ADR-0086: honest adverse project conditions never block release."""
 
     _configure(session, adopted, artifacts=[WEEKLY])
-    late = CoverageDeclaration(
-        identity="weekly-coverage-late",
-        lines=COVERAGE.lines
+    late = _declare(
+        session,
+        adopted,
+        variant="weekly-coverage-late",
+        lines=COVERAGE_LINES
         + (
             SourceCoverage(
                 source_name="Utility owner email",
@@ -841,7 +864,9 @@ def test_a_candidate_with_disclosed_exceptions_is_prepared_and_authorizable(
         ),
     )
 
-    bound, _, candidate = _prepare(session, adopted, store, coverage=late)
+    bound, _, candidate = _prepare(
+        session, adopted, store, coverage_declaration_id=late.id
+    )
 
     assert bound.readiness == READY_WITH_EXCEPTIONS
     assert candidate.readiness == READY_WITH_EXCEPTIONS
@@ -1109,7 +1134,7 @@ def test_the_predecessor_is_explicitly_absent_before_the_first_package(
     later = _bind(
         session,
         adopted,
-        coverage=CoverageDeclaration(identity="second-week", lines=COVERAGE.lines),
+        coverage_declaration_id=_declare(session, adopted, variant="second-week").id,
     )
     assert later.previous_package_id is None
 
@@ -1124,7 +1149,7 @@ def test_the_predecessor_is_the_authorized_package_once_one_exists(
     bound = _bind(
         session,
         adopted,
-        coverage=CoverageDeclaration(identity="second-week", lines=COVERAGE.lines),
+        coverage_declaration_id=_declare(session, adopted, variant="second-week").id,
     )
 
     assert bound.previous_package_id == package.package_id
@@ -1227,7 +1252,7 @@ def test_preparation_creates_no_report_approved_for_release_and_moves_no_baselin
         session,
         adopted,
         store,
-        coverage=CoverageDeclaration(identity="second-week", lines=COVERAGE.lines),
+        coverage_declaration_id=_declare(session, adopted, variant="second-week").id,
     )
 
     after = session.scalar(
@@ -1320,6 +1345,11 @@ def test_every_release_relation_is_partitioned_by_project(session):
         "p_release_candidates_project_partition",
         "p_release_candidate_artifacts_project_partition",
         "p_release_preparation_refusals_project_partition",
+        # The request one coordinator submitted and what each attempt at it
+        # produced, added with #675 and partitioned for the same reason: both
+        # name what one customer was about to be sent, and why they were not.
+        "p_release_preparation_requests_project_partition",
+        "p_release_preparation_attempts_project_partition",
         # The authorized package's own enumeration, added with #533 and
         # partitioned for the same reason as everything above it.
         "p_release_package_artifacts_project_partition",
@@ -1442,6 +1472,7 @@ def test_the_whole_preparation_runs_in_three_transactions_and_holds_no_lock(
             project=project, revision_id=revision_id, template_bytes=body
         )
         _configure(setup, adopted, artifacts=[WEEKLY, CHASE])
+        declaration_id = _declare(setup, adopted).id
         setup.commit()
         project_id = project.id
 
@@ -1456,7 +1487,7 @@ def test_the_whole_preparation_runs_in_three_transactions_and_holds_no_lock(
         preparation=_preparation(project_id, revision_id),
         source_cutoff=CUTOFF,
         prepared_at=PREPARED_AT,
-        coverage=COVERAGE,
+        coverage_declaration_id=declaration_id,
         templates=TEMPLATE,
         first_issue_behavior=NO_PRIOR_COMPARISON_STATEMENT,
         template_bytes=body,
@@ -1631,7 +1662,8 @@ def test_every_artifact_dereferences_the_same_five_shared_inputs(
         assert owner.accepted_revision_id == adopted.revision_id
         assert owner.previous_package_id is None
         assert owner.source_cutoff == CUTOFF
-        assert owner.coverage_sha256 == COVERAGE.content_sha256
+        assert owner.coverage_sha256 == bound.coverage.content_sha256
+        assert owner.coverage_declaration_id == bound.coverage.declaration_id
         assert owner.output_template_format_id == bound.output_template_format_id
         assert owner.field_mapping_format_id == bound.field_mapping_format_id
 

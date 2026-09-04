@@ -92,13 +92,13 @@ from corridor.issue_rendering import (
     TemplateBinding,
 )
 from corridor.release_candidate import (
-    CoverageDeclaration,
     attach_candidate,
     bind_preparation,
     latest_authorized_package,
     render_candidate_artifacts,
 )
 
+from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
     Rendition,
@@ -177,11 +177,22 @@ class Adopted:
         self.template_bytes = template_bytes
 
 
-def coverage_named(identity: str, *, exception: bool = False) -> CoverageDeclaration:
-    """One declared coverage state, optionally with an honest exception in it."""
+def coverage_named(
+    session, adopted, identity: str = "weekly-coverage-2026-03-02", *, exception: bool = False
+):
+    """One confirmed coverage declaration, optionally with an honest exception.
 
-    return CoverageDeclaration(
-        identity=identity,
+    #675 made this a persisted row a candidate names by foreign key rather than
+    a value a caller composes, so a fixture confirms one before it prepares.
+    """
+
+    return declare_coverage(
+        session,
+        adopted.project,
+        cutoff=CUTOFF,
+        principal=COORDINATOR,
+        confirmed_at=PREPARED_AT,
+        variant=identity,
         lines=(
             SourceCoverage(
                 source_name="Weekly utility conflict matrix",
@@ -195,9 +206,6 @@ def coverage_named(identity: str, *, exception: bool = False) -> CoverageDeclara
             ),
         ),
     )
-
-
-COVERAGE = coverage_named("weekly-coverage-2026-03-02")
 
 
 def preparation_reading(project_id: int, revision_id: int) -> dict:
@@ -245,12 +253,13 @@ def configure(
 
 
 def bind(session, adopted, **overrides):
+    if "coverage_declaration_id" not in overrides:
+        overrides["coverage_declaration_id"] = coverage_named(session, adopted).id
     arguments = {
         "project_id": adopted.project.id,
         "preparation": preparation_reading(adopted.project.id, adopted.revision_id),
         "source_cutoff": CUTOFF,
         "prepared_at": PREPARED_AT,
-        "coverage": COVERAGE,
         "templates": TEMPLATE,
         "first_issue_behavior": NO_PRIOR_COMPARISON_STATEMENT,
         "template_bytes": adopted.template_bytes,
@@ -392,7 +401,10 @@ def _next_candidate(session, adopted, store, *, identity="second-week"):
     """A fresh candidate prepared after whatever has happened so far."""
 
     _, _, candidate = prepare(
-        session, adopted, store, coverage=coverage_named(identity)
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, identity).id,
     )
     return candidate
 
@@ -930,13 +942,21 @@ def test_a_prepared_but_unauthorized_candidate_never_advances_the_baseline(
 
     configure(session, adopted, artifacts=[WEEKLY])
     prepare(session, adopted, store)
-    prepare(session, adopted, store, coverage=coverage_named("second-week"))
+    prepare(
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
+    )
 
     assert current_authorized_package(session, adopted.project.id) is None
     assert _packages(session, adopted) == []
 
     _, _, candidate = prepare(
-        session, adopted, store, coverage=coverage_named("third-week")
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, "third-week").id,
     )
     authorization = _authorize(session, adopted, candidate, store)
 
@@ -955,7 +975,11 @@ def test_the_newly_approved_issue_is_the_sole_comparison_baseline(
     _, _, candidate = prepare(session, adopted, store)
     authorization = _authorize(session, adopted, candidate, store)
 
-    bound = bind(session, adopted, coverage=coverage_named("second-week"))
+    bound = bind(
+        session,
+        adopted,
+        coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
+    )
 
     assert bound.previous_package_id == authorization.package_id
     assert bound.reading.previous_issue is not None
@@ -1092,7 +1116,12 @@ def test_release_history_presents_the_set_without_internal_receipt_identifiers(
 
     configure(session, adopted, artifacts=[SUMMARY, WEEKLY, CHASE])
     _, _, first_candidate = prepare(
-        session, adopted, store, coverage=coverage_named("week-one", exception=True)
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(
+            session, adopted, "week-one", exception=True
+        ).id,
     )
     _authorize(session, adopted, first_candidate, store)
     second_candidate = _next_candidate(session, adopted, store)
@@ -1107,7 +1136,9 @@ def test_release_history_presents_the_set_without_internal_receipt_identifiers(
     assert first.authorized_at == RELEASED_AT
     assert first.accepted_revision_id == adopted.revision_id
     assert first.source_cutoff == CUTOFF
-    assert first.coverage_identity == "week-one"
+    # #675 derives the identity from the confirmed declaration rather than
+    # letting a caller name it, so it is the declaration's own.
+    assert first.coverage_identity.startswith("issue-coverage:2026-03-02:")
     assert first.exceptions and "Weekly utility conflict matrix" in (
         first.exceptions[0]
     )

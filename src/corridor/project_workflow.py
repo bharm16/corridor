@@ -87,6 +87,7 @@ from corridor.models import (
 )
 from corridor.packet_review import ItemReading, ReviewReading, read_review_items
 from corridor.presentation import field_label
+from corridor.release_preparation import preparation_standings
 
 
 # The three sections, in the order the week runs. The names are internal
@@ -107,6 +108,12 @@ HEADINGS: Mapping[str, str] = {
 # What each readiness problem is, named once so a screen and a test agree.
 NO_OUTPUT_TEMPLATE = "no_output_template"
 UNREAD_SOURCE = "unread_source"
+# The last attempt at preparing this project's issue did not produce one
+# (#675). It is a technical blocker on the *current* issue and deliberately
+# not a state of its own: a failed preparation is something to put right
+# before this issue goes out, which is exactly what this list is for, and the
+# portfolio's five primary states stay five.
+PREPARATION_FAILED = "preparation_failed"
 
 
 @dataclass(frozen=True, slots=True)
@@ -462,6 +469,23 @@ def issue_readiness_by_project(
                 f"{document.filename} was delivered but could not be read "
                 f"({document.parse_status}), so this issue's coverage is "
                 "incomplete.",
+            )
+        )
+    # A preparation that ran and produced nothing (#675). A request still in
+    # flight adds nothing here on purpose: while a worker is preparing, no
+    # human action is required, and a problem printed for it would ask a
+    # coordinator to act on Corridor's own work in progress.
+    for project_id, standing in preparation_standings(
+        session, project_ids=ids
+    ).items():
+        if not standing.failed:
+            continue
+        problems[project_id].append(
+            ReadinessProblem(
+                PREPARATION_FAILED,
+                "The last attempt to prepare this issue produced nothing: "
+                f"{standing.reason} Nothing partial was written, and asking "
+                "for it again is what puts it right.",
             )
         )
     return {project_id: tuple(rows) for project_id, rows in problems.items()}
