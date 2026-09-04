@@ -1,0 +1,83 @@
+# Draft. Infrastructure CI for infra/.
+#
+# `plan` runs on every pull request that touches infra/ and creates nothing.
+# `deploy` is manual and bound to the `nonproduction` GitHub environment, whose
+# protection rules are half of the trust condition on the AWS role -- the role's
+# subject is `repo:bharm16/corridor:environment:nonproduction`, so a run that is
+# not admitted to that environment cannot assume it at all.
+#
+# Prerequisite: the account must be bootstrapped and CorridorAccountFoundation
+# deployed locally first, because this workflow's role is created by that stack.
+name: infra-nonproduction
+
+on:
+  pull_request:
+    paths: ["infra/**", ".github/workflows/infra-nonproduction.yml"]
+  workflow_dispatch:
+    inputs:
+      stack:
+        description: Stack to deploy
+        required: true
+        type: choice
+        options: [CorridorNetwork, CorridorData, CorridorApplication]
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install
+        working-directory: infra
+        run: |
+          pip install -r requirements-dev.txt
+          npm install --no-save aws-cdk
+      - name: Tests
+        working-directory: infra
+        run: python -m pytest tests -q
+      - name: Synth (strict, with cdk-nag)
+        working-directory: infra
+        run: npx cdk synth --strict --quiet
+
+  deploy:
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: nonproduction
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@v4
+        with: { node-version: "22" }
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::810100779593:role/corridor-nonprod-deploy
+          aws-region: us-east-2
+      - name: Install
+        working-directory: infra
+        run: |
+          pip install -r requirements-dev.txt
+          npm install --no-save aws-cdk
+      - name: Diff
+        working-directory: infra
+        run: npx cdk diff "${{ inputs.stack }}"
+      - name: Deploy
+        working-directory: infra
+        run: npx cdk deploy "${{ inputs.stack }}" --require-approval never
