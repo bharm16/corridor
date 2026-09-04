@@ -16,17 +16,29 @@ hidden inputs out of the rendered HTML, which is the only way a test can prove
 that what the screen offers is submittable, rather than that a hand-written
 payload happens to satisfy the route.
 
-The one seam a test stands in for is the worker's *input resolver*: #529 takes
-the customer's template bytes, the approved template and mapping binding, the
-first-issue behaviour and the report-preparation reading from its caller, and
-`release_preparation_worker` deliberately does not invent a second authority
-over where those come from. `run_preparation_request` — the seam a background
-worker would call — is real here, and only its `PreparationInputs` are handed
-in.
+**There is no longer a seam in the middle that a test stands in for.** Until
+#690 nothing deployed executed a confirmed preparation request, so these
+proofs called `run_preparation_request` themselves and handed it the template
+bytes, the template binding, the first-issue behaviour and the report-
+preparation reading that #529 takes from its caller. That gap is closed, and
+so these run the whole path:
+
+    HTTP confirmation
+    -> an occurrence published for that one request
+    -> a claim by the production Due Work handler registry
+    -> the production input resolver, on retained authorities only
+    -> a candidate
+    -> HTTP authorization by the designated releaser
+    -> the authorized package, on the screen the coordinator was already on
+
+What the tests supply is a project, a declared instant and a coordinator's
+clicks. What they never supply is a template, a reading, a template binding or
+a first-issue behaviour.
 
 Nothing here reads a clock. The cutoff, every request instant and every
-attempt's start and finish are declared, and the routes take theirs from
-`get_review_clock`.
+runtime tick are declared: the routes take theirs from `get_review_clock` and
+the runtime takes its from the `Ticker` seam below, whose `now` returns a
+value this file set.
 """
 
 from __future__ import annotations
@@ -43,9 +55,17 @@ from sqlalchemy import func, select
 
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.config import settings
+from corridor.due_work import (
+    HANDLER_RELEASE_PREPARATION,
+    HANDLER_REPORT_PREPARATION,
+    ReleasePreparationDeclaration,
+    ReportPreparationDeclaration,
+    configure_due_work,
+    enqueue_due_work,
+    run_due_work_once,
+)
 from corridor.issue_coverage import derive_coverage_reading
 from corridor.issue_profile import effective_issue_inventory
-from corridor.issue_rendering import NO_PRIOR_COMPARISON_STATEMENT
 from corridor.models import (
     IssueCoverageDeclaration,
     Project,
@@ -57,17 +77,13 @@ from corridor.models import (
 from corridor.object_storage import content_store
 from corridor.principals import HumanPrincipal
 from corridor.project_workflow import PREPARATION_FAILED, issue_readiness
-from corridor.release_candidate import RENDERER_FAILED, current_release_candidate
+from corridor.release_candidate import current_release_candidate
 from corridor.release_preparation import (
     FAILED,
     PREPARED,
-    pending_request_ids,
     preparation_standing,
 )
-from corridor.release_preparation_worker import (
-    PreparationInputs,
-    run_preparation_request,
-)
+from corridor.release_preparation_supervisor import retained_output_template
 from corridor.web.app import (
     app,
     get_human_principal,
@@ -78,14 +94,7 @@ from corridor.web.issue_section import PREPARE_ACTION, issue_view
 
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import configure_issue
-from test_release_candidate import (
-    BINDING,
-    CHASE,
-    TEMPLATE,
-    UCM_RENDERER,
-    WEEKLY,
-    _preparation,
-)
+from test_release_candidate import CHASE, UCM_RENDERER, WEEKLY
 
 
 COORDINATOR = HumanPrincipal("local:coordinator")
@@ -94,13 +103,14 @@ OPERATOR = HumanPrincipal("local:operator")
 
 JANUARY = datetime(2026, 1, 5, tzinfo=timezone.utc)
 FEBRUARY = datetime(2026, 2, 2, tzinfo=timezone.utc)
-# The instant every request in this file is read and decided at, and the cutoff
-# the week is read at. One declared moment, never a clock.
+# One declared timeline, in the order a deployed week happens in: the two Due
+# Work schedules are enabled, the weekly reading is taken, the coordinator
+# reads and confirms the week, and the supervisor ticks afterwards.
+SCHEDULES_FROM = datetime(2026, 3, 2, 7, 0, tzinfo=timezone.utc)
+READING_AT = datetime(2026, 3, 2, 7, 30, tzinfo=timezone.utc)
 NOW = datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)
-STARTED_AT = datetime(2026, 3, 2, 8, 1, tzinfo=timezone.utc)
-FINISHED_AT = datetime(2026, 3, 2, 8, 2, tzinfo=timezone.utc)
-RETRY_STARTED_AT = datetime(2026, 3, 2, 9, 1, tzinfo=timezone.utc)
-RETRY_FINISHED_AT = datetime(2026, 3, 2, 9, 2, tzinfo=timezone.utc)
+WORKER_AT = datetime(2026, 3, 2, 8, 5, tzinfo=timezone.utc)
+RETRY_WORKER_AT = datetime(2026, 3, 2, 9, 5, tzinfo=timezone.utc)
 
 
 @dataclass(frozen=True)
@@ -237,39 +247,109 @@ def week(client, adopted: Adopted) -> str:
     return page.text
 
 
-def run_worker(
-    factory,
-    adopted: Adopted,
-    *,
-    template_bytes: bytes | None = None,
-    started_at: datetime = STARTED_AT,
-    finished_at: datetime = FINISHED_AT,
-):
-    """Run the one pending request the way a background worker would.
+# --- the deployed runtime, driven the way a deployment drives it -------------
 
-    The request is found by ``pending_request_ids`` — the worker's own reader —
-    rather than by an identifier the test kept from the POST, so a route that
-    recorded a request nobody could find would fail here.
+
+class Ticker:
+    """The runtime's clock seam, holding one declared instant at a time."""
+
+    def __init__(self, moment: datetime) -> None:
+        self.moment = moment
+
+    def now(self) -> datetime:
+        return self.moment
+
+
+def enable_runtime(
+    factory, adopted: Adopted, *, weekly: bool = True, supervisor: bool = True
+) -> None:
+    """Turn on the two schedules a deployed project runs this path with.
+
+    Both are ordinary released declarations, configured through the same
+    ``configure_due_work`` a deployment configures them through. Either may be
+    left off, which is how a test says "this project has no retained weekly
+    reading" or "nothing is going to claim this request yet" without reaching
+    past the runtime to arrange it.
     """
 
-    with factory() as reading:
-        pending = pending_request_ids(reading, project_id=adopted.project_id)
-    assert len(pending) == 1, f"expected one pending request, found {pending}"
-    return run_preparation_request(
-        factory,
-        request_id=pending[0],
-        inputs=PreparationInputs(
-            preparation=_preparation(adopted.project_id, adopted.revision_id),
-            templates=TEMPLATE,
-            first_issue_behavior=NO_PRIOR_COMPARISON_STATEMENT,
-            template_bytes=(
-                adopted.template_bytes if template_bytes is None else template_bytes
-            ),
-            binding=BINDING,
-        ),
-        started_at=started_at,
-        finished_at=finished_at,
+    with factory() as setup:
+        if weekly:
+            configure_due_work(
+                setup,
+                ReportPreparationDeclaration.released_weekly(
+                    project_id=adopted.project_id,
+                    configuration_version="report-preparation-v1",
+                    starts_at=SCHEDULES_FROM,
+                ),
+                now=SCHEDULES_FROM,
+            )
+        if supervisor:
+            configure_due_work(
+                setup,
+                ReleasePreparationDeclaration.released_on_request(
+                    project_id=adopted.project_id,
+                    configuration_version="release-preparation-v1",
+                    starts_at=SCHEDULES_FROM,
+                ),
+                now=SCHEDULES_FROM,
+            )
+        setup.commit()
+
+
+def tick(factory, clock: Ticker, *, owner: str = "runtime:test-supervisor"):
+    """One runtime cycle: publish what is due, then work one occurrence."""
+
+    with factory() as ticking:
+        with ticking.begin():
+            enqueue_due_work(ticking, now=clock.now())
+    return run_due_work_once(factory, clock=clock, owner=owner)
+
+
+def take_weekly_reading(factory) -> None:
+    """The retained #488 reading a preparation request is measured against."""
+
+    result = tick(factory, Ticker(READING_AT))
+    assert result is not None
+    assert result.handler_key == HANDLER_REPORT_PREPARATION
+    assert result.execution_outcome == "completed", result.error_code
+
+
+def confirm_coverage(client, adopted: Adopted) -> dict[str, str]:
+    """The coordinator's own act, submitted exactly as the page offered it."""
+
+    confirmation = _form(week(client, adopted), "/issue/prepare")
+    assert confirmation is not None
+    requested = client.post(
+        f"/work/{adopted.slug}/issue/prepare", data=confirmation
     )
+    assert requested.status_code == 202, requested.text
+    assert "Preparing this issue" in prose(requested.text)
+    return confirmation
+
+
+def run_supervisor(
+    factory, *, at: datetime, owner: str = "runtime:test-supervisor"
+):
+    """Work the one published preparation occurrence, through the registry.
+
+    The assertions are what make this a proof rather than a call: nothing here
+    names the request, the handler or the worker, so a runtime that published
+    nothing, claimed something else, or raised instead of recording an outcome
+    fails here rather than further down where it would read as a rendering
+    problem.
+    """
+
+    result = tick(factory, Ticker(at), owner=owner)
+    assert result is not None, (
+        "nothing was due: the confirmed request was never published as an "
+        "occurrence, so no deployed process would ever run it"
+    )
+    assert result.handler_key == HANDLER_RELEASE_PREPARATION, (
+        "the production registry handler is what claims a published "
+        f"preparation occurrence, not {result.handler_key}"
+    )
+    assert result.execution_outcome == "completed", result.error_code
+    return result
 
 
 def _count(factory, model, adopted: Adopted) -> int:
@@ -291,17 +371,23 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
 ):
     """The whole of #536's first required proof, in the order it is written.
 
-    No candidate, the derived coverage reading, one confirmation, one worker
-    run, the candidate on the same screen, the designated releaser's approval,
-    and the authorized package — all through `/work/{slug}` and the two acts it
-    carries.
+    No candidate, the derived coverage reading, one confirmation, a claim by
+    the production Due Work registry, the candidate on the same screen, the
+    designated releaser's approval, and the authorized package -- all through
+    `/work/{slug}` and the two acts it carries, with no test-side shortcut
+    through the middle.
     """
+
+    enable_runtime(factory, adopted)
+    take_weekly_reading(factory)
 
     # 1. The project has no candidate, and the section says so rather than
     #    offering an approval.
     body = week(client, adopted)
     assert "No issue has been prepared for this project yet" in prose(body)
     assert _form(body, "/issue/authorize") is None
+    assert _count(factory, ReleaseCandidate, adopted) == 0
+    assert _count(factory, ReleasePackage, adopted) == 0
 
     # 2. The Issue section shows the derived coverage reading, and the digest
     #    it offers to confirm is the one `issue_coverage` derives.
@@ -333,14 +419,20 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
         assert (
             preparation_standing(reading, project_id=adopted.project_id).in_flight
         )
+    # And still nothing has been prepared, so the step below is what prepares
+    # it rather than something that already had.
+    assert _count(factory, ReleaseCandidate, adopted) == 0
 
-    # 4. A worker prepares the candidate.
-    attempt = run_worker(factory, adopted)
-    assert attempt.outcome == "prepared", attempt.reason
-    assert attempt.candidate_id is not None
+    # 4. The deployed runtime publishes an occurrence for that one request,
+    #    claims it, resolves every input from its retained authority, and
+    #    prepares the candidate.
+    result = run_supervisor(factory, at=WORKER_AT)
+    assert result.handler_result["outcome"] == "prepared", result.handler_result
+    candidate_id = int(result.handler_result["candidate_id"])
+    assert _count(factory, ReleaseCandidate, adopted) == 1
 
     # 5. The candidate appears in the same workflow, and the approval it offers
-    #    names the candidate the worker just made.
+    #    names the candidate the runtime just made.
     body = week(client, adopted)
     readable = prose(body)
     assert "Ready for your approval" in readable
@@ -348,23 +440,33 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     assert "the weekly Coordination Report" in readable
     approval = _form(body, "/issue/authorize")
     assert approval is not None
-    assert approval["candidate_id"] == str(attempt.candidate_id)
+    assert approval["candidate_id"] == str(candidate_id)
     # The candidate names the coverage the coordinator confirmed on the screen,
     # not one the worker derived for itself.
     with factory() as reading:
-        candidate = reading.get_one(ReleaseCandidate, int(attempt.candidate_id))
+        candidate = reading.get_one(ReleaseCandidate, candidate_id)
         declaration = reading.get_one(
             IssueCoverageDeclaration, int(candidate.coverage_declaration_id)
         )
         assert declaration.derived_reading_digest == derived.reading_digest
         assert candidate.prepared_by_principal == COORDINATOR.subject
 
-    # 6. The designated releaser approves it, on the surface they were on.
+    # 6. The *designated* releaser approves it, on the surface they were on.
+    #    The coordinator who prepared it may not: preparing an issue is not
+    #    releasing one, and the person who asked for it is not thereby the
+    #    person who may send it.
+    assert _count(factory, ReleasePackage, adopted) == 0
+    refused = client.post(
+        f"/work/{adopted.slug}/issue/authorize", data=approval
+    )
+    assert refused.status_code == 403, refused.text
+    assert _count(factory, ReleasePackage, adopted) == 0
     as_principal(RELEASER)
     authorized = client.post(
         f"/work/{adopted.slug}/issue/authorize", data=approval
     )
     assert authorized.status_code == 201, authorized.text
+    assert _count(factory, ReleasePackage, adopted) == 1
 
     # 7. The Issue section shows the authorized package, and offers nothing
     #    that would send it twice.
@@ -379,7 +481,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
                 ReleasePackage.project_id == adopted.project_id
             )
         ).one()
-        assert int(package.candidate_id) == int(attempt.candidate_id)
+        assert int(package.candidate_id) == candidate_id
         assert package.authorized_by_principal == RELEASER.subject
         assert package.authorized_at == NOW
 
@@ -395,16 +497,20 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     Staleness here is the ordinary weekly kind the amendment names first: what
     the project is configured to externally issue changed after the candidate
     was prepared, so the candidate no longer describes the project it was made
-    for.
+    for. Both candidates are prepared by the deployed runtime, from two
+    separately published occurrences naming two separate requests.
     """
 
+    enable_runtime(factory, adopted)
+    take_weekly_reading(factory)
+
     # An authorizable candidate, made the way proof one makes one.
-    first = _form(week(client, adopted), "/issue/prepare")
-    assert client.post(
-        f"/work/{adopted.slug}/issue/prepare", data=first
-    ).status_code == 202
-    stale = run_worker(factory, adopted)
-    assert stale.outcome == "prepared", stale.reason
+    first = confirm_coverage(client, adopted)
+    prepared = run_supervisor(factory, at=WORKER_AT)
+    assert prepared.handler_result["outcome"] == "prepared", (
+        prepared.handler_result
+    )
+    stale_candidate_id = int(prepared.handler_result["candidate_id"])
     assert _form(week(client, adopted), "/issue/authorize") is not None
 
     # The candidate becomes stale: the customer's configured issue changes.
@@ -424,7 +530,7 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     readable = prose(body)
     with factory() as reading:
         view = issue_view(reading, project_id=adopted.project_id, as_of=NOW)
-        candidate = reading.get_one(ReleaseCandidate, int(stale.candidate_id))
+        candidate = reading.get_one(ReleaseCandidate, stale_candidate_id)
         old_coverage_identity = candidate.coverage_identity
     assert view.stale_reasons
     assert "configured to externally issue changed" in " ".join(view.stale_reasons)
@@ -452,22 +558,20 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
         )
     assert fresh["derived_reading_digest"] == derived.reading_digest
 
-    # A fresh candidate is prepared from it.
+    # A fresh candidate is prepared from it, by a second published occurrence.
     assert client.post(
         f"/work/{adopted.slug}/issue/prepare", data=fresh
     ).status_code == 202
-    replacement = run_worker(
-        factory,
-        adopted,
-        started_at=RETRY_STARTED_AT,
-        finished_at=RETRY_FINISHED_AT,
+    replacement = run_supervisor(factory, at=RETRY_WORKER_AT)
+    assert replacement.handler_result["outcome"] == "prepared", (
+        replacement.handler_result
     )
-    assert replacement.outcome == "prepared", replacement.reason
-    assert int(replacement.candidate_id) != int(stale.candidate_id)
+    replacement_candidate_id = int(replacement.handler_result["candidate_id"])
+    assert replacement_candidate_id != stale_candidate_id
     with factory() as reading:
         assert int(
             current_release_candidate(reading, adopted.project_id).id
-        ) == int(replacement.candidate_id)
+        ) == replacement_candidate_id
 
     # The stale candidate stays visible as history once it has been replaced,
     # which is when it would otherwise vanish: the section names the current
@@ -483,7 +587,7 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     as_principal(RELEASER)
     refused = client.post(
         f"/work/{adopted.slug}/issue/authorize",
-        data={"candidate_id": int(stale.candidate_id)},
+        data={"candidate_id": stale_candidate_id},
     )
     assert refused.status_code == 409, refused.text
     assert _count(factory, ReleasePackage, adopted) == 0
@@ -492,35 +596,55 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     # the section offers instead.
     approval = _form(week(client, adopted), "/issue/authorize")
     assert approval is not None
-    assert approval["candidate_id"] == str(replacement.candidate_id)
+    assert approval["candidate_id"] == str(replacement_candidate_id)
     assert client.post(
         f"/work/{adopted.slug}/issue/authorize", data=approval
     ).status_code == 201
+    assert _count(factory, ReleasePackage, adopted) == 1
 
 
 # --- proof three: a failed preparation, and a retry that means something ----
 
 
 def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
-    factory, adopted, client, store
+    factory, adopted, client, store, tmp_path
 ):
     """#536's third required proof, in the order it is written.
 
-    The failure is a real one from #529's own vocabulary: the bytes handed to
-    the UCM renderer are not the workbook the customer registered, so the
-    mandatory member of the package cannot be produced.
+    The failure is reached the way a deployment would reach it rather than by
+    handing the worker bad inputs: the bytes the customer's registered output
+    template was registered over are not in the content store when the claimed
+    occurrence goes looking for them, so the production resolver can retrieve
+    no template, refuses by name, and the mandatory member of the package is
+    never produced. It is also the one thing #690 left proved only at the
+    resolver — a template refusal driven through the handler.
+
+    **Nothing about what the coordinator confirmed moves between the failure
+    and the retry**, which is what makes the retry's idempotency mean
+    something: the second request exists because the first attempt finished
+    having produced nothing, and not because the reading changed under it.
     """
 
-    confirmation = _form(week(client, adopted), "/issue/prepare")
-    assert client.post(
-        f"/work/{adopted.slug}/issue/prepare", data=confirmation
-    ).status_code == 202
+    enable_runtime(factory, adopted)
+    take_weekly_reading(factory)
+    confirmation = confirm_coverage(client, adopted)
 
-    attempt = run_worker(
-        factory, adopted, template_bytes=b"not the registered workbook"
-    )
-    assert attempt.outcome == "refused"
-    assert attempt.refusal_code == RENDERER_FAILED
+    # The registered template's own bytes go missing from the store. Nothing
+    # in the database changes: the registration, the profile and every
+    # coverage line are exactly what the coordinator confirmed.
+    with factory() as reading:
+        registered = retained_output_template(
+            reading, project_id=adopted.project_id, store=store
+        )
+    (tmp_path / "files" / registered.storage_key).unlink()
+
+    result = run_supervisor(factory, at=WORKER_AT)
+    assert result.handler_result["outcome"] == "failed", result.handler_result
+    assert result.handler_result["candidate_id"] is None
+    with factory() as reading:
+        standing = preparation_standing(reading, project_id=adopted.project_id)
+    assert standing.state == FAILED
+    assert "output template" in (standing.reason or ""), standing.reason
 
     # No partial candidate: not a candidate row, not an artifact row.
     assert _count(factory, ReleaseCandidate, adopted) == 0
@@ -532,9 +656,6 @@ def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
         problems = issue_readiness(
             reading, project_id=adopted.project_id, as_of=NOW
         )
-        assert preparation_standing(
-            reading, project_id=adopted.project_id
-        ).state == FAILED
     assert PREPARATION_FAILED in {problem.code for problem in problems}
     body = week(client, adopted)
     readable = prose(body)
@@ -542,10 +663,21 @@ def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
     assert "Nothing partial was written" in readable
     assert "What must be put right first" in readable
 
+    # The store is put right, which is the whole of what was wrong.
+    store.put(
+        registered.storage_key,
+        adopted.template_bytes,
+        sha256=registered.content_sha256,
+    )
+
     # The retry the sentence promises is offered, and it is idempotent: two
     # submissions of the same confirmed reading queue one preparation.
     retry = _form(body, "/issue/prepare")
     assert retry is not None
+    assert retry == confirmation, (
+        "nothing the coordinator confirmed has moved, so the retry below is a "
+        "second request only because the first attempt finished with nothing"
+    )
     assert client.post(
         f"/work/{adopted.slug}/issue/prepare", data=retry
     ).status_code == 202
@@ -558,19 +690,18 @@ def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
     assert _count(factory, IssueCoverageDeclaration, adopted) == 1
     assert _count(factory, ReleasePreparationRequest, adopted) == 2
 
-    # And the retry actually runs: the same request the section is waiting on,
-    # prepared this time, is a candidate the coordinator can act on.
-    retried = run_worker(
-        factory,
-        adopted,
-        started_at=RETRY_STARTED_AT,
-        finished_at=RETRY_FINISHED_AT,
-    )
-    assert retried.outcome == "prepared", retried.reason
+    # And the retry actually runs, on its own published occurrence: the same
+    # request the section is waiting on, prepared this time, is a candidate the
+    # coordinator can act on.
+    retried = run_supervisor(factory, at=RETRY_WORKER_AT)
+    assert retried.handler_result["outcome"] == "prepared", retried.handler_result
+    assert _count(factory, ReleaseCandidate, adopted) == 1
     with factory() as reading:
         assert preparation_standing(
             reading, project_id=adopted.project_id
         ).state == PREPARED
     approval = _form(week(client, adopted), "/issue/authorize")
     assert approval is not None
-    assert approval["candidate_id"] == str(retried.candidate_id)
+    assert approval["candidate_id"] == str(
+        retried.handler_result["candidate_id"]
+    )
