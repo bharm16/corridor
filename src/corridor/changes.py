@@ -69,7 +69,16 @@ from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal
 @dataclass
 class Change:
     ref_code: str
-    kind: str  # new | closed | dismissed | committed_date_change | escalated | became_ready
+    # new | closed | dismissed | committed_date_change | required_by_change
+    # | escalated | became_ready
+    #
+    # `committed_date_change` and `required_by_change` are deliberately two
+    # kinds. Promised For is when the external party says it will act;
+    # Required By is when the specified construction condition must be met.
+    # They are different quantities, held by different parties, and a reader
+    # who cannot tell them apart cannot tell a promise moving from a deadline
+    # moving (#637).
+    kind: str
     detail: str
     # The Dependency this change is about, so a report cell describing it
     # drills through to the record rather than citing nothing (ADR-0003).
@@ -381,6 +390,42 @@ def diff_since_last(
                     f"first committed date: {now['published_promised_for']}",
                     now.get("id"),
                 )
+            )
+
+        # Required By — the date by which the specified construction condition
+        # must be met — is not the Promised For date above and is not an
+        # escalation. It is its own quantity and gets its own kind, so a
+        # reader can see a deadline move without it being mixed into a
+        # promise moving or into a strategy becoming critical (#637).
+        #
+        # Both directions are stated as the change they are. An earlier
+        # Required By is not a "slip" and a later one is not an improvement:
+        # whether either is good news depends on facts this module does not
+        # hold, so it says what moved and stops.
+        #
+        # Only the accepted record reaches here. `now` is this reading's
+        # snapshot of the accepted value and `was` is the previous run's,
+        # cross-checked against the accepted revision that run names. An
+        # unresolved schedule Proposed Delta is neither: it stays in Review as
+        # open work, and reporting it here would tell an external reader the
+        # accepted deadline had already moved when no one has accepted it.
+        #
+        # A snapshot written before this field was retained has no `need_date`
+        # key at all, and that is not the same as one recording no Required By
+        # — the same distinction `resolution_strategy` draws below. Reading
+        # absence as "none was recorded" would announce a schema change as a
+        # change in the world, for every record at once.
+        if "need_date" in was and was["need_date"] != now["need_date"]:
+            if was["need_date"] and now["need_date"]:
+                detail = (
+                    f"Required By moved {was['need_date']} → {now['need_date']}"
+                )
+            elif now["need_date"]:
+                detail = f"Required By recorded: {now['need_date']}"
+            else:
+                detail = "Required By is no longer recorded"
+            diff.changes.append(
+                Change(ref, "required_by_change", detail, now.get("id"))
             )
 
         # A snapshot written before #96 has no `resolution_strategy` key at
