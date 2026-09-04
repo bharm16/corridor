@@ -88,6 +88,169 @@ def _segment(project_id: int, document_id: int, text_value: str) -> SourceSegmen
     )
 
 
+# A fixed moment, because no test here reads the wall clock.
+RECORDED_AT = datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)
+
+# One row per project in each newly partitioned family (#657), chosen so the
+# whole seam can be seeded without standing up six write commands: each is a
+# plain insert the schema owner may make, and each carries `project_id`.
+SEEDED_RECORD_ROWS = {
+    "delta_groups": (
+        "insert into delta_groups (project_id, source_family, source_revision) "
+        "values (:project_id, 'ucm', :slug) returning id"
+    ),
+    "candidates": (
+        "insert into candidates (project_id, kind, payload_json, "
+        "source_document_id, source_pages) "
+        "values (:project_id, 'dependency', '{}'::jsonb, :document_id, "
+        "array[1]) returning id"
+    ),
+    "recorded_verbal_origins": (
+        "insert into recorded_verbal_origins "
+        "(project_id, recorded_by, recorded_at, exact_text, content_sha256) "
+        "values (:project_id, 'local:recorder', :recorded_at, :slug, :digest) "
+        "returning id"
+    ),
+    "facts": (
+        "insert into facts (project_id, fact_type, subject_kind, subject_key, "
+        "text_value, transformation, recorded_by, content_sha256) "
+        "values (:project_id, 'statement_wording', 'statement_candidate', "
+        ":slug, :slug, 'exact_prose_span_v1', 'local:recorder', :digest) returning id"
+    ),
+}
+
+
+# The two guards that hold "only the typed command writes accepted authority".
+# They are lifted for the seeding and put straight back; whether they hold is a
+# different claim with its own test, and borrowing them here would only mean
+# the partition on the accepted record goes untested.
+_RECORD_WRITE_GUARDS = (
+    "alter table project_record_revisions "
+    "{action} trigger trg_project_record_revisions_guard",
+    "alter table fact_decisions {action} trigger trg_fact_decisions_guard",
+)
+
+
+def _seed_record_rows(
+    owner, project_id: int, slug: str, *, document_id: int | None = None
+) -> dict[str, int]:
+    """One committed row per partitioned family, plus the accepted projection.
+
+    Proving that the *view* honours the partition needs a row in it, so the
+    two accepted-authority write guards are lifted around those inserts alone.
+    """
+
+    if document_id is None:
+        document_id = int(
+            owner.execute(
+                text(
+                    "insert into documents (project_id, sha256, filename, "
+                    "doc_type, numbering_scheme, pages, parse_status) "
+                    "values (:project_id, :digest, :slug, 'matrix', "
+                    "'project-unique', 1, 'parsed') returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "digest": sha256(f"{slug}-doc".encode()).hexdigest(),
+                    "slug": f"{slug}.xlsx",
+                },
+            ).scalar_one()
+        )
+    segment_id = int(
+        owner.execute(
+            text(
+                "insert into source_segments (project_id, document_id, kind, "
+                "exact_text, content_sha256, ordinal, sheet_name, cell_range) "
+                "values (:project_id, :document_id, 'spreadsheet_cell', :slug, "
+                ":digest, 2, 'Conflicts', 'A3') returning id"
+            ),
+            {
+                "project_id": project_id,
+                "document_id": document_id,
+                "slug": f"{slug}-cell",
+                "digest": sha256(f"{slug}-cell".encode()).hexdigest(),
+            },
+        ).scalar_one()
+    )
+    ids = {}
+    for table, statement in SEEDED_RECORD_ROWS.items():
+        ids[table] = int(
+            owner.execute(
+                text(statement),
+                {
+                    "project_id": project_id,
+                    "slug": f"{slug}-row",
+                    "recorded_at": RECORDED_AT,
+                    "digest": sha256(f"{slug}-row".encode()).hexdigest(),
+                    "document_id": document_id,
+                },
+            ).scalar_one()
+        )
+    # A source-backed Fact is refused at the end of the statement unless a
+    # `value_source` names the words it came from, so the Fact and its source
+    # are one act here exactly as they are everywhere else.
+    ids["fact_sources"] = int(
+        owner.execute(
+            text(
+                "insert into fact_sources (project_id, fact_id, "
+                "source_segment_id, role, ordinal) "
+                "values (:project_id, :fact_id, :segment_id, 'value_source', 1)"
+                " returning id"
+            ),
+            {
+                "project_id": project_id,
+                "fact_id": ids["facts"],
+                "segment_id": segment_id,
+            },
+        ).scalar_one()
+    )
+    for statement in _RECORD_WRITE_GUARDS:
+        owner.execute(text(statement.format(action="disable")))
+    try:
+        revision_id = int(
+            owner.execute(
+                text(
+                    "insert into project_record_revisions "
+                    "(project_id, command_type, human_principal, "
+                    "idempotency_key) "
+                    "values (:project_id, 'adopt_baseline', 'local:recorder', "
+                    ":key) returning id"
+                ),
+                {"project_id": project_id, "key": f"{slug}-revision"},
+            ).scalar_one()
+        )
+        ids["project_record_revisions"] = revision_id
+        ids["fact_decisions"] = int(
+            owner.execute(
+                text(
+                    "insert into fact_decisions "
+                    "(project_id, fact_id, subject_key, fact_type, "
+                    "revision_id) values (:project_id, :fact_id, :slug, "
+                    "'statement_wording', :revision_id) returning id"
+                ),
+                {
+                    "project_id": project_id,
+                    "fact_id": ids["facts"],
+                    "slug": f"{slug}-row",
+                    "revision_id": revision_id,
+                },
+            ).scalar_one()
+        )
+    finally:
+        # The deferred foreign keys of the rows just written are still pending,
+        # and PostgreSQL refuses to alter a table that has pending trigger
+        # events. Making them immediate settles those rows here, which is also
+        # where a failure belongs.
+        owner.execute(text("set constraints all immediate"))
+        for statement in _RECORD_WRITE_GUARDS:
+            owner.execute(text(statement.format(action="enable")))
+        # And put the deferral back, because a second project seeded in the
+        # same transaction needs its Fact and that Fact's value source to be
+        # one act again.
+        owner.execute(text("set constraints all deferred"))
+    return ids
+
+
 @pytest.fixture
 def two_projects(runtime_database):
     """Two committed projects with one segment each, and a member of only one."""
@@ -121,8 +284,24 @@ def two_projects(runtime_database):
                 can_coordinate=True,
             )
         )
+        owner.flush()
         ids = (ours.id, theirs.id)
     return ids
+
+
+@pytest.fixture
+def their_record_rows(runtime_database, two_projects):
+    """The other project's committed row in each partitioned family, by id.
+
+    A direct id is how a partition gets bypassed when only listing queries were
+    considered: `select * from delta_groups` is obviously project-shaped and
+    `where id = 41` is not, so the second is the one that has to be tried.
+    """
+
+    _ours, theirs = two_projects
+    with runtime_database.session_factory.begin() as owner:
+        _seed_record_rows(owner, _ours, "ours")
+        return _seed_record_rows(owner, theirs, "theirs")
 
 
 @pytest.fixture
@@ -330,23 +509,19 @@ def test_a_refused_switch_keeps_the_partition_the_caller_already_held(
     web_connection.rollback()
 
 
-def test_changing_partitions_is_gated_by_the_membership_proof_not_by_a_commit(
-    runtime_database, two_projects, web_connection
-):
-    """What one transaction may declare, measured rather than assumed (#654).
+# --- One transaction holds one scope (#662, amending #654) -----------------
 
-    #654 assumed a caller could not move from one valid partition to another
-    without an explicit transaction boundary. It can: every successful
-    declaration re-seals the setting, so a person on both projects switches
-    inside a single transaction and the row-level policy follows at once. The
-    boundary that actually holds is the proof — the command re-checks the
-    active roster entry as its own owner on every call — and the savepoint,
-    which is what returns a *refused* caller to the scope it had. The switch
-    replaces the partition rather than widening it, which is the property that
-    matters: the caller never holds both projects at once.
+
+@pytest.fixture
+def member_of_both(runtime_database, two_projects):
+    """The same person on both projects, so a switch is refused by the *rule*.
+
+    Refusing a switch to a project the caller was never on proves nothing about
+    scope: the membership proof already refuses that. The switch has to be one
+    the database would otherwise have allowed.
     """
 
-    ours, theirs = two_projects
+    _ours, theirs = two_projects
     with runtime_database.session_factory.begin() as owner:
         owner.add(
             ProjectRosterEntry(
@@ -356,21 +531,344 @@ def test_changing_partitions_is_gated_by_the_membership_proof_not_by_a_commit(
                 active=True,
             )
         )
+    return two_projects
 
+
+def test_the_first_declaration_of_a_transaction_sets_the_scope(
+    member_of_both, web_connection
+):
+    """None to project A: the ordinary case, and the one everything else is measured against."""
+
+    ours, _theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        assert access.current_partition_declaration(web) is None
+
+        assert access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        ) == ours
+
+        assert access.current_project_partition(web) == (ours,)
+        assert (
+            access.current_partition_declaration(web)
+            == f"project:{LEAVER.subject}:{ours}"
+        )
+    web_connection.rollback()
+
+
+def test_redeclaring_the_same_project_scope_is_idempotent(
+    member_of_both, web_connection
+):
+    """A gate that runs twice on one request must not be a defect (#662)."""
+
+    ours, _theirs = member_of_both
     with OrmSession(bind=web_connection) as web:
         access.open_project_partition(
             web, principal_subject=LEAVER.subject, project_id=ours
         )
 
+        assert access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        ) == ours
+
+        assert access.current_project_partition(web) == (ours,)
+    web_connection.rollback()
+
+
+def test_changing_to_another_project_inside_one_transaction_is_refused(
+    member_of_both, web_connection
+):
+    """The correction #662 makes to what #654 measured.
+
+    #654 found that a person on both projects could move from one to the other
+    inside a single transaction, because every successful declaration re-seals
+    the setting, and recorded that as the behaviour. It is the wrong
+    behaviour: it makes the authorization context of a unit of work a moving
+    target, so an atomic read can span two customers' projects and nothing
+    objects. A transaction now holds one scope, and a new transaction is the
+    boundary for changing it.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+    web_connection.rollback()
+
+
+def test_a_refused_scope_change_leaves_the_caller_holding_what_it_had(
+    member_of_both, web_connection
+):
+    """Refusing a change must not cost the caller the reading it was doing.
+
+    The savepoint #654 established is what makes this true: the scope is a
+    transaction-local setting, PostgreSQL restores such a setting when a
+    subtransaction aborts, and the command runs inside one. So the reader is
+    left with project A's rows — not the empty partition, and certainly not
+    project B's.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+        assert (
+            access.current_partition_declaration(web)
+            == f"project:{LEAVER.subject}:{ours}"
+        )
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        assert web.scalar(text("select 1")) == 1
+    web_connection.rollback()
+
+
+def test_widening_a_single_project_to_the_member_reading_is_refused(
+    member_of_both, web_connection
+):
+    """Changing scope *kind* is changing scope.
+
+    A cross-project reading is a wider partition than a single project, so
+    reaching it from inside a transaction that already declared one project is
+    exactly the widening #662 refuses. The cross-project surfaces declare the
+    member partition first and never after.
+    """
+
+    ours, _theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_member_project_partition(
+                web, principal_subject=LEAVER.subject
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+    web_connection.rollback()
+
+
+def test_redeclaring_the_same_member_reading_is_idempotent(
+    member_of_both, web_connection
+):
+    """The cross-project scope is identified by the person, not by today's ids.
+
+    Both surfaces that use it declare it at the top of the request, and a
+    roster that moves under a long transaction must not turn the second
+    declaration into a refusal.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        first = access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+
+        again = access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+
+        assert first == again == (ours, theirs)
+        assert (
+            access.current_partition_declaration(web)
+            == f"member:{LEAVER.subject}"
+        )
+    web_connection.rollback()
+
+
+def test_narrowing_the_member_reading_to_one_project_is_refused(
+    member_of_both, web_connection
+):
+    """Narrowing is a change too: batch work uses the declared cross-project scope."""
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+
+        assert access.current_project_partition(web) == (ours, theirs)
+    web_connection.rollback()
+
+
+def test_a_second_principal_cannot_take_over_a_declared_transaction(
+    runtime_database, member_of_both, web_connection
+):
+    """Scope is a person's, so a different person is a different scope.
+
+    Without this a pooled connection that had begun one person's cross-project
+    reading could be handed to another person's and answer with the first
+    person's projects still sealed in, or replace them mid-unit-of-work.
+    """
+
+    ours, theirs = member_of_both
+    other = HumanPrincipal("local:other")
+    with runtime_database.session_factory.begin() as owner:
+        owner.add(
+            ProjectRosterEntry(
+                project_id=theirs,
+                principal_subject=other.subject,
+                display_name="Other",
+                active=True,
+            )
+        )
+
+    with OrmSession(bind=web_connection) as web:
+        access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_member_project_partition(
+                web, principal_subject=other.subject
+            )
+
+        assert access.current_project_partition(web) == (ours, theirs)
+    web_connection.rollback()
+
+
+def test_a_new_transaction_is_the_boundary_for_changing_scope(
+    member_of_both, web_connection
+):
+    """The rule is a boundary, not a prohibition (#662).
+
+    Cross-project coordination reads the member partition; batch work takes
+    one project per transaction. Both are available — what is refused is doing
+    them inside the same unit of work, where an atomic read would span two.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+    web_connection.rollback()
+
+    with OrmSession(bind=web_connection) as web:
+        assert access.current_partition_declaration(web) is None
+
         access.open_project_partition(
             web, principal_subject=LEAVER.subject, project_id=theirs
         )
 
-        assert access.current_project_partition(web) == (theirs,)
         assert [
             row.exact_text for row in web.scalars(select(SourceSegment)).all()
         ] == ["theirs-UC-1"]
     web_connection.rollback()
+
+
+def test_closing_the_partition_does_not_release_the_declared_scope(
+    member_of_both, web_connection
+):
+    """Being finished with a reading is not permission to start another one.
+
+    If closing cleared the declaration, the guard would be one extra call to
+    step around and would refuse nothing at all.
+    """
+
+    ours, theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.close_project_partition(web)
+        assert access.current_project_partition(web) is None
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+    web_connection.rollback()
+
+
+def test_the_same_scope_can_be_taken_up_again_after_it_was_given_up(
+    member_of_both, web_connection
+):
+    """Closing is reversible for the scope this transaction actually holds."""
+
+    ours, _theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        access.close_project_partition(web)
+
+        assert access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        ) == ours
+
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+    web_connection.rollback()
+
+
+def test_a_hand_written_declaration_refuses_every_further_declaration(
+    member_of_both, web_connection
+):
+    """The declaration is sealed, so tampering fails closed rather than open.
+
+    The guard is a consistency rule and not a second forgery defence — a
+    caller that clears the setting still has to pass the membership proof to
+    obtain any scope. What the seal buys is that a *forged* declaration cannot
+    be used to pretend the transaction already holds the scope it wants: an
+    unverifiable declaration refuses everything after it.
+    """
+
+    ours, _theirs = member_of_both
+    with OrmSession(bind=web_connection) as web:
+        web.execute(
+            text(
+                "select set_config("
+                "'corridor.project_partition_declaration', :value, true)"
+            ),
+            {"value": f"project:{LEAVER.subject}:{ours}"},
+        )
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+
+        assert web.scalars(select(SourceSegment)).all() == []
+    web_connection.rollback()
+
+
+def test_the_web_capability_cannot_seal_a_declaration_of_its_own(
+    two_projects, web_connection
+):
+    """Sealing a declaration is the half of the guard that asks no question."""
+
+    with pytest.raises(ProgrammingError) as refused:
+        web_connection.execute(
+            text("select seal_partition_declaration('project:anyone:1')")
+        )
+    web_connection.rollback()
+    assert "permission denied for function seal_partition_declaration" in str(
+        refused.value
+    )
 
 
 def test_a_cross_project_reading_is_partitioned_by_active_membership(
@@ -423,6 +921,10 @@ def test_offboarding_leaves_a_live_connection_with_the_empty_partition(
             web, principal_subject=LEAVER.subject, project_id=ours
         )
         assert len(web.scalars(select(SourceSegment)).all()) == 1
+    # The reading above is finished, and finishing it is a transaction
+    # boundary: a declared scope belongs to one transaction (#662), so the
+    # connection has to leave that one before it can declare anything again.
+    web_connection.rollback()
 
     with runtime_database.session_factory.begin() as owner:
         access.deprovision_principal(owner, principal=LEAVER, operator=OPERATOR)
@@ -435,11 +937,225 @@ def test_offboarding_leaves_a_live_connection_with_the_empty_partition(
             == ()
         )
         assert web.scalars(select(SourceSegment)).all() == []
+    web_connection.rollback()
+
+    with OrmSession(bind=web_connection) as web:
         with pytest.raises(access.PartitionRefused):
             access.open_project_partition(
                 web, principal_subject=LEAVER.subject, project_id=ours
             )
     web_connection.rollback()
+
+
+# --- Complete partition coverage (#657) ------------------------------------
+
+
+def test_a_naked_select_on_every_partitioned_family_reads_one_project(
+    their_record_rows, two_projects, web_connection
+):
+    """The careless query, family by family, not only on the four #531 covered.
+
+    Each of these answered `select * from <table>` with both customers' rows
+    an hour ago. The seam is the same as `source_segments`, so the proof is
+    the same: no predicate, read as the deployed login, against committed rows.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        seen = {
+            table: web.execute(
+                text(f"select project_id from {table}")  # noqa: S608
+            ).scalars().all()
+            for table in sorted(their_record_rows)
+        }
+
+    assert seen == {table: [ours] for table in sorted(their_record_rows)}
+
+
+def test_a_direct_id_lookup_does_not_reach_the_other_project(
+    their_record_rows, two_projects, web_connection
+):
+    """The bypass a listing-shaped proof never finds.
+
+    `select * from fact_decisions` looks project-shaped and invites a
+    predicate; `where id = 41` does not, and every id-addressed surface in the
+    web app is written that way. So the row is fetched by the id it really
+    has, and the partition has to be what refuses it.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        reached = {
+            table: web.execute(
+                text(f"select id from {table} where id = :id"),  # noqa: S608
+                {"id": row_id},
+            ).scalar()
+            for table, row_id in sorted(their_record_rows.items())
+        }
+
+    assert reached == {table: None for table in their_record_rows}
+
+
+def test_the_accepted_record_view_reads_as_its_caller_not_as_its_owner(
+    their_record_rows, two_projects, web_connection
+):
+    """A view over partitioned tables is not partitioned by itself.
+
+    `current_project_record` is owned by the schema owner, and PostgreSQL
+    evaluates row-level security inside a view as the *view's* owner. So the
+    projection handed `corridor_web` every project's accepted record while
+    `facts` and `fact_decisions` under it refused — the partition was real and
+    the thing everybody reads through was not. `security_invoker` is what makes
+    the view ask the question as the caller.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        rows = web.execute(
+            text("select project_id from current_project_record")
+        ).scalars().all()
+
+    assert rows == [ours]
+
+
+def test_a_cross_project_reading_of_every_family_stops_at_the_roster(
+    runtime_database, their_record_rows, two_projects, web_connection
+):
+    """Member-project scope returns the authorized projects and no others."""
+
+    ours, theirs = two_projects
+    with runtime_database.session_factory.begin() as owner:
+        third = Project(slug="third", name="Third", is_synthetic=True)
+        owner.add(third)
+        owner.flush()
+        _seed_record_rows(owner, third.id, "third")
+        owner.add(
+            ProjectRosterEntry(
+                project_id=theirs,
+                principal_subject=LEAVER.subject,
+                display_name="Leaver",
+                active=True,
+            )
+        )
+
+    with OrmSession(bind=web_connection) as web:
+        scope = access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        )
+        seen = {
+            table: sorted(
+                set(
+                    web.execute(
+                        text(f"select project_id from {table}")  # noqa: S608
+                    ).scalars().all()
+                )
+            )
+            for table in sorted(their_record_rows)
+        }
+
+    assert scope == (ours, theirs)
+    assert seen == {table: [ours, theirs] for table in sorted(their_record_rows)}
+
+
+# --- The classification, checked against the database it describes ---------
+
+
+def _web_readable_relations(connection) -> set[str]:
+    return set(
+        connection.execute(
+            text(
+                "select c.relname from pg_class c "
+                "join pg_namespace n on n.oid = c.relnamespace "
+                "where n.nspname = 'public' "
+                "and c.relkind in ('r', 'v', 'm', 'p') "
+                "and has_table_privilege('corridor_web', c.oid, 'SELECT')"
+            )
+        ).scalars()
+    )
+
+
+def _partition_policy_relations(connection) -> set[str]:
+    return set(
+        connection.execute(
+            text(
+                "select c.relname from pg_policy p "
+                "join pg_class c on c.oid = p.polrelid "
+                "join pg_namespace n on n.oid = c.relnamespace "
+                "where n.nspname = 'public' "
+                "and p.polname like 'p\\_%\\_project\\_partition' "
+                "and c.relrowsecurity"
+            )
+        ).scalars()
+    )
+
+
+def test_the_classification_answers_every_relation_the_login_can_read(
+    runtime_database,
+):
+    """The static ratchet reads the models; this reads the database it built.
+
+    A relation created by the migration and mapped by nothing — a view, a
+    retired table — would slip past a models-only check, so the live schema is
+    what is enumerated here.
+    """
+
+    with runtime_database.session_factory() as owner:
+        readable = _web_readable_relations(owner.connection())
+
+    unclassified = access.unclassified_relations(readable)
+
+    assert unclassified == ()
+
+
+def test_every_relation_classified_as_partitioned_really_carries_the_policy(
+    runtime_database,
+):
+    """The list is a claim about PostgreSQL, so PostgreSQL is asked."""
+
+    with runtime_database.session_factory() as owner:
+        policied = _partition_policy_relations(owner.connection())
+
+    assert sorted(access.PARTITIONED_RELATIONS - policied) == []
+
+
+def test_no_relation_carries_the_policy_without_being_recorded_as_covered(
+    runtime_database,
+):
+    """A policy nobody wrote down is coverage nobody can rely on or retire."""
+
+    with runtime_database.session_factory() as owner:
+        policied = _partition_policy_relations(owner.connection())
+
+    assert sorted(policied - access.PARTITIONED_RELATIONS) == []
+
+
+def test_the_relations_named_as_uncovered_really_are_uncovered(runtime_database):
+    """An honest hole list stops being honest the moment a hole is filled.
+
+    If a relation on the uncovered list gains a policy, the list is what is now
+    wrong: it advertises a gap that no longer exists, and the ceiling that is
+    supposed to fall with it never does.
+    """
+
+    with runtime_database.session_factory() as owner:
+        policied = _partition_policy_relations(owner.connection())
+
+    covered = sorted(set(access.NOT_YET_PARTITIONED_RELATIONS) & policied)
+
+    assert covered == [], (
+        "these relations carry the partition policy but are still recorded as "
+        "not yet partitioned; move them to PARTITIONED_RELATIONS and lower "
+        "NOT_YET_PARTITIONED_CEILING"
+    )
 
 
 # --- Offboarding over the real sign-in path --------------------------------
