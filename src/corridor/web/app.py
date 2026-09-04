@@ -5057,15 +5057,17 @@ def portfolio(
     reading = read_portfolio(
         session, principal_subject=principal.subject, as_of=clock()
     )
-    focus = (reading.waiting or reading.standings or (None,))[0]
+    waiting = (reading.waiting or (None,))[0]
     response = TEMPLATES.TemplateResponse(
         request,
         "portfolio.html",
         {
             "portfolio": reading,
-            # Exactly one element carries `autofocus`: the first project still
-            # holding work, or the first project at all when none does.
-            "focus": focus.slug if focus is not None else "",
+            # Where the skip link goes, and nothing else: the first project
+            # still holding work. Reading this page moves no focus at all, so
+            # no element carries `autofocus` and the link is offered only when
+            # there is somewhere worth skipping to.
+            "skip_to": waiting.slug if waiting is not None else "",
             "cutoff": reading.cutoff.date().isoformat(),
             "email": web_session.email_normalized if web_session else "",
         },

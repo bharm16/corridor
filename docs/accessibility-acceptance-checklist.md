@@ -67,6 +67,14 @@ items below against the screen it builds.
 - [ ] A stale refusal preserves the coordinator's selections, announces what
       changed, and focuses the refusal (ADR-0039: no partial write).
 - [ ] A plain refresh lands on the item, not at the top of the document.
+- [ ] **A screen that performs no act moves no focus when it loads.** This
+      section governs the response to a write. A pure reading — the
+      cross-project portfolio (#537) is the one built so far — has no refusal,
+      no refused field and no completed Save to announce, so nothing on it
+      carries `autofocus`: moving focus on load can carry a screen-reader user
+      past the heading and the context that says what they are looking at.
+      Offer a user-activated skip link to the first thing needing attention
+      instead, and keep `tabindex="-1"` on the region it moves focus to.
 
 ### 5. Keyboard-complete child selection
 

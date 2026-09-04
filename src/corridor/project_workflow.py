@@ -87,7 +87,7 @@ from corridor.models import (
 )
 from corridor.packet_review import ItemReading, ReviewReading, read_review_items
 from corridor.presentation import field_label
-from corridor.release_preparation import preparation_standings
+from corridor.release_preparation import PreparationStanding, preparation_standings
 
 
 # The three sections, in the order the week runs. The names are internal
@@ -419,9 +419,22 @@ def issue_readiness(
 
 
 def issue_readiness_by_project(
-    session: Session, *, project_ids: Sequence[int], as_of: datetime
+    session: Session,
+    *,
+    project_ids: Sequence[int],
+    as_of: datetime,
+    preparations: Mapping[int, PreparationStanding] | None = None,
 ) -> dict[int, tuple[ReadinessProblem, ...]]:
-    """``issue_readiness`` for several projects, in a fixed number of statements."""
+    """``issue_readiness`` for several projects, in a fixed number of statements.
+
+    ``preparations`` is the one optional input, and it exists so that a caller
+    already holding ``preparation_standings`` for the same projects does not
+    make this function ask for them a second time. The cross-project reading
+    (#537) holds them because a request still in flight is secondary context on
+    its row while a finished failure is a problem here, and those are two
+    readings of one record. Left unsupplied, this reads them itself, which is
+    what every single-project caller does.
+    """
 
     ids = tuple(dict.fromkeys(int(value) for value in project_ids))
     problems: dict[int, list[ReadinessProblem]] = {
@@ -475,9 +488,11 @@ def issue_readiness_by_project(
     # flight adds nothing here on purpose: while a worker is preparing, no
     # human action is required, and a problem printed for it would ask a
     # coordinator to act on Corridor's own work in progress.
-    for project_id, standing in preparation_standings(
-        session, project_ids=ids
-    ).items():
+    if preparations is None:
+        preparations = preparation_standings(session, project_ids=ids)
+    for project_id, standing in preparations.items():
+        if project_id not in problems:
+            continue
         if not standing.failed:
             continue
         problems[project_id].append(
