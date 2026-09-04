@@ -1351,3 +1351,77 @@ def test_the_migration_revokes_exactly_the_relations_the_boundary_denies():
     assert set(module.WEB_PARTITIONED_TABLES) <= set(
         web_boundary.PROTECTED_RELATIONS
     )
+
+
+def test_the_migration_and_the_boundary_agree_the_public_allowlist_is_empty():
+    """#693's rule is one rule, not two copies that can drift apart.
+
+    The migration carries its own frozen allowlist for the reason #680's
+    block does: a revision may not change meaning when a module above it is
+    edited. That is the right shape and it is also how the two fall out of
+    step, so they are compared here — and the emptiness is asserted on both,
+    because an entry means every role in the customer database, present and
+    future, is meant to hold that privilege.
+    """
+
+    import importlib.util
+
+    from corridor import web_boundary
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/corridor/migrations/baseline_versions"
+        / "b2d5f8a1c4e7_source_append_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location("_b2d5f8a1c4e7_693", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert (
+        module.PUBLIC_RELATION_PRIVILEGE_ALLOWLIST
+        == web_boundary.PUBLIC_RELATION_PRIVILEGES
+    )
+    assert web_boundary.PUBLIC_RELATION_PRIVILEGES == {}, (
+        "an intentional PUBLIC grant needs a written reason and a decision "
+        "that says so; #693 recorded that neither relation it found was one"
+    )
+    # The three the sweep is recorded to remove are what the downgrade hands
+    # back. A pair in one and not the other is a privilege the downgrade
+    # either loses or invents.
+    assert set(module.PUBLIC_RELATION_PRIVILEGES_AT_THIS_REVISION) == {
+        ("fact_decisions", "SELECT"),
+        ("project_record_revisions", "SELECT"),
+        ("subject_resolution_decisions", "SELECT"),
+    }
+    for relation, privilege in module.PUBLIC_RELATION_PRIVILEGES_AT_THIS_REVISION:
+        assert (
+            f"grant {privilege.lower()} on public.{relation} to public;"
+            in module.PUBLIC_PRIVILEGE_RESTORE
+        )
+
+
+def test_the_empty_public_allowlist_still_builds_a_valid_sql_array():
+    """`array[]` is a syntax error, so an empty list must render typed.
+
+    An allowlist rendered the obvious way makes the migration fail to *build*
+    when it is empty — which looks like a failing guard and is a broken
+    statement. The empty case is the shipped case, so it is asserted rather
+    than assumed.
+    """
+
+    import importlib.util
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/corridor/migrations/baseline_versions"
+        / "b2d5f8a1c4e7_source_append_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location("_b2d5f8a1c4e7_693_sql", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert module._text_array_sql(()) == "array[]::text[]"
+    assert module._text_array_sql(("a", "b")) == "array['a', 'b']"
+    assert "array[]::text[]" in module.PUBLIC_PRIVILEGE_REVOKE
