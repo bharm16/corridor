@@ -110,8 +110,12 @@ class CorridorDataStack(Stack):
             security_groups=[database_security_group],
             # The DDL owner. config.py's `database_url`; only the migration
             # task is granted read access to this secret.
+            # The master username must be exactly "corridor". The consolidated
+            # baseline is a pg_dump carrying 408 `OWNER TO corridor;`
+            # statements, so any other master login makes `alembic upgrade
+            # head` fail on the first one with: role "corridor" does not exist.
             credentials=rds.Credentials.from_generated_secret(
-                "corridor_admin", secret_name="corridor/nonprod/db-admin"
+                "corridor", secret_name="corridor/nonprod/db-admin"
             ),
             database_name="corridor",
             allocated_storage=20,

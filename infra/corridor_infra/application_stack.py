@@ -375,7 +375,9 @@ class CorridorApplicationStack(Stack):
             f"{name}Container",
             image=image,
             command=command,
-            environment=environment,
+            # The entrypoint selects which single database URL to compose from
+            # this. It refuses to start without it.
+            environment={**environment, "CORRIDOR_TASK_ROLE": name.lower()},
             secrets=secrets,
             logging=ecs.LogDrivers.aws_logs(
                 stream_prefix=name.lower(),

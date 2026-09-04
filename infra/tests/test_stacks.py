@@ -317,6 +317,7 @@ def test_env_and_secret_names_exist_in_corridor_config():
         "CORRIDOR_DB_NAME",
         "CORRIDOR_DB_ADMIN_USERNAME",
         "CORRIDOR_DB_ADMIN_PASSWORD",
+        "CORRIDOR_TASK_ROLE",
     }
 
     assert "CORRIDOR_WEB_DB_PASSWORD" in readable
@@ -338,6 +339,7 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
     entrypoint_inputs = {
         "CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME",
         "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
+        "CORRIDOR_TASK_ROLE",
     }
     allowed = aliases | plain | entrypoint_inputs
 
@@ -468,3 +470,59 @@ def test_postgres_is_a_supported_minor_version(stacks):
         "AWS::RDS::DBInstance",
         {"Engine": "postgres", "EngineVersion": "16.15"},
     )
+
+
+def test_the_stack_never_lowers_database_tls(stacks):
+    """CORRIDOR_DB_SSLMODE exists only so a smoke test can run against a plain
+    PostgreSQL container. A deployed task must always verify the certificate,
+    so the stack must never set it at all."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition":
+            continue
+        for container in resource["Properties"]["ContainerDefinitions"]:
+            names = {
+                entry["Name"]
+                for entry in container.get("Environment", [])
+                + container.get("Secrets", [])
+            }
+            assert "CORRIDOR_DB_SSLMODE" not in names, logical_id
+
+
+def test_every_task_declares_its_role(stacks):
+    """The entrypoint refuses to start without CORRIDOR_TASK_ROLE, and it
+    decides which single database URL gets composed."""
+    template = stacks["application"].to_json()["Resources"]
+    seen = {}
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition":
+            continue
+        for container in resource["Properties"]["ContainerDefinitions"]:
+            role = [
+                entry["Value"]
+                for entry in container.get("Environment", [])
+                if entry["Name"] == "CORRIDOR_TASK_ROLE"
+            ]
+            assert role, f"{logical_id} declares no task role"
+            seen[logical_id] = role[0]
+    assert sorted(seen.values()) == ["batch", "migration", "web"]
+
+
+def test_the_database_master_login_is_the_schema_owner_the_baseline_expects():
+    """The consolidated baseline is a pg_dump with 408 `OWNER TO corridor;`
+    statements. Any other master username fails the first migration with
+    role "corridor" does not exist -- found by running it, not by reading it.
+    """
+    import json
+
+    _, _, data, _ = _build()
+    template = Template.from_stack(data).to_json()["Resources"]
+    secrets = [
+        resource
+        for resource in template.values()
+        if resource["Type"] == "AWS::SecretsManager::Secret"
+        and "db-admin" in json.dumps(resource["Properties"].get("Name", ""))
+    ]
+    assert len(secrets) == 1
+    generated = secrets[0]["Properties"]["GenerateSecretString"]
+    assert json.loads(generated["SecretStringTemplate"]) == {"username": "corridor"}
