@@ -200,15 +200,27 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back():
         assert database.migration_head == SUPPORTED_HEAD
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
 
+        before_public = _public_relation_grants(database.session_factory)
+
         upgraded = _alembic(database_url, "upgrade", "head")
         assert upgraded.returncode == 0, upgraded.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_SECURED
+        upgraded_public = _public_relation_grants(database.session_factory)
 
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
         assert _migration_head(database.session_factory) == SUPPORTED_HEAD
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
+        restored_public = _public_relation_grants(database.session_factory)
+
+    # #693: the supported revision carries three undocumented grants to
+    # PUBLIC, the transition removes all three, and the downgrade returns
+    # exactly them — including the grantor, because a re-grant made by a
+    # different role is a different ACL entry even when it reads the same.
+    assert before_public == PUBLIC_GRANTS_BEFORE_693
+    assert upgraded_public == []
+    assert restored_public == before_public
 
 
 def test_downgrade_across_the_consolidated_baseline_is_unsupported():
@@ -595,6 +607,48 @@ def _statement_retirement_security(session_factory) -> dict:
         "function_public_execute": bool(public_execute),
         "tables": {name: tuple(values) for name, values in tables.items()},
     }
+
+
+# --- #693 The PUBLIC grants the transition removes, and hands back ---------
+#
+# #680's revoke reported success on a relation that stayed readable, because
+# `REVOKE ... FROM corridor_web` does not touch a grant to PUBLIC. #693 sweeps
+# them out of the catalog. The downgrade has to hand back the exact shape it
+# found — same relation, same privilege, same grantor — so this reads the
+# effective ACL on both sides of a real `alembic downgrade` rather than
+# trusting that a re-grant is symmetrical.
+
+_PUBLIC_RELATION_GRANTS = text(
+    "select c.relname, a.privilege_type, pg_get_userbyid(a.grantor) as grantor, "
+    "       a.is_grantable "
+    "  from pg_class c "
+    "  join pg_namespace n on n.oid = c.relnamespace "
+    "  cross join lateral aclexplode(c.relacl) a "
+    " where n.nspname = 'public' "
+    "   and c.relkind in ('r', 'p', 'v', 'm', 'f') "
+    "   and a.grantee = 0 "
+    " union all "
+    "select c.relname || '.' || att.attname, a.privilege_type, "
+    "       pg_get_userbyid(a.grantor), a.is_grantable "
+    "  from pg_class c "
+    "  join pg_namespace n on n.oid = c.relnamespace "
+    "  join pg_attribute att "
+    "    on att.attrelid = c.oid and att.attnum > 0 and not att.attisdropped "
+    "  cross join lateral aclexplode(att.attacl) a "
+    " where n.nspname = 'public' and a.grantee = 0 "
+    " order by 1, 2"
+)
+
+PUBLIC_GRANTS_BEFORE_693 = [
+    ("fact_decisions", "SELECT", "corridor_fact_decision_writer", False),
+    ("project_record_revisions", "SELECT", "corridor_fact_decision_writer", False),
+    ("subject_resolution_decisions", "SELECT", "corridor_fact_decision_writer", False),
+]
+
+
+def _public_relation_grants(session_factory):
+    with session_factory() as session:
+        return [tuple(row) for row in session.execute(_PUBLIC_RELATION_GRANTS)]
 
 
 def _alembic(database_url, command: str, target: str):

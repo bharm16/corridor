@@ -1838,6 +1838,219 @@ def test_the_classification_and_the_grants_agree_about_every_relation(
     assert sorted(web_boundary.PROTECTED_RELATIONS - readable) == []
 
 
+# --- #693 A grant to PUBLIC is a grant to every role, decided by nobody ----
+#
+# #680's revoke reported success on `subject_resolution_decisions` and left it
+# readable, because the relation also carried `GRANT SELECT ... TO PUBLIC` and
+# a revoke aimed at `corridor_web` does not touch one. Worse, the check that
+# was supposed to catch that — `has_table_privilege('corridor_web', ...)`,
+# which every assertion in the section above uses — answers *true* through
+# PUBLIC without saying where the privilege came from, so both halves agreed.
+#
+# So the two tests that matter here are of two different kinds and neither
+# replaces the other. The catalog test reads the *effective* ACL with
+# `aclexplode`, which reports the grant whatever role made it, at relation and
+# at column level. The live test connects as a role holding no grant on
+# anything — the role somebody adds to this database next year — and runs the
+# select. A static reading of the explicit `GRANT ... TO corridor_web`
+# statements would pass while both of these failed, which is exactly how the
+# bypass survived.
+
+_PUBLIC_GRANT_SCAN = text(
+    "select c.relname as relation, a.privilege_type as privilege "
+    "  from pg_class c "
+    "  join pg_namespace n on n.oid = c.relnamespace "
+    "  cross join lateral aclexplode(c.relacl) a "
+    " where n.nspname = 'public' "
+    "   and c.relkind in ('r', 'p', 'v', 'm', 'f') "
+    "   and a.grantee = 0 "
+    " union all "
+    "select c.relname || '.' || att.attname as relation, "
+    "       a.privilege_type as privilege "
+    "  from pg_class c "
+    "  join pg_namespace n on n.oid = c.relnamespace "
+    "  join pg_attribute att "
+    "    on att.attrelid = c.oid and att.attnum > 0 and not att.attisdropped "
+    "  cross join lateral aclexplode(att.attacl) a "
+    " where n.nspname = 'public' "
+    "   and c.relkind in ('r', 'p', 'v', 'm', 'f') "
+    "   and a.grantee = 0 "
+    " order by 1, 2"
+)
+
+# The three that carried the grant. Two are partitioned and the pilot reads
+# them; one is denied outright. All three are named here because the point is
+# that the rule now covers them alike, not that a list was extended.
+FORMERLY_PUBLIC_RELATIONS = (
+    "fact_decisions",
+    "project_record_revisions",
+    "subject_resolution_decisions",
+)
+
+
+def _public_grants(connection) -> list[tuple[str, str]]:
+    return [
+        (str(row.relation), str(row.privilege))
+        for row in connection.execute(_PUBLIC_GRANT_SCAN)
+    ]
+
+
+def test_no_application_relation_or_column_grants_a_privilege_to_public(
+    runtime_database,
+):
+    """The effective ACL, read the way PostgreSQL stores it.
+
+    `aclexplode` over `relacl` and `attacl` with `grantee = 0` is every
+    privilege PUBLIC holds on a table, partitioned table, view, materialized
+    view or foreign table in `public`, and on any single column of one. It
+    does not care which role wrote the grant or whether any capability list
+    mentions the relation, which is the property `has_table_privilege` on a
+    named role does not have.
+    """
+
+    with runtime_database.session_factory() as owner:
+        observed = _public_grants(owner.connection())
+
+    assert web_boundary.undocumented_public_privileges(observed) == (), (
+        "these relations grant a privilege to PUBLIC, which is a privilege "
+        "held by every role in the customer database including every role "
+        "added later. Revoke it in the migration, or record it in "
+        "web_boundary.PUBLIC_RELATION_PRIVILEGES with the reason it is meant"
+    )
+
+
+def test_the_public_grant_scan_reports_a_grant_that_really_is_there(
+    runtime_database,
+):
+    """The scan above is only worth its green if it can go red.
+
+    A catalog query with one clause wrong returns nothing on a clean database
+    and reads exactly like a boundary that holds. So this makes a grant to
+    PUBLIC, on a table and on a single column of it, and asserts the same
+    query and the same allowlist call report both.
+    """
+
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text("create table public.t693_probe (id int, note text)"))
+        owner.execute(text("grant select on public.t693_probe to public"))
+        owner.execute(text("grant update (note) on public.t693_probe to public"))
+        observed = _public_grants(owner.connection())
+        undocumented = web_boundary.undocumented_public_privileges(observed)
+        owner.execute(text("drop table public.t693_probe"))
+
+    assert ("t693_probe", "SELECT") in undocumented
+    assert ("t693_probe.note", "UPDATE") in undocumented
+
+
+@pytest.fixture
+def unprivileged_login(runtime_database):
+    """A real login holding no grant on anything: the role added next year.
+
+    Named from a digest of the harness database so parallel workers do not
+    collide on a cluster-global role, and dropped with `drop owned by` first
+    so a test that granted it something can still give the role back.
+    """
+
+    name = "corridor_probe_" + sha256(
+        runtime_database.name.encode("utf-8")
+    ).hexdigest()[:16]
+
+    def _drop(owner) -> None:
+        owner.execute(text(f'drop owned by "{name}"'))
+        owner.execute(text(f'drop role "{name}"'))
+
+    with runtime_database.session_factory.begin() as owner:
+        exists = owner.execute(
+            text("select 1 from pg_roles where rolname = :name"), {"name": name}
+        ).scalar()
+        if exists:
+            _drop(owner)
+        owner.execute(text(f"create role \"{name}\" login password '{name}'"))
+
+    probe = create_engine(
+        make_url(settings.database_url)
+        .set(database=runtime_database.name, username=name, password=name)
+        .render_as_string(hide_password=False),
+        poolclass=NullPool,
+        future=True,
+    )
+    try:
+        yield probe
+    finally:
+        probe.dispose()
+        with runtime_database.session_factory.begin() as owner:
+            _drop(owner)
+
+
+def _select_is_served(connection, statement: str) -> bool:
+    savepoint = connection.begin_nested()
+    try:
+        connection.execute(text(statement))
+    except ProgrammingError:
+        savepoint.rollback()
+        return False
+    savepoint.rollback()
+    return True
+
+
+def test_a_login_holding_no_grant_cannot_read_the_formerly_public_relations(
+    runtime_database, unprivileged_login
+):
+    """The harm, as the thing that actually goes wrong.
+
+    A PUBLIC grant is not a wider grant to `corridor_web`; it is a grant to
+    every role in the database, including ones nobody has created yet. So the
+    proof is a login created with no membership, no designation and no grant
+    at all, running the select. Before #693 it read `fact_decisions` and
+    `project_record_revisions` — no rows, because both are partitioned and it
+    declared no partition, but the read was *permitted*, and a relation that
+    later gains a policy-free hole would have been open.
+    """
+
+    with unprivileged_login.connect() as probe:
+        served = [
+            relation
+            for relation in FORMERLY_PUBLIC_RELATIONS
+            if _select_is_served(probe, f"select 1 from {relation} limit 1")
+        ]
+
+    assert served == [], (
+        "a login holding no grant at all can still read these relations, "
+        "which means they carry a privilege granted to PUBLIC"
+    )
+
+
+def test_the_unprivileged_login_reads_what_it_is_actually_granted(
+    runtime_database, unprivileged_login
+):
+    """The refusal above has to be about the grant, not about the connection.
+
+    An unreachable database, a wrong schema search path or a role that cannot
+    log in would all produce the same empty `served` list and prove nothing.
+    So the same login is granted `SELECT` on one of the three, reads it
+    without raising, and is refused again once the grant is taken back. Only
+    the grant changes between the three readings.
+    """
+
+    relation = FORMERLY_PUBLIC_RELATIONS[0]
+    role = unprivileged_login.url.username
+    statement = f"select 1 from {relation} limit 1"
+
+    with unprivileged_login.connect() as probe:
+        before = _select_is_served(probe, statement)
+
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text(f'grant select on public.{relation} to "{role}"'))
+    with unprivileged_login.connect() as probe:
+        granted = _select_is_served(probe, statement)
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text(f'revoke select on public.{relation} from "{role}"'))
+    with unprivileged_login.connect() as probe:
+        after = _select_is_served(probe, statement)
+
+    assert (before, granted, after) == (False, True, False)
+
+
 # --- Offboarding over the real sign-in path --------------------------------
 
 

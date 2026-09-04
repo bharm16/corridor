@@ -58,6 +58,14 @@ Three consequences are deliberate and worth stating out loud.
   the legacy project by name instead of failing halfway through a template
   with a permission error.
 
+#693 closed the last hole in that claim.  A revoke aimed at
+``corridor_web`` leaves a grant to PUBLIC standing, so three relations stayed
+readable by every role in the database — present and future — while every
+capability list said otherwise.  The rule is now general and lives below as
+``PUBLIC_RELATION_PRIVILEGES``: no application table or view carries a
+privilege granted to PUBLIC, the allowlist of intentional ones is empty, and
+the migration sweeps the catalog rather than naming relations.
+
 ``PILOT_ROUTE_RELATIONS`` was not written from memory.  It was recorded from
 an instrumented run of the route tests, keyed on the ``FROM``/``JOIN``/
 ``INTO``/``UPDATE`` targets of every statement issued while each request was
@@ -68,6 +76,7 @@ test that drives these routes as ``corridor_web`` itself.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
@@ -457,6 +466,74 @@ PROTECTED_RELATIONS: frozenset[str] = frozenset(
 # listed a second time: one list of holes, and the boundary is that the web
 # capability holds no privilege on any of them.
 DENIED_RELATIONS: frozenset[str] = frozenset(access.NOT_YET_PARTITIONED_RELATIONS)
+
+
+# --- #693 Nothing is readable by decision of nobody ------------------------
+#
+# #680's revoke was aimed at one named login, and for one relation it reported
+# success while the relation stayed readable.  `subject_resolution_decisions`
+# also carried `GRANT SELECT ... TO PUBLIC`, left behind by the command role
+# that created it.  A `REVOKE ... FROM corridor_web` does not touch a PUBLIC
+# grant, and `has_table_privilege('corridor_web', ...)` — which is what every
+# list-versus-catalog check above asks — answers *true* through PUBLIC without
+# distinguishing where the privilege came from.  So the boundary read as
+# complete and was not.
+#
+# That is why the assertion that matters is `select * from <relation>` as a
+# real login, and why the lists below exist as well: a static reading of the
+# explicit `GRANT ... TO corridor_web` statements is exactly the check that
+# missed this.
+#
+# **The general rule, replacing the one-off list.**  No application table or
+# view in `public` carries any privilege granted to PUBLIC.  The migration
+# does not name relations to fix; it sweeps the catalog and revokes whatever
+# it finds outside this allowlist, so `subject_resolution_decisions`,
+# `fact_decisions` and `project_record_revisions` are governed by the same
+# rule as a relation added next year rather than by a hand list somebody has
+# to remember to extend.
+#
+# **What is not in scope here, said out loud.**  PostgreSQL grants `USAGE` on
+# the `public` *schema* to PUBLIC by default, and grants `EXECUTE` on a
+# function to PUBLIC unless the function's ACL says otherwise.  The schema
+# grant is what makes a named table grant reachable at all and is not a DML
+# privilege on a relation.  The function default is real, but every
+# `SECURITY DEFINER` command in this database already carries an explicit ACL
+# with no PUBLIC entry — the narrow execution grants #492 and #531 wrote — and
+# the remaining functions run with the caller's own rights.  Changing either
+# would be a decision this boundary has not been asked to make.
+
+#: Relation-level privileges granted to PUBLIC that a decision intends, keyed
+#: by ``(relation, privilege)`` and valued by the written reason for it.
+#:
+#: **Empty, deliberately.**  Neither relation #693 found was intentional; both
+#: were incidental to the command role that created the table.  An entry here
+#: means somebody decided that every role in the customer database, including
+#: every role added later, should hold that privilege — so an entry needs a
+#: reason, and the reason is the value.
+PUBLIC_RELATION_PRIVILEGES: dict[tuple[str, str], str] = {}
+
+
+def undocumented_public_privileges(
+    observed: Iterable[tuple[str, str]],
+) -> tuple[tuple[str, str], ...]:
+    """The observed PUBLIC grants no decision above accounts for, in order.
+
+    ``observed`` is ``(relation, privilege)`` pairs read from the catalog, and
+    the privilege is compared case-insensitively because PostgreSQL reports
+    ``SELECT`` while a grant is written ``select``.
+    """
+
+    allowed = {
+        (relation, privilege.upper())
+        for relation, privilege in PUBLIC_RELATION_PRIVILEGES
+    }
+    return tuple(
+        sorted(
+            (relation, privilege)
+            for relation, privilege in observed
+            if (relation, privilege.upper()) not in allowed
+        )
+    )
 
 
 def route_is_enabled(method: str, template: str) -> bool:
