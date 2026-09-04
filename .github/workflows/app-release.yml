@@ -238,6 +238,85 @@ jobs:
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
           echo "web service stable at $WEB_DESIRED_COUNT on $WEB_TD"
 
+      # Stable is not the same as released. The application stack sets the
+      # deployment circuit breaker with rollback=True, so a new task that never
+      # becomes healthy causes ECS to restore the previous deployment and reach
+      # stability again -- and the health checks below would then be answered by
+      # the old image, which is perfectly healthy. Without this the workflow
+      # records this commit as released while every running task is the
+      # previous one.
+      - name: Require that the release is what is actually running
+        run: |
+          aws ecs describe-services --cluster "$CLUSTER" --services "$WEB_SERVICE" \
+            --output json > service.json
+          uv run python - <<'PY'
+          import json, os, sys
+
+          service = json.load(open("service.json"))["services"][0]
+          expected = os.environ["WEB_TD"]
+          desired = int(os.environ["WEB_DESIRED_COUNT"])
+
+          active = service.get("taskDefinition")
+          if active != expected:
+              sys.exit(
+                  f"the service is running {active}, not {expected}: the "
+                  "deployment was rolled back"
+              )
+
+          primary = [
+              deployment
+              for deployment in service.get("deployments", [])
+              if deployment.get("status") == "PRIMARY"
+          ]
+          if not primary:
+              sys.exit("no PRIMARY deployment on the service")
+          deployment = primary[0]
+          if deployment.get("taskDefinition") != expected:
+              sys.exit(
+                  f"the primary deployment is {deployment.get('taskDefinition')}, "
+                  f"not {expected}"
+              )
+          if deployment.get("rolloutState") not in (None, "COMPLETED"):
+              sys.exit(
+                  "rolloutState is "
+                  f"{deployment.get('rolloutState')}: "
+                  f"{deployment.get('rolloutStateReason')}"
+              )
+          running = deployment.get("runningCount", 0)
+          if running != desired:
+              sys.exit(f"{running} tasks running, expected {desired}")
+          print(f"released: {expected} with {running} running")
+          PY
+
+      - name: Require that the running tasks carry the released digest
+        if: inputs.web_desired_count != '0'
+        run: |
+          aws ecs list-tasks --cluster "$CLUSTER" --service-name "$WEB_SERVICE" \
+            --desired-status RUNNING --output json > tasks.json
+          TASK_ARNS=$(uv run python -c "
+          import json
+          print(' '.join(json.load(open('tasks.json'))['taskArns']))
+          ")
+          [ -n "$TASK_ARNS" ] || { echo "::error::no running tasks"; exit 1; }
+          # shellcheck disable=SC2086
+          aws ecs describe-tasks --cluster "$CLUSTER" --tasks $TASK_ARNS \
+            --output json > running.json
+          uv run python - <<'PY'
+          import json, os, sys
+
+          digest = os.environ["IMAGE_DIGEST"]
+          tasks = json.load(open("running.json"))["tasks"]
+          wrong = [
+              container.get("imageDigest")
+              for task in tasks
+              for container in task.get("containers", [])
+              if container.get("imageDigest") not in (None, digest)
+          ]
+          if wrong:
+              sys.exit(f"running tasks carry {set(wrong)}, expected {digest}")
+          print(f"{len(tasks)} running task(s) on {digest}")
+          PY
+
       # Through the certificate's own hostname. The load balancer's generated
       # name is not covered by the certificate, so curl would fail hostname
       # verification after an otherwise-successful release.

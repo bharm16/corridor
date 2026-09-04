@@ -184,3 +184,29 @@ def test_no_credentialed_job_runs_from_an_unreviewed_ref(workflow):
             f"{workflow}:{job_name} assumes an AWS role without a main-only "
             "guard, so an unreviewed branch's YAML can use it"
         )
+
+
+def test_the_runbook_names_the_setting_the_ref_guard_cannot_enforce():
+    """The `github.ref` guard lives in the workflow file, which the requester
+    controls: a branch can delete it, and after environment approval its OIDC
+    token still carries the trusted `...:environment:nonproduction` subject.
+    Both role trusts check only that subject, so AWS never learns which ref
+    supplied the YAML.
+
+    The actual boundary is the environment's deployment-branch policy, which
+    is a GitHub setting rather than anything in this repository. The one thing
+    the repository can do is refuse to let that go undocumented.
+    """
+    runbook = (
+        pathlib.Path(__file__).parents[2]
+        / "docs"
+        / "deployment"
+        / "nonproduction-aws.md"
+    ).read_text()
+
+    assert "Deployment branches and tags" in runbook
+    assert "Selected branches" in runbook
+    assert "load-bearing" in runbook.lower()
+    assert "Required reviewers" in runbook
+    # And it must say why the in-repo guard is not enough.
+    assert "defence in depth" in runbook or "defense in depth" in runbook

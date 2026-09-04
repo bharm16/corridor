@@ -93,6 +93,36 @@ were intended would be worse than failing visibly here. Issue an ACM
 certificate, set the context value, and the stack switches to 443 with a 80→443
 redirect and `TLS13_RES`.
 
+## The deployment-branch policy is load-bearing
+
+Both OIDC roles trust exactly one subject:
+
+```
+repo:bharm16/corridor:environment:nonproduction
+```
+
+That subject says which *environment* the run was admitted to. It says nothing
+about which ref supplied the workflow file. So the `github.ref == 'refs/heads/main'`
+guard in the workflows is defence in depth and not the boundary: a collaborator
+with write access can dispatch from a branch that simply deletes the guard, and
+after environment approval its token carries the same trusted subject. AWS
+grants the role without ever learning where the YAML came from.
+
+The boundary is a GitHub setting, and it must be configured before the first
+deployment:
+
+**Settings → Environments → `nonproduction`**
+
+| Setting | Value | Why |
+|---|---|---|
+| Deployment branches and tags | **Selected branches**, `main` only | The only thing that stops an unreviewed branch obtaining the role |
+| Required reviewers | at least one person | A human sees the dispatch before the token is issued |
+| Environment variables | `CORRIDOR_CERTIFICATE_ARN`, `CORRIDOR_PUBLIC_HOSTNAME`, `CORRIDOR_SIGN_IN_SENDER` | Deployment configuration, not secrets |
+| Environment secrets | none | The account holds no long-lived AWS credential |
+
+"Selected branches: `main`" is the load-bearing one. Without it, every other
+control in this document is enforced by a file the requester can edit.
+
 ## Deployment order
 
 Nothing below has been run.
