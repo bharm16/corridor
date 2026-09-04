@@ -91,7 +91,7 @@ Public IPv4 is AWS's published `$0.005` per address-hour, not from that pull.
 | Item | Unit | Idle (web 1, batch 0) | Both running |
 |---|---|---:|---:|
 | Fargate web 0.25 vCPU / 0.5 GB | $0.04048 vCPU-hr, $0.004445 GB-hr | $9.01 | $9.01 |
-| Fargate batch 0.5 vCPU / 1 GB | same | $0.00 | $18.02 |
+| Fargate batch 1 vCPU / 2 GB | same | $0.00 | $36.04 |
 | ALB | $0.0225/hr + $0.008/LCU-hr | $18.43 | $18.43 |
 | Public IPv4 | $0.005/addr-hr | $10.95 (3) | $14.60 (4) |
 | RDS db.t4g.micro + 20 GB gp3 | $0.016/hr, $0.115/GB-mo | $13.98 | $13.98 |
@@ -99,7 +99,7 @@ Public IPv4 is AWS's published `$0.005` per address-hour, not from that pull.
 | CloudWatch + VPC flow logs | $0.50/GB, $0.03/GB-mo | ~$1.60 | ~$2.10 |
 | ECR + S3 | $0.10, $0.023 /GB-mo | $0.32 | $0.32 |
 | NAT Gateway | excluded by design | $0.00 | $0.00 |
-| **Total** | | **≈ $56** | **≈ $78** |
+| **Total** | | **≈ $56** | **≈ $96** |
 
 Scaling web to 0 as well leaves the ALB, its two addresses, RDS, secrets and
 storage: **≈ $42/month**. RDS and the ALB are the floor; they do not go away

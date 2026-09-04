@@ -153,8 +153,8 @@ class CorridorApplicationStack(Stack):
         # --- batch (the "worker" capability, started on demand) ----------
         batch_task, batch_role, batch_exec = self._task(
             "Batch",
-            cpu=512,
-            memory=1024,
+            cpu=1024,
+            memory=2048,
             image=image,
             environment=common_env,
             secrets={
@@ -162,6 +162,9 @@ class CorridorApplicationStack(Stack):
                     worker_db_secret, "password"
                 )
             },
+            # 1 vCPU / 2 GB: this container runs PyMuPDF and shells out to
+            # the OpenCV render subprocess, and it is billed only while a task
+            # is actually running. Reduce it once CloudWatch shows real usage.
             # Overridden per RunTask; carry-forward is the routine one.
             command=["python", "-m", "corridor.automatic_carry_forward_cli"],
         )
