@@ -7,7 +7,7 @@ amends:
   - ADR-0053
 amended_by:
   - ADR-0091
-migration: no ReleasePackage exists; preparation, the package receipt, and the authorization gate are unimplemented (#529, #533).
+migration: one coherent reading is bound and prepared into an immutable release candidate over the configured artifact set (#529), and the `release_packages` identity relation exists but is empty; the package receipt and the authorization gate are unimplemented (#533).
 ---
 
 # One authorized release package is the external issue unit
