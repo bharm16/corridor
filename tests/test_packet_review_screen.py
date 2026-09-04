@@ -696,3 +696,28 @@ def test_a_held_out_change_offers_needs_coordination_and_records_the_plan(
             DeltaDisposition.delta_id == child.delta_id,
         )
     ).all()
+
+
+def test_a_held_out_single_source_change_is_not_described_as_several_sources(
+    session: Session, project: Project, client
+):
+    """The focused screen stopped meaning "sources disagree" (#659).
+
+    A single change held out of its batch is focused now, so wording written
+    for a cross-source question — "sources that answer it differently", "answer
+    the others" — names a disagreement that is not there. The counts are
+    unchanged; only the sentences naming them are.
+    """
+
+    _revision(session, project, changes=3, exceptions=True)
+    reading = read_review_items(session, project_id=project.id, as_of=NOW)
+    (item,) = [
+        row for row in reading.items if row.held_out_reason == HELD_OUT_OWNER_MISMATCH
+    ]
+
+    body = _open(client, project, item.item_key).text
+
+    assert len(item.children) == 1
+    assert "Sources that answer it differently" not in body
+    assert "Sources answering it" in body
+    assert "answer the others with" not in body

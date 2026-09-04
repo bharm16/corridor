@@ -245,10 +245,15 @@
 
       <h3>Your answer for each source</h3>
       <p class="quiet" id="{{ view.id }}-answers">
+        {%- if view.item.children | length > 1 %}
         Each source is answered on its own. A source you leave open stays open
         and is decided later. Only one source can become the accepted value for
         a field, so answer the others with Keep current, Needs coordination, or
         Defer.
+        {%- else %}
+        A change you leave open stays open and is decided later. Answer it with
+        Apply, Keep current, Needs coordination, or Defer.
+        {%- endif %}
       </p>
 
       {%- for child in view.item.children %}
