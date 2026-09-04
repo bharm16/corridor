@@ -237,6 +237,13 @@ _FAMILIES: tuple[tuple[str, tuple[_Member, ...]], ...] = (
         ),
     ),
     (
+        # The family key is retained verbatim because recorded baselines in
+        # artifacts/storage-baseline are keyed by it and a rename would make
+        # this measurement incomparable with them. The name is now wrong about
+        # what it measures: ADR-0092 makes these two columns a dated
+        # occurrence's own Report Reading payload rather than a copy of state
+        # another row owns. What is measured here is how much retained report
+        # evidence the database holds, which is still worth knowing.
         "report_snapshot_copies",
         (
             _Member(

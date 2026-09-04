@@ -969,7 +969,7 @@ def test_the_export_and_the_recorded_run_read_the_report_s_evaluation(
     )
     recorded = run.snapshot_json["dependencies"].values()
     assert recorded
-    assert all("OVERDUE" not in entry["exceptions"] for entry in recorded)
+    assert all("OVERDUE" not in entry["constraint_alerts"] for entry in recorded)
 
 
 def test_publishing_without_an_evaluation_is_refused(

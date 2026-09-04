@@ -19,27 +19,28 @@ is treated as an unknown boundary rather than being backfilled from the
 current default (ADR-0044).
 
 Since #602 a run also names the accepted Project Record revision it was taken
-against, and that reference — not the snapshot — is what the run is bound to.
-Since #603 the baseline this module diffs against is built from that reference:
+against, and record-owned fields are read through that reference: since #603
 ``report_diff_reference.baseline_for_run`` rebuilds the record fields the spine
 carries as of the run's revision, resolves each record's Ledger identity rather
-than reading the copied one, and reports any field where the retained copy and
-the revision disagree.
+than reading the retained one, and reports any field where the retained reading
+and the revision disagree.
 
-The snapshot is **not** expired by that, and the reason is a property of what
-it holds rather than an unfinished step.  ``ready`` and ``exceptions`` are not
-record state at all but a reading of the record under one ruleset, one
-threshold configuration and one date, so no revision carries them.  The
-``committed_date`` stored here is the date projected from the external party's
-current statement, not the record's own ``committed_date`` Fact, so the
-same-named value on the spine is a different quantity and substituting it
-would change the diff because its inputs changed shape.  The retained copy
-stays the only witness of those three, and of which records were on the Ledger
-that week.  Where the copy and the
-reference disagree about a field both can answer, the copy stands and the
-disagreement is reported on the ``Diff`` — for a project in ``legacy``
-operating mode the legacy relations are still the accepted record, and two
-released legacy commands move an accepted value without writing any Fact.
+What a run retains beside that reference is **not** a cache of the record.
+ADR-0092 names it the immutable Report Reading payload of one dated occurrence,
+retained for as long as the run is and expiring on no cache TTL.
+``documentation_requirement_met`` and ``constraint_alerts`` are not record state
+at all but a reading of the record under one ruleset, one threshold
+configuration and one date, so no revision carries them.
+``published_promised_for`` is the date projected from the external party's
+current statement, not the record's own ``committed_date`` Fact; the same-named
+value on the spine is a different quantity, which is why the payload stopped
+using one key for both.  The reading is also the only witness of which records
+the report covered that week.  Where the reading and the reference disagree
+about a field both can answer, the reading stands — it is what the report
+published — and the disagreement is reported on the ``Diff``; for a project in
+``legacy`` operating mode the legacy relations are still the accepted record,
+and two released legacy commands move an accepted value without writing any
+Fact.
 """
 
 from __future__ import annotations
@@ -62,6 +63,7 @@ from corridor.models import (
     is_critical,
 )
 from corridor.report_diff_reference import BaselineDrift, baseline_for_run
+from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal
 
 
 @dataclass
@@ -135,12 +137,19 @@ def snapshot(
     evaluation: Evaluation,
     committed_dates: Mapping[int, date | None] | None = None,
 ) -> dict:
-    """The state a report was published against, one entry per dependency.
+    """The Report Reading payload one report occurrence published (ADR-0092).
 
-    The report passes the evaluation it published, so the snapshot records
-    the exceptions the reader saw rather than a second reading taken a
-    moment later. Required, not defaulted: this snapshot is what the *next*
+    The report passes the evaluation it published, so the payload records the
+    Constraint Alerts the reader saw rather than a second reading taken a
+    moment later. Required, not defaulted: this reading is what the *next*
     report diffs against, so a second reading here misreports change.
+
+    Version 2 writes the governed names — ``documentation_requirement_met``,
+    ``constraint_alerts`` and ``published_promised_for`` — and seals the payload
+    with its schema version and content digest. ``published_promised_for`` is
+    the statement-projected date, named apart from the record's own
+    ``committed_date`` Fact and bound to the statement identity and projection
+    rule version that produced it, so one key never carries both quantities.
     """
     if evaluation.project_id != project_id:
         raise ValueError("the evaluation belongs to another project")
@@ -165,33 +174,64 @@ def snapshot(
 
     publication = evaluation.statement_publication
     party_statements = () if publication is None else publication.party_statements
-    return {
+
+    def promised_for_statement(row) -> dict | None:
+        """The statement identity ``published_promised_for`` was projected from.
+
+        ``None`` where the reading published no statement for the record, which
+        is an answer rather than a missing value: the projected date is ``None``
+        there too, and inventing a lineage would be exactly the false reference
+        the naming split exists to prevent.
+        """
+        if publication is None:
+            return None
+        statement = publication.by_dependency.get(row.dependency.id)
+        if statement is None or statement.current_event is None:
+            return None
+        return {
+            "commitment_lineage_id": statement.current_event.commitment_lineage_id,
+            "current_event_id": statement.current_event.id,
+            "published_event_id": (
+                statement.event.id if statement.event is not None else None
+            ),
+        }
+
+    return seal({
         "ruleset_version": evaluation.ruleset_version,
         # The exact thresholds this reading used, so the next report can tell a
-        # settings change apart from project movement. An older snapshot has no
+        # settings change apart from project movement. An older payload has no
         # such key; that absence is read as unknown, never as the defaults.
         "thresholds": _thresholds_snapshot(evaluation.thresholds),
+        # The rule that turned each External Party Statement into the date this
+        # reading published, so a later reader knows which projection produced
+        # the value rather than assuming today's.
+        "promised_for_projection_rule_version": (
+            PROMISED_FOR_PROJECTION_RULE_VERSION
+        ),
         "dependencies": {
             row.dependency.ref_code: {
                 "id": row.dependency.id,
                 "resolution_strategy": row.dependency.resolution_strategy,
-                "committed_date": (
+                "published_promised_for": (
                     published_committed_date(row).isoformat()
                     if published_committed_date(row)
                     else None
                 ),
+                "promised_for_statement": promised_for_statement(row),
                 "need_date": (
                     row.dependency.need_date.isoformat()
                     if row.dependency.need_date
                     else None
                 ),
-                "ready": row.is_ready,
-                "exceptions": sorted(by_dependency.get(row.dependency.id, ())),
+                "documentation_requirement_met": row.is_ready,
+                "constraint_alerts": sorted(
+                    by_dependency.get(row.dependency.id, ())
+                ),
             }
             for row in rows
         },
         # These statements intentionally have no Dependency key. Keeping their
-        # frozen identities beside the Dependency snapshot makes the report's
+        # frozen identities beside the record population makes the report's
         # covered population auditable without inventing a Ledger projection.
         "external_party_commitments": {
             str(statement.current_event.commitment_lineage_id): {
@@ -205,7 +245,7 @@ def snapshot(
             for statement in party_statements
             if not statement.is_closed
         },
-    }
+    })
 
 
 def _dismissal_of(session: Session, dependency_id: int | None):
@@ -293,7 +333,9 @@ def diff_since_last(
             )
             continue
 
-        if now["ready"] and not was["ready"]:
+        if now["documentation_requirement_met"] and not was[
+            "documentation_requirement_met"
+        ]:
             diff.changes.append(
                 Change(
                     ref,
@@ -305,23 +347,26 @@ def diff_since_last(
 
         # A Committed Date Change can move earlier or later; both are factual
         # changes and neither is reduced to the vague legacy term "slip".
-        if was["committed_date"] and now["committed_date"]:
-            if now["committed_date"] != was["committed_date"]:
+        # The compared value is the reading's statement-projected
+        # ``published_promised_for``, never the record's committed_date Fact.
+        if was["published_promised_for"] and now["published_promised_for"]:
+            if now["published_promised_for"] != was["published_promised_for"]:
                 diff.changes.append(
                     Change(
                         ref,
                         "committed_date_change",
-                        f"committed date moved {was['committed_date']} → "
-                        f"{now['committed_date']}",
+                        "committed date moved "
+                        f"{was['published_promised_for']} → "
+                        f"{now['published_promised_for']}",
                         now.get("id"),
                     )
                 )
-        elif now["committed_date"] and not was["committed_date"]:
+        elif now["published_promised_for"] and not was["published_promised_for"]:
             diff.changes.append(
                 Change(
                     ref,
                     "new",
-                    f"first committed date: {now['committed_date']}",
+                    f"first committed date: {now['published_promised_for']}",
                     now.get("id"),
                 )
             )
@@ -352,7 +397,9 @@ def diff_since_last(
         # whose thresholds the baseline never recorded — a rule appearing may
         # just mean the calculation changed, so it is not project movement.
         if not diff.calculation_inputs_changed:
-            appeared = set(now["exceptions"]) - set(was["exceptions"])
+            appeared = set(now["constraint_alerts"]) - set(
+                was["constraint_alerts"]
+            )
             for rule in sorted(appeared):
                 diff.changes.append(
                     Change(ref, "escalated", f"new exception: {rule}", now.get("id"))

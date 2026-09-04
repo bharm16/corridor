@@ -239,9 +239,9 @@ def test_a_snapshot_captures_state_and_its_ruleset(session, project, document):
     assert snap["ruleset_version"]
     entry = snap["dependencies"]["DEP-1"]
     assert "status" not in entry
-    assert entry["committed_date"] == "2026-09-01"
-    assert entry["ready"] is False
-    assert "ORPHAN" in entry["exceptions"]
+    assert entry["published_promised_for"] == "2026-09-01"
+    assert entry["documentation_requirement_met"] is False
+    assert "ORPHAN" in entry["constraint_alerts"]
 
 
 # --------------------------------------------------------------------- diff
@@ -317,7 +317,9 @@ def test_snapshot_and_diff_read_the_current_statement_over_a_stale_scalar(
     session.flush()
 
     assert (
-        _snapshot(session, project)["dependencies"]["DEP-1"]["committed_date"]
+        _snapshot(session, project)["dependencies"]["DEP-1"][
+            "published_promised_for"
+        ]
         == "2026-08-15"
     )
     [change] = _diff(session, project).of_kind("committed_date_change")
@@ -597,7 +599,7 @@ def test_configuration_driven_alert_churn_is_not_project_movement(
     # Confirm the baseline really had no DUE_SOON.
     assert "DUE_SOON" not in latest_run(session, project).snapshot_json[
         "dependencies"
-    ]["DUE-1"]["exceptions"]
+    ]["DUE-1"]["constraint_alerts"]
 
     _declare(session, project, due_soon_days=30)
     diff = _diff_eff(session, project)

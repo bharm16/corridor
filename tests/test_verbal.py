@@ -717,7 +717,9 @@ def test_document_only_reports_keep_their_own_cited_history(
         .order_by(ReportRun.id.desc())
     ).one()
     assert (
-        stored.snapshot_json["dependencies"][dependency.ref_code]["committed_date"]
+        stored.snapshot_json["dependencies"][dependency.ref_code][
+            "published_promised_for"
+        ]
         == "2026-06-15"
     )
 
