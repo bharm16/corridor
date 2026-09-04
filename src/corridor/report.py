@@ -771,6 +771,13 @@ def _customer_change_name(kind: str) -> str:
         "dismissed": "Incorrect entry removed",
         "became_ready": documentation_review_label(True),
         "escalated": "Record changed",
+        # Composed from the glossary's own term rather than coined: "Required
+        # By" is the accepted date this row moved, and the verb says only that
+        # it moved.  Deliberately not "Change to required timing", the parallel
+        # of `committed_date_change`'s wording — Promised For and Required By
+        # are different quantities (#637), and naming them alike is how a
+        # reader comes to treat one as the other.
+        "required_by_change": "Change to Required By",
     }.get(kind, statement_type_label(kind))
 
 

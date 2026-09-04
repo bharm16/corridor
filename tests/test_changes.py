@@ -1048,3 +1048,22 @@ def test_an_open_schedule_proposed_delta_is_not_an_accepted_required_by_change(
         "required_by_change"
     )
     assert change.detail == "Required By moved 2026-10-01 → 2026-09-15"
+
+
+def test_a_required_by_change_reaches_the_customer_under_its_glossary_term():
+    """The Change column never shows a reader the internal kind (#637).
+
+    `_customer_change_name` falls through to the retained event identity for a
+    kind it does not know, which is right for a historical kind and wrong for a
+    new one: without an entry a customer's report prints the literal
+    `required_by_change`.  The name composes the glossary's own term with a
+    plain verb, and stays distinct from the Promised For wording.
+    """
+
+    from corridor.report import _customer_change_name
+
+    assert _customer_change_name("required_by_change") == "Change to Required By"
+    assert _customer_change_name("required_by_change") != _customer_change_name(
+        "committed_date_change"
+    )
+    assert "required_by_change" not in _customer_change_name("required_by_change")
