@@ -68,6 +68,29 @@ deltas that resolved (#534, ``report_preparation``).  A project that has
 registered no output template is simply not promised a workbook it has not
 configured.
 
+**ADR-0085's three visible consequence levels are derived here, once (#641).**
+A level is a projection of one proposed difference onto what the project is
+configured to externally issue — which artifacts, produced by which registered
+renderer revision, stating which accepted fields, under which explicit customer
+policy.  ``issue_profile`` records that configuration (#640) and
+``issue_content`` resolves it into executable contracts and typed policy
+selectors; ``consequence_levels`` performs the projection.  This module reads
+the project's configuration **once per reading**, at the same cutoff the
+partition was bound to, and hangs the resulting level on the child it belongs
+to.  Every Review surface then prints that object: the review screen and the
+project's own week (#536) cannot disagree about a packet, because neither of
+them derives anything.  A packet's own level is the highest of its children's
+and is a property, not a stored field — ADR-0085 permits a packet to headline
+and forbids splitting one because the levels differ.
+
+Where the configuration cannot be executed — a renderer revision this release
+does not register, an evaluator it does not run, a ``required_decision`` that
+is a sentence rather than a typed selector — **no level is derived at all** and
+the reason is stated in Issue readiness.  Not a blanket "Must handle before
+this issue", which would assert a customer rule nobody configured, and not a
+blanket "Can wait", which would promise that a change reaches nothing while
+nobody knows what the artifacts contain.
+
 **No clock.**  ``as_of`` and ``decided_at`` are declared by the caller, exactly
 as the reading below them requires, so a screen and its test agree about what
 "already elapsed" and "decided at" mean.
@@ -111,6 +134,15 @@ from corridor.models import (
     SourceSegment,
     SupportAssessment,
 )
+from corridor.consequence_levels import (
+    CONSEQUENCE_RULE_VERSION,
+    LEVEL_HEADINGS,
+    ConsequenceLevel,
+    consequence_level,
+    headline_level,
+)
+from corridor.issue_content import ChangeFacts, EffectiveIssueContent, effective_issue_content
+from corridor.issue_profile import effective_issue_inventory
 from corridor.presentation import field_label
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import (
@@ -432,6 +464,22 @@ class ChildReading:
     # the decision.
     held_out_reason: str | None = None
     held_out_item_key: str | None = None
+    # ADR-0085's visible level for this one change, with its own reasons.
+    # ``None`` where the project's issue profile cannot be executed as
+    # configured (#641): an absent heading, never a default one.
+    consequence: ConsequenceLevel | None = None
+
+    @property
+    def consequence_heading(self) -> str | None:
+        """The accepted ADR-0085 heading this change is shown under."""
+
+        return self.consequence.heading if self.consequence is not None else None
+
+    @property
+    def consequence_reasons(self) -> tuple[str, ...]:
+        """Why this change is at that level, in its own words (#641)."""
+
+        return self.consequence.reasons if self.consequence is not None else ()
 
     @property
     def ready(self) -> bool:
@@ -478,6 +526,27 @@ class ItemReading:
     unchanged_count: int
     customer_artifacts: tuple[str, ...]
     artifact_rule_version: str = ARTIFACT_IMPACT_RULE_VERSION
+    consequence_rule_version: str = CONSEQUENCE_RULE_VERSION
+
+    @property
+    def consequence(self) -> str | None:
+        """The highest visible level among this item's own children (#641).
+
+        A packet may headline its children's highest consequence and is never
+        split because they differ (ADR-0085), so this is derived from the
+        children rather than stored beside them.  Every surface reads it from
+        here; none derives a level of its own, which is how the review screen
+        and the project's week cannot disagree about one packet.
+        """
+
+        return headline_level(child.consequence for child in self.children)
+
+    @property
+    def consequence_heading(self) -> str | None:
+        """That level as ADR-0085's own accepted heading, or nothing."""
+
+        level = self.consequence
+        return LEVEL_HEADINGS[level] if level is not None else None
 
     @property
     def ordinal(self) -> int:
@@ -792,6 +861,11 @@ class ReviewReading:
     accepted_revision_id: int | None
     items: tuple[ItemReading, ...]
     reading: DeltaReading
+    # The one resolution of what this project is configured to issue at this
+    # cutoff, and of the customer policy over it (#641).  Every level below
+    # was derived from this object; a surface that wants to explain a level, or
+    # to say why there is none, reads its problems rather than asking again.
+    issue_content: EffectiveIssueContent | None = None
 
     def standing_sentence(self, delta_id: int) -> str:
         """Why this proposed change is no longer offered, in the reading's terms.
@@ -880,6 +954,13 @@ def read_review_items(
     support = _value_support(session, project_id, incoming.values())
     rows = _baseline_rows(session, project_id)
     artifacts = _configured_artifacts(session, project_id)
+    # What this project is configured to externally issue at this very cutoff,
+    # resolved once for the whole reading (#640, #641).  Two surfaces cannot
+    # disagree about a packet's level because neither derives one: both read
+    # the levels this single resolution produced.
+    issue_content = effective_issue_content(
+        session, effective_issue_inventory(session, project_id, as_of)
+    )
     reasons = {
         standing_row.delta_id: standing_row.attention_reasons
         for standing_row in reading.standings
@@ -913,6 +994,7 @@ def read_review_items(
             artifacts=artifacts,
             band=bands[delta_id],
             attention_reasons=reasons.get(delta_id, ()),
+            issue_content=issue_content,
         )
         for delta_id in reading.actionable_delta_ids
     }
@@ -985,6 +1067,7 @@ def read_review_items(
         accepted_revision_id=reading.accepted_revision_id,
         items=tuple(items),
         reading=reading,
+        issue_content=issue_content,
     )
 
 
@@ -1029,6 +1112,7 @@ def _child(
     artifacts: Mapping[str, str | None],
     band: str,
     attention_reasons: tuple[str, ...],
+    issue_content: EffectiveIssueContent,
 ) -> ChildReading:
     capture = incoming.get(delta.id)
     support_ids = support.get(capture.fact.id, ()) if capture is not None else ()
@@ -1066,6 +1150,19 @@ def _child(
         support_assessment_ids=support_ids,
         not_ready_reason=not_ready,
         selected=not_ready is None,
+        # Every child listed here is actionable, so the decision a customer
+        # policy waits on is by construction unsettled; #529 asks the same
+        # question about differences that have been decided and passes its own
+        # answer (#641).
+        consequence=consequence_level(
+            issue_content,
+            ChangeFacts(
+                field=delta.target_field,
+                change_type=delta.change_type,
+                attention_reasons=attention_reasons,
+            ),
+            decision_settled=False,
+        ),
     )
 
 
@@ -1818,6 +1915,23 @@ def emit_packet_opening(
 
 
 def _item_payload(reading: ReviewReading, item: ItemReading) -> dict[str, Any]:
+    """What the coordinator was shown, including the consequence they read (#641).
+
+    The issue profile the levels were derived from travels with them — its row,
+    its identity, its version and the digest of the declaration that version
+    made — because a level is only interpretable against the configuration it
+    projected onto, and that configuration changes by attributable act. So does
+    the rule that performed the projection, and the cutoff the whole reading
+    was bound to.
+
+    These are **added to the existing family**, not published as a second one.
+    ``packet_surfacing`` already means "this item was put in front of a
+    person"; emitting another family because the reading learned more about the
+    same event would double-count the one measure the contract exists for,
+    which is the reason this module emits only two events in the first place.
+    """
+
+    content = reading.issue_content
     return {
         "project_id": reading.project_id,
         "item_key": item.item_key,
@@ -1834,6 +1948,36 @@ def _item_payload(reading: ReviewReading, item: ItemReading) -> dict[str, Any]:
         "customer_artifacts": list(item.customer_artifacts),
         "artifact_rule_version": item.artifact_rule_version,
         "observed_accepted_revision_id": reading.accepted_revision_id,
+        "cutoff": reading.as_of.isoformat(),
+        "issue_profile_id": content.profile_id if content is not None else None,
+        "issue_profile_identity": (
+            content.profile_identity if content is not None else None
+        ),
+        "issue_profile_version": (
+            content.profile_version if content is not None else None
+        ),
+        "issue_profile_sha256": (
+            content.content_sha256 if content is not None else None
+        ),
+        # Why a level is absent, where one is. A null consequence with nothing
+        # beside it would be unreadable in the series.
+        "issue_profile_problems": (
+            [problem.code for problem in content.problems]
+            if content is not None
+            else []
+        ),
+        "consequence_rule_version": item.consequence_rule_version,
+        "consequence_level": item.consequence,
+        "child_consequences": [
+            {
+                "delta_id": child.delta_id,
+                "level": child.consequence.name
+                if child.consequence is not None
+                else None,
+                "reasons": list(child.consequence_reasons),
+            }
+            for child in item.children
+        ],
     }
 
 
@@ -1842,4 +1986,5 @@ def _item_labels(item: ItemReading) -> dict[str, str]:
         "grouping_key_kind": item.grouping_key_kind,
         "band": item.band,
         "held_out_reason": item.held_out_reason or "none",
+        "consequence_level": item.consequence or "none",
     }

@@ -33,7 +33,9 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.consequence_levels import AFFECTS_ISSUE, LEVEL_HEADINGS
 from corridor.db import engine
+from corridor.issue_content import NO_ISSUE_PROFILE
 from corridor.models import (
     DeltaDisposition,
     DeltaFollowUpPlan,
@@ -75,6 +77,9 @@ from access_support import seed_membership
 from packet_review_support import (
     Rendition,
     accept_baseline_fact,
+    configure_issue,
+    field_mapping,
+    register_field_mapping,
     append_deltas,
     modify,
     register_baseline,
@@ -88,17 +93,21 @@ from packet_review_support import (
 COORDINATOR = HumanPrincipal("local:coordinator")
 OUTSIDER = HumanPrincipal("local:outsider")
 NOW = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
+# When this project's issue profile took effect. Strictly before every cutoff
+# read below, because a profile answers only for cutoffs at or after its own
+# effective instant (#640).
+CONFIGURED_FROM = datetime(2026, 1, 5, tzinfo=timezone.utc)
+# The canonical field behind the label "Promised for"; the fixture's proposed
+# changes all move it.
+COMMITTED = "committed_date"
 RETURNS_AT = datetime(2026, 10, 1, 0, 0, tzinfo=timezone.utc)
 CONFLICT = 42
 OTHER = 43
 
-# ADR-0085 names these three, and this module must not print any of them until
-# the content inventory they project onto exists.
-VISIBLE_LEVELS = (
-    "Must handle before this issue",
-    "Affects this issue",
-    "Can wait",
-)
+# ADR-0085's three accepted headings, read back from the module that owns the
+# derivation rather than respelled here, so this file cannot drift from the
+# words the decision settled.
+VISIBLE_LEVELS = tuple(LEVEL_HEADINGS.values())
 
 
 @pytest.fixture
@@ -192,6 +201,25 @@ class Adopted:
     def template(self) -> "Adopted":
         register_output_template(
             self.session, self.project, identity="district-ucm-template", version="v3"
+        )
+        return self
+
+    def issued(self, *fields: str) -> "Adopted":
+        """Configure what this project externally issues, and how (#640, #641).
+
+        A project that has not configured its issued set cannot produce an
+        issue at all under ADR-0091, so a test that wants a clean Issue
+        readiness has to say what the customer receives.
+        """
+
+        register_field_mapping(
+            self.session, self.project, field_mapping(*fields or (COMMITTED,))
+        )
+        configure_issue(
+            self.session,
+            self.project,
+            principal=COORDINATOR,
+            effective_from=CONFIGURED_FROM,
         )
         return self
 
@@ -386,7 +414,7 @@ def test_a_follow_up_only_project_lands_on_follow_up(session, project):
 def test_a_ready_to_issue_project_lands_on_the_issue(session, project):
     """Nothing to decide, nobody to chase, and an accepted record to issue."""
 
-    Adopted(session, project).accepted(CONFLICT).template().adopt()
+    Adopted(session, project).accepted(CONFLICT).template().issued().adopt()
 
     workflow = read_project_workflow(session, project_id=project.id, as_of=NOW)
 
@@ -414,7 +442,14 @@ def test_a_quiet_project_lands_at_the_top_and_says_so(session, project, client):
 def test_coverage_and_rendering_problems_are_issue_readiness_not_decisions(
     session, project, client
 ):
-    """An unread source and an unregistered template are never record decisions."""
+    """An unread source, an unregistered template, and an unconfigured issue.
+
+    None of the three is a difference between a source and the accepted record,
+    so none can reach a record decision. ADR-0091 makes the issued set
+    per-project configuration, so a project that has not configured one cannot
+    produce an issue either, and saying so belongs here beside the other two
+    (#641).
+    """
 
     adopted = Adopted(session, project).accepted(CONFLICT)
     unread = adopted.rendition("permit-2026-09.pdf")
@@ -426,6 +461,7 @@ def test_coverage_and_rendering_problems_are_issue_readiness_not_decisions(
 
     assert {problem.code for problem in workflow.readiness} == {
         NO_OUTPUT_TEMPLATE,
+        NO_ISSUE_PROFILE,
         UNREAD_SOURCE,
     }
     assert workflow.review.items == (), "nothing here is a record decision"
@@ -624,13 +660,38 @@ def test_the_page_reads_as_one_document_with_descending_headings(
     assert body.count('<table class="record"') == body.count("<caption>")
 
 
-def test_no_visible_consequence_level_is_asserted(session, project, client):
-    """ADR-0085's three levels need a content inventory that does not exist.
+def test_the_visible_consequence_level_is_the_derived_one(
+    session, project, client
+):
+    """#536 asserted these three strings were absent; #641 derives them.
 
-    ADR-0091's own migration note records that the per-project configured issue
-    set is not modelled, so a level printed here would be a guess wearing a
-    heading.  This asserts the absence deliberately: adding one later has to
-    come with the inventory it projects from.
+    The guard is replaced rather than deleted, because a deleted guard and a
+    satisfied one look identical in a diff. What it now asserts is the whole
+    point of the replacement: the level this page prints is the one
+    ``packet_review`` derived from the project's configured issue content, and
+    the other two headings are not printed at all — an unconfigured project
+    still prints none of them, which is the old assertion's real content.
+    """
+
+    _cross_source(session, project).issued()
+
+    workflow = read_project_workflow(session, project_id=project.id, as_of=NOW)
+    body = client.get(f"/work/{project.slug}").text
+
+    derived = {item.consequence_heading for item in workflow.undecided}
+    assert derived == {LEVEL_HEADINGS[AFFECTS_ISSUE]}
+    for level in VISIBLE_LEVELS:
+        assert (level in body) is (level in derived)
+
+
+def test_an_unconfigured_project_prints_no_consequence_level_at_all(
+    session, project, client
+):
+    """The absence #536 guarded, now stated with its reason beside it.
+
+    A project whose issued set is not configured has nothing to project a level
+    onto, so none of the three headings appears — and the page says why in
+    Issue readiness rather than defaulting to one of them.
     """
 
     _cross_source(session, project)
@@ -639,6 +700,13 @@ def test_no_visible_consequence_level_is_asserted(session, project, client):
 
     for level in VISIBLE_LEVELS:
         assert level not in body
+    assert "not derived" in body
+    assert NO_ISSUE_PROFILE in {
+        problem.code
+        for problem in read_project_workflow(
+            session, project_id=project.id, as_of=NOW
+        ).readiness
+    }
 
 
 def test_a_non_member_is_answered_exactly_like_a_missing_project(

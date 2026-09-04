@@ -291,7 +291,9 @@ def derive_standings(
             project_id: sets[project_id].open_ids for project_id in project_ids
         },
     )
-    readiness = issue_readiness_by_project(session, project_ids=project_ids)
+    readiness = issue_readiness_by_project(
+        session, project_ids=project_ids, as_of=as_of
+    )
 
     today = as_of.date()
     return tuple(

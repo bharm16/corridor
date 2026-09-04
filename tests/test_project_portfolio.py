@@ -172,7 +172,7 @@ def _blocked(session: Session, name: str = "Blocked") -> Project:
     unreadable = adopted.rendition("permit-2026-09.pdf")
     unreadable.document.parse_status = "failed"
     session.flush()
-    adopted.template().adopt()
+    adopted.template().issued().adopt()
     return project
 
 
@@ -180,7 +180,7 @@ def _reviewing(session: Session, name: str = "Reviewing") -> Project:
     """Two sources answering one Promised For differently, nothing decided."""
 
     project = _project(session, name)
-    _cross_source(session, project)
+    _cross_source(session, project).issued()
     return project
 
 
@@ -188,7 +188,7 @@ def _ready(session: Session, name: str = "Ready") -> Project:
     """An accepted record, a registered template, and nothing waiting."""
 
     project = _project(session, name)
-    Adopted(session, project).accepted(CONFLICT).template().adopt()
+    Adopted(session, project).accepted(CONFLICT).template().issued().adopt()
     return project
 
 
@@ -202,7 +202,7 @@ def _planned(session: Session, name: str = "Planned") -> Project:
     """
 
     project = _project(session, name)
-    _cross_source(session, project)
+    _cross_source(session, project).issued()
     _plan_every_child(session, project)
     return project
 
@@ -215,7 +215,7 @@ def _partly_planned(session: Session, name: str = "Partly planned") -> Project:
     """
 
     project = _project(session, name)
-    _cross_source(session, project)
+    _cross_source(session, project).issued()
     reading = read_review_items(session, project_id=project.id, as_of=NOW)
     item = next(one for one in reading.items if one.focused)
     result = resolve_review_packet(
@@ -565,7 +565,7 @@ def test_snoozed_work_is_absent_until_the_date_its_deferral_named(session):
     """
 
     project = _project(session, "Snoozed")
-    adopted = Adopted(session, project).accepted(CONFLICT).template()
+    adopted = Adopted(session, project).accepted(CONFLICT).template().issued()
     adopted.answer(
         document="ucm-2026-09.xlsx",
         family="ucm-workbook",
@@ -724,10 +724,15 @@ def test_one_bounded_read_produces_the_whole_portfolio(session):
     )
     # The design partner's expected portfolio is tens of projects, and the
     # margin here is the whole point: the number below is the reading's shape,
-    # not its size. Twelve statements is what it costs today; the ceiling is
+    # not its size. Fifteen statements is what it costs today; the ceiling is
     # deliberately close to it so that an accidental extra query is a failure
-    # rather than a slow drift back to one round trip per project.
-    assert large <= 12, large
+    # rather than a slow drift back to one round trip per project. It rose from
+    # twelve when Issue readiness learned to state what a project is configured
+    # to issue (#641): three more statements — the effective profile of every
+    # project, their configured artifacts, and their stored field-mapping
+    # declarations — and three is the whole cost at any portfolio size, which
+    # is what the equality above proves.
+    assert large <= 15, large
 
 
 # --- how it reads ----------------------------------------------------------
@@ -809,8 +814,14 @@ def test_no_provisional_customer_label_is_printed(session, client):
     assert "Release Package" not in body
 
 
-def test_no_visible_consequence_level_is_asserted(session, client):
-    """ADR-0085's three levels need a content inventory that does not exist."""
+def test_the_portfolio_prints_no_consequence_level(session, client):
+    """A level belongs to one packet, and this reading shows no packets (#641).
+
+    ADR-0085's three headings are derived now, and the review screen and the
+    project's own week both print them. The portfolio is a row per project with
+    a count of questions on it; printing one packet's level beside a count of
+    several would be a fourth state nobody derived.
+    """
 
     _mixed(session)
 

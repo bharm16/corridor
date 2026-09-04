@@ -100,6 +100,13 @@
   <section class="item"{{ ui.anchor(view.id, focus) }} aria-label="{{ view.item.headline }}">
     {{ ui.reason_presented(view.item.headline, view.guidance) }}
 
+    {%- if view.item.consequence_heading %}
+    <p class="quiet">
+      Consequence for the next issue: {{ view.item.consequence_heading }}.
+      This is the highest of the changes below; each keeps its own.
+    </p>
+    {%- endif %}
+
     {{ ui.fact_list(view.counts) }}
 
     {%- if view.opened %}
@@ -113,6 +120,24 @@
       <li>Held out of this source revision's batch because {{ view.item.held_out_words }}.</li>
       {%- endif %}
     </ul>
+
+    {#- ADR-0085's three visible levels, one per proposed change. The heading
+        groups the reasons above; it never replaces them, and a change never
+        inherits a sibling's level (#641). #}
+    {%- if view.item.consequence_heading %}
+    <h3>What each change means for the next issue</h3>
+    {% call ui.record_table(
+         "The consequence of each proposed change for the next customer issue",
+         ["Proposed change", "Consequence", "Why"]) %}
+      {%- for child in view.item.children %}
+      <tr>
+        <th scope="row">{{ child.subject_name }} — {{ child.field_name }}</th>
+        <td>{{ child.consequence_heading }}</td>
+        <td>{{ child.consequence_reasons|join("; ") }}</td>
+      </tr>
+      {%- endfor %}
+    {% endcall %}
+    {%- endif %}
 
     {%- if view.item.focused %}
 
