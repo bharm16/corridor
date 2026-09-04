@@ -22,9 +22,19 @@
   internal names and appear nowhere.
 
   There is no script. A quiet project is listed in words as needing nothing, so
-  the answer costs no click; the first project still waiting is the one element
-  carrying `autofocus`, so a keyboard user and a screen reader both start where
-  the work is.
+  the answer costs no click.
+
+  **Loading this page moves no focus.** It carried `autofocus` on the first
+  project still waiting, and that is wrong for a reading: automatic focus can
+  move a screen-reader user past the heading and the paragraph saying what the
+  cutoff is and what this page does not do, and land them mid-list with no
+  warning and nothing explaining where they are. `_primitives.html`'s focus
+  rule is about the *response to a write* — a refusal, a refused field, a
+  completed Save — and none of those exists here, because this page performs
+  no act at all. So focus begins in document order: heading, summary, the skip
+  link, then the rows. The skip link is user-activated, offered only when some
+  project is actually waiting, and it moves focus to that project's own
+  region, which is why every region keeps its `tabindex="-1"`.
 #}
 <!doctype html>
 <meta charset="utf-8">
@@ -47,6 +57,18 @@
   .project dl.facts dt { color:var(--muted); }
   .project dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
   .quiet { color:var(--muted); font-size:.9rem; }
+  .note { color:var(--muted); margin:.2rem 0 .6rem; }
+  /* Visible focus, on the links and on the regions the skip link moves to.
+     `:focus-visible` alone would leave the region unmarked where a
+     programmatic focus is not treated as visible, so plain `:focus` is drawn
+     too. The ring is `currentcolor` rather than a chosen colour: it keeps its
+     contrast against whatever the reader's own settings paint the text with,
+     it survives Windows high-contrast mode, and it states nothing about the
+     project — a focus ring is where the keyboard is, never what a row means,
+     which is the distinction `test_architecture` is guarding. */
+  a:focus-visible, .skip-link:focus { outline:3px solid currentcolor; outline-offset:2px; }
+  .project:focus, .project:focus-visible { outline:3px solid currentcolor; outline-offset:2px; }
+  .skip-link { display:inline-block; margin:0 0 1rem; }
 </style>
 {{ ui.styles() }}
 
@@ -77,12 +99,18 @@
     there is no reason to open them.
   </p>
 
+  {%- if skip_to %}
+  <p><a class="skip-link" href="#project-{{ skip_to }}">Skip to first project needing attention</a></p>
+  {%- endif %}
+
   {%- for row in portfolio.standings %}
   <section class="project" id="project-{{ row.slug }}" tabindex="-1"
-           {%- if row.slug == focus %} autofocus{% endif %}
            aria-labelledby="project-{{ row.slug }}-heading">
     <h2 id="project-{{ row.slug }}-heading">{{ row.name }}</h2>
     <p>{{ ui.state(state_label(row.tone, row.sentence)) }}</p>
+    {%- for note in row.notes %}
+    <p class="note">{{ note }}. Corridor is doing this, and there is nothing to do about it here.</p>
+    {%- endfor %}
     {{ ui.fact_list(row.counts) }}
     <p>
       <a href="/work/{{ row.slug }}?from=portfolio">Open {{ row.name }}</a>

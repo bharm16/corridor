@@ -66,6 +66,19 @@ still has time. ``follow_up_waiting`` keeps counting all of them beside the
 row, because the count is what a coordinator reads and the state is what they
 act on.
 
+**Corridor's own work in progress is context, never a sixth state** (#675). A
+preparation this project asked for and has not finished asks *nothing* of a
+coordinator: there is no act to take while a worker is rendering, and a state
+for it would be a row headed by a condition the person reading it cannot
+clear. So an in-flight request prints one bounded sentence beside whichever
+state the records produced, and a project with nothing else outstanding stays
+*no action required* while it prepares. The two ends of that preparation are
+already states this reading has: a finished attempt that produced nothing is a
+current-issue blocker, through ``issue_readiness``'s own
+``PREPARATION_FAILED`` problem rather than a second opinion here, and a
+finished attempt that produced a candidate reaches ``ISSUE_READY`` through the
+same ``candidate_awaits_authorization`` every other candidate is read by.
+
 **What is deliberately not derived here.** The commitment and retained-request
 triggers of #425 — an accepted date that has passed, a retained outgoing
 request past its declared boundary — are not part of this row's follow-up
@@ -113,6 +126,7 @@ from corridor.release_authorization import (
     candidate_format_differences,
     issue_state_differences,
 )
+from corridor.release_preparation import preparation_standings
 from corridor.release_candidate import (
     candidate_staleness_reasons,
     current_candidates_by_project,
@@ -164,6 +178,16 @@ SENTENCES: Mapping[str, str] = {
     NO_ACTION: "Nothing needs attention at this cutoff",
 }
 
+# What a row says while Corridor itself is preparing this project's next
+# issue. It is secondary context and never a state: #675's own
+# ``PreparationStanding`` records that a project being prepared asks nothing of
+# a coordinator, so the five above are untouched and this sentence is printed
+# beside whichever one the records produced. The words are the Issue section's
+# own (`web.issue_section.LABELS[PREPARING]`), not a new label, because the
+# same fact must not be spelled two ways on two screens (ADR-0048); a test
+# asserts the two strings are still the same one.
+PREPARING_NOTE = "Preparing this issue"
+
 # The tone each state is drawn in. Colour is redundant reinforcement only; the
 # sentence above is what carries the meaning (`ui_primitives`).
 TONES: Mapping[str, str] = {
@@ -196,6 +220,7 @@ class ProjectStanding:
     readiness_problems: int
     accepted_revision_id: int | None
     candidate_ready: bool
+    preparing: bool
 
     @property
     def sentence(self) -> str:
@@ -221,6 +246,17 @@ class ProjectStanding:
             ("Past the date the plan named", self.follow_up_overdue),
             ("Problems to put right first", self.readiness_problems),
         )
+
+    @property
+    def notes(self) -> tuple[str, ...]:
+        """Bounded secondary sentences that are context and not action.
+
+        Empty for almost every row. A preparation in flight is the only one
+        today, and it is here rather than in ``state`` because it asks the
+        coordinator for nothing: they cannot start it, hurry it, or clear it.
+        """
+
+        return (PREPARING_NOTE,) if self.preparing else ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -330,8 +366,17 @@ def derive_standings(
             project_id: sets[project_id].open_ids for project_id in project_ids
         },
     )
+    # One read of what each project's next issue is doing, used twice and
+    # asked for once: a finished failure is an issue-readiness problem, an
+    # unfinished request is this row's secondary sentence, and both are the
+    # same record (#675). ``issue_readiness_by_project`` reads it itself when
+    # no caller hands it over, which is what every single-project caller does.
+    preparations = preparation_standings(session, project_ids=project_ids)
     readiness = issue_readiness_by_project(
-        session, project_ids=project_ids, as_of=as_of
+        session,
+        project_ids=project_ids,
+        as_of=as_of,
+        preparations=preparations,
     )
     # What a project has actually prepared, and what it has actually issued.
     # Five more statements, none of them per project, and every one of them a
@@ -356,6 +401,7 @@ def derive_standings(
                 newest_revision_id=accepted.get(project.id) or 0,
                 formats=formats.get(project.id, {}),
             ),
+            preparing=preparations[project.id].in_flight,
             today=today,
         )
         for project in projects
@@ -510,6 +556,7 @@ def _standing(
     problems: int,
     accepted_revision_id: int | None,
     candidate_ready: bool,
+    preparing: bool,
     today,
 ) -> ProjectStanding:
     planned = {need.delta_id for need in needs}
@@ -550,6 +597,7 @@ def _standing(
         readiness_problems=problems,
         accepted_revision_id=accepted_revision_id,
         candidate_ready=candidate_ready,
+        preparing=preparing,
     )
 
 
@@ -561,6 +609,15 @@ def _standing(
 # that was shown and left alone, so a quiet project's zero-click week is read
 # from the presentation record plus the *absence* of a selection naming it —
 # which is only a fact if silence is never written.
+#
+# **The presentation payload is exactly the row, and that is the contract**
+# (#532 reads it next). Every field of ``ProjectStanding`` a coordinator can
+# see is in it — the primary state, the landing section the link would enter,
+# each secondary count, and whether the row also said a preparation was under
+# way — so an analyst reconstructs what was on the screen instead of inferring
+# it from a state name. Nothing derived later is added: no ranking, no
+# duration, no attention score. A field is added here only when the row itself
+# starts showing it.
 #
 # Both events take their instant from the reading's declared cutoff, never from
 # a clock, so a test states the moment. Customer and project identity stays in
@@ -604,9 +661,13 @@ def emit_portfolio_reading(
                     {
                         "project_id": row.project_id,
                         "state": row.state,
+                        "landing": row.landing,
                         "changes_to_review": row.changes_to_review,
                         "follow_up_waiting": row.follow_up_waiting,
+                        "follow_up_overdue": row.follow_up_overdue,
+                        "follow_up_due": row.follow_up_due,
                         "readiness_problems": row.readiness_problems,
+                        "preparing": row.preparing,
                     }
                     for row in reading.standings
                 ],

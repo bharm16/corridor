@@ -47,6 +47,7 @@ from corridor.models import (
     DeltaReviewPacketReceipt,
     Project,
     ProjectRecordRevision,
+    ReleasePreparationAttempt,
 )
 from corridor.packet_review import (
     FocusedAnswer,
@@ -60,12 +61,21 @@ from corridor.project_portfolio import (
     ISSUE_BLOCKED,
     ISSUE_READY,
     NO_ACTION,
+    PREPARING_NOTE,
     REVIEW_WAITING,
     SENTENCES,
     STATE_PRECEDENCE,
     landing_section,
     primary_state,
     read_portfolio,
+)
+from corridor.release_preparation import (
+    FAILED,
+    PREPARED,
+    PREPARING,
+    preparation_standing,
+    preparation_idempotency_key,
+    request_preparation,
 )
 from corridor.release_authorization import (
     AuthorizationRefused,
@@ -92,6 +102,7 @@ from corridor.web.app import (
 )
 
 from access_support import request_scoped, seed_membership
+from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import Rendition, append_deltas, modify, subject, support
 # The candidate fixtures come from #533's own test module for the same reason
@@ -449,6 +460,67 @@ def _quiet(session: Session, name: str = "Quiet") -> Project:
     project = _project(session, name)
     Adopted(session, project).adopt()
     return project
+
+
+def _asked_to_prepare(session: Session, project: Project):
+    """One preparation this project asked for and no worker has finished (#675).
+
+    Through the real seam, not an inserted row: ``request_preparation``
+    revalidates the confirmed coverage, the profile version and the accepted
+    revision, so a fixture cannot record a request the module would refuse and
+    then claim the portfolio read it.
+    """
+
+    declaration = declare_coverage(
+        session, project, cutoff=NOW, principal=COORDINATOR, confirmed_at=NOW
+    )
+    revision_id = int(
+        session.scalar(
+            select(func.max(ProjectRecordRevision.id)).where(
+                ProjectRecordRevision.project_id == project.id
+            )
+        )
+    )
+    request = request_preparation(
+        session,
+        project_id=project.id,
+        declaration=declaration,
+        accepted_revision_id=revision_id,
+        requested_by=COORDINATOR,
+        requested_at=NOW,
+        idempotency_key=preparation_idempotency_key(
+            session, project_id=project.id, declaration=declaration
+        ),
+    )
+    session.flush()
+    session.expire_all()
+    return request
+
+
+def _attempt_finished(
+    session: Session, request, *, outcome: str, candidate_id=None, reason=None
+):
+    """The one row a worker appends when an attempt finishes, and no other.
+
+    The relation's own check constraint is what keeps the three outcomes
+    apart, so a fixture that named a candidate and a failure together would be
+    refused by the database rather than quietly produce a state this reading
+    would then be tested against.
+    """
+
+    row = ReleasePreparationAttempt(
+        request_id=request.id,
+        project_id=request.project_id,
+        outcome=outcome,
+        candidate_id=candidate_id,
+        reason=reason,
+        started_at=NOW,
+        finished_at=NOW,
+    )
+    session.add(row)
+    session.flush()
+    session.expire_all()
+    return row
 
 
 def _legacy(session: Session, name: str = "Legacy") -> Project:
@@ -885,6 +957,172 @@ def test_a_blocked_candidate_is_not_ready(session, tmp_path, store):
     assert not _portfolio(session).standing(prepared.project.id).candidate_ready
 
 
+# --- Corridor's own work in progress (#675) --------------------------------
+
+
+def test_a_preparation_in_flight_is_context_and_never_a_state(session, client):
+    """A project being prepared asks nothing of a coordinator, so it asks nothing.
+
+    The row keeps whichever state its records produced — here, none at all —
+    and says in bounded words that Corridor is preparing the issue. There is
+    no act to take: the Issue section deliberately offers none while a request
+    is in flight, so a state for it would head a row with a condition the
+    person reading it cannot clear.
+    """
+
+    project = _ready(session, "Preparing")
+    before = _portfolio(session).standing(project.id)
+    assert before.state == NO_ACTION and not before.preparing
+
+    _asked_to_prepare(session, project)
+
+    standing = _portfolio(session).standing(project.id)
+    assert preparation_standing(session, project_id=project.id).state == PREPARING
+    assert standing.state == NO_ACTION, (
+        "a preparation under way is not a sixth primary state"
+    )
+    assert standing.preparing
+    assert standing.notes == (PREPARING_NOTE,)
+    assert standing.quiet, "nothing is required of the coordinator"
+    assert standing.readiness_problems == 0
+    assert (before.changes_to_review, before.follow_up_due) == (
+        standing.changes_to_review,
+        standing.follow_up_due,
+    ), "asking for a preparation moved no count on this row"
+
+    body = client.get("/portfolio").text
+    assert PREPARING_NOTE in body
+    assert SENTENCES[NO_ACTION] in body
+
+
+def test_the_preparing_sentence_is_the_issue_section_own_words(session):
+    """One fact, one spelling, on both screens (ADR-0048)."""
+
+    from corridor.web.issue_section import STATE_LABELS
+    from corridor.web.issue_section import PREPARING as SECTION_PREPARING
+
+    assert PREPARING_NOTE == STATE_LABELS[SECTION_PREPARING].text
+    assert PREPARING_NOTE not in SENTENCES.values(), (
+        "the note beside a row is not one of the five states"
+    )
+
+
+def test_a_preparation_that_produced_nothing_blocks_the_current_issue(
+    session, client
+):
+    """The failure end of #675, read as this row's first rung.
+
+    It is a current-issue technical blocker and it arrives through
+    ``issue_readiness``'s own ``PREPARATION_FAILED`` problem, not through a
+    second opinion here — which is why the row also stops saying a preparation
+    is under way the moment the attempt finishes.
+    """
+
+    project = _ready(session, "Failed preparation")
+    request = _asked_to_prepare(session, project)
+    assert _portfolio(session).standing(project.id).state == NO_ACTION
+
+    _attempt_finished(
+        session,
+        request,
+        outcome="failed",
+        reason="the registered output template's bytes could not be retrieved.",
+    )
+
+    standing = _portfolio(session).standing(project.id)
+    assert preparation_standing(session, project_id=project.id).state == FAILED
+    assert standing.state == ISSUE_BLOCKED
+    assert standing.readiness_problems == 1
+    assert not standing.preparing and standing.notes == ()
+    assert not standing.candidate_ready, "no partial candidate was written"
+
+    body = client.get("/portfolio").text
+    assert SENTENCES[ISSUE_BLOCKED] in body
+    assert PREPARING_NOTE not in body
+
+
+def test_a_preparation_that_produced_a_candidate_reaches_the_issue_rung(
+    session, tmp_path, store
+):
+    """The other end of the same preparation, on the same page as the first.
+
+    Two projects, one in flight and one whose attempt finished with the
+    candidate #533 would authorize, so the difference between them is the
+    attempt and nothing else. The candidate is #529's own, built through
+    #533's fixture, because a row claiming an issue is ready to approve is
+    only honest if what it read is the candidate the authorizing module would
+    accept.
+    """
+
+    prepared, candidate = _prepared(session, tmp_path, store, "Prepared")
+    in_flight = _ready(session, "Still preparing")
+    _asked_to_prepare(session, in_flight)
+    request = _asked_to_prepare(session, prepared.project)
+
+    waiting = _portfolio(session).standing(prepared.project.id)
+    assert waiting.preparing and waiting.state == ISSUE_READY
+
+    _attempt_finished(
+        session, request, outcome="prepared", candidate_id=candidate.id
+    )
+
+    finished = _portfolio(session).standing(prepared.project.id)
+    unfinished = _portfolio(session).standing(in_flight.id)
+    assert preparation_standing(
+        session, project_id=prepared.project.id
+    ).state == PREPARED
+    assert not finished.preparing and finished.notes == ()
+    assert finished.state == ISSUE_READY and finished.candidate_ready
+    # The project still preparing has no candidate to authorize, and that is
+    # the whole difference between the two rows.
+    assert unfinished.preparing and unfinished.state == NO_ACTION
+    assert not unfinished.candidate_ready
+    assert finished.state != unfinished.state
+
+
+def test_a_preparation_in_flight_changes_no_project_state(
+    session, tmp_path, store
+):
+    """One project on every rung, each asked to prepare, and none of them moves.
+
+    This is the criterion stated where it can actually fail: not "a preparing
+    project shows one of the five" — a fixture where four rows happened to
+    read the same would satisfy that — but "the five rows are five different
+    states before the requests and the same five after them".
+    """
+
+    shapes = {
+        ISSUE_BLOCKED: _blocked(session),
+        REVIEW_WAITING: _reviewing(session),
+        ISSUE_READY: _prepared(session, tmp_path, store, "Prepared")[0].project,
+        FOLLOW_UP_DUE: _overdue(session),
+        NO_ACTION: _ready(session),
+    }
+    before = {
+        rung: _portfolio(session).standing(project.id).state
+        for rung, project in shapes.items()
+    }
+    assert before == {rung: rung for rung in shapes}, before
+    assert len(set(before.values())) == len(STATE_PRECEDENCE), (
+        "the fixture must put one project on each rung, not several on one"
+    )
+
+    for project in shapes.values():
+        _asked_to_prepare(session, project)
+
+    reading = _portfolio(session)
+    after = {
+        rung: reading.standing(project.id).state
+        for rung, project in shapes.items()
+    }
+
+    assert after == before
+    assert all(
+        reading.standing(project.id).preparing for project in shapes.values()
+    ), "every one of them really is preparing, so the rule was exercised"
+    assert set(after.values()) == set(STATE_PRECEDENCE)
+
+
 # --- the follow-up rung, which had no reachable state at all ---------------
 
 
@@ -1254,21 +1492,88 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
 # --- how it reads ----------------------------------------------------------
 
 
-def test_exactly_one_project_takes_focus_and_it_is_the_first_one_waiting(
+def test_reading_the_portfolio_moves_no_focus_at_all(session, client, tmp_path, store):
+    """Loading a reading takes the keyboard nowhere.
+
+    It used to `autofocus` the first project still waiting, on the argument
+    that a keyboard user should start where the work is. That argument is
+    wrong for this page and the maintainer refused it: moving focus on load
+    can carry a screen-reader user past the heading and past the paragraph
+    that says what the cutoff is and what this page does not do, landing them
+    mid-list with nothing explaining where they are. The primitives' focus
+    rule governs the *response to a write* — a refusal, a refused field, a
+    completed Save — and this page performs no act at all.
+    """
+
+    _mixed(session, tmp_path, store)
+
+    body = client.get("/portfolio").text
+
+    assert "autofocus" not in body
+    # Every region stays programmatically focusable, because the skip link
+    # below moves focus to one of them.
+    for row in _portfolio(session).standings:
+        assert f'id="project-{row.slug}" tabindex="-1"' in body
+
+
+def test_the_skip_link_names_the_first_project_waiting_and_is_user_activated(
     session, client
 ):
-    """A keyboard user starts where the work is, not at the document title."""
+    """One optional link, in document order, that the reader chooses to follow."""
 
     quiet = _quiet(session, "Aaa quiet")
     waiting = _reviewing(session, "Zzz reviewing")
 
     body = client.get("/portfolio").text
 
-    assert body.count("autofocus") == 1
-    focused = re.search(r'id="project-([a-z0-9-]+)" tabindex="-1" autofocus', body)
-    assert focused is not None
-    assert focused.group(1) == waiting.slug
-    assert f'id="project-{quiet.slug}" tabindex="-1"' in body
+    assert body.count("Skip to first project needing attention") == 1
+    assert f'href="#project-{waiting.slug}"' in body
+    assert f'href="#project-{quiet.slug}"' not in body, (
+        "the skip link goes where the work is, not to the first row"
+    )
+    # Document order: heading, summary, the link, then the rows. The link is
+    # the reader's own act; nothing before it is skipped for them.
+    assert body.index("<h1>") < body.index("Skip to first project")
+    assert body.index("Sources captured up to") < body.index("Skip to first project")
+    assert body.index("Skip to first project") < body.index(
+        f'id="project-{quiet.slug}"'
+    )
+    assert body.index("Skip to first project") < body.index(
+        f'id="project-{waiting.slug}"'
+    )
+
+
+def test_no_skip_link_is_offered_when_no_project_is_waiting(session, client):
+    """A link to nowhere is worse than no link."""
+
+    _quiet(session, "One")
+    _quiet(session, "Two")
+
+    body = client.get("/portfolio").text
+
+    assert [row.state for row in _portfolio(session).standings] == [
+        NO_ACTION,
+        NO_ACTION,
+    ]
+    assert "Skip to first project" not in body
+    assert 'class="skip-link"' not in body, "no link, not a hidden one"
+
+
+def test_focus_is_drawn_where_the_keyboard_can_land(session, client):
+    """A visible ring on the links and on the regions the skip link reaches.
+
+    Asserted on the stylesheet the page ships, which is the regression guard;
+    that the ring actually paints in a browser was driven separately and is
+    not something a rendered-HTML assertion can claim.
+    """
+
+    _reviewing(session)
+
+    body = client.get("/portfolio").text
+
+    assert "a:focus-visible" in body
+    assert ".project:focus" in body
+    assert body.count("outline:3px solid currentcolor") == 2
 
 
 def test_every_project_is_a_region_bound_to_its_own_heading(session, client, tmp_path, store):
@@ -1298,6 +1603,32 @@ def test_the_page_reads_as_one_document_with_descending_headings(session, client
         assert level <= previous + 1, "a heading level is skipped"
 
 
+def _state_sentence(body: str, slug: str) -> str:
+    """The words the state element of one project's own row actually carries.
+
+    Not "does this sentence appear on the page": a five-state proof that only
+    asks that is satisfied by a page which prints every sentence once and
+    attaches them to the wrong rows, and by a fixture where four projects read
+    the same. This reads the one `ui.state` element inside that project's own
+    section, with the decorative mark stripped.
+    """
+
+    section = re.search(
+        rf'<section class="project" id="project-{re.escape(slug)}"(.*?)</section>',
+        body,
+        re.S,
+    )
+    assert section is not None, f"no row was rendered for {slug}"
+    states = re.findall(
+        r'<span class="state state-[a-z]+">(.*?)</span>',
+        # The mark is its own nested span and is `aria-hidden`; drop it.
+        re.sub(r'<span class="mark" aria-hidden="true">.*?</span>', "", section.group(1)),
+        re.S,
+    )
+    assert len(states) == 1, f"{slug} carries {len(states)} state elements"
+    return states[0].strip()
+
+
 def test_every_state_is_printed_in_its_own_words(session, client, tmp_path, store):
     """Colour is redundant reinforcement; the sentence carries the meaning."""
 
@@ -1308,6 +1639,51 @@ def test_every_state_is_printed_in_its_own_words(session, client, tmp_path, stor
 
     for project in projects.values():
         assert SENTENCES[reading.standing(project.id).state] in body
+
+
+def test_the_five_states_are_five_different_sentences_on_five_rows(
+    session, client, tmp_path, store
+):
+    """The closure standard, read off the page rather than off the reading.
+
+    One project on each rung, and the assertion is that the rows *differ*: the
+    five sentences are five distinct strings, none of them a fragment of
+    another, and each row carries its own. A proof that only asked whether
+    each row rendered something would pass on a page where two states share a
+    sentence, which would tell a coordinator nothing about which is which.
+    """
+
+    shapes = {
+        ISSUE_BLOCKED: _blocked(session),
+        REVIEW_WAITING: _reviewing(session),
+        ISSUE_READY: _prepared(session, tmp_path, store, "Prepared")[0].project,
+        FOLLOW_UP_DUE: _overdue(session),
+        NO_ACTION: _ready(session),
+    }
+    assert len(set(SENTENCES.values())) == len(STATE_PRECEDENCE), (
+        "two states are spelled the same way"
+    )
+    for state, sentence in SENTENCES.items():
+        for other, another in SENTENCES.items():
+            if other != state:
+                assert sentence not in another, (
+                    f"{state}'s sentence is a fragment of {other}'s"
+                )
+
+    reading = _portfolio(session)
+    body = client.get("/portfolio").text
+
+    printed = {
+        rung: _state_sentence(body, project.slug)
+        for rung, project in shapes.items()
+    }
+
+    assert printed == {rung: SENTENCES[rung] for rung in shapes}
+    assert len(set(printed.values())) == len(STATE_PRECEDENCE)
+    assert {
+        rung: reading.standing(project.id).state
+        for rung, project in shapes.items()
+    } == {rung: rung for rung in shapes}
 
 
 def test_no_provisional_customer_label_is_printed(session, client, tmp_path, store):
@@ -1371,6 +1747,100 @@ def test_the_presentation_records_every_project_shown_and_its_state(session, cli
     } == {row.project_id: row.state for row in reading.standings}
     # #491's low-cardinality rule: identity is in the payload, never a label.
     assert set(event_record.metric_labels) == {"surface", "status"}
+
+
+def test_the_presentation_payload_is_exactly_the_row(session, client, tmp_path, store):
+    """The contract #532 reads next, stated field by field.
+
+    Every part of a row a coordinator can see is in the payload — the primary
+    state, the section the link would enter, each secondary count, and whether
+    the row also said a preparation was under way — so an analyst rebuilds the
+    screen instead of inferring it. Nothing derived later is in it: no
+    ranking, no duration, no attention score.
+    """
+
+    _mixed(session, tmp_path, store)
+    preparing = _ready(session, "Preparing")
+    _asked_to_prepare(session, preparing)
+
+    with analytics.capture_events() as events:
+        assert client.get("/portfolio").status_code == 200
+
+    presented = events.by_family(EventFamily.PORTFOLIO_READING)[0]
+    reading = _portfolio(session)
+
+    assert set(presented.payload) == {
+        "principal_subject",
+        "cutoff",
+        "project_count",
+        "projects",
+    }
+    assert presented.payload["principal_subject"] == COORDINATOR.subject
+    assert presented.payload["cutoff"] == NOW.isoformat()
+    assert presented.payload["project_count"] == len(reading.standings)
+    assert presented.payload["projects"] == [
+        {
+            "project_id": row.project_id,
+            "state": row.state,
+            "landing": row.landing,
+            "changes_to_review": row.changes_to_review,
+            "follow_up_waiting": row.follow_up_waiting,
+            "follow_up_overdue": row.follow_up_overdue,
+            "follow_up_due": row.follow_up_due,
+            "readiness_problems": row.readiness_problems,
+            "preparing": row.preparing,
+        }
+        for row in reading.standings
+    ]
+    # The one row that is preparing says so in the payload, and its state is
+    # still one of the five.
+    entry = next(
+        one
+        for one in presented.payload["projects"]
+        if one["project_id"] == preparing.id
+    )
+    assert entry["preparing"] is True
+    assert entry["state"] == NO_ACTION
+    assert [one["preparing"] for one in presented.payload["projects"]].count(
+        True
+    ) == 1
+
+
+def test_a_quiet_week_is_derivable_from_the_two_families_alone(
+    session, client, tmp_path, store
+):
+    """The zero-click result, derived the way #532 will have to derive it.
+
+    Nothing is written when a project is shown and left alone, so the only
+    evidence a quiet project cost no click is the presentation naming it and
+    no selection naming it. This performs that derivation over a page where
+    one project *was* opened, so the absence means something.
+    """
+
+    quiet = _quiet(session, "Untouched")
+    other_quiet = _quiet(session, "Also untouched")
+    opened = _reviewing(session, "Opened")
+
+    with analytics.capture_events() as events:
+        assert client.get("/portfolio").status_code == 200
+        assert client.get(f"/work/{opened.slug}?from=portfolio").status_code == 200
+
+    shown = {
+        entry["project_id"]: entry
+        for entry in events.by_family(EventFamily.PORTFOLIO_READING)[0].payload[
+            "projects"
+        ]
+    }
+    selected = {
+        one.payload["project_id"]
+        for one in events.by_family(EventFamily.PROJECT_SELECTION)
+    }
+
+    zero_click = set(shown) - selected
+    assert zero_click == {quiet.id, other_quiet.id}
+    assert selected == {opened.id}
+    assert all(shown[project_id]["state"] == NO_ACTION for project_id in zero_click)
+    assert shown[opened.id]["state"] == REVIEW_WAITING
 
 
 def test_opening_a_project_from_the_portfolio_is_recorded_once(session, client):
