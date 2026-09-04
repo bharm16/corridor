@@ -117,6 +117,15 @@ class CorridorApplicationStack(Stack):
         # (DATABASE_URL, WEB_DATABASE_URL, WORKER_DATABASE_URL).
         common_env = {
             "CORRIDOR_ENVIRONMENT": "nonproduction",
+            # #694's two halves have to agree. The web task reads as
+            # `corridor_web`, which is the login the revoke was aimed at, so a
+            # deployment that does not also declare the boundary reads as
+            # INCONSISTENT and `refuse_routes_the_boundary_cannot_serve`
+            # answers 503 on every gated route -- /readyz included, which would
+            # make the load balancer deregister the task and take the whole
+            # environment down. Found by running the container, not by reading
+            # the stack.
+            "CORRIDOR_LIVE_PILOT_WEB_BOUNDARY": "true",
             "CORRIDOR_STORAGE_BACKEND": "s3",
             "CORRIDOR_S3_BUCKET": artifact_bucket.bucket_name,
             "CORRIDOR_S3_REGION": Aws.REGION,
@@ -336,6 +345,9 @@ class CorridorApplicationStack(Stack):
         CfnOutput(self, "ClusterName", value=cluster.cluster_name)
         CfnOutput(self, "ClusterArn", value=cluster.cluster_arn)
         CfnOutput(self, "WebServiceName", value=self.web_service.service_name)
+        CfnOutput(
+            self, "WebTaskDefinitionArn", value=web_task.task_definition_arn
+        )
         CfnOutput(
             self,
             "MigrationTaskDefinitionArn",

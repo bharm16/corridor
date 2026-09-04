@@ -1,14 +1,21 @@
-# Application release: push a tested image, migrate, then serve.
+# Application release: push a tested image, migrate, then serve it.
 #
 # Separate from infra-nonproduction.yml because it is separate work with a
-# separate identity. This workflow never deploys a stack; it moves resources
-# CloudFormation already created. Its role, corridor-nonprod-app-release, holds
-# no cloudformation:*, no rds:*, and cannot assume the CDK bootstrap roles.
+# separate identity. This workflow never deploys a stack; it registers new task
+# definition revisions and moves resources CloudFormation already created. Its
+# role holds no cloudformation write authority and cannot assume the CDK
+# bootstrap roles.
 #
-# The order is the point. The migration is the only schema writer, so it runs
-# to completion and its exit code is checked before the web service is allowed
-# to serve. A release that migrates and then fails leaves the service where it
-# was rather than serving against a half-migrated schema.
+# Pushing a tag to ECR does not change an existing task definition, so pushing
+# and then running the stack's task definition would run the *previous* image
+# while reporting success. Every release therefore registers new revisions bound
+# to the image digest and runs those.
+#
+# The web service is drained before the migration. Leaving it up would let the
+# old image keep serving while the migration changes the schema underneath it.
+# That makes this a maintenance-window release, which is the right trade for a
+# synthetic environment with no availability requirement; expand/contract can be
+# designed when there is one.
 name: app-release
 
 on:
@@ -18,23 +25,28 @@ on:
         description: Full 40-character commit SHA on main to release
         required: true
         type: string
-      start_web:
-        description: Scale the web service to 1 after a successful migration
-        required: false
-        default: false
-        type: boolean
+      web_desired_count:
+        description: Web tasks to run after a successful migration
+        required: true
+        default: "0"
+        type: choice
+        options: ["0", "1"]
 
 permissions:
   contents: read
 
+# Shared with infra-nonproduction.yml. A stack deploy that rewrites task
+# definitions while a release is registering revisions against them races, so
+# every mutation of this environment queues behind every other.
 concurrency:
-  group: corridor-nonproduction-release
+  group: corridor-nonproduction-mutation
   cancel-in-progress: false
 
 env:
   AWS_REGION: us-east-2
   CLUSTER: corridor-nonprod
   COMMIT_SHA: ${{ inputs.commit_sha }}
+  WEB_DESIRED_COUNT: ${{ inputs.web_desired_count }}
 
 jobs:
   release:
@@ -58,12 +70,12 @@ jobs:
 
       - name: Require that the commit is on main
         run: |
-          if ! git merge-base --is-ancestor "$COMMIT_SHA" origin/main 2>/dev/null; then
-            git fetch --quiet origin main
-            git merge-base --is-ancestor "$COMMIT_SHA" origin/main \
-              || { echo "::error::$COMMIT_SHA is not an ancestor of origin/main"; exit 1; }
-          fi
-          echo "commit is on main"
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$COMMIT_SHA" origin/main \
+            || { echo "::error::$COMMIT_SHA is not an ancestor of origin/main"; exit 1; }
+
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: { python-version: "3.12" }
 
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
@@ -73,20 +85,25 @@ jobs:
       - name: Resolve the stack outputs this release needs
         run: |
           aws cloudformation describe-stacks --stack-name CorridorApplication \
-            --query 'Stacks[0].Outputs' --output json > outputs.json || {
-              echo "::error::CorridorApplication is not deployed yet"; exit 1; }
-          get() { python3 -c "
-          import json,sys
-          for o in json.load(open('outputs.json')):
-              if o['OutputKey']==sys.argv[1]: print(o['OutputValue']); break
-          " "$1"; }
-          {
-            echo "REPOSITORY_URI=$(get RepositoryUri)"
-            echo "MIGRATION_TASK_DEF=$(get MigrationTaskDefinitionArn)"
-            echo "WEB_SERVICE=$(get WebServiceName)"
-            echo "TASK_SUBNETS=$(get TaskSubnetIds)"
-            echo "MIGRATION_SG=$(get MigrationSecurityGroupId)"
-          } >> "$GITHUB_ENV"
+            --query 'Stacks[0].Outputs' --output json > outputs.json \
+            || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json, os
+          outputs = {o["OutputKey"]: o["OutputValue"] for o in json.load(open("outputs.json"))}
+          for key, name in (
+              ("RepositoryUri", "REPOSITORY_URI"),
+              ("WebServiceName", "WEB_SERVICE"),
+              ("TaskSubnetIds", "TASK_SUBNETS"),
+              ("MigrationSecurityGroupId", "MIGRATION_SG"),
+              ("MigrationTaskDefinitionArn", "BASE_MIGRATION_TD"),
+              ("BatchTaskDefinitionArn", "BASE_BATCH_TD"),
+              ("WebTaskDefinitionArn", "BASE_WEB_TD"),
+          ):
+              value = outputs.get(key)
+              if not value:
+                  raise SystemExit(f"stack output {key} is missing")
+              print(f"{name}={value}")
+          PY
 
       - name: Build and push the image under its commit SHA
         run: |
@@ -95,43 +112,107 @@ jobs:
           docker build -t "$REPOSITORY_URI:$COMMIT_SHA" .
           docker push "$REPOSITORY_URI:$COMMIT_SHA"
 
-      - name: Record the pushed digest
+      - name: Resolve the immutable digest
         run: |
           DIGEST=$(aws ecr describe-images --repository-name corridor \
             --image-ids "imageTag=$COMMIT_SHA" \
             --query 'imageDetails[0].imageDigest' --output text)
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::could not resolve a digest for $COMMIT_SHA"; exit 1 ;;
+          esac
           echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
-          echo "digest: $DIGEST"
+
+      - name: Register task definition revisions bound to that digest
+        run: |
+          pip install --quiet boto3
+          python3 scripts/register_ecs_release_task_definitions.py \
+            --repository-uri "$REPOSITORY_URI" \
+            --digest "$IMAGE_DIGEST" \
+            --commit-sha "$COMMIT_SHA" \
+            --web-task-definition "$BASE_WEB_TD" \
+            --migration-task-definition "$BASE_MIGRATION_TD" \
+            --batch-task-definition "$BASE_BATCH_TD" > released.json
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import json
+          released = json.load(open("released.json"))
+          for role, name in (("web", "WEB_TD"), ("migration", "MIGRATION_TD"), ("batch", "BATCH_TD")):
+              print(f"{name}={released[role]}")
+          PY
+          cat released.json
+
+      # The old image must stop serving before the schema moves under it.
+      - name: Drain the web service
+        run: |
+          PREVIOUS=$(aws ecs describe-services --cluster "$CLUSTER" \
+            --services "$WEB_SERVICE" --query 'services[0].desiredCount' --output text)
+          echo "PREVIOUS_DESIRED=$PREVIOUS" >> "$GITHUB_ENV"
+          if [ "$PREVIOUS" != "0" ]; then
+            aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
+              --desired-count 0 >/dev/null
+            aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
+          fi
+          echo "web drained (was $PREVIOUS)"
 
       - name: Run the migration and require it to succeed
         run: |
-          TASK_ARN=$(aws ecs run-task \
+          aws ecs run-task \
             --cluster "$CLUSTER" \
-            --task-definition "$MIGRATION_TASK_DEF" \
+            --task-definition "$MIGRATION_TD" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$MIGRATION_SG],assignPublicIp=ENABLED}" \
-            --query 'tasks[0].taskArn' --output text)
-          echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
-          echo "waiting for $TASK_ARN"
-          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+            --output json > run-task.json
 
-          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
-            --query 'tasks[0].containers[0].exitCode' --output text)
-          REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
-            --query 'tasks[0].stoppedReason' --output text)
-          echo "exit=$EXIT_CODE reason=$REASON"
-          if [ "$EXIT_CODE" != "0" ]; then
-            echo "::error::migration exited $EXIT_CODE ($REASON); web not started"
+          FAILURES=$(python3 -c "import json;print(json.dumps(json.load(open('run-task.json')).get('failures',[])))")
+          if [ "$FAILURES" != "[]" ]; then
+            echo "::error::run-task reported failures: $FAILURES"
             exit 1
           fi
+          TASK_ARN=$(python3 -c "
+          import json, sys
+          tasks = json.load(open('run-task.json')).get('tasks') or []
+          if not tasks:
+              sys.exit('run-task started no task')
+          print(tasks[0]['taskArn'])
+          ")
+          echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
 
-      - name: Start the web service
-        if: inputs.start_web
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --output json > stopped.json
+          python3 - <<'PY'
+          import json, sys
+          task = json.load(open("stopped.json"))["tasks"][0]
+          reason = task.get("stoppedReason", "")
+          codes = {c["name"]: c.get("exitCode") for c in task["containers"]}
+          print(f"stoppedReason={reason} exitCodes={codes}")
+          bad = {n: c for n, c in codes.items() if c != 0}
+          if bad:
+              sys.exit(f"migration containers did not exit 0: {bad} ({reason})")
+          PY
+
+      - name: Point the web service at the released revision
         run: |
           aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
-            --desired-count 1 >/dev/null
+            --task-definition "$WEB_TD" \
+            --desired-count "$WEB_DESIRED_COUNT" >/dev/null
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
-          echo "web service stable"
+          echo "web service stable at $WEB_DESIRED_COUNT on $WEB_TD"
+
+      - name: Verify the service answers
+        if: inputs.web_desired_count != '0'
+        run: |
+          DNS=$(python3 -c "
+          import json
+          outputs = {o['OutputKey']: o['OutputValue'] for o in json.load(open('outputs.json'))}
+          print(outputs['LoadBalancerDns'])
+          ")
+          for _ in $(seq 1 30); do
+            if curl -fsS "https://$DNS/livez" >/dev/null 2>&1; then break; fi
+            sleep 10
+          done
+          curl -fsS "https://$DNS/livez"
+          curl -fsS "https://$DNS/readyz"
 
       - name: Record what was released
         if: always()
@@ -140,8 +221,10 @@ jobs:
             echo "### Release"
             echo
             echo "- commit: \`$COMMIT_SHA\`"
-            echo "- image: \`$REPOSITORY_URI:$COMMIT_SHA\`"
             echo "- digest: \`${IMAGE_DIGEST:-not pushed}\`"
+            echo "- web task definition: \`${WEB_TD:-not registered}\`"
+            echo "- migration task definition: \`${MIGRATION_TD:-not registered}\`"
+            echo "- batch task definition: \`${BATCH_TD:-not registered}\`"
             echo "- migration task: \`${MIGRATION_TASK_ARN:-not run}\`"
-            echo "- web started: \`${{ inputs.start_web }}\`"
+            echo "- web desired count: \`$WEB_DESIRED_COUNT\` (was \`${PREVIOUS_DESIRED:-unknown}\`)"
           } >> "$GITHUB_STEP_SUMMARY"

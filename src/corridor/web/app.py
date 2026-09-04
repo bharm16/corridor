@@ -643,6 +643,25 @@ def refuse_routes_the_boundary_cannot_serve(
         raise HTTPException(refusal.status_code, refusal.detail)
 
 
+@app.get("/livez")
+def livez() -> Response:
+    """Answer that this process is running, and read nothing to say so.
+
+    Declared *above* the router-level boundary dependency on purpose. That
+    dependency resolves `get_web_capability`, which resolves `get_session`, so
+    a route declared after it opens a database connection before its handler
+    runs -- and `add_api_route` snapshots the router's dependencies at
+    decoration time, so position is what exempts this one.
+
+    A liveness probe that touches the database turns one slow dependency into a
+    restart loop: the probe times out, the orchestrator kills a process that
+    was fine, and the replacement meets the same slow database. /readyz is
+    where the dependencies are allowed to matter.
+    """
+
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
 # Registered on the router before the first route is declared, because
 # `add_api_route` snapshots the router's dependencies at decoration time.
 app.router.dependencies.append(Depends(refuse_routes_the_boundary_cannot_serve))
@@ -668,17 +687,6 @@ def get_content_store() -> ObjectStore:
     """The deployment's object store, as a seam a health probe can substitute."""
 
     return content_store()
-
-
-@app.get("/livez")
-def livez() -> Response:
-    """Answer that this process is running, and read nothing to say so.
-
-    Separate from /readyz because a liveness probe that touches the database
-    turns one slow dependency into a restart loop.
-    """
-
-    return JSONResponse({"status": "ok"}, status_code=200)
 
 
 @app.get("/readyz")

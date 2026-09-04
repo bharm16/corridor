@@ -14,7 +14,7 @@
     "corridor:githubEnvironment": "nonproduction",
     "corridor:certificateArn": "",
     "corridor:webDesiredCount": 0,
-    "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": true,
+    "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": false,
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,

@@ -225,6 +225,10 @@ def test_github_trust_is_pinned_to_the_environment(stacks):
 UNSCOPABLE_ACTIONS = {
     "ecr:GetAuthorizationToken",
     "ecs:DescribeTaskDefinition",
+    # Registration is account-level in IAM; what a registered revision may
+    # reference is bounded by the PassRole statement instead.
+    "ecs:RegisterTaskDefinition",
+    "ecs:TagResource",
 }
 
 
@@ -660,15 +664,30 @@ def test_the_two_github_roles_are_separate_identities(stacks):
 
 def test_the_release_role_cannot_deploy_a_stack(stacks):
     """It moves existing ECS resources; it must not be able to create
-    infrastructure or assume the CDK bootstrap roles."""
+    infrastructure or assume the CDK bootstrap roles.
+
+    It does read one stack's outputs, so the rule is about CloudFormation
+    *writes* rather than the word cloudformation.
+    """
     for logical_id, policy in (
         stacks["foundation"].find_resources("AWS::IAM::Policy").items()
     ):
         if "Release" not in logical_id:
             continue
-        document = json.dumps(policy["Properties"]["PolicyDocument"])
-        for forbidden in ("cloudformation:", "cdk-hnb659fds", "rds:", "iam:CreateRole"):
+        statements = policy["Properties"]["PolicyDocument"]["Statement"]
+        document = json.dumps(statements)
+        for forbidden in ("cdk-hnb659fds", "rds:", "iam:CreateRole", "iam:PutRole"):
             assert forbidden not in document, (logical_id, forbidden)
+
+        for statement in statements:
+            action = statement.get("Action")
+            actions = [action] if isinstance(action, str) else action
+            for entry in actions:
+                if not entry.startswith("cloudformation:"):
+                    continue
+                assert entry == "cloudformation:DescribeStacks", entry
+                # And only the one stack.
+                assert "CorridorApplication" in json.dumps(statement["Resource"])
 
 
 def test_the_cdk_role_cannot_touch_application_resources(stacks):
@@ -690,3 +709,81 @@ def test_the_permissions_boundary_context_is_actually_configured():
     assert context["@aws-cdk/core:permissionsBoundary"] == {
         "name": "CorridorDelegatedRoleBoundary"
     }
+
+
+# --- no hidden custom resources ----------------------------------------
+def test_no_stack_synthesizes_a_lambda(stacks):
+    """Every CDK helper that quietly adds a Lambda also adds a role that both
+    permissions boundaries would have to admit. The execution boundary does not
+    permit Lambda creation and the delegated boundary refuses the actions those
+    helpers need, so a Lambda appearing here means a deployment that fails
+    partway through. Removing the helpers is cheaper than widening the ceiling
+    for every delegated role in the account."""
+    for name, template in stacks.items():
+        template.resource_count_is("AWS::Lambda::Function", 0)
+
+
+def test_no_stack_synthesizes_a_custom_resource_provider_role(stacks):
+    for name, template in stacks.items():
+        for logical_id in template.find_resources("AWS::IAM::Role"):
+            assert "CustomResourceProvider" not in logical_id, f"{name}/{logical_id}"
+
+
+def test_no_stack_synthesizes_a_custom_resource(stacks):
+    for name, template in stacks.items():
+        for logical_id, resource in template.to_json()["Resources"].items():
+            assert not resource["Type"].startswith("Custom::"), (
+                f"{name}/{logical_id} is {resource['Type']}"
+            )
+
+
+def test_nothing_uses_the_default_security_group(stacks):
+    """The default group is left as AWS creates it and never attached, which is
+    what the removed restrictDefaultSecurityGroup custom resource was for. This
+    proves the half that matters without a Lambda."""
+    for name in ("application", "data"):
+        body = json.dumps(stacks[name].to_json())
+        assert "DefaultSecurityGroup" not in body, name
+
+    network = stacks["network"].to_json()["Resources"]
+    vpc_ids = [k for k, v in network.items() if v["Type"] == "AWS::EC2::VPC"]
+    assert len(vpc_ids) == 1
+    for logical_id, resource in network.items():
+        if resource["Type"] != "AWS::EC2::SecurityGroup":
+            continue
+        # Every group in the VPC is one Corridor declared and named.
+        assert resource["Properties"].get("GroupDescription"), logical_id
+
+
+def test_the_postgres_log_group_is_named_for_the_instance(stacks):
+    """RDS exports to a group derived from the instance identifier, so the
+    identifier has to be stable and the group has to exist first."""
+    stacks["data"].has_resource_properties(
+        "AWS::RDS::DBInstance", {"DBInstanceIdentifier": "corridor-nonprod"}
+    )
+    stacks["data"].has_resource_properties(
+        "AWS::Logs::LogGroup",
+        {
+            "LogGroupName": "/aws/rds/instance/corridor-nonprod/postgresql",
+            "RetentionInDays": 14,
+        },
+    )
+
+
+def test_the_web_boundary_is_declared_wherever_reads_run_as_corridor_web(stacks):
+    """#694 refuses every gated route when the declared flag is off but the
+    reading login is `corridor_web`. The web task connects as exactly that, so
+    omitting the declaration answers 503 on /readyz and the load balancer
+    deregisters a task that is otherwise fine."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition":
+            continue
+        for container in resource["Properties"]["ContainerDefinitions"]:
+            env = {
+                entry["Name"]: entry["Value"]
+                for entry in container.get("Environment", [])
+            }
+            assert env.get("CORRIDOR_LIVE_PILOT_WEB_BOUNDARY") == "true", (
+                f"{logical_id} does not declare the live-pilot web boundary"
+            )

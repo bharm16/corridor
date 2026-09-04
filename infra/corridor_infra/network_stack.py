@@ -138,6 +138,12 @@ class CorridorNetworkStack(Stack):
             allow_all_outbound=True,
         )
 
+        # The VPC's default security group is deliberately left as AWS creates
+        # it and simply never used. Restricting it is a CDK custom resource --
+        # a Lambda plus a role with EC2 authority -- and both permissions
+        # boundaries would have to widen to admit that, for a group nothing
+        # attaches to. `test_nothing_uses_the_default_security_group` proves
+        # the "never used" half, which is the part that matters.
         self.db_sg = ec2.SecurityGroup(
             self,
             "DatabaseSecurityGroup",

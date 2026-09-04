@@ -105,9 +105,29 @@ class CorridorDataStack(Stack):
             removal_policy=RemovalPolicy.RETAIN,
         )
 
+        # A stable identifier, because the log group name is derived from it
+        # and has to be knowable at synthesis time.
+        instance_identifier = "corridor-nonprod"
+
+        # Created explicitly rather than through `cloudwatch_logs_retention`.
+        # That property makes CDK synthesize a LogRetention custom resource --
+        # a Lambda, its own role, and a policy needing logs:PutRetentionPolicy
+        # on *. Both boundaries would then have to admit Lambda creation and
+        # that wildcard, widening the ceiling for every delegated role in the
+        # account to save one property. RDS writes to this group by convention,
+        # so declaring it directly costs nothing and creates no Lambda.
+        postgres_logs = logs.LogGroup(
+            self,
+            "DatabasePostgresLogGroup",
+            log_group_name=f"/aws/rds/instance/{instance_identifier}/postgresql",
+            retention=logs.RetentionDays.TWO_WEEKS,
+            removal_policy=RemovalPolicy.DESTROY,
+        )
+
         self.database = rds.DatabaseInstance(
             self,
             "Database",
+            instance_identifier=instance_identifier,
             engine=rds.DatabaseInstanceEngine.postgres(version=POSTGRES_VERSION),
             instance_type=ec2.InstanceType.of(
                 ec2.InstanceClass.BURSTABLE4_GRAVITON, ec2.InstanceSize.MICRO
@@ -136,9 +156,6 @@ class CorridorDataStack(Stack):
             auto_minor_version_upgrade=True,
             removal_policy=RemovalPolicy.SNAPSHOT,
             cloudwatch_logs_exports=["postgresql"],
-            # Without this the exported log group is created with no retention
-            # and keeps PostgreSQL logs forever, at $0.03/GB-month.
-            cloudwatch_logs_retention=logs.RetentionDays.TWO_WEEKS,
         )
 
         # Runtime logins. The migration creates the roles themselves; these
@@ -147,37 +164,6 @@ class CorridorDataStack(Stack):
         self.web_db_secret = self._login_secret("WebDbSecret", "corridor_web")
         self.worker_db_secret = self._login_secret("WorkerDbSecret", "corridor_worker")
 
-        NagSuppressions.add_resource_suppressions_by_path(
-            self,
-            f"/{self.stack_name}/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a"
-            "/ServiceRole",
-            [
-                {
-                    "id": "AwsSolutions-IAM5",
-                    "reason": (
-                        "CDK's own LogRetention helper. It sets retention on "
-                        "the log group RDS names at run time, so the group is "
-                        "not knowable at synthesis and the construct emits "
-                        "logs:PutRetentionPolicy on *. Not a Corridor role: "
-                        "the wildcard test excludes this construct by name "
-                        "rather than allowing those actions generally."
-                    ),
-                    "appliesTo": ["Resource::*"],
-                },
-                {
-                    "id": "AwsSolutions-IAM4",
-                    "reason": (
-                        "AWSLambdaBasicExecutionRole on CDK's own LogRetention "
-                        "helper. The construct attaches it; replacing it would "
-                        "mean forking a CDK internal."
-                    ),
-                    "appliesTo": [
-                        "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
-                    ],
-                },
-            ],
-            apply_to_children=True,
-        )
         NagSuppressions.add_resource_suppressions(
             access_logs,
             [{"id": "AwsSolutions-S1",
@@ -237,6 +223,9 @@ class CorridorDataStack(Stack):
                     }
                 ],
             )
+
+        # The group must exist before RDS starts exporting into it.
+        self.database.node.add_dependency(postgres_logs)
 
         CfnOutput(self, "ArtifactBucketName", value=self.artifact_bucket.bucket_name)
         CfnOutput(self, "DatabaseEndpoint",

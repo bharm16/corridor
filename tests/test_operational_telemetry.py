@@ -680,3 +680,29 @@ def test_readyz_names_no_project_and_no_credential(session, tmp_path):
 
     assert project.slug not in body
     assert "corridor:corridor" not in body
+
+
+def test_livez_carries_no_route_dependencies_at_all():
+    """/livez is exempt from the router-level boundary dependency only because
+    it is declared before that dependency is appended, and `add_api_route`
+    snapshots dependencies at decoration time. Moving the handler below that
+    line would silently make the liveness probe open a database session, which
+    is the restart loop it exists to avoid -- and the behavioural test would
+    still pass wherever the database happens to be reachable.
+
+    So this asserts the structure rather than the behaviour.
+    """
+    from corridor.web.app import app
+
+    livez = [route for route in app.routes if getattr(route, "path", None) == "/livez"]
+    assert len(livez) == 1
+    assert livez[0].dependencies == [], (
+        "/livez picked up a route dependency; it must stay declared above "
+        "app.router.dependencies.append(...)"
+    )
+
+    readyz = [route for route in app.routes if getattr(route, "path", None) == "/readyz"]
+    assert len(readyz) == 1
+    assert readyz[0].dependencies, (
+        "/readyz should carry the boundary dependency like every other route"
+    )

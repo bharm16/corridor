@@ -52,9 +52,19 @@ def _actions(statement: dict) -> list[str]:
 
 
 def _matches(pattern: str, action: str) -> bool:
-    """IAM action matching: only a trailing * is meaningful in these documents."""
+    """Whether a policy `pattern` covers `action`.
+
+    `action` may itself be a pattern, because CDK's grants emit families like
+    `s3:GetObject*`. A ceiling entry only covers a granted family if it is that
+    family or broader: `s3:GetObject` does not admit a grant of
+    `s3:GetObject*`, since the grant includes actions the ceiling never named.
+    """
     if pattern == "*":
         return True
+    if action.endswith("*"):
+        return pattern.endswith("*") and action.lower().startswith(
+            pattern[:-1].lower()
+        )
     if pattern.endswith("*"):
         return action.lower().startswith(pattern[:-1].lower())
     return pattern.lower() == action.lower()
@@ -250,3 +260,135 @@ def test_the_readme_documents_both_boundaries(execution_policy):
     assert "CorridorCdkExecutionBoundary" in readme
     assert "CorridorDelegatedRoleBoundary" in readme
     assert "arn:aws:iam::aws:policy/PowerUserAccess" in readme
+
+
+# --- generic: the boundaries against what is actually synthesized -------
+#
+# The action-only test above compares two handwritten documents. That is not
+# enough on its own: it missed the delegated boundary refusing
+# logs:PutRetentionPolicy, which a CDK helper needed, and it missed the release
+# role's cloudformation:DescribeStacks, which the boundary never mentioned. Both
+# were found by a human reading the templates. These tests read the templates
+# instead.
+
+# Actions the AWS-managed execution policy contributes, which do not appear in
+# any inline document but still have to be within the ceiling.
+ECS_TASK_EXECUTION_MANAGED_ACTIONS = (
+    "ecr:GetAuthorizationToken",
+    "ecr:BatchCheckLayerAvailability",
+    "ecr:GetDownloadUrlForLayer",
+    "ecr:BatchGetImage",
+    "logs:CreateLogStream",
+    "logs:PutLogEvents",
+)
+
+
+def _synthesized_stacks():
+    """Import the stack fixtures lazily so this file stays runnable alone."""
+    import sys
+
+    sys.path.insert(0, str(pathlib.Path(__file__).parent))
+    from test_stacks import _build
+
+    from aws_cdk.assertions import Template
+
+    foundation, network, data, application = _build()
+    return {
+        "foundation": Template.from_stack(foundation),
+        "network": Template.from_stack(network),
+        "data": Template.from_stack(data),
+        "application": Template.from_stack(application),
+    }
+
+
+def _inline_actions(template) -> dict[str, set[str]]:
+    """role logical id -> every action its inline policies grant."""
+    by_role: dict[str, set[str]] = {}
+    for policy in template.find_resources("AWS::IAM::Policy").values():
+        roles = policy["Properties"].get("Roles") or []
+        names = [json.dumps(role) for role in roles]
+        actions: set[str] = set()
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            if statement["Effect"] != "Allow":
+                continue
+            action = statement.get("Action")
+            actions.update([action] if isinstance(action, str) else action)
+        for name in names:
+            by_role.setdefault(name, set()).update(actions)
+    return by_role
+
+
+def test_the_delegated_boundary_permits_every_action_every_role_is_granted(
+    delegated_boundary,
+):
+    """For each synthesized role, every action its identity policy grants must
+    also be within the delegated ceiling -- otherwise the grant is an implicit
+    deny that only appears at run time."""
+    refused: list[tuple[str, str]] = []
+    for name, template in _synthesized_stacks().items():
+        for role, actions in _inline_actions(template).items():
+            for action in sorted(actions):
+                if not permits(delegated_boundary, action):
+                    refused.append((f"{name}:{role[:60]}", action))
+    assert not refused, f"the delegated boundary silently denies: {refused}"
+
+
+def test_the_delegated_boundary_permits_the_managed_execution_policy(
+    delegated_boundary,
+):
+    """The ECS execution roles attach an AWS-managed policy whose actions never
+    appear in an inline document, so nothing else in this file would notice the
+    boundary refusing them."""
+    for action in ECS_TASK_EXECUTION_MANAGED_ACTIONS:
+        assert permits(delegated_boundary, action), action
+
+
+def test_the_execution_boundary_covers_every_service_in_the_templates(
+    execution_boundary,
+):
+    """CloudFormation creates whatever the templates contain, so every service
+    that appears must be within the execution ceiling. A CDK helper that
+    quietly adds a Lambda fails here rather than during a deployment."""
+    seen: set[str] = set()
+    for template in _synthesized_stacks().values():
+        for resource in template.to_json()["Resources"].values():
+            kind = resource["Type"]
+            if not kind.startswith("AWS::"):
+                continue
+            seen.add(kind.split("::")[1].lower())
+
+    # CloudFormation service names to the IAM prefix that governs them.
+    prefixes = {
+        "ec2": "ec2", "ecs": "ecs", "ecr": "ecr", "rds": "rds", "s3": "s3",
+        "iam": "iam", "logs": "logs", "cloudtrail": "cloudtrail",
+        "cloudwatch": "cloudwatch", "secretsmanager": "secretsmanager",
+        "elasticloadbalancingv2": "elasticloadbalancing", "lambda": "lambda",
+        "sns": "sns", "ssm": "ssm", "kms": "kms",
+    }
+    def covered(prefix: str) -> bool:
+        """Whether the ceiling mentions this service at all.
+
+        A synthetic probe action does not work: the boundary names CloudTrail
+        operations individually rather than with a wildcard, so
+        `cloudtrail:CreateSomething` would read as uncovered while
+        `cloudtrail:CreateTrail` is right there.
+        """
+        for statement in execution_boundary["Statement"]:
+            if statement["Effect"] != "Allow":
+                continue
+            for pattern in _actions(statement):
+                if pattern == "*" or pattern.lower().startswith(f"{prefix}:"):
+                    return True
+        return False
+
+    uncovered = []
+    for service in sorted(seen):
+        prefix = prefixes.get(service)
+        if prefix is None:
+            continue
+        if not covered(prefix):
+            uncovered.append(service)
+    assert not uncovered, (
+        f"templates contain {uncovered} but the execution boundary does not "
+        "permit those services"
+    )

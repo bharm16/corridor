@@ -55,11 +55,13 @@ env:
   AWS_REGION: us-east-2
   AWS_ACCOUNT: "810100779593"
 
-# One infrastructure operation at a time. Two concurrent deploys against the
-# same stack race in CloudFormation, and cancelling one midway is worse than
-# queueing it.
+# One mutation of this environment at a time, shared with app-release.yml. A
+# stack deploy that rewrites task definitions while a release is registering
+# revisions against them races, and cancelling either midway is worse than
+# queueing it. The pull-request jobs mutate nothing but sit in the same group;
+# that is a small cost for one rule with no exceptions to reason about.
 concurrency:
-  group: corridor-nonproduction-infrastructure
+  group: corridor-nonproduction-mutation
   cancel-in-progress: false
 
 jobs:

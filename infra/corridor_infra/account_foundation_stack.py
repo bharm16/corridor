@@ -92,11 +92,20 @@ class CorridorAccountFoundationStack(Stack):
         )
 
         # --- CI entry identity -------------------------------------------
-        oidc_provider = iam.OpenIdConnectProvider(
+        # CfnOIDCProvider, not the L2 OpenIdConnectProvider: the L2 is a custom
+        # resource, so it drags in a Lambda and a role that both permissions
+        # boundaries would have to admit. AWS::IAM::OIDCProvider is native
+        # CloudFormation and does exactly the same thing.
+        #
+        # No ThumbprintList. IAM stopped requiring it for providers whose
+        # certificate chains to a trusted root, which token.actions.
+        # githubusercontent.com does -- and a pinned thumbprint is a rotating
+        # value that silently breaks every deployment when it changes.
+        oidc_provider = iam.CfnOIDCProvider(
             self,
             "GitHubOidcProvider",
             url=GITHUB_OIDC_URL,
-            client_ids=["sts.amazonaws.com"],
+            client_id_list=["sts.amazonaws.com"],
         )
 
         # The subject is pinned to the repository *and* the deployment
@@ -118,7 +127,7 @@ class CorridorAccountFoundationStack(Stack):
                 "workflow is ever added, it gets its own role."
             ),
             assumed_by=iam.WebIdentityPrincipal(
-                oidc_provider.open_id_connect_provider_arn,
+                oidc_provider.attr_arn,
                 {
                     "StringEquals": {
                         f"{GITHUB_OIDC_HOST}:aud": "sts.amazonaws.com",
@@ -168,7 +177,7 @@ class CorridorAccountFoundationStack(Stack):
                 "already exist. It cannot deploy a stack."
             ),
             assumed_by=iam.WebIdentityPrincipal(
-                oidc_provider.open_id_connect_provider_arn,
+                oidc_provider.attr_arn,
                 {
                     "StringEquals": {
                         f"{GITHUB_OIDC_HOST}:aud": "sts.amazonaws.com",
@@ -207,6 +216,34 @@ class CorridorAccountFoundationStack(Stack):
         )
         self.release_role.add_to_policy(
             iam.PolicyStatement(
+                # The release reads the application stack's outputs to find the
+                # repository, the service and the task definitions it must
+                # repoint. Read-only, and one stack: not cloudformation:*.
+                sid="ReadOnlyTheApplicationStacksOutputs",
+                actions=["cloudformation:DescribeStacks"],
+                resources=[
+                    f"arn:aws:cloudformation:{Aws.REGION}:{Aws.ACCOUNT_ID}"
+                    ":stack/CorridorApplication/*"
+                ],
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                # Pushing a tag does not change a task definition, so a release
+                # registers new revisions bound to the image digest. Registration
+                # is account-level in IAM; what it may reference is bounded by
+                # the PassRole statement below.
+                sid="RegisterTheReleasedRevisions",
+                actions=[
+                    "ecs:DescribeTaskDefinition",
+                    "ecs:RegisterTaskDefinition",
+                    "ecs:TagResource",
+                ],
+                resources=["*"],
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
                 sid="ReadEcsStateForTheCorridorClusterOnly",
                 actions=[
                     "ecs:DescribeClusters",
@@ -216,16 +253,6 @@ class CorridorAccountFoundationStack(Stack):
                 ],
                 resources=["*"],
                 conditions={"ArnEquals": {"ecs:cluster": cluster_arn}},
-            )
-        )
-        self.release_role.add_to_policy(
-            iam.PolicyStatement(
-                # DescribeTaskDefinition is one of the ECS actions AWS defines
-                # with no resource type and no cluster condition key, so it
-                # cannot be scoped further than this.
-                sid="DescribeTaskDefinitionAdmitsNoResourceScope",
-                actions=["ecs:DescribeTaskDefinition"],
-                resources=["*"],
             )
         )
         self.release_role.add_to_policy(
@@ -258,9 +285,12 @@ class CorridorAccountFoundationStack(Stack):
                 {
                     "id": "AwsSolutions-IAM5",
                     "reason": (
-                        "Two actions admit no resource scope at all: "
-                        "ecr:GetAuthorizationToken and ecs:DescribeTaskDefinition "
-                        "are defined by AWS with no resource type. Every other "
+                        "ecr:GetAuthorizationToken, ecs:DescribeTaskDefinition, "
+                        "ecs:RegisterTaskDefinition and ecs:TagResource are "
+                        "defined by AWS with no resource type, so Resource:* is "
+                        "the only form they take; what a registered revision may "
+                        "reference is bounded by the PassRole statement. Every "
+                        "other "
                         "Resource:* statement here carries an ArnEquals "
                         "condition on the Corridor cluster, which is how ECS "
                         "scopes those calls. PassRole is restricted to "
@@ -271,6 +301,11 @@ class CorridorAccountFoundationStack(Stack):
                         "Resource::*",
                         {
                             "regex": "/^Resource::arn:aws:iam::.*:role\\/corridor\\/nonproduction\\/\\*$/g"
+                        },
+                        {
+                            # The stack id suffix CloudFormation appends; the
+                            # stack name itself is exact.
+                            "regex": "/^Resource::arn:aws:cloudformation:.*:stack\\/CorridorApplication\\/\\*$/g"
                         },
                     ],
                 }
