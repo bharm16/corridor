@@ -52,11 +52,15 @@ from corridor.issue_rendering import (
     SourceCoverage,
     TemplateBinding,
 )
-from corridor.models import Project, ReleaseCandidate, ReleasePackage
+from corridor.models import (
+    IssueCoverageDeclaration,
+    Project,
+    ReleaseCandidate,
+    ReleasePackage,
+)
 from corridor.object_storage import content_store
 from corridor.principals import HumanPrincipal
 from corridor.release_candidate import (
-    CoverageDeclaration,
     attach_candidate,
     bind_preparation,
     current_release_candidate,
@@ -77,6 +81,7 @@ from corridor.web.issue_section import (
     issue_view,
 )
 
+from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import Rendition, append_deltas, configure_issue, modify, subject
 
@@ -127,9 +132,16 @@ RESOLVE_COMMITTED_DATE = DecisionBlockingPolicy(
 )
 
 
-def coverage_named(identity: str) -> CoverageDeclaration:
-    return CoverageDeclaration(
-        identity=identity,
+def coverage_named(session, adopted, identity: str = "weekly-coverage-2026-03-02"):
+    """One confirmed coverage declaration this project may be prepared under."""
+
+    return declare_coverage(
+        session,
+        adopted.project,
+        cutoff=CUTOFF,
+        principal=COORDINATOR,
+        confirmed_at=PREPARED_AT,
+        variant=identity,
         lines=(
             SourceCoverage(
                 source_name="Weekly utility conflict matrix",
@@ -139,9 +151,6 @@ def coverage_named(identity: str) -> CoverageDeclaration:
             ),
         ),
     )
-
-
-COVERAGE = coverage_named("weekly-coverage-2026-03-02")
 
 
 def preparation_reading(project_id: int, revision_id: int) -> dict:
@@ -259,12 +268,13 @@ def configure(session, adopted, *, artifacts=(WEEKLY, CHASE), policies=()):
 def prepare(session, adopted, store, **overrides):
     """Bind, render and attach one candidate in this rollback-scoped session."""
 
+    if "coverage_declaration_id" not in overrides:
+        overrides["coverage_declaration_id"] = coverage_named(session, adopted).id
     arguments = {
         "project_id": adopted.project.id,
         "preparation": preparation_reading(adopted.project.id, adopted.revision_id),
         "source_cutoff": CUTOFF,
         "prepared_at": PREPARED_AT,
-        "coverage": COVERAGE,
         "templates": TEMPLATE,
         "first_issue_behavior": NO_PRIOR_COMPARISON_STATEMENT,
         "template_bytes": adopted.template_bytes,
@@ -384,13 +394,15 @@ def test_the_section_presents_the_candidate_it_would_send(session, adopted, clie
         "the chase list",
         "the weekly Coordination Report",
     ]
-    assert view.declaration.coverage_identity == COVERAGE.identity
-    assert view.declaration.coverage_sha256 == COVERAGE.content_sha256
+    declaration = session.get_one(
+        IssueCoverageDeclaration, candidate.coverage_declaration_id
+    )
+    assert view.declaration.coverage_identity == declaration.coverage_identity
 
     body = prose(week(client, adopted))
     assert "the customer's updated UCM workbook" in body
     assert "the weekly Coordination Report" in body
-    assert COVERAGE.identity in body
+    assert declaration.coverage_identity in body
     assert str(adopted.revision_id) in body
     assert CUTOFF.date().isoformat() in body
     assert "Approve this issue for sharing" in body
@@ -431,7 +443,12 @@ def test_the_second_candidate_names_the_first_issue_as_its_predecessor(
     assert approve(client, adopted, first.id).status_code == 201
     session.expire_all()
 
-    second = prepare(session, adopted, store, coverage=coverage_named("second-week"))
+    second = prepare(
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, "second-week").id,
+    )
     view = issue_view(session, project_id=adopted.project.id, as_of=NOW)
 
     assert view.candidate.id == second.id
@@ -639,8 +656,13 @@ def test_the_rendered_screen_offers_no_approval_for_a_blocked_candidate(
     body = week(client, adopted)
 
     assert "/issue/authorize" not in body
-    assert "<form" not in body
     assert "Approve this issue for sharing" not in prose(body)
+    # The only form on a blocked candidate's screen is #675's own, which asks
+    # for a *fresh* candidate rather than offering to approve this one. That
+    # is the recovery this section has always described in words and could not
+    # perform until #675.
+    assert body.count("<form") == 1
+    assert "/issue/prepare" in body
 
 
 def test_a_stale_candidate_asks_for_a_fresh_preparation_and_stays_visible(
@@ -656,7 +678,12 @@ def test_a_stale_candidate_asks_for_a_fresh_preparation_and_stays_visible(
 
     configure(session, adopted)
     first = prepare(session, adopted, store)
-    stale = prepare(session, adopted, store, coverage=coverage_named("prepared-early"))
+    stale = prepare(
+        session,
+        adopted,
+        store,
+        coverage_declaration_id=coverage_named(session, adopted, "prepared-early").id,
+    )
     assert approve(client, adopted, first.id).status_code == 201
     session.expire_all()
 
@@ -672,10 +699,17 @@ def test_a_stale_candidate_asks_for_a_fresh_preparation_and_stays_visible(
         " ".join(view.stale_reasons)
     )
 
-    body = prose(week(client, adopted))
+    rendered = week(client, adopted)
+    body = prose(rendered)
     assert "Approve this issue for sharing" not in body
     assert "freshly prepared candidate" in body
-    assert "prepared-early" in body, "the old candidate stays visible as history"
+    assert stale.coverage_identity in body, (
+        "the old candidate stays visible as history"
+    )
+    # And the fresh preparation the sentence asks for is now an act the
+    # section carries, which is the whole of #675's claim on #536.
+    assert "/issue/prepare" in rendered
+    assert "Confirm coverage and prepare issue" in body
 
     response = approve(client, adopted, stale.id)
     assert response.status_code == 409

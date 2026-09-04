@@ -413,6 +413,10 @@ class SourceDelivery(Base):
             "disposition",
             name="uq_source_deliveries_observation",
         ),
+        # The project-scoped identity a Document's delivery link points at, so
+        # one customer's document can never name another customer's delivery
+        # (#675).
+        UniqueConstraint("id", "project_id", name="uq_source_deliveries_row"),
         CheckConstraint(
             "content_sha256 ~ '^[0-9a-f]{64}$'",
             name="ck_source_delivery_content_sha256",
@@ -877,6 +881,11 @@ class Document(Base):
             "or supersession_source_document_id <> id",
             name="ck_documents_no_self_attested_supersession",
         ),
+        ForeignKeyConstraint(
+            ["source_delivery_id", "project_id"],
+            ["source_deliveries.id", "source_deliveries.project_id"],
+            name="fk_documents_source_delivery",
+        ),
         CheckConstraint(
             "numbering_scheme in ('project-unique', 'per-party')",
             name="ck_documents_numbering_scheme",
@@ -918,6 +927,14 @@ class Document(Base):
     # Corpus provenance. A citation that bottoms out at "a file on my
     # laptop" is not a citation.
     source_url: Mapped[str | None] = mapped_column(Text)
+    # The ledger row of the delivery that carried these bytes in (#675).
+    # Nullable because the corpus path registers documents that arrived
+    # through no transport at all, and because a coverage reading must be
+    # able to say "this source dereferences no delivery" rather than guess
+    # one. It is the only link a Proposed Delta has to the append-only
+    # Source Delivery boundary its issue was confirmed against, reached
+    # through the delta's own group.
+    source_delivery_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     retrieved_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     doc_date: Mapped[date | None] = mapped_column(Date)
     pages: Mapped[int | None] = mapped_column(Integer)
@@ -3186,6 +3203,132 @@ class IssueProfileArtifact(Base):
     renderer_version: Mapped[str] = mapped_column(String(64))
 
 
+# --- #675 The confirmed coverage declaration one issue is prepared under ----
+
+# The four states one coverage line may be in, spelled where the database
+# check reads them. They are ``issue_rendering``'s own vocabulary, respelled
+# nowhere: ``read`` is the only non-exception, and the other three are the
+# honest ways a source is not part of what was read for this issue.
+COVERAGE_LINE_STATES = ("read", "failed", "excluded", "late")
+
+
+class IssueCoverageDeclaration(Base):
+    """One coordinator's confirmation of the coverage reading Corridor derived.
+
+    ADR-0086 makes "one declared coverage state" a shared input of every
+    artifact in an issue, and #529 bound it as an in-memory value the caller
+    supplied. That let any caller state a coverage nobody confirmed, so #675
+    gives the declaration its own identity: the candidate now names this row
+    by foreign key, and the only thing that can be prepared is coverage a
+    person put their name to.
+
+    **The machine's half and the human's half are separately digested.**
+    ``derived_reading`` holds the exact canonical bytes Corridor derived from
+    the effective issue profile, the persisted Source Delivery ledger, the
+    processing receipts and the declared cutoff, and ``derived_reading_digest``
+    is the SHA-256 of them; ``declaration`` repeats that digest and adds only
+    what a person may add -- bounded annotations and permitted exclusions with
+    their reasons -- and ``declaration_digest`` is the SHA-256 of *that*. A
+    coordinator who confirmed one reading therefore cannot be recorded as
+    having confirmed another, and the two questions "what did Corridor say"
+    and "what did the person declare" keep two separate answers.
+
+    **The boundary is an append-only watermark, never a clock comparison.**
+    ``through_source_delivery_id`` is the highest ``source_deliveries`` row
+    this issue includes, and every delivery after it is outside the issue by
+    identity. ``cutoff_at`` is the human-readable instant the reading was taken
+    at and is frozen beside it, but membership is the watermark: #641 recorded
+    that a Proposed Delta has no trustworthy source-arrival instant and that
+    ``created_at`` is server-assigned, and this is the record that lets the
+    question be asked without one. ``None`` is the honest watermark of a
+    project that has taken no delivery at all, and is not "everything".
+    """
+
+    __tablename__ = "issue_coverage_declarations"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "project_id", name="uq_issue_coverage_declarations_row"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_issue_coverage_declarations_key",
+        ),
+        # One row per confirmed declaration. A repeated confirmation of the
+        # same reading with the same annotations converges here rather than
+        # appending a second identical declaration.
+        UniqueConstraint(
+            "project_id",
+            "declaration_digest",
+            name="uq_issue_coverage_declarations_identity",
+        ),
+        ForeignKeyConstraint(
+            [
+                "issue_profile_id",
+                "project_id",
+                "issue_profile_identity",
+                "issue_profile_version",
+            ],
+            [
+                "project_issue_profiles.id",
+                "project_issue_profiles.project_id",
+                "project_issue_profiles.profile_identity",
+                "project_issue_profiles.profile_version",
+            ],
+            name="fk_issue_coverage_declarations_profile",
+        ),
+        ForeignKeyConstraint(
+            ["through_source_delivery_id", "project_id"],
+            ["source_deliveries.id", "source_deliveries.project_id"],
+            name="fk_issue_coverage_declarations_delivery",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(derived_reading, 'utf8')), 'hex') "
+            "= derived_reading_digest",
+            name="ck_issue_coverage_declarations_reading_digest",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(declaration, 'utf8')), 'hex') "
+            "= declaration_digest",
+            name="ck_issue_coverage_declarations_declaration_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(coverage_identity)) > 0",
+            name="ck_issue_coverage_declarations_identity_text",
+        ),
+        CheckConstraint(
+            "length(btrim(confirmed_by_principal)) > 0",
+            name="ck_issue_coverage_declarations_principal",
+        ),
+        CheckConstraint(
+            "issue_profile_version >= 1",
+            name="ck_issue_coverage_declarations_version",
+        ),
+        Index(
+            "ix_issue_coverage_declarations_project", "project_id", "cutoff_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    issue_profile_id: Mapped[int] = mapped_column(BigInteger)
+    issue_profile_identity: Mapped[str] = mapped_column(String(160))
+    issue_profile_version: Mapped[int] = mapped_column(Integer)
+    cutoff_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    through_source_delivery_id: Mapped[int | None] = mapped_column(BigInteger)
+    derived_reading: Mapped[str] = mapped_column(Text)
+    derived_reading_digest: Mapped[str] = mapped_column(String(64))
+    declaration: Mapped[str] = mapped_column(Text)
+    declaration_digest: Mapped[str] = mapped_column(String(64))
+    coverage_identity: Mapped[str] = mapped_column(String(160))
+    confirmed_by_principal: Mapped[str] = mapped_column(String(128))
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # --- #529 One immutable release candidate, from one coherent reading --------
 
 # Every reason preparation may refuse for, as a closed vocabulary. A refusal a
@@ -3203,6 +3346,18 @@ PREPARATION_REFUSAL_REASONS = (
 
 _PREPARATION_REFUSAL_REASONS_SQL = ", ".join(
     f"'{reason}'" for reason in PREPARATION_REFUSAL_REASONS
+)
+
+# The three outcomes one finished preparation attempt may record (#675).
+# There is deliberately no ``running`` or ``queued`` member: an attempt row is
+# appended when the attempt *finishes*, so the relation stays append-only and
+# the immutability trigger covers it whole. "Preparing" is the derived answer
+# for a request no attempt has finished yet, which is exactly what the Issue
+# section says while a worker is at it.
+PREPARATION_ATTEMPT_OUTCOMES = ("prepared", "refused", "failed")
+
+_PREPARATION_ATTEMPT_OUTCOMES_SQL = ", ".join(
+    f"'{outcome}'" for outcome in PREPARATION_ATTEMPT_OUTCOMES
 )
 
 # ADR-0086's three derived outcomes for a candidate that exists.
@@ -3504,6 +3659,18 @@ class ReleaseCandidate(Base):
             ["release_packages.id", "release_packages.project_id"],
             name="fk_release_candidates_previous",
         ),
+        # The confirmed declaration this candidate was prepared under (#675),
+        # by identity rather than by the coverage identity and digest alone:
+        # those two say what the coverage was, and this says whose confirmation
+        # of which derived reading authorised preparing under it.
+        ForeignKeyConstraint(
+            ["coverage_declaration_id", "project_id"],
+            [
+                "issue_coverage_declarations.id",
+                "issue_coverage_declarations.project_id",
+            ],
+            name="fk_release_candidates_coverage",
+        ),
         ForeignKeyConstraint(
             [
                 "issue_profile_id",
@@ -3589,6 +3756,7 @@ class ReleaseCandidate(Base):
     accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
     previous_package_id: Mapped[int | None] = mapped_column(BigInteger)
     source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    coverage_declaration_id: Mapped[int] = mapped_column(BigInteger)
     coverage_identity: Mapped[str] = mapped_column(String(160))
     coverage_sha256: Mapped[str] = mapped_column(String(64))
     issue_profile_id: Mapped[int] = mapped_column(BigInteger)
@@ -3710,6 +3878,194 @@ class ReleasePreparationRefusal(Base):
     reason: Mapped[str] = mapped_column(Text)
     refused_by_principal: Mapped[str] = mapped_column(String(128))
     refused_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+
+
+# --- #675 What one preparation was asked for, and what each attempt did -----
+
+class ReleasePreparationRequest(Base):
+    """One idempotent request that a worker prepare this project's next issue.
+
+    #536 promised Review -> Follow-up -> Issue as one executable path and had
+    no way to make a candidate, because #529 renders outside its own short
+    transactions and needs a session *factory*: running it inside the HTTP
+    request would be long, fragile, and ambiguous to retry. This row is what
+    the request leaves behind instead. It records what the coordinator was
+    looking at when they asked -- the accepted revision, the issue profile
+    version, the source cutoff, and the confirmed coverage declaration -- so
+    the worker prepares the issue that was confirmed rather than whatever the
+    project happens to hold when it gets round to it.
+
+    There is deliberately no status column and no mutable "weekly close"
+    object. Status is derived from this relation and
+    ``release_preparation_attempts``, which is the same discipline ADR-0085
+    used to refuse a stored packet lifecycle and #537 used to refuse a stored
+    cross-project queue: a second authority beside the append-only records
+    would be stale the moment one of them moved, and somebody would have to
+    tick it.
+    """
+
+    __tablename__ = "release_preparation_requests"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "project_id", name="uq_release_preparation_requests_row"
+        ),
+        # The idempotency the ticket asks for: a coordinator who submits twice,
+        # or a retried POST, converges on the request already recorded rather
+        # than queueing a second preparation of the same issue.
+        UniqueConstraint(
+            "project_id",
+            "idempotency_key",
+            name="uq_release_preparation_requests_key",
+        ),
+        ForeignKeyConstraint(
+            ["accepted_revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_release_preparation_requests_revision",
+        ),
+        ForeignKeyConstraint(
+            [
+                "issue_profile_id",
+                "project_id",
+                "issue_profile_identity",
+                "issue_profile_version",
+            ],
+            [
+                "project_issue_profiles.id",
+                "project_issue_profiles.project_id",
+                "project_issue_profiles.profile_identity",
+                "project_issue_profiles.profile_version",
+            ],
+            name="fk_release_preparation_requests_profile",
+        ),
+        ForeignKeyConstraint(
+            ["coverage_declaration_id", "project_id"],
+            [
+                "issue_coverage_declarations.id",
+                "issue_coverage_declarations.project_id",
+            ],
+            name="fk_release_preparation_requests_coverage",
+        ),
+        CheckConstraint(
+            "length(btrim(requested_by_principal)) > 0",
+            name="ck_release_preparation_requests_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_release_preparation_requests_key",
+        ),
+        CheckConstraint(
+            "issue_profile_version >= 1",
+            name="ck_release_preparation_requests_version",
+        ),
+        Index(
+            "ix_release_preparation_requests_project", "project_id", "id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
+    issue_profile_id: Mapped[int] = mapped_column(BigInteger)
+    issue_profile_identity: Mapped[str] = mapped_column(String(160))
+    issue_profile_version: Mapped[int] = mapped_column(Integer)
+    coverage_declaration_id: Mapped[int] = mapped_column(BigInteger)
+    source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    requested_by_principal: Mapped[str] = mapped_column(String(128))
+    requested_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ReleasePreparationAttempt(Base):
+    """What one finished attempt at one preparation request produced (#675).
+
+    Exactly one of the three outcomes, and the check constraint makes the other
+    two unrepresentable in the same row: a ``prepared`` attempt names its
+    candidate and no reason, and a ``refused`` or ``failed`` attempt names a
+    bounded reason and no candidate. That is #529's own three-outcome rule
+    carried into the record a coordinator's screen is derived from, so
+    "preparation left a partial candidate" is not a state this relation can
+    describe.
+
+    ``started_at`` and ``finished_at`` are both declared by the worker and both
+    recorded on the one row, which is why a row is appended when an attempt
+    finishes rather than claimed when it begins. A relation that were claimed
+    first and completed later would need an UPDATE, and every release relation
+    beside it refuses one.
+    """
+
+    __tablename__ = "release_preparation_attempts"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "project_id", name="uq_release_preparation_attempts_row"
+        ),
+        ForeignKeyConstraint(
+            ["request_id", "project_id"],
+            [
+                "release_preparation_requests.id",
+                "release_preparation_requests.project_id",
+            ],
+            name="fk_release_preparation_attempts_request",
+        ),
+        ForeignKeyConstraint(
+            ["candidate_id", "project_id"],
+            ["release_candidates.id", "release_candidates.project_id"],
+            name="fk_release_preparation_attempts_candidate",
+        ),
+        CheckConstraint(
+            f"outcome in ({_PREPARATION_ATTEMPT_OUTCOMES_SQL})",
+            name="ck_release_preparation_attempts_outcome",
+        ),
+        CheckConstraint(
+            "(outcome = 'prepared' and candidate_id is not null "
+            "and refusal_code is null and reason is null) "
+            "or (outcome = 'refused' and candidate_id is null "
+            "and refusal_code is not null and reason is not null) "
+            "or (outcome = 'failed' and candidate_id is null "
+            "and refusal_code is null and reason is not null)",
+            name="ck_release_preparation_attempts_result",
+        ),
+        CheckConstraint(
+            f"refusal_code is null or refusal_code in "
+            f"({_PREPARATION_REFUSAL_REASONS_SQL})",
+            name="ck_release_preparation_attempts_code",
+        ),
+        CheckConstraint(
+            "reason is null or (length(btrim(reason)) > 0 "
+            "and length(reason) <= 2000)",
+            name="ck_release_preparation_attempts_reason",
+        ),
+        CheckConstraint(
+            "finished_at >= started_at",
+            name="ck_release_preparation_attempts_span",
+        ),
+        Index(
+            "ix_release_preparation_attempts_request", "request_id", "id"
+        ),
+        Index(
+            "ix_release_preparation_attempts_project", "project_id", "id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    request_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    outcome: Mapped[str] = mapped_column(String(32))
+    candidate_id: Mapped[int | None] = mapped_column(BigInteger)
+    refusal_code: Mapped[str | None] = mapped_column(String(48))
+    reason: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

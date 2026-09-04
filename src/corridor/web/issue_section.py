@@ -51,6 +51,25 @@ read back from the immutable ``input_declaration`` the candidate's identity is
 the digest of. Re-deriving any of them at reading time would let the screen
 describe a candidate that was never prepared.
 
+**The section can now make a candidate, and that is the point** (#675). #536
+shipped with #529 unreachable: a project with no candidate, or one made stale
+by a record, profile, mapping or coverage change, was told a fresh candidate
+was required and offered nothing that could produce one, which broke the
+promise that Review -> Follow-up -> Issue is one executable path. The section
+now shows the coverage reading Corridor derived — from the effective issue
+profile, the persisted Source Delivery ledger, the processing receipts and the
+declared cutoff — and offers one action over it: **Confirm coverage and prepare
+issue**. The coordinator confirms what Corridor read. They do not retype it,
+and they cannot relabel it: ``issue_coverage`` derives every line and refuses
+every forbidden edit, and nothing here composes a coverage line of its own.
+
+**Preparation is a fifth section state and no new portfolio state.** While a
+worker holds a request, the section says it is preparing this issue and offers
+nothing, because there is nothing for a person to do. The portfolio's five
+primary states are untouched: a project being prepared asks nothing, and a
+preparation that produced nothing joins the current-issue technical blockers
+the project already shows (``project_workflow.issue_readiness``).
+
 **No clock.** ``as_of`` is the same declared reporting cutoff the rest of the
 week is read at, and the release instant is the caller's. Nothing here reads
 the day.
@@ -69,11 +88,24 @@ from datetime import datetime
 import json
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.issue_content import ARTIFACT_WORDS
-from corridor.models import BLOCKED, ReleaseCandidate, ReleasePackage
+from corridor.issue_coverage import DerivedCoverageReading, derive_coverage_reading
+from corridor.issue_profile import effective_issue_inventory
+from corridor.issue_rendering import (
+    COVERAGE_EXCLUDED,
+    COVERAGE_FAILED,
+    COVERAGE_LATE,
+    COVERAGE_READ,
+)
+from corridor.models import (
+    BLOCKED,
+    ProjectRecordRevision,
+    ReleaseCandidate,
+    ReleasePackage,
+)
 from corridor.presentation import field_label
 from corridor.release_authorization import (
     SealedArtifact,
@@ -85,6 +117,7 @@ from corridor.release_candidate import (
     candidate_is_stale,
     current_release_candidate,
 )
+from corridor.release_preparation import PreparationStanding, preparation_standing
 from corridor.web.ui_primitives import StateLabel
 
 
@@ -92,20 +125,46 @@ class IssueViewRefused(ValueError):
     """The section would state or offer something the derivations do not."""
 
 
-# The four states this section can be in. They are internal identifiers; the
+# The five states this section can be in. They are internal identifiers; the
 # words each prints are in the labels and sentences below, built from #536's
 # own heading rather than from a new label for anything.
 NOTHING_PREPARED = "nothing_prepared"
 AUTHORIZABLE = "authorizable"
 NOT_AUTHORIZABLE = "not_authorizable"
 ALREADY_AUTHORIZED = "already_authorized"
+PREPARING = "preparing"
 
 STATE_LABELS: dict[str, StateLabel] = {
     NOTHING_PREPARED: StateLabel("neutral", "Nothing prepared yet"),
     AUTHORIZABLE: StateLabel("neutral", "Ready for your approval"),
     NOT_AUTHORIZABLE: StateLabel("attention", "Cannot be approved as it stands"),
     ALREADY_AUTHORIZED: StateLabel("settled", "Approved and sent as this issue"),
+    PREPARING: StateLabel("neutral", "Preparing this issue"),
 }
+
+# The maintainer's own wording for the one action this section carries. It is
+# spelled once, here, and the template reaches it through the view: an adjacent
+# label composed on a screen is the second name for one act that ADR-0048
+# exists to stop.
+PREPARE_ACTION = "Confirm coverage and prepare issue"
+
+# Said beside the coverage reading, because the division of labour is the whole
+# decision and a screen that did not state it would look like a form.
+COVERAGE_RULE = (
+    "This is what Corridor's own records say about the sources for this "
+    "issue: which arrived, which were processed, which failed, and which "
+    "arrived after the cutoff. You are not asked to retype any of it, and it "
+    "cannot be edited here — a source that failed cannot be declared read. "
+    "Confirming says that this is the coverage the issue is prepared under."
+)
+
+# Said while a worker holds the request.
+PREPARING_RULE = (
+    "Corridor is preparing this issue from the coverage you confirmed. "
+    "Nothing is needed from you while that happens, and nothing partial is "
+    "written: preparation either produces a complete issue or produces "
+    "nothing and says why."
+)
 
 # The one recovery every un-offerable candidate leads to, said once. ADR-0086
 # makes the blocking coverage and decision state part of the candidate's own
@@ -198,10 +257,65 @@ class IssueView:
     blocked: bool = False
     predecessor: PackageReference | None = None
     authorized: PackageReference | None = None
+    coverage: DerivedCoverageReading | None = None
+    preparation: PreparationStanding | None = None
+    accepted_revision_id: int | None = None
 
     @property
     def prepared(self) -> bool:
         return self.candidate is not None
+
+    @property
+    def preparing(self) -> bool:
+        return self.state == PREPARING
+
+    @property
+    def may_prepare(self) -> bool:
+        """Whether this section offers to make a candidate at all.
+
+        One visible action per state, which is why an authorizable candidate
+        does not also offer a fresh preparation: the act in front of the
+        coordinator there is #533's approval, and a second control beside it
+        would ask them to choose between approving the issue and replacing it.
+        Everywhere else — nothing prepared, a candidate that cannot be
+        approved as it stands, and one already sent — a fresh candidate is
+        exactly what the section has been telling them they need.
+        """
+
+        return (
+            self.state in (NOTHING_PREPARED, NOT_AUTHORIZABLE, ALREADY_AUTHORIZED)
+            and self.coverage is not None
+            and self.accepted_revision_id is not None
+        )
+
+    @property
+    def coverage_rows(self) -> tuple[tuple[str, str, str], ...]:
+        """The derived reading as a table reads it, in the reading's own order."""
+
+        if self.coverage is None:
+            return ()
+        return tuple(
+            (line.source_name, COVERAGE_WORDS.get(line.state, line.state), line.detail)
+            for line in self.coverage.lines
+        )
+
+    @property
+    def coverage_facts(self) -> tuple[tuple[str, Any], ...]:
+        """What the confirmation would freeze, in terms a person can check."""
+
+        if self.coverage is None:
+            return ()
+        boundary = self.coverage.through_source_delivery_id
+        return (
+            ("Sources included through", self.coverage.cutoff.date().isoformat()),
+            (
+                "Deliveries included up to and including",
+                "none — no source has been delivered to this project yet"
+                if boundary is None
+                else boundary,
+            ),
+            ("This exact reading", self.coverage.reading_digest),
+        )
 
     @property
     def may_authorize(self) -> bool:
@@ -225,6 +339,8 @@ class IssueView:
     def summary(self) -> str:
         """What this section is saying, in one sentence."""
 
+        if self.state == PREPARING:
+            return PREPARING_RULE
         if self.state == NOTHING_PREPARED:
             return (
                 "No issue has been prepared for this project yet, so there is "
@@ -301,10 +417,13 @@ class IssueView:
             for one in self.artifacts
         )
 
-    # The two sentences the section prints beside its own controls, reached
-    # through the view so the template holds no wording of its own.
+    # The sentences and the one label the section prints beside its own
+    # controls, reached through the view so the template holds no wording of
+    # its own.
     fresh_preparation = FRESH_PREPARATION
     designation_rule = DESIGNATION_RULE
+    coverage_rule = COVERAGE_RULE
+    prepare_action = PREPARE_ACTION
 
 
 def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueView:
@@ -315,10 +434,34 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
     section and a release attempted from it answer at the same instant.
     """
 
+    preparation = preparation_standing(session, project_id=project_id)
+    # The derived coverage reading, taken once at the same declared cutoff the
+    # rest of the week is read at. `issue_coverage` performs it; nothing here
+    # composes a line, a state or a boundary of its own.
+    coverage = derive_coverage_reading(
+        session,
+        project_id=project_id,
+        cutoff=as_of,
+        inventory=effective_issue_inventory(session, project_id, as_of),
+    )
+    accepted_revision_id = session.scalar(
+        select(func.max(ProjectRecordRevision.id)).where(
+            ProjectRecordRevision.project_id == project_id
+        )
+    )
+    accepted_revision_id = (
+        None if accepted_revision_id is None else int(accepted_revision_id)
+    )
+
     candidate = current_release_candidate(session, project_id)
     if candidate is None:
         return IssueView(
-            project_id=project_id, cutoff=as_of, state=NOTHING_PREPARED
+            project_id=project_id,
+            cutoff=as_of,
+            state=PREPARING if preparation.in_flight else NOTHING_PREPARED,
+            coverage=coverage,
+            preparation=preparation,
+            accepted_revision_id=accepted_revision_id,
         )
 
     package = session.scalars(
@@ -330,13 +473,16 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
     previous = _package(session, candidate.previous_package_id)
     _refuse_invented_predecessor(candidate, previous)
 
-    if package is not None:
+    if preparation.in_flight:
+        state = PREPARING
+    elif package is not None:
         state = ALREADY_AUTHORIZED
     elif blockers:
         state = NOT_AUTHORIZABLE
     else:
         state = AUTHORIZABLE
     _refuse_offered_with_blockers(state, blockers)
+    _refuse_offered_while_preparing(state, preparation)
 
     return IssueView(
         project_id=project_id,
@@ -350,6 +496,9 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
         blocked=candidate.readiness == BLOCKED,
         predecessor=_reference(previous),
         authorized=_reference(package),
+        coverage=coverage,
+        preparation=preparation,
+        accepted_revision_id=accepted_revision_id,
     )
 
 
@@ -408,6 +557,17 @@ def _reference(package: ReleasePackage | None) -> PackageReference | None:
     )
 
 
+# The plain words each derived coverage state prints. The identifiers are
+# ``issue_rendering``'s own vocabulary; these are the sentence fragments a
+# coordinator reads, and nothing here invents a fifth state.
+COVERAGE_WORDS: dict[str, str] = {
+    COVERAGE_READ: "Read",
+    COVERAGE_FAILED: "Not read",
+    COVERAGE_EXCLUDED: "Left out on purpose",
+    COVERAGE_LATE: "After the cutoff",
+}
+
+
 def _words(artifact_type: str) -> str:
     """The words one configured artifact goes by, in #641's own spelling.
 
@@ -437,6 +597,26 @@ def _refuse_offered_with_blockers(state: str, blockers: tuple[str, ...]) -> None
             "this candidate cannot be authorized and the section would offer "
             "it anyway; whether an issue may be approved is #529's answer, "
             f"and it named {len(blockers)} reason(s) not to"
+        )
+
+
+def _refuse_offered_while_preparing(
+    state: str, preparation: PreparationStanding
+) -> None:
+    """Refuse a section that would ask for work a worker is already doing.
+
+    ``may_prepare`` excludes the preparing state structurally, and this proves
+    the state derivation actually read the standing rather than falling through
+    to one of the four #536 already had. A section that offered the act while a
+    request was in flight would queue a second preparation of the same issue
+    every time a coordinator refreshed the page.
+    """
+
+    if state != PREPARING and preparation.in_flight:
+        raise IssueViewRefused(
+            "a preparation of this project's issue is in flight and the "
+            f"section would show it as {state!r}; while a worker holds a "
+            "request there is nothing here for a person to do"
         )
 
 

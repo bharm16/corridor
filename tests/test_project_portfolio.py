@@ -1233,7 +1233,7 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
     )
     # The design partner's expected portfolio is tens of projects, and the
     # margin here is the whole point: the number below is the reading's shape,
-    # not its size. Twenty statements is what it costs today; the ceiling is
+    # not its size. Twenty-one statements is what it costs today; the ceiling is
     # deliberately close to it so that an accidental extra query is a failure
     # rather than a slow drift back to one round trip per project. It rose from
     # twelve when Issue readiness learned to state what a project is configured
@@ -1244,8 +1244,11 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
     # artifacts, and every registered template and mapping. Each is the batched
     # sibling of the single-project reader #529 or #533 already owned, which is
     # what the equality above proves and what a per-candidate `candidate_is_stale`
-    # would have broken immediately.
-    assert large <= 20, large
+    # would have broken immediately. It rose by one more when Issue readiness
+    # learned that a preparation had failed (#675): one statement for every
+    # project's newest preparation request, and a second only when one of them
+    # exists, which is again the batched sibling of the single-project reader.
+    assert large <= 21, large
 
 
 # --- how it reads ----------------------------------------------------------

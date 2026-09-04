@@ -142,6 +142,10 @@ from corridor.consequence_levels import (
     headline_level,
 )
 from corridor.issue_content import ChangeFacts, EffectiveIssueContent, effective_issue_content
+from corridor.issue_coverage import (
+    deltas_outside_coverage_boundary,
+    latest_declaration,
+)
 from corridor.issue_profile import effective_issue_inventory
 from corridor.presentation import field_label
 from corridor.principals import HumanPrincipal
@@ -961,6 +965,16 @@ def read_review_items(
     issue_content = effective_issue_content(
         session, effective_issue_inventory(session, project_id, as_of)
     )
+    # Which differences arrived after the coverage boundary this project's
+    # issue was confirmed under (#675). Empty where no coverage has been
+    # confirmed and for every delta whose Source Fact dereferences no
+    # delivery, which is the honest answer in both cases.
+    outside_boundary = deltas_outside_coverage_boundary(
+        session,
+        project_id=project_id,
+        delta_ids=reading.actionable_delta_ids,
+        declaration=latest_declaration(session, project_id=project_id, cutoff=as_of),
+    )
     reasons = {
         standing_row.delta_id: standing_row.attention_reasons
         for standing_row in reading.standings
@@ -995,6 +1009,7 @@ def read_review_items(
             band=bands[delta_id],
             attention_reasons=reasons.get(delta_id, ()),
             issue_content=issue_content,
+            outside_boundary=outside_boundary,
         )
         for delta_id in reading.actionable_delta_ids
     }
@@ -1113,6 +1128,7 @@ def _child(
     band: str,
     attention_reasons: tuple[str, ...],
     issue_content: EffectiveIssueContent,
+    outside_boundary: frozenset[int],
 ) -> ChildReading:
     capture = incoming.get(delta.id)
     support_ids = support.get(capture.fact.id, ()) if capture is not None else ()
@@ -1162,6 +1178,10 @@ def _child(
                 attention_reasons=attention_reasons,
             ),
             decision_settled=False,
+            # ADR-0085's cutoff limb, answered by `issue_coverage` against the
+            # confirmed Source Delivery watermark and never by comparing
+            # `ProposedDelta.created_at` to anything (#675).
+            source_outside_coverage_boundary=delta.id in outside_boundary,
         ),
     )
 

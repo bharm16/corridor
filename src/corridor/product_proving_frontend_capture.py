@@ -225,6 +225,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         "POST",
         frozenset({201, 403, 409}),
     ),
+    "prepare_project_issue": (
+        "/work/{slug}/issue/prepare",
+        "POST",
+        frozenset({202, 409}),
+    ),
     "queue": ("/queue/{slug}", "GET", frozenset({200})),
     "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
     "internal_report_full": (

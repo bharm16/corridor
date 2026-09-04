@@ -351,6 +351,7 @@ from corridor.models import (
     ExtractionRun,
     PolicyRun,
     RecordInclusionRequest,
+    ReleasePreparationRequest,
 )
 from corridor.extraction_runs import declare_active_run
 from corridor.extraction_runs import current_active_run_declaration, is_completed_run
@@ -422,7 +423,13 @@ from corridor.follow_up_bundles import (
     emit_follow_up_reading,
     read_follow_up_bundles,
 )
+from corridor.issue_coverage import CoverageRefused, confirm_coverage, derive_coverage_reading
+from corridor.issue_profile import effective_issue_inventory
 from corridor.project_workflow import read_project_workflow
+from corridor.release_preparation import (
+    PreparationRequestRefused,
+    request_preparation,
+)
 from corridor.release_authorization import (
     NOT_DESIGNATED,
     Authorization,
@@ -4552,6 +4559,8 @@ def _project_workflow_response(
     now: datetime,
     refusal: AuthorizationRefused | None = None,
     approved: Authorization | None = None,
+    prepare_refusal: str | None = None,
+    requested: ReleasePreparationRequest | None = None,
     route_name: str = "coordinator_home",
     route_template: str = "/work/{slug}",
     method: str = "GET",
@@ -4591,14 +4600,24 @@ def _project_workflow_response(
             "landing": landing,
             "refusal": refusal,
             "approved": approved,
+            # The outcome of #675's own act, kept apart from #533's: a
+            # preparation that was refused sent nothing and approved nothing,
+            # and announcing it under the approval's heading would tell a
+            # coordinator something untrue about what just happened.
+            "prepare_refusal": prepare_refusal,
+            "requested": requested,
             # Exactly one element carries `autofocus`: a refusal first, then a
             # completed approval, and otherwise the section the coordinator's
             # work actually starts in.
             "focus": (
                 ui_primitives.focus_target(
-                    refused=refusal is not None, saved=approved is not None
+                    refused=refusal is not None or prepare_refusal is not None,
+                    saved=approved is not None or requested is not None,
                 )
-                if refusal is not None or approved is not None
+                if refusal is not None
+                or approved is not None
+                or prepare_refusal is not None
+                or requested is not None
                 else workflow.landing
             ),
             "cutoff": workflow.cutoff.date().isoformat(),
@@ -4710,6 +4729,163 @@ def authorize_project_issue(
         status_code=201,
     )
 
+
+@app.post("/work/{slug}/issue/prepare", response_class=HTMLResponse)
+def prepare_project_issue(
+    request: Request,
+    slug: str,
+    issue_profile_id: int = Form(...),
+    issue_profile_version: int = Form(...),
+    accepted_revision_id: int = Form(...),
+    cutoff: str = Form(...),
+    derived_reading_digest: str = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Confirm the coverage shown and ask for this issue to be prepared (#675).
+
+    **It revalidates everything the coordinator was looking at.** The declared
+    cutoff, the issue profile row and version, the accepted revision, and the
+    digest of the derived coverage reading all travel through the form and are
+    all re-derived here before anything is written. A submission composed
+    against a reading that has since moved — a source arrived, a document
+    finished processing, the profile took a new version, the record advanced —
+    is refused and nothing is appended. That is the point of carrying the
+    digest at all: without it the confirmation would attest to whatever the
+    database happened to say when the POST landed.
+
+    **It writes two separately identified records and returns.** The coverage
+    declaration is the person's attestation over the machine's reading; the
+    preparation request is what a worker executes through #529's three phases.
+    Both are idempotent by a key derived from the confirmed declaration, so a
+    resubmitted form converges rather than queueing a second preparation.
+
+    **It renders nothing.** #529 renders outside its own short transactions and
+    needs a session factory; the customer's workbook renderer holds a session
+    while it reads and produces the file. Doing that here would hold a web
+    worker for the length of a workbook render and would be ambiguous to retry.
+
+    **No designation check here either.** Preparing a candidate is not
+    releasing one: #533's external-release designation gates the approval and
+    PostgreSQL proves it there. `_project` still runs, because it is the
+    project partition every slug-addressed surface opens.
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        raise HTTPException(404, f"no project {slug!r}")
+    now = clock()
+    fields = {
+        "issue_profile_id": issue_profile_id,
+        "issue_profile_version": issue_profile_version,
+        "accepted_revision_id": accepted_revision_id,
+        "cutoff": cutoff,
+        "derived_reading_digest": derived_reading_digest,
+    }
+    try:
+        # One savepoint around both appends, so a refusal gives up its own work
+        # and nothing else: the same shape the authorization route above uses,
+        # and what lets this session still render the week around the refusal.
+        with session.begin_nested():
+            declared = _declared_cutoff(cutoff, now)
+            inventory = effective_issue_inventory(session, project.id, declared)
+            reading = derive_coverage_reading(
+                session,
+                project_id=project.id,
+                cutoff=declared,
+                inventory=inventory,
+            )
+            if reading is None:
+                raise CoverageRefused(
+                    "this project is not configured to issue anything as at that "
+                    "cutoff, so there is no coverage to confirm"
+                )
+            if (
+                reading.profile_id != int(issue_profile_id)
+                or reading.profile_version != int(issue_profile_version)
+            ):
+                raise CoverageRefused(
+                    "what this project is configured to issue changed after this "
+                    "coverage was shown, so the reading you confirmed is not the "
+                    "one in force. Read the week again."
+                )
+            declaration = confirm_coverage(
+                session,
+                project_id=project.id,
+                reading=reading,
+                confirmed_reading_digest=derived_reading_digest,
+                principal=principal,
+                confirmed_at=now,
+                # Derived from what was confirmed rather than generated, so a
+                # resubmitted form converges on the declaration already recorded
+                # instead of appending a second identical one.
+                idempotency_key=f"coverage:{reading.reading_digest}",
+            )
+            requested = request_preparation(
+                session,
+                project_id=project.id,
+                declaration=declaration,
+                accepted_revision_id=accepted_revision_id,
+                requested_by=principal,
+                requested_at=now,
+                idempotency_key=f"prepare:{declaration.declaration_digest}",
+            )
+    except (CoverageRefused, PreparationRequestRefused) as refusal:
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            prepare_refusal=str(refusal),
+            route_name="prepare_project_issue",
+            route_template="/work/{slug}/issue/prepare",
+            method="POST",
+            request_fields=fields,
+            status_code=409,
+        )
+    return _project_workflow_response(
+        request,
+        project,
+        principal,
+        session,
+        now=now,
+        requested=requested,
+        route_name="prepare_project_issue",
+        route_template="/work/{slug}/issue/prepare",
+        method="POST",
+        request_fields=fields,
+        status_code=202,
+    )
+
+
+def _declared_cutoff(supplied: str, now: datetime) -> datetime:
+    """The cutoff the coordinator was shown, proved rather than trusted.
+
+    It comes back through the form because a confirmation is *of a reading at a
+    cutoff*, and the instant the POST lands is not that cutoff. It is proved
+    time-zone-aware and not in the future, so a caller cannot confirm coverage
+    of sources that have not arrived; everything else about it is the
+    coordinator's own declared instant, exactly as every other seam from #640
+    onward requires.
+    """
+
+    try:
+        declared = datetime.fromisoformat(supplied)
+    except ValueError as exc:
+        raise CoverageRefused(
+            "the cutoff this coverage was read at is not a readable instant"
+        ) from exc
+    if declared.tzinfo is None:
+        raise CoverageRefused(
+            "the cutoff this coverage was read at carries no time zone"
+        )
+    if declared > now:
+        raise CoverageRefused(
+            "coverage cannot be confirmed for a cutoff that has not arrived"
+        )
+    return declared
 
 # --- The coordinator's cross-project week (#537) ---------------------------
 #

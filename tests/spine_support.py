@@ -40,11 +40,13 @@ SPINE_TABLE_PATTERN = re.compile(
     # reason — a citation outliving its segment points at nothing.
     r"evidence_link_sources|"
     # Not spine state either: a prepared release candidate, its artifact set,
-    # the authorization relation and the refusal receipts (#529). They are
-    # deleted with the spine because a candidate cites the accepted revision it
-    # was prepared from, and a cleanup that removed the revision and left the
-    # candidate behind would leave it pointing at a revision that never was.
-    r"release_[a-z_]+)$"
+    # the authorization relation and the refusal receipts (#529), and the
+    # confirmed coverage declaration a candidate is prepared under (#675).
+    # They are deleted with the spine because a candidate cites the accepted
+    # revision it was prepared from, and a cleanup that removed the revision
+    # and left the candidate behind would leave it pointing at a revision that
+    # never was.
+    r"release_[a-z_]+|issue_coverage_declarations)$"
 )
 SPINE_ROOTS = frozenset({"facts", "source_segments", "project_record_revisions"})
 

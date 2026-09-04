@@ -104,6 +104,7 @@ from corridor.follow_up_bundles import (
     bundle_reading_payload,
     read_follow_up_bundles,
 )
+from corridor.issue_coverage import CoverageRefused, declared_lines, load_declaration
 from corridor.issue_content import (
     ARTIFACT_WORDS,
     CHANGE_SUMMARY_IDENTITY,
@@ -213,8 +214,16 @@ class CoverageDeclaration:
     was not reviewed for this issue" is one of the five shared inputs, and a
     coverage state that could be edited after the fact would let a package
     claim a review nobody performed.
+
+    **It is no longer a value a caller composes** (#675). This is now read from
+    one ``issue_coverage_declarations`` row — a coordinator's confirmation of
+    the reading Corridor derived — and ``declaration_id`` names that row.
+    Preparation therefore cannot be given a coverage state nobody confirmed,
+    and the candidate carries the confirmation as a foreign key rather than as
+    a digest of bytes whose provenance nothing records.
     """
 
+    declaration_id: int
     identity: str
     lines: tuple[SourceCoverage, ...] = ()
 
@@ -245,6 +254,27 @@ class CoverageDeclaration:
     @property
     def exceptions(self) -> tuple[SourceCoverage, ...]:
         return tuple(line for line in self.lines if line.is_exception)
+
+
+def declared_coverage(
+    session: Session, *, project_id: int, declaration_id: int
+) -> CoverageDeclaration:
+    """The confirmed coverage one preparation runs under, read by identity.
+
+    The one door between #675's persisted declaration and this module's bound
+    value. It reads the confirmed lines back out of the stored declaration
+    bytes the row's digest covers, so what a candidate is prepared under is
+    exactly what somebody put their name to.
+    """
+
+    row = load_declaration(
+        session, project_id=project_id, declaration_id=declaration_id
+    )
+    return CoverageDeclaration(
+        declaration_id=int(row.id),
+        identity=row.coverage_identity,
+        lines=declared_lines(row),
+    )
 
 
 # --- what one binding produced ---------------------------------------------
@@ -343,6 +373,11 @@ class BoundPreparation:
             ),
             "source_cutoff": self.source_cutoff.isoformat(),
             "coverage": {
+                # The confirmed declaration by identity (#675), beside what it
+                # said. Two different confirmations of the same lines are two
+                # different declarations, and a candidate says which one it was
+                # prepared under.
+                "declaration_id": self.coverage.declaration_id,
                 "identity": self.coverage.identity,
                 "content_sha256": self.coverage.content_sha256,
             },
@@ -648,7 +683,7 @@ def bind_preparation(
     preparation: Mapping[str, Any],
     source_cutoff: datetime,
     prepared_at: datetime,
-    coverage: CoverageDeclaration,
+    coverage_declaration_id: int,
     templates: TemplateBinding,
     first_issue_behavior: str,
     template_bytes: bytes,
@@ -660,6 +695,12 @@ def bind_preparation(
     Short by construction: it reads, it binds, and it renders nothing. The
     caller commits immediately, and the project lock is gone before a single
     byte is produced.
+
+    ``coverage_declaration_id`` replaced #529's ``coverage`` value deliberately
+    (#675). The coverage state one issue is prepared under is now a confirmed
+    ``issue_coverage_declarations`` row rather than a dataclass a caller
+    composed, so preparation cannot be handed a coverage nobody attested to,
+    and the candidate references that confirmation by foreign key.
     """
 
     if source_cutoff.tzinfo is None or prepared_at.tzinfo is None:
@@ -668,6 +709,12 @@ def bind_preparation(
             "a candidate is bound to declared, time-zone-aware instants; "
             "nothing here reads a clock",
         )
+    try:
+        coverage = declared_coverage(
+            session, project_id=project_id, declaration_id=coverage_declaration_id
+        )
+    except CoverageRefused as exc:
+        raise PreparationRefused(MIXED_READING, str(exc)) from exc
     if not (coverage.identity or "").strip():
         raise PreparationRefused(
             MIXED_READING, "the declared coverage state needs an identity"
@@ -1087,7 +1134,7 @@ def attach_candidate(
         preparation=preparation,
         source_cutoff=bound.source_cutoff,
         prepared_at=bound.prepared_at,
-        coverage=bound.coverage,
+        coverage_declaration_id=bound.coverage.declaration_id,
         templates=templates,
         first_issue_behavior=first_issue_behavior,
         template_bytes=template_bytes,
@@ -1143,6 +1190,7 @@ def attach_candidate(
         accepted_revision_id=bound.accepted_revision_id,
         previous_package_id=bound.previous_package_id,
         source_cutoff=bound.source_cutoff,
+        coverage_declaration_id=bound.coverage.declaration_id,
         coverage_identity=bound.coverage.identity,
         coverage_sha256=bound.coverage.content_sha256,
         issue_profile_id=bound.inventory.profile_id,
@@ -1256,7 +1304,7 @@ def prepare_release_candidate(
     preparation: Mapping[str, Any],
     source_cutoff: datetime,
     prepared_at: datetime,
-    coverage: CoverageDeclaration,
+    coverage_declaration_id: int,
     templates: TemplateBinding,
     first_issue_behavior: str,
     template_bytes: bytes,
@@ -1292,7 +1340,7 @@ def prepare_release_candidate(
                 preparation=preparation,
                 source_cutoff=source_cutoff,
                 prepared_at=prepared_at,
-                coverage=coverage,
+                coverage_declaration_id=coverage_declaration_id,
                 templates=templates,
                 first_issue_behavior=first_issue_behavior,
                 template_bytes=template_bytes,

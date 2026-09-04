@@ -221,8 +221,8 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # seals (#533), which is one more table keyed by its own bigserial and so
     # one more sequence; the receipt itself is the `release_packages` relation
     # #529 already created, widened by #533 rather than replaced.
-    assert fingerprint.table_count == 189
-    assert fingerprint.sequence_count == 174
+    assert fingerprint.table_count == 192
+    assert fingerprint.sequence_count == 177
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

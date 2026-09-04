@@ -108,6 +108,18 @@
   {% call ui.outcome("refused", "This issue was not approved, and nothing was sent", focus) %}
     <p>{{ refusal.sentence }}</p>
   {% endcall %}
+  {%- elif prepare_refusal %}
+  {% call ui.outcome("refused", "This issue was not prepared, and nothing was recorded", focus) %}
+    <p>{{ prepare_refusal }}</p>
+  {% endcall %}
+  {%- elif requested %}
+  {% call ui.outcome("saved", "Coverage confirmed, and this issue is being prepared", focus) %}
+    <p>
+      Corridor is preparing this issue from the coverage you confirmed, at
+      accepted Project Record revision {{ requested.accepted_revision_id }}.
+      Nothing is needed from you while that happens.
+    </p>
+  {% endcall %}
   {%- elif approved %}
   {% call ui.outcome("saved", "Approved for sharing", focus) %}
     <p>
@@ -316,7 +328,7 @@
       #}
       <h3>The prepared issue</h3>
       <p>
-        {%- if issue.prepared %}{{ ui.state(issue.state_label) }} {% endif -%}
+        {%- if issue.prepared or issue.preparing %}{{ ui.state(issue.state_label) }} {% endif -%}
         {{ issue.summary }}
       </p>
 
@@ -398,6 +410,51 @@
         {% endcall %}
       </form>
       {%- endif %}
+      {%- endif %}
+
+      {#
+        #675's derived coverage reading and the one action over it.
+
+        Every line, every state and the delivery boundary come from
+        `issue_coverage`; this table prints them and composes none. There is no
+        input here that could change a state: the only thing the form carries
+        is what was shown, so a confirmation can be proved to be a confirmation
+        of this exact reading and of nothing else.
+      #}
+      {%- if issue.coverage %}
+      <h4>Sources for this issue</h4>
+      <p class="quiet">{{ issue.coverage_rule }}</p>
+      {{ ui.fact_list(issue.coverage_facts) }}
+      {% call ui.record_table(
+           "What Corridor's records say about each source for this issue",
+           ["Source", "State", "What the records say"]) %}
+        {%- for name, state, detail in issue.coverage_rows %}
+        <tr>
+          <th scope="row">{{ name }}</th>
+          <td>{{ state }}</td>
+          <td>{{ detail }}</td>
+        </tr>
+        {%- else %}
+        <tr>
+          <th scope="row">No source has been delivered to this project yet</th>
+          <td>—</td>
+          <td>There is nothing to have read for this issue.</td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- endif %}
+
+      {%- if issue.may_prepare %}
+      <form method="post" action="/work/{{ project.slug }}/issue/prepare">
+        <input type="hidden" name="issue_profile_id" value="{{ issue.coverage.profile_id }}">
+        <input type="hidden" name="issue_profile_version" value="{{ issue.coverage.profile_version }}">
+        <input type="hidden" name="accepted_revision_id" value="{{ issue.accepted_revision_id }}">
+        <input type="hidden" name="cutoff" value="{{ issue.coverage.cutoff.isoformat() }}">
+        <input type="hidden" name="derived_reading_digest" value="{{ issue.coverage.reading_digest }}">
+        {% call ui.sticky_actions(issue.prepare_action) %}
+        <button type="submit">{{ issue.prepare_action }}</button>
+        {% endcall %}
+      </form>
       {%- endif %}
     {%- endif %}
   {% endcall %}

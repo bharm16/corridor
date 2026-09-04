@@ -36,15 +36,29 @@ tells a coordinator that everything is urgent; and calling everything "Can
 wait", which quietly promises that a change reaches no artifact when nobody
 knows what the artifacts contain.
 
-**What is deliberately not derived.** ADR-0085's "Can wait" has a second limb:
-a difference whose *source is outside the current issue cutoff*. A Proposed
-Delta records no domain instant for when its source arrived — ``created_at`` is
+**The cutoff limb, derived at last (#675).** ADR-0085's "Can wait" has a
+second limb: a difference whose *source is outside the current issue cutoff*.
+#641 left it absent rather than stubbed and said exactly why — a Proposed Delta
+records no domain instant for when its source arrived, ``created_at`` is
 PostgreSQL-assigned, and #488 was rebuilt precisely to stop that column being
-compared against a logical time — and the reading a level is derived over is
-already bounded by the caller's declared cutoff. So the limb is absent rather
-than stubbed, in the same way ``review_packet_reading`` leaves a hold-out
-reason it cannot yet detect out of its vocabulary: a reading never claims a
-check it did not make.
+compared against a logical time. What it lacked was not a rule but a fact.
+
+#675 supplies the fact. A confirmed coverage declaration freezes the exact
+append-only Source Delivery watermark one issue includes, and a Proposed Delta
+dereferences the delivery its Source Fact came in on through its own delta
+group's document. ``source_outside_coverage_boundary`` is that comparison —
+one identity against another — and it is answered by ``issue_coverage``, never
+here. **Nothing in this module reads ``ProposedDelta.created_at``, and nothing
+compares an instant to the cutoff.** The caller passes ``False`` where no
+coverage has been confirmed or where the delta names no delivery, because a
+reading never claims a check it did not make.
+
+The limb is checked *first*, before an executable customer policy and before
+the configured artifacts, and that order is the decision rather than an
+accident: a source the issue was confirmed not to include cannot be something
+the issue must state correctly. Ranking it under "Must handle before this
+issue" would tell a coordinator to settle, before Friday, a difference that
+arrived after the week they are closing.
 """
 
 from __future__ import annotations
@@ -86,6 +100,11 @@ CAN_WAIT_SENTENCE = (
     "it changes nothing this project is configured to issue for this cutoff"
 )
 
+OUTSIDE_BOUNDARY_SENTENCE = (
+    "the source it came in on arrived after the coverage this issue was "
+    "confirmed under, so it belongs to the next issue rather than this one"
+)
+
 
 @dataclass(frozen=True, slots=True)
 class ConsequenceLevel:
@@ -115,6 +134,7 @@ def consequence_level(
     change: ChangeFacts,
     *,
     decision_settled: bool = False,
+    source_outside_coverage_boundary: bool = False,
 ) -> ConsequenceLevel | None:
     """Which of ADR-0085's three levels one proposed difference is at.
 
@@ -126,11 +146,20 @@ def consequence_level(
     scheduling rather than a decision — a deferred difference a policy waits on
     still blocks the issue.
 
+    ``source_outside_coverage_boundary`` is whether the delivery this
+    difference's Source Fact came in on is newer than the append-only watermark
+    the issue's coverage was confirmed against (#675). It defaults to ``False``
+    because that is the honest answer when no coverage has been confirmed and
+    when the delta dereferences no delivery, and because a caller that has not
+    made the check must not accidentally assert it.
+
     ``None`` where the issue profile cannot be executed as configured.
     """
 
     if not content.supported:
         return None
+    if source_outside_coverage_boundary:
+        return ConsequenceLevel(CAN_WAIT, (OUTSIDE_BOUNDARY_SENTENCE,))
     blocking = content.blocking_policies_for(change)
     if blocking and not decision_settled:
         return ConsequenceLevel(
