@@ -129,7 +129,16 @@ def ingest_document(
     registry_id: str | None = None,
     expected_sha256: str | None = None,
     numbering_scheme: str | None = None,
+    source_delivery_id: int | None = None,
 ) -> Document:
+    # `source_delivery_id` is the ledger row of the delivery that carried these
+    # exact bytes in (#687). It is the caller's proven fact, never derived here:
+    # only an intake path that already holds a `source_deliveries` row for these
+    # bytes may pass one, and every other path leaves the link unknown rather
+    # than guessing a delivery from a time, a filename, or an arrival order. The
+    # composite foreign key `(source_delivery_id, project_id)` means a delivery
+    # taken for another customer's project is refused by the database.
+
     # The content-addressed store names files by hash, so `path.name` is a
     # 64-character hex string. Callers pass the document's real name — the
     # archive member or manifest title — because this is what a reader sees
@@ -192,13 +201,17 @@ def ingest_document(
         # Re-ingest never re-parses — the bytes are identical by definition.
         # But provenance describes where the file came from, not the file,
         # and a document first ingested without a date would otherwise carry
-        # that gap forever. Backfill nulls only; never overwrite.
+        # that gap forever. Backfill nulls only; never overwrite. The delivery
+        # link follows the same rule for a stronger reason: identical bytes can
+        # be delivered twice, and the second delivery must not relabel which one
+        # this document came in on (#687).
         for attribute, value in (
             ("registry_id", registry_id),
             ("source_url", source_url),
             ("retrieved_at", _as_datetime(retrieved_at)),
             ("doc_date", doc_date),
             ("filename", filename),
+            ("source_delivery_id", source_delivery_id),
         ):
             if value and getattr(existing, attribute) in (None, ""):
                 setattr(existing, attribute, value)
@@ -231,6 +244,7 @@ def ingest_document(
         pages=0,
         parse_status="pending",
         numbering_scheme=numbering_scheme or "project-unique",
+        source_delivery_id=source_delivery_id,
     )
     session.add(document)
     session.flush()

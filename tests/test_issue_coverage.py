@@ -26,6 +26,7 @@ from corridor.consequence_levels import (
     OUTSIDE_BOUNDARY_SENTENCE,
     consequence_level,
 )
+from corridor.packet_review import read_review_items
 from corridor.db import Session, engine
 from corridor.issue_content import (
     COVERAGE_ALL_REQUIRED_SOURCES_READ,
@@ -34,6 +35,7 @@ from corridor.issue_content import (
     ChangeFacts,
     effective_issue_content,
 )
+from corridor.later_revision import capture_later_revision
 from corridor.issue_coverage import (
     ANNOTATION_LIMIT,
     CoverageAnnotation,
@@ -66,7 +68,14 @@ from corridor.source_delivery import (
     take_delivery,
 )
 
-from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
+from later_revision_support import (
+    BASELINE_ROWS,
+    HEADINGS,
+    PRINCIPAL,
+    adopt,
+    deliver,
+    workbook_bytes,
+)
 from packet_review_support import (
     Rendition,
     append_deltas,
@@ -123,15 +132,23 @@ def adopted(session, tmp_path):
         operator=OPERATOR,
     )
     body = workbook_bytes(tmp_path / "ucm.xlsx", BASELINE_ROWS)
-    revision_id, _ = adopt(session, project, body, tmp_path)
-    return _Adopted(project=project, revision_id=revision_id, template_bytes=body)
+    revision_id, manifest = adopt(session, project, body, tmp_path)
+    return _Adopted(
+        project=project,
+        revision_id=revision_id,
+        template_bytes=body,
+        manifest=manifest,
+    )
 
 
 class _Adopted:
-    def __init__(self, project, revision_id, template_bytes):
+    def __init__(self, project, revision_id, template_bytes, manifest=None):
         self.project = project
         self.revision_id = revision_id
         self.template_bytes = template_bytes
+        # The mapping revision the project registered, which a later revision
+        # of the same workbook must be read through.
+        self.manifest = manifest
 
 
 def _configure(session, adopted, *, coverage=()):
@@ -891,3 +908,86 @@ def test_a_declaration_of_another_project_cannot_be_loaded(session, adopted):
         load_declaration(
             session, project_id=other.id, declaration_id=declaration.id
         )
+
+
+def test_a_late_delivery_can_wait_end_to_end_from_intake(session, adopted, tmp_path):
+    """The Can wait limb fires for a delta whose Document intake linked (#687).
+
+    Nothing here writes `documents.source_delivery_id`. The link is made by the
+    later-revision intake itself, in the transaction that registers the
+    revision, from the very delivery row that path already refuses to run
+    without. That is the whole point of the ticket: before it, the limb was
+    complete and inert because no ingress path wrote the column.
+
+    The reading is taken twice, and the first time arms the second. Before any
+    coverage is confirmed the change is not "Can wait" — so the fixture is a
+    delta that genuinely would reach this issue, and the second reading is a
+    change of level rather than a level it always had. No instant here comes
+    from a clock: both recorded arrivals are declared, and the boundary itself
+    is compared by append-only identity.
+    """
+
+    _configure(session, adopted)
+    in_scope = _deliver(
+        session, adopted, name="in-scope-ucm", received_at=CUTOFF - timedelta(days=2)
+    )
+
+    revised = [list(row) for row in BASELINE_ROWS]
+    revised[0][HEADINGS.index("Promised For")] = "2026-06-01"
+    staged, envelope = deliver(
+        session,
+        adopted.project,
+        workbook_bytes(tmp_path / "ucm-later.xlsx", revised),
+    )
+    late = session.scalars(
+        select(SourceDelivery).where(
+            SourceDelivery.idempotency_key == envelope.idempotency_key
+        )
+    ).one()
+    # Declared, exactly as `_deliver` declares its own: the watermark rule turns
+    # on this instant, so letting the server clock set it would make the
+    # boundary an accident of when the suite ran.
+    late.received_at = CUTOFF + timedelta(days=1)
+    session.flush()
+
+    capture = capture_later_revision(
+        session,
+        project=adopted.project,
+        staged=staged,
+        envelope=envelope,
+        manifest=adopted.manifest,
+        principal=PRINCIPAL,
+        images_dir=tmp_path / "images",
+    )
+
+    # Intake wrote the link, and it names the delivery this revision arrived on.
+    document = session.get(Document, capture.document_id)
+    assert document.source_delivery_id == late.id
+    assert capture.delta_ids
+
+    def _levels():
+        reading = read_review_items(
+            session, project_id=adopted.project.id, as_of=CUTOFF
+        )
+        return [
+            child.consequence
+            for item in reading.items
+            for child in item.children
+            if child.delta_id in capture.delta_ids
+        ]
+
+    before = _levels()
+    assert before, "the revision produced no readable child to judge"
+    assert all(level.name != CAN_WAIT for level in before), (
+        "with no coverage confirmed this change must still reach the issue, or "
+        f"the fixture proves nothing: {[level.name for level in before]}"
+    )
+
+    reading = _read(session, adopted)
+    assert reading.through_source_delivery_id == in_scope.id
+    declaration = _confirm(session, adopted, reading)
+    assert declaration.through_source_delivery_id < late.id
+
+    after = _levels()
+    assert [level.name for level in after] == [CAN_WAIT] * len(after)
+    assert all(level.reasons == (OUTSIDE_BOUNDARY_SENTENCE,) for level in after)

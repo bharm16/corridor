@@ -559,6 +559,16 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
     registered Document. What is deliberately absent is any inference —
     supersession, rendition equivalence, document dates, registry ids, and
     organizations all stay exactly as unresolved as an upload leaves them.
+
+    The message document carries the delivery it came in on (#687), and only
+    that one: `push_delivery_id` is the ledger row this message's *own* bytes
+    were taken on, and the document registered from `storage_path` is those
+    exact bytes. An attachment is a part of the delivery rather than the
+    delivery, so it is left unlinked and stays its own line in the coverage
+    reading — folding it into the delivery's line would let one attachment
+    that failed to parse hide behind a message that read cleanly. The frozen
+    global-address route (ADR-0059) has no delivery at all and writes no link,
+    which is the same honest unknown a corpus document carries.
     """
 
     if inbound.body_text.strip() and inbound.document_id is None:
@@ -569,6 +579,7 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
             doc_type="email",
             images_dir=settings.corpus_images,
             filename=_message_filename(inbound),
+            source_delivery_id=inbound.push_delivery_id,
         )
         inbound.document_id = body_document.id
     receipts = list(inbound.attachments_json or [])

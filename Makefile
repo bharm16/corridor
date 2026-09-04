@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -150,6 +150,16 @@ extract:
 #   make admission ARGS="load sh99-grand-parkway"
 admission:
 	uv run python -m corridor.admission_cli $(ARGS)
+
+# Fill `documents.source_delivery_id` for Documents registered before every
+# intake path wrote it (#687). Every intake path that holds a delivery now
+# writes the link in the same transaction, so this is only for the history:
+# it links what a retained inbound-message record or a capture receipt proves,
+# and leaves every other document unknown rather than guessing a delivery from
+# a time. Idempotent; omit the slug to sweep every project:
+#   make link-deliveries ARGS="link sh99-grand-parkway"
+link-deliveries:
+	uv run python -m corridor.document_delivery_backfill $(ARGS)
 
 # Explicitly select the Current Production Run; extraction never selects "newest":
 #   make active-run ARGS="<document-id> <extraction-run-id>"
