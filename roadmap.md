@@ -71,8 +71,8 @@ this list without a recorded reason:
 | **Accepted-record boundary** — the database refuses application-role writes to accepted authority | #492, #530, #446 |
 | **Adopted-baseline operating mode** — no legacy path silently replaces an accepted value | #520, #509 |
 | **Adaptive review, packet resolution, and one linear workflow** — the coordinator can review and resolve real volume, and the week's work is one path | #518, #519, #494, #559, #526, #527, #528, #536, #537 |
-| **Accepted-authority follow-up** — chase work derives from accepted decisions, not free text | #425 |
-| **Complete customer release** — the artifact set each project is configured to issue (ADR-0086 as amended by ADR-0091), sealed and authorized as one unit | #495 and #534 done; #596, #597, #529, #533 open |
+| **Accepted-authority follow-up** — chase work derives from accepted decisions, not free text | #425 done; #658 renders it, #652 retains the correspondence that makes silence a fact |
+| **Complete customer release** — the artifact set each project is configured to issue (ADR-0086 as amended by ADR-0091), sealed and authorized as one unit | #495, #534, #596, #597 done; #640 models the configured set, then #529 and #533 |
 | **Live-data activation gates** — real customer data is admitted only behind them | #561, #564, #535 in that order, and the gates #535 owns |
 | **Measurement readiness** — instrumentation exists before the first measured week | #491, #558, #532 |
 
@@ -131,9 +131,15 @@ agent can settle. Everything else on the board is buildable work.
   delivery destination.
 
 **Closed by decision, and no longer open questions:** #503 identity and
-authorization (settled, with #531 carrying the pilot half), #557
+authorization (settled, and #531 has now *implemented* the pilot half), #557
 model-provider processing posture (the approved posture is recorded), and
-#560 the release artifact contract (recorded as ADR-0091).
+#560 the release artifact contract (recorded as ADR-0091, and #640 models it).
+
+**The release chain, in order:** #640 issue profile → #641 consequence levels
+and #529 candidate → #533 authorization → #636 portfolio readiness → finish
+#536 → finish #537 → #532 measurement. That sequence completes the paid
+vertical slice; the one-unreleased-edge window means its migration-bearing
+steps run one at a time.
 
 ## Phase 0 — correct the constitution
 
@@ -239,7 +245,12 @@ earlier.
    ADR-0090 #425 also owns the two superseded action-date alerts and the
    source-backed no-response rule that replaces `STALE`; under ADR-0091 the
    follow-up bundles and chase view are core internal behaviour whether or
-   not the chase list is externally issued.
+   not the chase list is externally issued. **#425 is done**, and shipped with
+   no screen — **#658** renders the bundles in the linear workflow. Its
+   no-response rule is implemented and *unreachable*: Corridor retains no
+   outgoing request or expected-response boundary, which **#652** adds.
+   **#659** adds the missing path to Needs coordination on a focused
+   single-source question.
 9. #564 shadow processing on the partner's captured sources once #561, #489,
    #509, #518, #446, and the partner's ingress and source class exist; it
    feeds #499 with real inputs before authoritative activation. **#606** is
@@ -319,7 +330,9 @@ tables; it neither blocks the pilot nor is measured by it.
    semantically equivalent to the snapshot baseline, **#604** references
    decision identities from audit instead of copying before/after field maps,
    and **#605** stores extractor configuration once by digest and cites
-   Source Segments for evidence. ADR-0089 adds the delivery family that a
+   Source Segments for evidence. **All four have landed and #598 is closed**,
+   its first criterion amended by ADR-0092: a Report Run *retains the reading
+   it published*, so the payload was never a cache to expire. ADR-0089 adds the delivery family that a
    later constraint of the same kind applies to.
 4. Coverage-aware semantic-equivalence gate and reader switch (stages 3, 4).
 5. #458 writer switch, bounded shadow comparison, rollback decision, legacy
@@ -356,8 +369,8 @@ cohort surface.
 - **Accessibility** work on any surface.
 - **Deployment and observability** beyond #491A's pilot minimum.
 - **Backup, restore, and recovery** hardening.
-- **Migration** — all of Phase 4. #512 and #457 are done; #513, #598 with its
-  children #602-#605, and #458 remain.
+- **Migration** — all of Phase 4. #512, #457 and #598 (with its children
+  #602-#605) are done; #513, #458 and #645 remain.
 - **Optional output formats** beyond the artifacts a project is configured to
   issue (ADR-0086 as amended by ADR-0091 keeps participation configurable).
 - **Deeper Record views** behind the Work List (ADR-0085 keeps the full
