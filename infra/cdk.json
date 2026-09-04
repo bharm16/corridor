@@ -1,6 +1,12 @@
 {
   "app": "python3 app.py",
-  "watch": { "exclude": ["README.md", "requirements*.txt", "tests/**"] },
+  "watch": {
+    "exclude": [
+      "README.md",
+      "requirements*.txt",
+      "tests/**"
+    ]
+  },
   "context": {
     "corridor:account": "810100779593",
     "corridor:region": "us-east-2",
@@ -12,6 +18,8 @@
     "@aws-cdk/aws-iam:minimizePolicies": true,
     "@aws-cdk/core:checkSecretUsage": true,
     "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
-    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "corridor:imageTag": "",
+    "corridor:allowInsecureHttp": false
   }
 }

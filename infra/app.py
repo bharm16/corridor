@@ -62,9 +62,12 @@ CorridorApplicationStack(
     artifact_bucket=data.artifact_bucket,
     web_db_secret=data.web_db_secret,
     worker_db_secret=data.worker_db_secret,
-    image_tag=ctx("imageTag", "bootstrap"),
+    image_tag=ctx("imageTag", ""),
     web_desired_count=int(app.node.try_get_context("corridor:webDesiredCount") or 0),
     certificate_arn=ctx("certificateArn", ""),
+    allow_insecure_http=bool(
+        app.node.try_get_context("corridor:allowInsecureHttp") or False
+    ),
 )
 
 for key, value in {

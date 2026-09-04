@@ -43,10 +43,11 @@ from aws_cdk import (
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
-# Verify the exact minor version is still offered before the first deploy:
+# 16.4 is deprecated in RDS; 16.15 is current. Re-check before the first
+# deploy, since no database exists yet and this is the cheapest moment to move:
 #   aws rds describe-db-engine-versions --engine postgres --engine-version 16
 # auto_minor_version_upgrade keeps it current afterwards.
-POSTGRES_VERSION = rds.PostgresEngineVersion.of("16.4", "16")
+POSTGRES_VERSION = rds.PostgresEngineVersion.of("16.15", "16")
 
 
 class CorridorDataStack(Stack):

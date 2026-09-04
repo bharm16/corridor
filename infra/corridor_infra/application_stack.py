@@ -31,6 +31,7 @@ application does not call CloudWatch itself.
 """
 
 from aws_cdk import (
+    Annotations,
     Aws,
     CfnOutput,
     Duration,
@@ -71,6 +72,7 @@ class CorridorApplicationStack(Stack):
         image_tag: str,
         web_desired_count: int,
         certificate_arn: str = "",
+        allow_insecure_http: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -101,6 +103,13 @@ class CorridorApplicationStack(Stack):
         db_admin_secret = database.secret
         assert db_admin_secret is not None, "RDS generated credential is required"
 
+        if not image_tag or image_tag == "bootstrap":
+            raise ValueError(
+                "corridor:imageTag must be an immutable tag -- the commit SHA "
+                "the image was built from. The repository is configured "
+                "IMMUTABLE, and a placeholder like 'bootstrap' would pin every "
+                "deployment to whatever happened to be pushed first."
+            )
         image = ecs.ContainerImage.from_ecr_repository(self.repository, image_tag)
 
         # Only names src/corridor/config.py actually reads. Settings has no
@@ -197,6 +206,21 @@ class CorridorApplicationStack(Stack):
                 "CORRIDOR_DB_ADMIN_PASSWORD": ecs.Secret.from_secrets_manager(
                     db_admin_secret, "password"
                 ),
+                # The migration *creates* the corridor_web and corridor_worker
+                # logins, and the baseline reads exactly these two variables to
+                # set their passwords (baseline_versions/a1c4e7b0d2f3, lines
+                # 59-60). Without them it falls back to predictable role-name
+                # passwords, which would not match the randomized secrets the
+                # web and batch tasks are given -- so neither could
+                # authenticate after a successful migration. This widens the
+                # migration task only; web and batch still cannot read each
+                # other's login or the admin credential.
+                "CORRIDOR_WEB_DB_PASSWORD": ecs.Secret.from_secrets_manager(
+                    web_db_secret, "password"
+                ),
+                "CORRIDOR_WORKER_DB_PASSWORD": ecs.Secret.from_secrets_manager(
+                    worker_db_secret, "password"
+                ),
             },
             command=["alembic", "upgrade", "head"],
         )
@@ -235,12 +259,30 @@ class CorridorApplicationStack(Stack):
             targets=[self.web_service],
             deregistration_delay=Duration.seconds(30),
             health_check=elbv2.HealthCheck(
-                path="/health",
+                # /readyz, not /health: /health is the aggregate operational
+                # answer and returns 503 on a stale worker heartbeat. This
+                # environment runs no resident worker, so /health would
+                # deregister a web task that is serving perfectly well.
+                path="/readyz",
                 healthy_http_codes="200",
                 interval=Duration.seconds(30),
                 timeout=Duration.seconds(5),
             ),
         )
+
+        # Fail closed. Absence of a certificate previously selected plaintext
+        # silently, which is the wrong default for an externally reachable
+        # environment: the quiet path should be the safe one, and choosing
+        # plaintext should cost a deliberate flag.
+        if not certificate_arn and not allow_insecure_http:
+            raise ValueError(
+                "corridor:certificateArn is required. Issue an ACM certificate "
+                "and pass it through the protected GitHub environment. To run "
+                "an internal, disposable HTTP-only stack instead, set "
+                "corridor:allowInsecureHttp=true explicitly -- it is disabled "
+                "by default and must not be used for the nonproduction "
+                "environment."
+            )
 
         if certificate_arn:
             self.alb.add_listener(
@@ -254,13 +296,18 @@ class CorridorApplicationStack(Stack):
                 default_target_groups=[target_group],
             )
             self.alb.add_redirect(
-                source_port=80, target_port=443, target_protocol="HTTPS"
+                source_port=80,
+                target_port=443,
+                target_protocol=elbv2.ApplicationProtocol.HTTPS,
             )
         else:
-            # No ACM certificate has been issued yet. Synthesising an HTTPS
-            # listener without one fails, so this degrades to HTTP and is
-            # recorded as a deploy-time prerequisite rather than silently
-            # shipping an unencrypted endpoint as if it were intended.
+            # Reached only when allow_insecure_http was set explicitly; the
+            # guard above rejects the default path.
+            Annotations.of(self).add_warning(
+                "corridor:allowInsecureHttp is set. This load balancer serves "
+                "plaintext HTTP and must not be used for the nonproduction "
+                "environment or any externally reachable demo."
+            )
             self.alb.add_listener(
                 "HttpListener",
                 port=80,

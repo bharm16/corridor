@@ -106,10 +106,13 @@ class CorridorAccountFoundationStack(Stack):
         self.github_role = iam.Role(
             self,
             "GitHubDeployRole",
-            role_name="corridor-nonprod-deploy",
+            role_name="corridor-nonprod-cdk-deploy",
             description=(
-                "GitHub Actions entry identity. Assumes the CDK bootstrap "
-                "roles; holds no direct resource authority of its own."
+                "GitHub Actions CDK entry identity. Assumes the CDK bootstrap "
+                "roles; holds no direct ECS, RDS, S3 or IAM authority of its "
+                "own. Named for CDK so it is not later mistaken for a direct "
+                "application-release role -- if a non-CDK image/ECS release "
+                "workflow is ever added, it gets its own role."
             ),
             assumed_by=iam.WebIdentityPrincipal(
                 oidc_provider.open_id_connect_provider_arn,

@@ -281,6 +281,35 @@ def runtime_report(
     )
 
 
+def serving_report(
+    session: Session, *, store: ObjectStore, role: str
+) -> RuntimeReport:
+    """Whether this process can serve a request right now.
+
+    A load balancer asks a narrower question than an operator does. The worker
+    heartbeat is a reading about the fleet's cadence, not about whether this
+    web process can answer: judging readiness on it would deregister a web task
+    that is serving perfectly well because a batch schedule went unattended,
+    taking the coordinator UI down for a reason the UI has nothing to do with.
+    That is not hypothetical here -- the deployed environment runs no resident
+    worker, so an enabled schedule with nothing to claim it goes stale by
+    design.
+
+    `runtime_report` keeps the aggregate answer, worker heartbeat included, and
+    remains what /health serves and what alerting reads.
+    """
+
+    return RuntimeReport(
+        role=role,
+        checks=(
+            ComponentHealth("application", True, "running"),
+            check_database(session),
+            check_object_storage(store),
+        ),
+        signals=(),
+    )
+
+
 def _latest_worker_act(session: Session) -> datetime | None:
     """The newest thing a worker durably did: hold a claim, or retain a receipt."""
 

@@ -69,7 +69,7 @@ from corridor.candidate_statement_facts import (
 from corridor.db import WebSession as SessionFactory
 from corridor.db import WorkerSession as MachineSessionFactory
 from corridor.object_storage import ObjectStore, content_store
-from corridor.operational_health import ComponentHealth, runtime_report
+from corridor.operational_health import ComponentHealth, runtime_report, serving_report
 from corridor.telemetry import (
     ROLE_WEB,
     RequestCorrelationMiddleware,
@@ -668,6 +668,35 @@ def get_content_store() -> ObjectStore:
     """The deployment's object store, as a seam a health probe can substitute."""
 
     return content_store()
+
+
+@app.get("/livez")
+def livez() -> Response:
+    """Answer that this process is running, and read nothing to say so.
+
+    Separate from /readyz because a liveness probe that touches the database
+    turns one slow dependency into a restart loop.
+    """
+
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
+@app.get("/readyz")
+def readyz(
+    session: Session = Depends(get_session),
+    store: ObjectStore = Depends(get_content_store),
+) -> Response:
+    """Report whether this web process can serve, for the load balancer.
+
+    Deliberately excludes the worker heartbeat: see
+    `corridor.operational_health.serving_report`. Unauthenticated on the same
+    terms as /health -- component names, bounded reason codes, nothing else.
+    """
+
+    report = serving_report(session, store=store, role=ROLE_WEB)
+    return JSONResponse(
+        report.as_dict(), status_code=200 if report.healthy else 503
+    )
 
 
 @app.get("/health")

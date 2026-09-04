@@ -19,6 +19,43 @@ from corridor_infra.network_stack import CorridorNetworkStack
 
 ENV = cdk.Environment(account="111111111111", region="us-east-2")
 
+# Syntactically valid, deliberately not a real certificate. Deployment supplies
+# the real ARN through the protected GitHub environment.
+DUMMY_CERT = (
+    "arn:aws:acm:us-east-2:111111111111:certificate/"
+    "00000000-0000-0000-0000-000000000000"
+)
+
+
+def _build(**overrides):
+    """Build the four stacks, so a test can vary one input and assert on it."""
+    app = cdk.App()
+    foundation = CorridorAccountFoundationStack(
+        app, "F", env=ENV,
+        github_repo="bharm16/corridor", github_environment="nonproduction",
+    )
+    network = CorridorNetworkStack(app, "N", env=ENV)
+    data = CorridorDataStack(
+        app, "D", env=ENV, vpc=network.vpc, database_security_group=network.db_sg
+    )
+    kwargs = dict(
+        vpc=network.vpc,
+        alb_security_group=network.alb_sg,
+        web_security_group=network.web_sg,
+        batch_security_group=network.batch_sg,
+        migration_security_group=network.migration_sg,
+        database=data.database,
+        artifact_bucket=data.artifact_bucket,
+        web_db_secret=data.web_db_secret,
+        worker_db_secret=data.worker_db_secret,
+        image_tag="0123456789abcdef0123456789abcdef01234567",
+        web_desired_count=0,
+        certificate_arn=DUMMY_CERT,
+    )
+    kwargs.update(overrides)
+    application = CorridorApplicationStack(app, "A", env=ENV, **kwargs)
+    return foundation, network, data, application
+
 
 @pytest.fixture(scope="module")
 def stacks():
@@ -47,8 +84,9 @@ def stacks():
         artifact_bucket=data.artifact_bucket,
         web_db_secret=data.web_db_secret,
         worker_db_secret=data.worker_db_secret,
-        image_tag="test",
+        image_tag="0123456789abcdef0123456789abcdef01234567",
         web_desired_count=0,
+        certificate_arn=DUMMY_CERT,
     )
     return {
         "foundation": Template.from_stack(foundation),
@@ -250,13 +288,6 @@ def test_single_ecr_repository(stacks):
     )
 
 
-def test_health_check_uses_the_application_route_and_port(stacks):
-    stacks["application"].has_resource_properties(
-        "AWS::ElasticLoadBalancingV2::TargetGroup",
-        {"HealthCheckPath": "/health", "Port": 8412},
-    )
-
-
 def test_log_retention_is_bounded(stacks):
     for group in stacks["application"].find_resources("AWS::Logs::LogGroup").values():
         assert group["Properties"]["RetentionInDays"] == 14
@@ -321,3 +352,119 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
                     f"{logical_id} sets {name}, which config.py does not read "
                     f"and the entrypoint does not consume"
                 )
+
+
+# --- fail-closed TLS ---------------------------------------------------
+def test_no_certificate_and_no_explicit_opt_in_is_refused():
+    """Absence of a certificate must not quietly select plaintext."""
+    with pytest.raises(ValueError, match="certificateArn is required"):
+        _build(certificate_arn="")
+
+
+def test_insecure_http_requires_an_explicit_flag():
+    _, _, _, application = _build(certificate_arn="", allow_insecure_http=True)
+    template = Template.from_stack(application)
+    template.has_resource_properties(
+        "AWS::ElasticLoadBalancingV2::Listener", {"Port": 80, "Protocol": "HTTP"}
+    )
+
+
+def test_the_normal_path_is_https_with_a_redirect(stacks):
+    template = stacks["application"]
+    template.has_resource_properties(
+        "AWS::ElasticLoadBalancingV2::Listener",
+        {"Port": 443, "Protocol": "HTTPS"},
+    )
+    listeners = template.find_resources("AWS::ElasticLoadBalancingV2::Listener")
+    redirects = [
+        listener
+        for listener in listeners.values()
+        if any(
+            action.get("Type") == "redirect"
+            for action in listener["Properties"].get("DefaultActions", [])
+        )
+    ]
+    assert redirects, "port 80 does not redirect to HTTPS"
+
+
+# --- immutable image tag ----------------------------------------------
+def test_an_empty_image_tag_is_refused():
+    with pytest.raises(ValueError, match="immutable tag"):
+        _build(image_tag="")
+
+
+def test_the_bootstrap_placeholder_tag_is_refused():
+    with pytest.raises(ValueError, match="immutable tag"):
+        _build(image_tag="bootstrap")
+
+
+# --- readiness ---------------------------------------------------------
+def test_the_load_balancer_checks_readyz_not_health(stacks):
+    """/health returns 503 on a stale worker heartbeat and this environment
+    runs no resident worker, so checking it would deregister a healthy task."""
+    stacks["application"].has_resource_properties(
+        "AWS::ElasticLoadBalancingV2::TargetGroup",
+        {"HealthCheckPath": "/readyz", "Port": 8412},
+    )
+
+
+# --- migration credentials --------------------------------------------
+def test_migration_receives_both_runtime_passwords(stacks):
+    """The baseline migration creates the corridor_web and corridor_worker
+    logins from CORRIDOR_WEB_DB_PASSWORD and CORRIDOR_WORKER_DB_PASSWORD. If it
+    does not get them it invents predictable ones, and neither runtime task can
+    then authenticate with its randomized secret."""
+    template = stacks["application"].to_json()["Resources"]
+    migration = [
+        resource
+        for logical_id, resource in template.items()
+        if resource["Type"] == "AWS::ECS::TaskDefinition" and "Migration" in logical_id
+    ]
+    assert len(migration) == 1
+    names = {
+        entry["Name"]
+        for container in migration[0]["Properties"]["ContainerDefinitions"]
+        for entry in container.get("Secrets", [])
+    }
+    assert names == {
+        "CORRIDOR_DB_ADMIN_USERNAME",
+        "CORRIDOR_DB_ADMIN_PASSWORD",
+        "CORRIDOR_WEB_DB_PASSWORD",
+        "CORRIDOR_WORKER_DB_PASSWORD",
+    }
+
+
+def test_web_and_batch_still_receive_only_their_own_login(stacks):
+    template = stacks["application"].to_json()["Resources"]
+    expected = {
+        "Web": {"CORRIDOR_WEB_DB_PASSWORD"},
+        "Batch": {"CORRIDOR_WORKER_DB_PASSWORD"},
+    }
+    for role, wanted in expected.items():
+        task = [
+            resource
+            for logical_id, resource in template.items()
+            if resource["Type"] == "AWS::ECS::TaskDefinition"
+            and logical_id.startswith(role)
+        ]
+        assert len(task) == 1, role
+        names = {
+            entry["Name"]
+            for container in task[0]["Properties"]["ContainerDefinitions"]
+            for entry in container.get("Secrets", [])
+        }
+        assert names == wanted, f"{role} sees {names}"
+
+
+# --- identity and engine ----------------------------------------------
+def test_the_cdk_entry_role_is_named_for_cdk(stacks):
+    stacks["foundation"].has_resource_properties(
+        "AWS::IAM::Role", {"RoleName": "corridor-nonprod-cdk-deploy"}
+    )
+
+
+def test_postgres_is_a_supported_minor_version(stacks):
+    stacks["data"].has_resource_properties(
+        "AWS::RDS::DBInstance",
+        {"Engine": "postgres", "EngineVersion": "16.15"},
+    )
