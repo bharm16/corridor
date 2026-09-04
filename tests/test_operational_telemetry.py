@@ -596,3 +596,113 @@ def test_the_health_endpoint_names_no_project_and_no_credential(session, tmp_pat
 
     assert project.slug not in body
     assert "corridor:corridor" not in body
+
+
+def test_livez_answers_without_reading_the_database_or_the_store(session):
+    """A liveness probe that touches a dependency turns one slow query into a
+    restart loop, so /livez is served with no overrides bound at all."""
+
+    client = TestClient(app)
+
+    response = client.get("/livez")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
+def test_readyz_reports_only_the_components_that_decide_serving(session, tmp_path):
+    now = datetime.now(timezone.utc)
+    project = _project(session, "telemetry-ready")
+    _hourly_schedule(session, project, now=now)
+    client = _health_client(session, LocalFilesystemStore(tmp_path))
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["role"] == telemetry.ROLE_WEB
+    assert [check["component"] for check in body["checks"]] == [
+        "application",
+        "database",
+        "object_storage",
+    ]
+    assert body["signals"] == []
+
+
+def test_a_stale_worker_heartbeat_degrades_health_but_not_readiness(
+    session, tmp_path
+):
+    """The deployed environment runs no resident worker, so an enabled schedule
+    goes stale by design. If readiness read it, the load balancer would
+    deregister a web task that is serving correctly and take the coordinator UI
+    down because a batch job did not run."""
+
+    stale_since = datetime.now(timezone.utc) - timedelta(hours=4)
+    project = _project(session, "telemetry-stale")
+    _hourly_schedule(session, project, now=stale_since)
+    client = _health_client(session, LocalFilesystemStore(tmp_path))
+
+    health_response = client.get("/health")
+    ready_response = client.get("/readyz")
+
+    assert health_response.status_code == 503
+    assert [
+        check for check in health_response.json()["checks"] if not check["healthy"]
+    ] == [{"component": "worker_heartbeat", "healthy": False, "detail": "stale"}]
+
+    assert ready_response.status_code == 200
+    assert ready_response.json()["status"] == "ok"
+    assert "worker_heartbeat" not in {
+        check["component"] for check in ready_response.json()["checks"]
+    }
+
+
+def test_readyz_answers_degraded_when_the_store_is_unreachable(session, tmp_path):
+    client = _health_client(session, LocalFilesystemStore(tmp_path / "missing"))
+
+    response = client.get("/readyz")
+
+    assert response.status_code == 503
+    unhealthy = [check for check in response.json()["checks"] if not check["healthy"]]
+    assert unhealthy == [
+        {"component": "object_storage", "healthy": False, "detail": "unreachable"}
+    ]
+
+
+def test_readyz_names_no_project_and_no_credential(session, tmp_path):
+    now = datetime.now(timezone.utc)
+    project = _project(session, "telemetry-ready-quiet")
+    _hourly_schedule(session, project, now=now)
+    client = _health_client(session, LocalFilesystemStore(tmp_path))
+
+    body = client.get("/readyz").text
+
+    assert project.slug not in body
+    assert "corridor:corridor" not in body
+
+
+def test_livez_carries_no_route_dependencies_at_all():
+    """/livez is exempt from the router-level boundary dependency only because
+    it is declared before that dependency is appended, and `add_api_route`
+    snapshots dependencies at decoration time. Moving the handler below that
+    line would silently make the liveness probe open a database session, which
+    is the restart loop it exists to avoid -- and the behavioural test would
+    still pass wherever the database happens to be reachable.
+
+    So this asserts the structure rather than the behaviour.
+    """
+    from corridor.web.app import app
+
+    livez = [route for route in app.routes if getattr(route, "path", None) == "/livez"]
+    assert len(livez) == 1
+    assert livez[0].dependencies == [], (
+        "/livez picked up a route dependency; it must stay declared above "
+        "app.router.dependencies.append(...)"
+    )
+
+    readyz = [route for route in app.routes if getattr(route, "path", None) == "/readyz"]
+    assert len(readyz) == 1
+    assert readyz[0].dependencies, (
+        "/readyz should carry the boundary dependency like every other route"
+    )

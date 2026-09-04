@@ -15,6 +15,7 @@ as unavailable rather than faked.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import replace
 from hashlib import sha256
 import json
@@ -24,7 +25,17 @@ from pathlib import Path
 from typing import Any, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
-from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    Depends,
+    FastAPI,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    UploadFile,
+)
 from fastapi.responses import (
     FileResponse,
     HTMLResponse,
@@ -69,7 +80,8 @@ from corridor.candidate_statement_facts import (
 from corridor.db import WebSession as SessionFactory
 from corridor.db import WorkerSession as MachineSessionFactory
 from corridor.object_storage import ObjectStore, content_store
-from corridor.operational_health import ComponentHealth, runtime_report
+from corridor.operational_health import ComponentHealth, runtime_report, serving_report
+from corridor import telemetry
 from corridor.telemetry import (
     ROLE_WEB,
     RequestCorrelationMiddleware,
@@ -643,6 +655,25 @@ def refuse_routes_the_boundary_cannot_serve(
         raise HTTPException(refusal.status_code, refusal.detail)
 
 
+@app.get("/livez")
+def livez() -> Response:
+    """Answer that this process is running, and read nothing to say so.
+
+    Declared *above* the router-level boundary dependency on purpose. That
+    dependency resolves `get_web_capability`, which resolves `get_session`, so
+    a route declared after it opens a database connection before its handler
+    runs -- and `add_api_route` snapshots the router's dependencies at
+    decoration time, so position is what exempts this one.
+
+    A liveness probe that touches the database turns one slow dependency into a
+    restart loop: the probe times out, the orchestrator kills a process that
+    was fine, and the replacement meets the same slow database. /readyz is
+    where the dependencies are allowed to matter.
+    """
+
+    return JSONResponse({"status": "ok"}, status_code=200)
+
+
 # Registered on the router before the first route is declared, because
 # `add_api_route` snapshots the router's dependencies at decoration time.
 app.router.dependencies.append(Depends(refuse_routes_the_boundary_cannot_serve))
@@ -668,6 +699,24 @@ def get_content_store() -> ObjectStore:
     """The deployment's object store, as a seam a health probe can substitute."""
 
     return content_store()
+
+
+@app.get("/readyz")
+def readyz(
+    session: Session = Depends(get_session),
+    store: ObjectStore = Depends(get_content_store),
+) -> Response:
+    """Report whether this web process can serve, for the load balancer.
+
+    Deliberately excludes the worker heartbeat: see
+    `corridor.operational_health.serving_report`. Unauthenticated on the same
+    terms as /health -- component names, bounded reason codes, nothing else.
+    """
+
+    report = serving_report(session, store=store, role=ROLE_WEB)
+    return JSONResponse(
+        report.as_dict(), status_code=200 if report.healthy else 503
+    )
 
 
 @app.get("/health")
@@ -2572,9 +2621,48 @@ def sign_in_form(request: Request, next: str = "", session: Session = Depends(ge
     )
 
 
+def _deliver_sign_in_link(
+    sender: auth.EmailSender, email: str, link: str, raw_token: str
+) -> None:
+    """Send the link, and let no outcome reach the caller.
+
+    Runs after the response has been returned. A delivery failure is a real
+    operational event and is logged as one, with the recipient and the bounded
+    reason -- never the link, which is a live credential.
+
+    On failure the token is retired. It reached nobody, and `has_live_token`
+    would otherwise make every retry inside its 15-minute lifetime coalesce
+    onto the dead one: the caller keeps seeing the same success page while no
+    link is ever issued or sent. Its own session, because the request's
+    transaction committed before this ran.
+    """
+
+    try:
+        sender.send_sign_in_link(email=email, link=link)
+        return
+    except auth.EmailDeliveryUnavailable as error:
+        reason = str(error)
+
+    retired = False
+    try:
+        with SessionFactory() as session:
+            retired = access.retire_undelivered_sign_in_token(session, raw_token)
+            session.commit()
+    except Exception:  # noqa: BLE001 - the response is already sent
+        retired = False
+
+    telemetry.log_event(
+        logging.getLogger("corridor.auth"),
+        "sign_in_link_delivery_failed",
+        reason=reason,
+        token_retired=retired,
+    )
+
+
 @app.post("/sign-in/request", response_class=HTMLResponse)
 def request_sign_in(
     request: Request,
+    background: BackgroundTasks,
     email: str = Form(...),
     next: str = Form(""),
     session: Session = Depends(get_session),
@@ -2614,12 +2702,21 @@ def request_sign_in(
             issued = access.issue_sign_in_token(
                 session, normalized, redirect_path=_safe_next(next)
             )
-            link = (
-                str(request.base_url).rstrip("/")
-                + "/sign-in/consume?token="
-                + quote(issued.raw_token)
+            # Never request.base_url: that is the caller's own Host header,
+            # so a forged host would send the real user a live token pointing
+            # at the attacker. The origin comes from configuration, and only a
+            # local clone is allowed to fall back to the request.
+            origin = auth.PUBLIC_ORIGIN or str(request.base_url).rstrip("/")
+            link = origin + "/sign-in/consume?token=" + quote(issued.raw_token)
+            # Delivered after the response, not during it. A synchronous send
+            # happens only for an enrolled address, so its latency -- and a
+            # provider failure, which would otherwise surface as a 500 -- would
+            # tell an unauthenticated caller which addresses are enrolled. That
+            # is exactly what this endpoint's identical answer exists to
+            # prevent, and it would undo it through the side door.
+            background.add_task(
+                _deliver_sign_in_link, sender, normalized, link, issued.raw_token
             )
-            sender.send_sign_in_link(email=normalized, link=link)
     session.commit()
     return TEMPLATES.TemplateResponse(
         request,

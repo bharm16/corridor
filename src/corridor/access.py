@@ -457,6 +457,37 @@ def issue_sign_in_token(
     )
 
 
+def retire_undelivered_sign_in_token(
+    session: Session, raw_token: str, *, now: datetime | None = None
+) -> bool:
+    """Retire a token whose link never reached anyone. True if one was retired.
+
+    `has_live_token` coalesces duplicate requests, which is right while a link
+    is in someone's inbox and wrong when delivery failed: every retry inside
+    the 15-minute window would find the dead token, issue nothing, and leave an
+    enrolled person unable to sign in until it expired. The raw token exists
+    nowhere else once the request is over, so it cannot be resent.
+
+    Marked consumed rather than deleted, using the same single-use guard, so
+    the row still records that a token existed and was spent. Retiring one that
+    was in fact delivered costs the recipient one more request; leaving a dead
+    one in place costs them fifteen minutes.
+    """
+
+    moment = _now(now)
+    retired = session.execute(
+        update(SignInToken)
+        .where(
+            SignInToken.token_sha256 == _sha256_hex(raw_token),
+            SignInToken.consumed_at.is_(None),
+            SignInToken.expires_at > moment,
+        )
+        .values(consumed_at=moment)
+        .returning(SignInToken.id)
+    ).first()
+    return retired is not None
+
+
 def consume_sign_in_token(
     session: Session, raw_token: str, *, now: datetime | None = None
 ) -> ConsumedSignInToken | None:

@@ -1,0 +1,196 @@
+# Manual infrastructure deployment. Nothing here runs on a pull request.
+#
+# The pull-request half of this work lives in `release-gate.yml`: the CDK
+# assertions and strict synth ride in its `check` job, because every gate job
+# that installs packages is a concurrent download and eleven is this account's
+# measured ceiling (#548, #595). The image build and container smoke run in
+# `full-suite.yml`. This file therefore has no `pull_request` trigger at all
+# and can never leave a required check pending (#697).
+#
+# `diff` and `deploy` are separate manual dispatches, not two steps of one
+# approved job. An environment approval granted before a job produces its own
+# diff is an approval of nothing: you approve, then the job tells you what it
+# was going to do. Run `diff`, read it, then dispatch `deploy`.
+#
+# In every job the whole toolchain is installed, verified and synthesised
+# *before* `configure-aws-credentials`. Nothing resolves or installs a
+# dependency once a role that can deploy stacks is active.
+#
+# Actions are pinned to commit SHAs. A tag is mutable, so `@v4` is a promise
+# from someone else about what runs with access to this account.
+name: infra-deploy
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: What to do
+        required: true
+        type: choice
+        options: [diff, deploy]
+      stack:
+        description: Stack to act on
+        required: true
+        type: choice
+        options:
+          # CorridorAccountFoundation is deliberately absent. It creates the
+          # OIDC provider and the role this workflow assumes, so it is
+          # deployed locally, once, under the MFA-protected bootstrap
+          # identity. A workflow cannot bootstrap its own credential.
+          - CorridorNetwork
+          - CorridorData
+          - CorridorApplication
+      image_tag:
+        description: Immutable image tag (commit SHA) for CorridorApplication
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+env:
+  AWS_REGION: us-east-2
+  AWS_ACCOUNT: "810100779593"
+
+# One mutation of this environment at a time, shared with app-release.yml.
+concurrency:
+  group: corridor-nonproduction-mutation
+  cancel-in-progress: false
+
+jobs:
+  diff:
+    # main only, like deploy. A dispatch runs the *selected ref's* YAML, and
+    # this job assumes corridor-nonprod-cdk-deploy -- which can assume the CDK
+    # deploy bootstrap role. A branch could therefore call deployment APIs
+    # directly instead of the advertised `cdk diff`, so "read-only" describes
+    # the command, not the credential.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.action == 'diff'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      STACK: ${{ inputs.stack }}
+      IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+      CERTIFICATE_ARN: ${{ vars.CORRIDOR_CERTIFICATE_ARN }}
+      PUBLIC_HOSTNAME: ${{ vars.CORRIDOR_PUBLIC_HOSTNAME }}
+      SIGN_IN_SENDER: ${{ vars.CORRIDOR_SIGN_IN_SENDER }}
+    # Bound to the environment because the role's trust condition requires it.
+    # The subject is `repo:...:environment:nonproduction`, and a job with no
+    # environment presents a ref-scoped subject instead, so AWS would refuse
+    # the assumption outright.
+    environment: nonproduction
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: "22" }
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
+        with: { version: "0.10.3" }
+      - name: Validate the deployment configuration
+        run: bash .github/scripts/validate-deployment-config.sh
+      - name: Install the locked toolchain and synthesise
+        working-directory: infra
+        run: |
+          uv sync --frozen
+          npm ci
+          uv run python -m pytest tests -q
+          export PATH="$PWD/.venv/bin:$PATH"
+          ./node_modules/.bin/cdk synth --strict --quiet \
+            --context "corridor:certificateArn=$CERTIFICATE_ARN" \
+            --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
+            --context "corridor:signInSender=$SIGN_IN_SENDER" \
+            --context "corridor:imageTag=$IMAGE_TAG"
+      # --- credentials from here on; nothing installs or resolves ---------
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::810100779593:role/corridor/nonproduction/corridor-nonprod-cdk-deploy
+          aws-region: us-east-2
+      - name: Diff
+        working-directory: infra
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          ./node_modules/.bin/cdk diff "$STACK" \
+            --context "corridor:certificateArn=$CERTIFICATE_ARN" \
+            --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
+            --context "corridor:signInSender=$SIGN_IN_SENDER" \
+            --context "corridor:imageTag=$IMAGE_TAG"
+
+  deploy:
+    # main only, decided before the job starts rather than in its first shell
+    # step: failing after the environment gate has already been consumed wastes
+    # an approval and reads like a deployment that was attempted.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.action == 'deploy'
+      && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    env:
+      STACK: ${{ inputs.stack }}
+      IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
+      CERTIFICATE_ARN: ${{ vars.CORRIDOR_CERTIFICATE_ARN }}
+      PUBLIC_HOSTNAME: ${{ vars.CORRIDOR_PUBLIC_HOSTNAME }}
+      SIGN_IN_SENDER: ${{ vars.CORRIDOR_SIGN_IN_SENDER }}
+    environment: nonproduction
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with: { python-version: "3.12" }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with: { node-version: "22" }
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
+        with: { version: "0.10.3" }
+      - name: Validate the deployment configuration
+        run: bash .github/scripts/validate-deployment-config.sh
+      - name: Install the locked toolchain and synthesise
+        working-directory: infra
+        run: |
+          uv sync --frozen
+          npm ci
+          uv run python -m pytest tests -q
+          export PATH="$PWD/.venv/bin:$PATH"
+          ./node_modules/.bin/cdk synth --strict --quiet \
+            --context "corridor:certificateArn=$CERTIFICATE_ARN" \
+            --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
+            --context "corridor:signInSender=$SIGN_IN_SENDER" \
+            --context "corridor:imageTag=$IMAGE_TAG"
+      # --- credentials from here on; nothing installs or resolves ---------
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::810100779593:role/corridor/nonproduction/corridor-nonprod-cdk-deploy
+          aws-region: us-east-2
+      - name: Deploy
+        working-directory: infra
+        run: |
+          export PATH="$PWD/.venv/bin:$PATH"
+          ./node_modules/.bin/cdk deploy "$STACK" \
+            --context "corridor:certificateArn=$CERTIFICATE_ARN" \
+            --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
+            --context "corridor:signInSender=$SIGN_IN_SENDER" \
+            --context "corridor:imageTag=$IMAGE_TAG" \
+            --require-approval never \
+            --outputs-file outputs.json
+      - name: Record what was deployed
+        working-directory: infra
+        env:
+          COMMIT_SHA: ${{ github.sha }}
+        run: |
+          {
+            echo "### Deployed \`$STACK\`"
+            echo
+            echo "- commit: \`$COMMIT_SHA\`"
+            echo "- image tag: \`$IMAGE_TAG\`"
+            echo "- hostname: \`$PUBLIC_HOSTNAME\`"
+            echo "- region: \`us-east-2\`"
+            echo
+            echo '```json'
+            cat outputs.json
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

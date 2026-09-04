@@ -1,0 +1,347 @@
+# Application release: push a tested image, migrate, then serve it.
+#
+# Separate from infra-nonproduction.yml because it is separate work with a
+# separate identity. This workflow never deploys a stack; it registers new task
+# definition revisions and moves resources CloudFormation already created.
+#
+# Pushing a tag to ECR does not change an existing task definition, so pushing
+# and then running the stack's task definition would run the *previous* image
+# while reporting success. Every release therefore registers new revisions bound
+# to the image digest and runs those.
+#
+# The web service is drained before the migration. Leaving it up would let the
+# old image keep serving while the migration changes the schema underneath it.
+# That makes this a maintenance-window release, which is the right trade for a
+# synthetic environment with no availability requirement.
+#
+# The locked Python environment is built *before* AWS credentials exist. An
+# unpinned install afterwards would hand unreviewed bytes a credential that can
+# push images, register task definitions and run the migration.
+name: app-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full 40-character commit SHA on main to release
+        required: true
+        type: string
+      web_desired_count:
+        description: Web tasks to run after a successful migration
+        required: true
+        default: "0"
+        type: choice
+        options: ["0", "1"]
+
+permissions:
+  contents: read
+
+# Shared with infra-nonproduction.yml: every mutation of this environment
+# queues behind every other.
+concurrency:
+  group: corridor-nonproduction-mutation
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  CLUSTER: corridor-nonprod
+  COMMIT_SHA: ${{ inputs.commit_sha }}
+  WEB_DESIRED_COUNT: ${{ inputs.web_desired_count }}
+
+jobs:
+  release:
+    # main only. Validating that `commit_sha` is on main proves the *image*
+    # is reviewed; it says nothing about this workflow file, which comes from
+    # whichever ref the dispatch selected. Unmerged YAML could add steps after
+    # the credential and use the role's ECR, ECS and PassRole authority.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: nonproduction
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Require a full commit SHA
+        run: |
+          if ! printf '%s' "$COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::commit_sha must be a full 40-character SHA"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Require that the commit is on main
+        run: |
+          git fetch --quiet origin main
+          git merge-base --is-ancestor "$COMMIT_SHA" origin/main \
+            || { echo "::error::$COMMIT_SHA is not an ancestor of origin/main"; exit 1; }
+
+      # --- everything below this line runs with no AWS credentials --------
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
+        with:
+          version: "0.10.3"
+
+      - name: Build the locked environment before any credential exists
+        run: |
+          uv sync --locked
+          uv run python -c "import boto3; print('boto3', boto3.__version__)"
+
+      - name: Validate the release helper against its own tests
+        run: uv run pytest tests/test_register_ecs_release_task_definitions.py -q
+
+      # --- credentials from here on ---------------------------------------
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::810100779593:role/corridor/nonproduction/corridor-nonprod-app-release
+          aws-region: us-east-2
+
+      - name: Resolve the stack outputs this release needs
+        run: |
+          aws cloudformation describe-stacks --stack-name CorridorApplication \
+            --query 'Stacks[0].Outputs' --output json > outputs.json \
+            || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          outputs = {o["OutputKey"]: o["OutputValue"] for o in json.load(open("outputs.json"))}
+          wanted = {
+              "RepositoryUri": "REPOSITORY_URI",
+              "WebServiceName": "WEB_SERVICE",
+              "TaskSubnetIds": "TASK_SUBNETS",
+              "MigrationSecurityGroupId": "MIGRATION_SG",
+              "MigrationTaskDefinitionArn": "BASE_MIGRATION_TD",
+              "BatchTaskDefinitionArn": "BASE_BATCH_TD",
+              "WebTaskDefinitionArn": "BASE_WEB_TD",
+              "ApplicationUrl": "APPLICATION_URL",
+          }
+          for key, name in wanted.items():
+              value = outputs.get(key)
+              if not value or value == "not-configured":
+                  raise SystemExit(f"stack output {key} is missing or unset")
+              print(f"{name}={value}")
+          PY
+
+      # A retry of a failed release re-runs the same commit. The repository is
+      # tag-immutable, so pushing again is rejected before the workflow reaches
+      # recovery. Reuse the existing image, but only after proving it is this
+      # commit's image and not something else wearing the tag.
+      - name: Publish the image, or adopt the one already published
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
+
+          EXISTING=$(aws ecr describe-images --repository-name corridor \
+            --image-ids "imageTag=$COMMIT_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
+            echo "tag $COMMIT_SHA already published as $EXISTING; verifying identity"
+            docker pull --quiet "$REPOSITORY_URI@$EXISTING"
+            REVISION=$(docker inspect --format \
+              '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$REPOSITORY_URI@$EXISTING")
+            if [ "$REVISION" != "$COMMIT_SHA" ]; then
+              echo "::error::$EXISTING is tagged $COMMIT_SHA but was built from '$REVISION'"
+              exit 1
+            fi
+            echo "IMAGE_DIGEST=$EXISTING" >> "$GITHUB_ENV"
+            echo "adopted the existing image"
+            exit 0
+          fi
+
+          docker build --build-arg "GIT_REVISION=$COMMIT_SHA" \
+            -t "$REPOSITORY_URI:$COMMIT_SHA" .
+          docker push "$REPOSITORY_URI:$COMMIT_SHA"
+          DIGEST=$(aws ecr describe-images --repository-name corridor \
+            --image-ids "imageTag=$COMMIT_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          case "$DIGEST" in
+            sha256:*) ;;
+            *) echo "::error::could not resolve a digest for $COMMIT_SHA"; exit 1 ;;
+          esac
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+
+      - name: Register task definition revisions bound to that digest
+        run: |
+          uv run python scripts/register_ecs_release_task_definitions.py \
+            --repository-uri "$REPOSITORY_URI" \
+            --digest "$IMAGE_DIGEST" \
+            --commit-sha "$COMMIT_SHA" \
+            --web-task-definition "$BASE_WEB_TD" \
+            --migration-task-definition "$BASE_MIGRATION_TD" \
+            --batch-task-definition "$BASE_BATCH_TD" > released.json
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import json
+          released = json.load(open("released.json"))
+          for role, name in (("web", "WEB_TD"), ("migration", "MIGRATION_TD"), ("batch", "BATCH_TD")):
+              print(f"{name}={released[role]}")
+          PY
+          cat released.json
+
+      # The old image must stop serving before the schema moves under it.
+      - name: Drain the web service
+        run: |
+          PREVIOUS=$(aws ecs describe-services --cluster "$CLUSTER" \
+            --services "$WEB_SERVICE" --query 'services[0].desiredCount' --output text)
+          echo "PREVIOUS_DESIRED=$PREVIOUS" >> "$GITHUB_ENV"
+          if [ "$PREVIOUS" != "0" ]; then
+            aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
+              --desired-count 0 >/dev/null
+            aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
+          fi
+          echo "web drained (was $PREVIOUS)"
+
+      - name: Run the migration and require it to succeed
+        run: |
+          aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$MIGRATION_TD" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$MIGRATION_SG],assignPublicIp=ENABLED}" \
+            --output json > run-task.json
+
+          TASK_ARN=$(uv run python - <<'PY'
+          import json, sys
+          response = json.load(open("run-task.json"))
+          failures = response.get("failures") or []
+          if failures:
+              sys.exit(f"run-task reported failures: {failures}")
+          tasks = response.get("tasks") or []
+          if not tasks:
+              sys.exit("run-task started no task")
+          print(tasks[0]["taskArn"])
+          PY
+          )
+          echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
+
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+          aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --output json > stopped.json
+          uv run python - <<'PY'
+          import json, sys
+          task = json.load(open("stopped.json"))["tasks"][0]
+          reason = task.get("stoppedReason", "")
+          codes = {c["name"]: c.get("exitCode") for c in task["containers"]}
+          print(f"stoppedReason={reason} exitCodes={codes}")
+          bad = {n: c for n, c in codes.items() if c != 0}
+          if bad:
+              sys.exit(f"migration containers did not exit 0: {bad} ({reason})")
+          PY
+
+      - name: Point the web service at the released revision
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
+            --task-definition "$WEB_TD" \
+            --desired-count "$WEB_DESIRED_COUNT" >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
+          echo "web service stable at $WEB_DESIRED_COUNT on $WEB_TD"
+
+      # Stable is not the same as released. The application stack sets the
+      # deployment circuit breaker with rollback=True, so a new task that never
+      # becomes healthy causes ECS to restore the previous deployment and reach
+      # stability again -- and the health checks below would then be answered by
+      # the old image, which is perfectly healthy. Without this the workflow
+      # records this commit as released while every running task is the
+      # previous one.
+      - name: Require that the release is what is actually running
+        run: |
+          aws ecs describe-services --cluster "$CLUSTER" --services "$WEB_SERVICE" \
+            --output json > service.json
+          uv run python - <<'PY'
+          import json, os, sys
+
+          service = json.load(open("service.json"))["services"][0]
+          expected = os.environ["WEB_TD"]
+          desired = int(os.environ["WEB_DESIRED_COUNT"])
+
+          active = service.get("taskDefinition")
+          if active != expected:
+              sys.exit(
+                  f"the service is running {active}, not {expected}: the "
+                  "deployment was rolled back"
+              )
+
+          primary = [
+              deployment
+              for deployment in service.get("deployments", [])
+              if deployment.get("status") == "PRIMARY"
+          ]
+          if not primary:
+              sys.exit("no PRIMARY deployment on the service")
+          deployment = primary[0]
+          if deployment.get("taskDefinition") != expected:
+              sys.exit(
+                  f"the primary deployment is {deployment.get('taskDefinition')}, "
+                  f"not {expected}"
+              )
+          if deployment.get("rolloutState") not in (None, "COMPLETED"):
+              sys.exit(
+                  "rolloutState is "
+                  f"{deployment.get('rolloutState')}: "
+                  f"{deployment.get('rolloutStateReason')}"
+              )
+          running = deployment.get("runningCount", 0)
+          if running != desired:
+              sys.exit(f"{running} tasks running, expected {desired}")
+          print(f"released: {expected} with {running} running")
+          PY
+
+      - name: Require that the running tasks carry the released digest
+        if: inputs.web_desired_count != '0'
+        run: |
+          aws ecs list-tasks --cluster "$CLUSTER" --service-name "$WEB_SERVICE" \
+            --desired-status RUNNING --output json > tasks.json
+          TASK_ARNS=$(uv run python -c "
+          import json
+          print(' '.join(json.load(open('tasks.json'))['taskArns']))
+          ")
+          [ -n "$TASK_ARNS" ] || { echo "::error::no running tasks"; exit 1; }
+          # shellcheck disable=SC2086
+          aws ecs describe-tasks --cluster "$CLUSTER" --tasks $TASK_ARNS \
+            --output json > running.json
+          uv run python - <<'PY'
+          import json, os, sys
+
+          digest = os.environ["IMAGE_DIGEST"]
+          tasks = json.load(open("running.json"))["tasks"]
+          wrong = [
+              container.get("imageDigest")
+              for task in tasks
+              for container in task.get("containers", [])
+              if container.get("imageDigest") not in (None, digest)
+          ]
+          if wrong:
+              sys.exit(f"running tasks carry {set(wrong)}, expected {digest}")
+          print(f"{len(tasks)} running task(s) on {digest}")
+          PY
+
+      # Through the certificate's own hostname. The load balancer's generated
+      # name is not covered by the certificate, so curl would fail hostname
+      # verification after an otherwise-successful release.
+      - name: Verify the service answers
+        if: inputs.web_desired_count != '0'
+        run: |
+          for _ in $(seq 1 30); do
+            if curl -fsS "$APPLICATION_URL/livez" >/dev/null 2>&1; then break; fi
+            sleep 10
+          done
+          curl -fsS "$APPLICATION_URL/livez"
+          curl -fsS "$APPLICATION_URL/readyz"
+
+      - name: Record what was released
+        if: always()
+        run: |
+          {
+            echo "### Release"
+            echo
+            echo "- commit: \`$COMMIT_SHA\`"
+            echo "- digest: \`${IMAGE_DIGEST:-not published}\`"
+            echo "- web task definition: \`${WEB_TD:-not registered}\`"
+            echo "- migration task definition: \`${MIGRATION_TD:-not registered}\`"
+            echo "- batch task definition: \`${BATCH_TD:-not registered}\`"
+            echo "- migration task: \`${MIGRATION_TASK_ARN:-not run}\`"
+            echo "- url: \`${APPLICATION_URL:-unknown}\`"
+            echo "- web desired count: \`$WEB_DESIRED_COUNT\` (was \`${PREVIOUS_DESIRED:-unknown}\`)"
+          } >> "$GITHUB_STEP_SUMMARY"

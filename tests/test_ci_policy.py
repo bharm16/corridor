@@ -55,15 +55,30 @@ def _shard_count(job: str = "pytest") -> int:
     return len(_job(job)["strategy"]["matrix"]["shard"])
 
 
-def test_the_repository_carries_exactly_the_gate_and_the_scheduled_suite():
-    """A third pull-request workflow is how the pending-check problem returns.
+def test_only_the_gate_reports_on_a_pull_request():
+    """A second pull-request workflow is how the pending-check problem returns.
 
     Any workflow whose `pull_request` trigger is path-filtered leaves a check
     pending on the pull requests it skips, so it can never be required and
     the gate it holds can never be proven.
+
+    The rule is about *pull-request* workflows, which is what the failure mode
+    needs. A workflow that only answers `workflow_dispatch` or `schedule`
+    never reports on a pull request and cannot leave one pending, so manual
+    deployment workflows are allowed alongside the two -- and are held to
+    carrying no `pull_request` trigger at all, which is stricter than being
+    merely unfiltered.
     """
 
-    assert _workflow_names() == ("full-suite.yml", GATE)
+    assert GATE in _workflow_names()
+    assert "full-suite.yml" in _workflow_names()
+
+    reporting = tuple(
+        name for name in _workflow_names() if "pull_request" in _workflow(name)["on"]
+    )
+    assert reporting == (GATE,), (
+        f"{reporting} report on a pull request; only {GATE} may"
+    )
 
 
 def test_the_required_gate_is_triggered_on_every_pull_request():

@@ -1,0 +1,30 @@
+{
+  "app": "python3 app.py",
+  "watch": {
+    "exclude": [
+      "README.md",
+      "requirements*.txt",
+      "tests/**"
+    ]
+  },
+  "context": {
+    "corridor:account": "810100779593",
+    "corridor:region": "us-east-2",
+    "corridor:githubRepo": "bharm16/corridor",
+    "corridor:githubEnvironment": "nonproduction",
+    "corridor:certificateArn": "",
+    "corridor:webDesiredCount": 0,
+    "@aws-cdk/aws-ec2:restrictDefaultSecurityGroup": false,
+    "@aws-cdk/aws-iam:minimizePolicies": true,
+    "@aws-cdk/core:checkSecretUsage": true,
+    "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
+    "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
+    "corridor:imageTag": "",
+    "@aws-cdk/core:defaultCrossStackReferences": "strong",
+    "@aws-cdk/core:permissionsBoundary": {
+      "name": "CorridorDelegatedRoleBoundary"
+    },
+    "corridor:publicHostname": "",
+    "corridor:signInSender": ""
+  }
+}

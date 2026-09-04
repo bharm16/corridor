@@ -39,3 +39,107 @@ jobs:
       # syncs (#595).
       - run: scripts/ci_environment.sh
       - run: make test-full
+
+  image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: corridor
+          POSTGRES_PASSWORD: smoke
+          POSTGRES_DB: corridor
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U corridor -d corridor"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Build
+        run: |
+          docker build --build-arg "GIT_REVISION=${{ github.sha }}" \
+            -t "corridor:${{ github.sha }}" .
+
+      - name: Smoke - the image records the commit it was built from
+        run: |
+          REVISION=$(docker inspect --format \
+            '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+            "corridor:${{ github.sha }}")
+          [ "$REVISION" = "${{ github.sha }}" ] || {
+            echo "::error::image revision label is '$REVISION'"; exit 1; }
+
+      # The migration is the only schema writer, and it is what creates the two
+      # runtime logins from the passwords it is given.
+      - name: Smoke - migration
+        run: |
+          docker run --rm --network host \
+            -e CORRIDOR_TASK_ROLE=migration \
+            -e CORRIDOR_DB_SSLMODE=disable \
+            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor \
+            -e CORRIDOR_DB_ADMIN_USERNAME=corridor \
+            -e CORRIDOR_DB_ADMIN_PASSWORD=smoke \
+            -e CORRIDOR_WEB_DB_PASSWORD=web-smoke-pw \
+            -e CORRIDOR_WORKER_DB_PASSWORD=worker-smoke-pw \
+            "corridor:${{ github.sha }}" alembic upgrade head
+
+      - name: Smoke - the runtime logins the migration created can authenticate
+        run: |
+          for role in corridor_web:web-smoke-pw corridor_worker:worker-smoke-pw; do
+            login="${role%%:*}"; password="${role##*:}"
+            PGPASSWORD="$password" psql -h 127.0.0.1 -U "$login" -d corridor \
+              -tAc "select current_user" | grep -qx "$login"
+            echo "  $login authenticated"
+          done
+
+      - name: Smoke - web answers readyz
+        run: |
+          docker run -d --name web --network host \
+            -e CORRIDOR_TASK_ROLE=web \
+            -e CORRIDOR_DB_SSLMODE=disable \
+            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor \
+            -e CORRIDOR_WEB_DB_PASSWORD=web-smoke-pw \
+            -e CORRIDOR_LIVE_PILOT_WEB_BOUNDARY=true \
+            -e CORRIDOR_EMAIL_BACKEND=ses \
+            -e CORRIDOR_SIGN_IN_SENDER=no-reply@example.com \
+            -e CORRIDOR_PUBLIC_ORIGIN=https://pilot.example.com \
+            "corridor:${{ github.sha }}" \
+            uvicorn corridor.web.app:app --host 0.0.0.0 --port 8412 \
+            --proxy-headers --forwarded-allow-ips 10.20.0.0/16
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8412/livez >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          curl -fsS http://127.0.0.1:8412/livez
+          curl -fsS http://127.0.0.1:8412/readyz
+          docker logs web | tail -20
+
+      - name: Smoke - batch composes its own URL and holds no other password
+        run: |
+          docker run --rm --network host \
+            -e CORRIDOR_TASK_ROLE=batch \
+            -e CORRIDOR_DB_SSLMODE=disable \
+            -e CORRIDOR_DB_HOST=127.0.0.1 -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor \
+            -e CORRIDOR_WORKER_DB_PASSWORD=worker-smoke-pw \
+            -e DATABASE_URL=postgresql://injected@evil/x \
+            "corridor:${{ github.sha }}" python -c "
+          import os
+          assert 'WORKER_DATABASE_URL' in os.environ
+          assert 'DATABASE_URL' not in os.environ, 'an injected owner URL survived'
+          assert not [k for k in os.environ if k.endswith('_PASSWORD')], 'raw password survived'
+          print('batch role ok')
+          "
+
+      - name: Smoke - the render environment resolves offline
+        run: |
+          docker run --rm --network none \
+            -e CORRIDOR_TASK_ROLE=batch \
+            -e CORRIDOR_DB_HOST=h -e CORRIDOR_DB_PORT=5432 \
+            -e CORRIDOR_DB_NAME=corridor -e CORRIDOR_WORKER_DB_PASSWORD=x \
+            "corridor:${{ github.sha }}" \
+            uv run --project workers/render --frozen python -c "import cv2; print(cv2.__version__)"

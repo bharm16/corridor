@@ -92,6 +92,18 @@ class PilotRoute:
 
 
 PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
+    ("GET", "/readyz"): PilotRoute(
+        why=(
+            "the load balancer's readiness probe. It resolves no principal "
+            "and names no project: `serving_report` reaches the database "
+            "only through `select 1` and the object store through its own "
+            "probe, so it needs no relation the revoke takes away. It has "
+            "to be enabled -- an enforced deployment answers 404 on an "
+            "unlisted route, and a 404 from the target group deregisters "
+            "every web task and takes the environment down"
+        ),
+        relations=frozenset(),
+    ),
     ("GET", "/health"): PilotRoute(
         why=(
             "the platform probe. It resolves no principal and names no "
