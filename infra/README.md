@@ -51,8 +51,10 @@ the template that would actually deploy:
 - no policy anywhere grants `iam:PassRole` on `*`
 - each task has its **own** execution role, and only the migration role can
   read the RDS admin credential
+- every environment variable a task sets is a name `config.py` actually reads
+  (or a documented entrypoint input)
 
-The last two were mutation-tested: collapsing the three execution roles back
+Those were mutation-tested: collapsing the three execution roles back
 into one makes both fail.
 
 ## Deliberate choices
@@ -75,9 +77,20 @@ web and batch drift onto different revisions.
 definition run on demand. #489's replica-safe leases are the prerequisite for
 promoting it to a service.
 
-**No `OPENAI_API_KEY` secret.** `openai_api_key` defaults to empty in
-`config.py` and the deterministic UCM path calls no model. An empty secret
-would add access surface nothing reads.
+**No `OPENAI_API_KEY` secret, and no application/session secret.**
+`openai_api_key` defaults to empty in `config.py` and the deterministic UCM
+path calls no model. Corridor's `Settings` has no session or signing-secret
+field at all -- there is no `app_secret`, `session_secret` or `secret_key` --
+so creating one would invent a contract the application does not have.
+
+**Environment variable names are asserted against `config.py`.** `Settings`
+has no `env_prefix`: a field with a `validation_alias` uses that alias, and a
+field without one uses its own name uppercased. So the passwords are
+`CORRIDOR_WEB_DB_PASSWORD` and `CORRIDOR_WORKER_DB_PASSWORD`, but the URLs are
+`DATABASE_URL`, `WEB_DATABASE_URL` and `WORKER_DATABASE_URL`. The stack injects
+connection *parts* and the image entrypoint composes the URLs, because a
+password is only a secret reference at task-definition time and the
+RDS-managed secret is JSON, not a URL. See the runbook.
 
 **Four cdk-nag suppressions**, each with a written, resource-specific reason in
 the source: terminal access-log buckets (S3 cannot log into itself), the ALB's

@@ -43,6 +43,30 @@ in ECR rather than building one. The image must provide:
 - the source tree at a stable path, since the render subprocess resolves
   `workers/render` relative to the repository root
 
+It must also **compose the database URL**. `config.py` has no `env_prefix`, so
+`database_url` is read from `DATABASE_URL`, `web_database_url` from
+`WEB_DATABASE_URL`, and `worker_database_url` from `WORKER_DATABASE_URL` --
+while the two passwords use their aliases, `CORRIDOR_WEB_DB_PASSWORD` and
+`CORRIDOR_WORKER_DB_PASSWORD`. A URL cannot be assembled in the task
+definition, because a password exists there only as a secret reference and the
+RDS-managed secret is a JSON document rather than a URL. So the stack injects
+the parts and the entrypoint assembles them:
+
+| Task | Entrypoint composes | From |
+|---|---|---|
+| migration | `DATABASE_URL` | `CORRIDOR_DB_ADMIN_USERNAME` / `_PASSWORD` + host, port, name |
+| web | `WEB_DATABASE_URL` | login `corridor_web` + `CORRIDOR_WEB_DB_PASSWORD` |
+| batch | `WORKER_DATABASE_URL` | login `corridor_worker` + `CORRIDOR_WORKER_DB_PASSWORD` |
+
+Setting `WEB_DATABASE_URL` and `WORKER_DATABASE_URL` explicitly is what keeps
+`db.py`'s `capability_url` from falling back to deriving them from the schema
+owner's URL -- which is why the web and batch tasks never receive
+`DATABASE_URL` at all.
+
+`test_no_task_sets_an_unreadable_corridor_variable` enforces that every
+variable a task sets is either a name `config.py` reads or one of those five
+entrypoint inputs.
+
 ### The ALB certificate
 
 Without `corridor:certificateArn` in context, the stack synthesizes an **HTTP**
@@ -95,7 +119,7 @@ Public IPv4 is AWS's published `$0.005` per address-hour, not from that pull.
 | ALB | $0.0225/hr + $0.008/LCU-hr | $18.43 | $18.43 |
 | Public IPv4 | $0.005/addr-hr | $10.95 (3) | $14.60 (4) |
 | RDS db.t4g.micro + 20 GB gp3 | $0.016/hr, $0.115/GB-mo | $13.98 | $13.98 |
-| Secrets Manager ×4 | $0.40/secret-mo | $1.60 | $1.60 |
+| Secrets Manager ×3 | $0.40/secret-mo | $1.20 | $1.20 |
 | CloudWatch + VPC flow logs | $0.50/GB, $0.03/GB-mo | ~$1.60 | ~$2.10 |
 | ECR + S3 | $0.10, $0.023 /GB-mo | $0.32 | $0.32 |
 | NAT Gateway | excluded by design | $0.00 | $0.00 |

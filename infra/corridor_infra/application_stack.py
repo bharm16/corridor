@@ -68,7 +68,6 @@ class CorridorApplicationStack(Stack):
         artifact_bucket: s3.Bucket,
         web_db_secret: secretsmanager.Secret,
         worker_db_secret: secretsmanager.Secret,
-        app_secret: secretsmanager.Secret,
         image_tag: str,
         web_desired_count: int,
         certificate_arn: str = "",
@@ -104,11 +103,25 @@ class CorridorApplicationStack(Stack):
 
         image = ecs.ContainerImage.from_ecr_repository(self.repository, image_tag)
 
+        # Only names src/corridor/config.py actually reads. Settings has no
+        # env_prefix, so a field with a validation_alias uses that alias
+        # (CORRIDOR_*) and a field without one uses its own name uppercased
+        # (DATABASE_URL, WEB_DATABASE_URL, WORKER_DATABASE_URL).
         common_env = {
             "CORRIDOR_ENVIRONMENT": "nonproduction",
             "CORRIDOR_STORAGE_BACKEND": "s3",
             "CORRIDOR_S3_BUCKET": artifact_bucket.bucket_name,
             "CORRIDOR_S3_REGION": Aws.REGION,
+            # Connection parts. The image entrypoint composes these plus the
+            # injected password into the SQLAlchemy URL its role needs --
+            # DATABASE_URL for migration, WEB_DATABASE_URL for web,
+            # WORKER_DATABASE_URL for batch. They cannot be composed here: a
+            # password only exists as a secret reference at task-definition
+            # time, and the RDS-managed secret is a JSON document rather than
+            # a URL.
+            "CORRIDOR_DB_HOST": database.db_instance_endpoint_address,
+            "CORRIDOR_DB_PORT": database.db_instance_endpoint_port,
+            "CORRIDOR_DB_NAME": "corridor",
         }
 
         # --- web ---------------------------------------------------------
@@ -122,7 +135,6 @@ class CorridorApplicationStack(Stack):
                 "CORRIDOR_WEB_DB_PASSWORD": ecs.Secret.from_secrets_manager(
                     web_db_secret, "password"
                 ),
-                "CORRIDOR_APP_SECRET": ecs.Secret.from_secrets_manager(app_secret),
             },
             command=[
                 "uvicorn",
@@ -178,9 +190,13 @@ class CorridorApplicationStack(Stack):
             image=image,
             environment=common_env,
             secrets={
-                "CORRIDOR_DATABASE_URL": ecs.Secret.from_secrets_manager(
-                    db_admin_secret
-                )
+                # Discrete fields, not the whole JSON document.
+                "CORRIDOR_DB_ADMIN_USERNAME": ecs.Secret.from_secrets_manager(
+                    db_admin_secret, "username"
+                ),
+                "CORRIDOR_DB_ADMIN_PASSWORD": ecs.Secret.from_secrets_manager(
+                    db_admin_secret, "password"
+                ),
             },
             command=["alembic", "upgrade", "head"],
         )

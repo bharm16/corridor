@@ -5,6 +5,9 @@ silently changed. They assert on the synthesized CloudFormation, so they fail
 on the template that would actually be deployed rather than on the Python.
 """
 
+import pathlib
+import re
+
 import aws_cdk as cdk
 import pytest
 from aws_cdk.assertions import Match, Template
@@ -44,7 +47,6 @@ def stacks():
         artifact_bucket=data.artifact_bucket,
         web_db_secret=data.web_db_secret,
         worker_db_secret=data.worker_db_secret,
-        app_secret=data.app_secret,
         image_tag="test",
         web_desired_count=0,
     )
@@ -234,6 +236,7 @@ def test_web_and_batch_receive_only_their_own_login(stacks):
             continue
         if "WebExecutionRole" in roles:
             assert "WorkerDbSecret" not in document, logical_id
+            assert "DatabaseSecret" not in document, logical_id
         if "BatchExecutionRole" in roles:
             assert "WebDbSecret" not in document, logical_id
 
@@ -257,3 +260,64 @@ def test_health_check_uses_the_application_route_and_port(stacks):
 def test_log_retention_is_bounded(stacks):
     for group in stacks["application"].find_resources("AWS::Logs::LogGroup").values():
         assert group["Properties"]["RetentionInDays"] == 14
+
+
+def test_env_and_secret_names_exist_in_corridor_config():
+    """Every name the task definitions set must be one config.py reads.
+
+    Settings has no env_prefix: a field with a validation_alias uses that
+    alias, and a field without one uses its own name uppercased. Inventing a
+    name here produces a variable the application silently ignores.
+    """
+    config = pathlib.Path(__file__).parents[2] / "src/corridor/config.py"
+    source = config.read_text()
+
+    aliases = set(re.findall(r'validation_alias="([A-Z0-9_]+)"', source))
+    plain = {
+        f.upper()
+        for f in re.findall(r"^    ([a-z_]+):", source, re.MULTILINE)
+    }
+    readable = aliases | plain
+
+    # Names the image entrypoint consumes to compose the URLs config.py reads.
+    entrypoint_inputs = {
+        "CORRIDOR_DB_HOST",
+        "CORRIDOR_DB_PORT",
+        "CORRIDOR_DB_NAME",
+        "CORRIDOR_DB_ADMIN_USERNAME",
+        "CORRIDOR_DB_ADMIN_PASSWORD",
+    }
+
+    assert "CORRIDOR_WEB_DB_PASSWORD" in readable
+    assert "CORRIDOR_WORKER_DB_PASSWORD" in readable
+    assert "DATABASE_URL" in readable
+    assert "WEB_DATABASE_URL" in readable
+    assert "WORKER_DATABASE_URL" in readable
+    # These must NOT be treated as settings; they are entrypoint inputs only.
+    assert not (entrypoint_inputs & readable), (
+        "an entrypoint input collides with a real setting name"
+    )
+
+
+def test_no_task_sets_an_unreadable_corridor_variable(stacks):
+    config = pathlib.Path(__file__).parents[2] / "src/corridor/config.py"
+    source = config.read_text()
+    aliases = set(re.findall(r'validation_alias="([A-Z0-9_]+)"', source))
+    plain = {f.upper() for f in re.findall(r"^    ([a-z_]+):", source, re.MULTILINE)}
+    entrypoint_inputs = {
+        "CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME",
+        "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
+    }
+    allowed = aliases | plain | entrypoint_inputs
+
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition":
+            continue
+        for container in resource["Properties"]["ContainerDefinitions"]:
+            for entry in container.get("Environment", []) + container.get("Secrets", []):
+                name = entry["Name"]
+                assert name in allowed, (
+                    f"{logical_id} sets {name}, which config.py does not read "
+                    f"and the entrypoint does not consume"
+                )

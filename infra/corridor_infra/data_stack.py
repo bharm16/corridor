@@ -22,9 +22,12 @@ one secret per runtime login. The web and batch tasks are never given the
 master credential -- that is what keeps "the migration job is the only schema
 writer" (#489) a real boundary rather than a convention.
 
-There is deliberately no OPENAI_API_KEY secret. `openai_api_key` defaults to
-empty in config.py and the deterministic UCM path does not call a model, so
-creating an empty model secret would add access surface that nothing reads.
+There is deliberately no OPENAI_API_KEY secret, and no application/session
+secret either. `openai_api_key` defaults to empty in config.py and the
+deterministic UCM path calls no model; and Corridor's Settings has no session
+or signing-secret field at all -- grep finds no app_secret, session_secret or
+secret_key. Creating either would be inventing a contract the application does
+not have.
 """
 
 from aws_cdk import (
@@ -129,18 +132,6 @@ class CorridorDataStack(Stack):
         self.web_db_secret = self._login_secret("WebDbSecret", "corridor_web")
         self.worker_db_secret = self._login_secret("WorkerDbSecret", "corridor_worker")
 
-        # Session/signing secret for the web application.
-        self.app_secret = secretsmanager.Secret(
-            self,
-            "AppSecret",
-            secret_name="corridor/nonprod/app-secret",
-            description="Corridor web application session/signing secret.",
-            generate_secret_string=secretsmanager.SecretStringGenerator(
-                password_length=64, exclude_punctuation=True
-            ),
-            removal_policy=RemovalPolicy.RETAIN,
-        )
-
         NagSuppressions.add_resource_suppressions(
             access_logs,
             [{"id": "AwsSolutions-S1",
@@ -178,8 +169,7 @@ class CorridorDataStack(Stack):
         # `database.secret` is the *attachment*; the generated secret itself is
         # a child construct of the instance, and that is what cdk-nag scans.
         generated = self.database.node.try_find_child("Secret")
-        for secret in (generated, self.web_db_secret,
-                       self.worker_db_secret, self.app_secret):
+        for secret in (generated, self.web_db_secret, self.worker_db_secret):
             if secret is None:
                 continue
             NagSuppressions.add_resource_suppressions(
