@@ -26,11 +26,13 @@
   to copy, and a "no response" state can come only from the reading's own
   retained-request band, never from a bundle having merely been quiet.
 
-  ADR-0085's three visible consequence levels are deliberately absent. They are
-  a projection onto the next issue's declared content inventory, and ADR-0091
-  records that the per-project configured issue set is not modelled, so a level
-  printed here would be a guess wearing a heading. Every Attention Reason stays
-  where #527 and #528 already print it.
+  ADR-0085's three visible consequence levels are printed, and derived rather
+  than guessed. They were deliberately absent while ADR-0091's per-project
+  configured issue set was unmodelled — a level printed then would have been a
+  guess wearing a heading. #640 modelled it and #641 derives the level from the
+  effective content inventory, so the review section prints
+  `item.consequence_heading` and nothing here invents one. Every Attention
+  Reason stays where #527 and #528 already print it.
 
   `Review Packet` and `Release Package` are internal names and appear nowhere.
   The sections are named from adopted glossary terms; no new label is coined.
