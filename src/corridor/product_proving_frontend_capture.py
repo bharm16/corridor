@@ -220,6 +220,11 @@ _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
         frozenset({201}),
     ),
     "coordinator_home": ("/work/{slug}", "GET", frozenset({200})),
+    "authorize_project_issue": (
+        "/work/{slug}/issue/authorize",
+        "POST",
+        frozenset({201, 403, 409}),
+    ),
     "queue": ("/queue/{slug}", "GET", frozenset({200})),
     "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
     "internal_report_full": (

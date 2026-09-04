@@ -1389,6 +1389,31 @@ def authorization_blockers(
     return tuple(reasons)
 
 
+def current_release_candidate(
+    session: Session, project_id: int
+) -> ReleaseCandidate | None:
+    """The candidate this project's coordinator is being asked about, or none.
+
+    The most recently *prepared* candidate, ordered by the declared preparation
+    instant the row carries and by its own id where two share one. Nothing here
+    reads a clock: ``prepared_at`` is the instant the preparation's caller
+    declared, so the current candidate is the same candidate tomorrow.
+
+    It is deliberately not "the newest candidate that could be authorized".
+    Skipping a blocked or stale candidate to reach an older authorizable one
+    would present a superseded reading of the project as the current one, and
+    the whole point of ADR-0086's blocked class is that clearing it needs a
+    newly prepared candidate rather than an older one quietly standing in.
+    """
+
+    return session.scalars(
+        select(ReleaseCandidate)
+        .where(ReleaseCandidate.project_id == project_id)
+        .order_by(ReleaseCandidate.prepared_at.desc(), ReleaseCandidate.id.desc())
+        .limit(1)
+    ).first()
+
+
 def candidate_artifacts(
     session: Session, candidate: ReleaseCandidate
 ) -> tuple[ReleaseCandidateArtifact, ...]:

@@ -21,7 +21,7 @@ import json
 import secrets
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import Depends, FastAPI, File, Form, Header, HTTPException, Query, UploadFile
@@ -206,6 +206,7 @@ from corridor.dependency_events import (
     current_statement_evidence_memberships,
 )
 from corridor.web.follow_up_view import chase_view
+from corridor.web.issue_section import issue_view
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -422,6 +423,12 @@ from corridor.follow_up_bundles import (
     read_follow_up_bundles,
 )
 from corridor.project_workflow import read_project_workflow
+from corridor.release_authorization import (
+    NOT_DESIGNATED,
+    Authorization,
+    AuthorizationRefused,
+    authorize_release_package,
+)
 from corridor.record_history import (
     UnknownRevision,
     read_record_history,
@@ -4543,8 +4550,22 @@ def _project_workflow_response(
     session: Session,
     *,
     now: datetime,
+    refusal: AuthorizationRefused | None = None,
+    approved: Authorization | None = None,
+    route_name: str = "coordinator_home",
+    route_template: str = "/work/{slug}",
+    method: str = "GET",
+    request_fields: Any = None,
+    status_code: int = 200,
 ) -> Response:
-    """Render one adopted project's week and record the read, writing nothing else."""
+    """Render one adopted project's week and record the read.
+
+    The same rendering serves the plain reading and the response to the one act
+    the page carries, so a coordinator who approves an issue — or is refused —
+    reads the outcome on the surface they were already on, with the week
+    re-derived around it rather than a redirect to a page that would answer the
+    same questions again.
+    """
 
     workflow = read_project_workflow(session, project_id=project.id, as_of=now)
     landing = workflow.section(workflow.landing)
@@ -4555,6 +4576,10 @@ def _project_workflow_response(
     chase = chase_view(
         read_follow_up_bundles(session, project_id=project.id, as_of=now)
     )
+    # The Issue section (#529, #533). `issue_view` reads #529's own
+    # `authorization_blockers` and refuses to offer an approval it named a
+    # reason against; nothing here derives readiness a second time.
+    issue = issue_view(session, project_id=project.id, as_of=now)
     response = TEMPLATES.TemplateResponse(
         request,
         "project_workflow.html",
@@ -4562,23 +4587,36 @@ def _project_workflow_response(
             "project": project,
             "workflow": workflow,
             "chase": chase,
+            "issue": issue,
             "landing": landing,
-            # Exactly one element carries `autofocus`: the section the
-            # coordinator's work actually starts in.
-            "focus": workflow.landing,
+            "refusal": refusal,
+            "approved": approved,
+            # Exactly one element carries `autofocus`: a refusal first, then a
+            # completed approval, and otherwise the section the coordinator's
+            # work actually starts in.
+            "focus": (
+                ui_primitives.focus_target(
+                    refused=refusal is not None, saved=approved is not None
+                )
+                if refusal is not None or approved is not None
+                else workflow.landing
+            ),
             "cutoff": workflow.cutoff.date().isoformat(),
             "today": now.date(),
         },
+        status_code=status_code,
     )
     record_frontend_request(
         session,
         principal=principal,
-        route_name="coordinator_home",
-        route_template="/work/{slug}",
-        method="GET",
+        route_name=route_name,
+        route_template=route_template,
+        method=method,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
-        request_fields=request.query_params,
+        request_fields=(
+            request.query_params if request_fields is None else request_fields
+        ),
     )
     # The presentation itself, under the #558 contract, at the cutoff the
     # reading was bound to rather than at a clock. The Product Proving receipt
@@ -4591,6 +4629,86 @@ def _project_workflow_response(
     )
     session.commit()
     return response
+
+
+@app.post("/work/{slug}/issue/authorize", response_class=HTMLResponse)
+def authorize_project_issue(
+    request: Request,
+    slug: str,
+    candidate_id: int = Form(...),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Approve one prepared issue for sharing, without leaving the week (#533).
+
+    **No designation check here.** Only a principal holding the
+    external-release designation may authorize, and #533 proves that inside
+    PostgreSQL as the release command's own owner. Passing
+    ``designation=access.EXTERNAL_RELEASE`` to `_project` would be a second
+    gate over the same roster that a later change could let drift from the one
+    the command reads, and it would answer a member without the designation
+    with a bare 403 rather than the sentence the database gives. `_project`
+    still runs, because it is the project partition every slug-addressed
+    surface opens and the read boundary a non-member is answered by (#531).
+
+    **No second readiness derivation either.** A blocked or stale candidate is
+    refused by ``authorize_release_package`` through #529's own
+    ``authorization_blockers``, and the section does not offer the control in
+    the first place because ``issue_view`` read the same answer. Both refusals
+    are the one authority; neither is a rule spelled again here.
+
+    The release instant is the declared one from `get_review_clock`, the same
+    instant the week around it is read at.
+    """
+
+    project = _project(session, slug, principal)
+    if not is_adopted_baseline(session, project.id):
+        # This act belongs to the adopted project's ordered week and to no
+        # other surface. A legacy project has no such week and no prepared
+        # candidate, and is answered the way a route that does not exist for
+        # it is answered rather than with a refusal about a candidate.
+        raise HTTPException(404, f"no project {slug!r}")
+    now = clock()
+    try:
+        approved = authorize_release_package(
+            session,
+            project_id=project.id,
+            candidate_id=candidate_id,
+            releaser=principal,
+            authorized_at=now,
+            surface="project_workflow",
+        )
+    except AuthorizationRefused as refusal:
+        # Every refusal left the candidate as it was and wrote no part of a
+        # release; the designation refusal gave up only its own savepoint, so
+        # this session can still render the week around the refusal.
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            refusal=refusal,
+            route_name="authorize_project_issue",
+            route_template="/work/{slug}/issue/authorize",
+            method="POST",
+            request_fields={"candidate_id": candidate_id},
+            status_code=403 if refusal.code == NOT_DESIGNATED else 409,
+        )
+    return _project_workflow_response(
+        request,
+        project,
+        principal,
+        session,
+        now=now,
+        approved=approved,
+        route_name="authorize_project_issue",
+        route_template="/work/{slug}/issue/authorize",
+        method="POST",
+        request_fields={"candidate_id": candidate_id},
+        status_code=201,
+    )
 
 
 # --- The coordinator's cross-project week (#537) ---------------------------

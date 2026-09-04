@@ -85,6 +85,13 @@ ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
     "render_report": ("/reports/{slug}/render", "POST", frozenset({201})),
     "release_report": ("/reports/{slug}/release", "POST", frozenset({201})),
     "coordinator_home": ("/work/{slug}", "GET", frozenset({200})),
+    # The one act #536's ordered week carries (#533). A refusal is a 403
+    # where PostgreSQL proved no external-release designation and a 409
+    # where the candidate is blocked, stale, or no longer whole; each
+    # renders the week around the refusal rather than redirecting.
+    "authorize_project_issue": (
+        "/work/{slug}/issue/authorize", "POST", frozenset({201, 403, 409})
+    ),
     "queue": ("/queue/{slug}", "GET", frozenset({200})),
     "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
     "internal_report_full": (
