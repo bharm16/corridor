@@ -200,6 +200,16 @@ def test_confirm_needs_a_signed_in_session(client_without_session, project, stor
 
 
 def test_confirm_refuses_a_cross_project_binding(client, session, project, store):
+    """A source previewed for one project cannot be confirmed into another.
+
+    The bytes are staged the way `/sources/upload` stages them, by the same
+    call, instead of through an upload request: staging is all that request
+    contributes here — `preview_intake` writes nothing — and the confirm is the
+    act under test. That keeps the test to one request, which is what a
+    transaction holding one project-authorization scope allows (#657, #662),
+    and keeps the confirm's writes real, so "nothing was registered" is read
+    from the database rather than from a rolled-back request.
+    """
     other = Project(slug=f"other-{uuid4().hex[:8]}", name="Other", is_synthetic=True)
     session.add(other)
     session.flush()
@@ -208,11 +218,8 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
     seed_membership(session, other, TEST_PRINCIPAL)
 
     body = _matrix_pdf()
-    client.post(
-        f"/projects/{project.slug}/sources/upload",
-        data={"doc_type": "matrix"},
-        files={"upload": ("matrix.pdf", body, "application/pdf")},
-    )
+    source_intake.validate_and_stage(body, "matrix.pdf")
+
     # Confirm the source previewed for `project` against `other`.
     r = client.post(
         f"/projects/{other.slug}/sources/confirm",
@@ -225,11 +232,17 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
         follow_redirects=False,
     )
     assert r.status_code == 409
-    assert (
-        session.scalar(
-            select(func.count())
-            .select_from(Document)
-            .where(Document.project_id == other.id)
+    # The refusal is the binding mismatch and not missing bytes: the exact
+    # previewed bytes are staged and still hash to what was submitted.
+    assert "no longer matches the source you previewed" in r.json()["detail"]
+    # Registered into neither project — not the one it was aimed at, and not
+    # the one it was previewed for.
+    for owner in (other, project):
+        assert (
+            session.scalar(
+                select(func.count())
+                .select_from(Document)
+                .where(Document.project_id == owner.id)
+            )
+            == 0
         )
-        == 0
-    )

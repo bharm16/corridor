@@ -15,6 +15,10 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor import audit
+from corridor.check_configuration import (
+    configuration_history,
+    effective_configuration,
+)
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.models import Dependency, Project, ProjectCheckConfiguration, ReportRun
@@ -329,17 +333,45 @@ def test_routes_fail_closed_without_a_seeded_identity(
 
 
 def test_configuration_does_not_cross_projects(client, session):
+    """A save for one project reaches that project and no other.
+
+    One request, and the other project is then asked directly. B's *page* would
+    need a second request, and a transaction holds one project-authorization
+    scope (#657, #662); giving that scope up means rolling the request back,
+    which would also discard the save and leave a test that passed whether or
+    not the configuration had landed in B. So the save stays real and the
+    question is put to the two seams the view renders from —
+    `effective_configuration` and `configuration_history`, both read here on an
+    unpartitioned relation, so B's rows are genuinely visible. That B's page
+    renders an undeclared project as "No declaration" is
+    `test_default_view_shows_supported_defaults_distinctly`; what is unique
+    here is which project the rows belong to.
+    """
     a = Project(slug="ops-a", name="A", is_synthetic=True)
     b = Project(slug="ops-b", name="B", is_synthetic=True)
     session.add_all((a, b))
     session.flush()
     seed_membership(session, a, TEST_PRINCIPAL)
     seed_membership(session, b, TEST_PRINCIPAL)
-    client.post(f"/operations/{a.slug}/checks", data=_valid_form())
 
-    body_b = client.get(f"/operations/{b.slug}/checks").text
-    assert "No declaration" in body_b
+    saved = client.post(
+        f"/operations/{a.slug}/checks", data=_valid_form(), follow_redirects=False
+    )
+    assert saved.status_code == 303
+    session.expire_all()
+
+    # The declaration exists, and it is A's alone.
+    assert _config_count(session, a.id) == 1
     assert _config_count(session, b.id) == 0
+    assert effective_configuration(session, a.id).is_declared
+    assert effective_configuration(session, a.id).thresholds.due_soon_days == 10
+
+    # B is undeclared and still reads under the supported defaults.
+    effective_b = effective_configuration(session, b.id)
+    assert effective_b.is_declared is False
+    assert effective_b.declared_by is None
+    assert effective_b.thresholds.due_soon_days == 30
+    assert configuration_history(session, b.id) == ()
 
 
 def test_unknown_project_is_not_found(client, session, project):
