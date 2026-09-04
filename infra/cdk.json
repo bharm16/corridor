@@ -20,6 +20,7 @@
     "@aws-cdk/aws-ecs:disableExplicitDeploymentControllerForCircuitBreaker": true,
     "@aws-cdk/aws-s3:serverAccessLogsUseBucketPolicy": true,
     "corridor:imageTag": "",
-    "corridor:allowInsecureHttp": false
+    "corridor:allowInsecureHttp": false,
+    "@aws-cdk/core:defaultCrossStackReferences": "strong"
   }
 }

@@ -17,6 +17,11 @@ out/
 # which is how 10k lines of build output once surfaced on main.
 infra/cdk.out/
 
+# The pinned CDK CLI, installed with `npm ci` from infra/package-lock.json.
+# Ignored at the root for the same reason as cdk.out above: a rule that lives
+# inside infra/ disappears with any checkout that does not carry infra/.
+infra/node_modules/
+
 # Local research notes, not part of the tracked record.
 docs/research/lean-extraction-storage-model-2026-08-30.md
 

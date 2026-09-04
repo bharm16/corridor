@@ -97,7 +97,7 @@ class CorridorApplicationStack(Stack):
             "Cluster",
             vpc=vpc,
             cluster_name="corridor-nonprod",
-            container_insights=True,
+            container_insights_v2=ecs.ContainerInsights.ENABLED,
         )
 
         db_admin_secret = database.secret
@@ -168,6 +168,12 @@ class CorridorApplicationStack(Stack):
             security_groups=[web_security_group],
             circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
             health_check_grace_period=Duration.seconds(90),
+            # The default 50% would take a one-task service to zero healthy
+            # tasks during a deployment: the environment would be down for the
+            # length of every rollout. 100/200 starts the replacement before
+            # retiring the incumbent.
+            min_healthy_percent=100,
+            max_healthy_percent=200,
             enable_execute_command=False,
         )
 

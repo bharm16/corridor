@@ -28,11 +28,18 @@ recreate, which for the database means losing it.
 ```bash
 cd infra
 python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
+npm ci                                    # the CDK CLI, pinned in package-lock.json
 export PATH="$PWD/.venv/bin:$PATH"
 
-./.venv/bin/python -m pytest tests -q     # 19 assertions
-npx aws-cdk@latest synth --strict --quiet # includes cdk-nag AwsSolutionsChecks
+./.venv/bin/python -m pytest tests -q     # 43 assertions
+./node_modules/.bin/cdk synth --strict --quiet \
+  --context corridor:certificateArn=<acm-arn> \
+  --context corridor:imageTag=<commit-sha>
 ```
+
+The CLI is pinned in `package.json` and installed with `npm ci`, never
+`npm install --no-save aws-cdk`: an unpinned CLI drifts away from the pinned
+`aws-cdk-lib` between runs, and the pair has to move together.
 
 `cdk diff` and `cdk deploy` need credentials and a bootstrapped account; see
 [the runbook](../docs/deployment/nonproduction-aws.md).
@@ -53,6 +60,14 @@ the template that would actually deploy:
   read the RDS admin credential
 - every environment variable a task sets is a name `config.py` actually reads
   (or a documented entrypoint input)
+- each task declares its role, and the stack never lowers database TLS
+- the load balancer checks `/readyz`, not `/health`
+- the migration receives all three credentials; web and batch receive only
+  their own
+- absence of a certificate is refused rather than silently serving plaintext
+- the image tag is immutable and never the `bootstrap` placeholder
+- the bootstrap policies scope `PassRole`, confine roles to Corridor's path,
+  and refuse to create a role without the permissions boundary
 
 Those were mutation-tested: collapsing the three execution roles back
 into one makes both fail.

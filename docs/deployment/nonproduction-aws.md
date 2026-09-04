@@ -21,51 +21,40 @@ before `cdk bootstrap`:
 | **Cost Explorer enabled** | **not enabled** | you, console (root must first activate IAM billing access) |
 | **Budget + alerts** | **none** | you, console |
 | **ACM certificate for the ALB** | **none** | you |
-| **Dockerfile** | **does not exist in the repo** | a separate change |
+| **Bootstrap policies created** | written, not created | you, one `aws iam create-policy` each |
+| Container image | built and smoke-tested in CI | done |
 | RDS minor version still offered | verify | `aws rds describe-db-engine-versions --engine postgres --engine-version 16` |
 
 `bryceharmon` holds `AdministratorAccess` through the `Admin` group and has no
 MFA device. It is acceptable as a *temporary bootstrap identity* once MFA is
 on; it should not remain the permanent administrative path.
 
-### The Dockerfile is a real blocker
+### The image
 
-No Dockerfile exists — only `docker-compose.yml`, which runs PostgreSQL for
-local development. `CorridorApplication` therefore references an image by tag
-in ECR rather than building one. The image must provide:
+`Dockerfile` builds one image that all three roles run, because nothing in the
+repository has a separate build context. It carries Python 3.12, a pinned `uv`
+(the render subprocess invokes it at run time), both uv projects synced at
+build time, `tesseract`, WeasyPrint's native stack, the RDS trust bundle, and a
+non-root `corridor` user.
 
-- Python 3.12 (`requires-python = ">=3.12,<3.13"`)
-- `uv` **on PATH** — `render_profiles.py` shells out to
-  `uv run --project workers/render --frozen python render_worker.py`
-- both uv projects synced: the root and `workers/render`
-- the `tesseract` binary (`scripts/ci_environment.sh` installs `tesseract-ocr`)
-- WeasyPrint's native stack (pango, cairo, gdk-pixbuf, libffi)
-- the source tree at a stable path, since the render subprocess resolves
-  `workers/render` relative to the repository root
+`scripts/container_entrypoint.py` is the entrypoint. It composes exactly one
+database URL for the role in `CORRIDOR_TASK_ROLE`, percent-encodes the
+credentials, requires `sslmode=verify-full` against the bundled trust store,
+drops the raw passwords the role no longer needs, and `execvpe`s the command
+from the task definition without a shell.
 
-It must also **compose the database URL**. `config.py` has no `env_prefix`, so
-`database_url` is read from `DATABASE_URL`, `web_database_url` from
-`WEB_DATABASE_URL`, and `worker_database_url` from `WORKER_DATABASE_URL` --
-while the two passwords use their aliases, `CORRIDOR_WEB_DB_PASSWORD` and
-`CORRIDOR_WORKER_DB_PASSWORD`. A URL cannot be assembled in the task
-definition, because a password exists there only as a secret reference and the
-RDS-managed secret is a JSON document rather than a URL. So the stack injects
-the parts and the entrypoint assembles them:
+Which URL it sets is the boundary. `Settings` reads `DATABASE_URL`,
+`WEB_DATABASE_URL` and `WORKER_DATABASE_URL` separately, and
+`db.capability_url` derives a capability URL from the owner's only when that
+capability's own URL is empty. Leaking `DATABASE_URL` into a runtime container
+would silently reconnect it as the schema owner, so web and batch never receive
+it.
 
-| Task | Entrypoint composes | From |
-|---|---|---|
-| migration | `DATABASE_URL` | `CORRIDOR_DB_ADMIN_USERNAME` / `_PASSWORD` + host, port, name |
-| web | `WEB_DATABASE_URL` | login `corridor_web` + `CORRIDOR_WEB_DB_PASSWORD` |
-| batch | `WORKER_DATABASE_URL` | login `corridor_worker` + `CORRIDOR_WORKER_DB_PASSWORD` |
-
-Setting `WEB_DATABASE_URL` and `WORKER_DATABASE_URL` explicitly is what keeps
-`db.py`'s `capability_url` from falling back to deriving them from the schema
-owner's URL -- which is why the web and batch tasks never receive
-`DATABASE_URL` at all.
-
-`test_no_task_sets_an_unreadable_corridor_variable` enforces that every
-variable a task sets is either a name `config.py` reads or one of those five
-entrypoint inputs.
+The `image` CI job builds it and, against a real PostgreSQL 16, runs the
+migration to head, proves the `corridor_web` and `corridor_worker` logins it
+created can authenticate, confirms web answers `/livez` and `/readyz`, checks
+that batch holds no other role's password, and resolves the render environment
+with the network disabled.
 
 ### The ALB certificate
 
@@ -82,13 +71,14 @@ Nothing below has been run.
 
 1. Complete every prerequisite above.
 2. Review the PR; run `pytest infra/tests` and `cdk synth --strict`.
-3. `cdk bootstrap aws://810100779593/us-east-2` — locally, as the MFA-protected
-   admin. This itself creates a stack: an asset bucket, an ECR repository, an
-   SSM version parameter, and **five** IAM roles (`deploy`, `lookup`,
+3. Create the two bootstrap policies, then bootstrap with them. See
+   [`infra/bootstrap/README.md`](../../infra/bootstrap/README.md) for the exact
+   commands. Bootstrap creates an asset bucket, an ECR repository, an SSM
+   version parameter, and **five** IAM roles (`deploy`, `lookup`,
    `file-publishing`, `image-publishing`, and the CloudFormation execution
-   role). The execution role defaults to `AdministratorAccess`; pass
-   `--cloudformation-execution-policies` deliberately rather than accepting it
-   by omission.
+   role). Omitting `--cloudformation-execution-policies` is what silently gives
+   that execution role `AdministratorAccess`, so it is passed explicitly along
+   with `--custom-permissions-boundary`.
 4. Deploy `CorridorAccountFoundation` locally. This creates the OIDC provider
    and `corridor-nonprod-deploy`.
 5. Create the GitHub `nonproduction` environment with protection rules. The
@@ -98,8 +88,11 @@ Nothing below has been run.
 6. Verify OIDC with a workflow that calls only `sts:GetCallerIdentity`.
 7. Record account id, region, and role ARN on #601 — **identifiers only, never
    a secret.** That satisfies #601's checklist.
-8. From GitHub Actions: `CorridorNetwork`, then `CorridorData`, then
-   `CorridorApplication` (web desired count 0).
+8. From GitHub Actions, dispatch `diff` for each stack and read it, then
+   dispatch `deploy`: `CorridorNetwork`, then `CorridorData`, then
+   `CorridorApplication` (web desired count 0). They are separate dispatches on
+   purpose -- an environment approval granted before a job produces its diff
+   approves nothing.
 9. Build and push the image; run the migration task (`alembic upgrade head`),
    which creates the `corridor_web` and `corridor_worker` roles from the
    baseline migration.

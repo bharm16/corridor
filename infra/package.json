@@ -1,0 +1,8 @@
+{
+  "name": "corridor-infra",
+  "private": true,
+  "description": "Pins the CDK CLI so it cannot drift away from the pinned aws-cdk-lib. Install with `npm ci`, never `npm install --no-save aws-cdk`.",
+  "devDependencies": {
+    "aws-cdk": "2.1140.0"
+  }
+}

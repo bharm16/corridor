@@ -465,10 +465,10 @@ def test_the_cdk_entry_role_is_named_for_cdk(stacks):
     )
 
 
-def test_postgres_is_a_supported_minor_version(stacks):
+def test_postgres_is_not_the_deprecated_minor_version(stacks):
     stacks["data"].has_resource_properties(
         "AWS::RDS::DBInstance",
-        {"Engine": "postgres", "EngineVersion": "16.15"},
+        {"Engine": "postgres", "EngineVersion": "16.14"},
     )
 
 

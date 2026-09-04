@@ -1,0 +1,74 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowTheServicesCorridorActuallyUses",
+      "Effect": "Allow",
+      "Action": [
+        "acm:*",
+        "cloudformation:*",
+        "cloudwatch:*",
+        "ec2:*",
+        "ecr:*",
+        "ecs:*",
+        "elasticloadbalancing:*",
+        "logs:*",
+        "rds:*",
+        "s3:*",
+        "secretsmanager:*",
+        "ssm:*",
+        "sts:AssumeRole",
+        "sts:GetCallerIdentity",
+        "sts:TagSession"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoLongLivedIdentities",
+      "Effect": "Deny",
+      "Action": [
+        "iam:CreateUser",
+        "iam:CreateAccessKey",
+        "iam:CreateLoginProfile",
+        "iam:CreateServiceSpecificCredential",
+        "iam:UpdateAccessKey",
+        "iam:UploadSigningCertificate",
+        "iam:UploadSSHPublicKey"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoAccountOrOrganizationChanges",
+      "Effect": "Deny",
+      "Action": [
+        "account:*",
+        "aws-portal:*",
+        "billing:*",
+        "budgets:Modify*",
+        "ce:Update*",
+        "organizations:*"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoEscapingTheBoundary",
+      "Effect": "Deny",
+      "Action": [
+        "iam:DeleteRolePermissionsBoundary",
+        "iam:DeleteUserPermissionsBoundary"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "NoTamperingWithTheAuditTrail",
+      "Effect": "Deny",
+      "Action": [
+        "cloudtrail:DeleteTrail",
+        "cloudtrail:PutEventSelectors",
+        "cloudtrail:StopLogging",
+        "cloudtrail:UpdateTrail"
+      ],
+      "Resource": "*"
+    }
+  ]
+}
