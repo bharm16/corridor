@@ -18,6 +18,7 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
+import re
 from uuid import uuid4
 
 import pytest
@@ -1684,6 +1685,12 @@ def test_the_module_never_reads_locator_validation_as_support():
         assert forbidden not in source
 
 
+
+def _rendered_years(body: str) -> set[str]:
+    """The years of every date-shaped token in a rendered body."""
+
+    return {match.group(1) for match in re.finditer(r"\b(\d{4})-\d{2}-\d{2}\b", body)}
+
 def test_re_rendering_the_same_reading_under_absurd_clocks_is_identical(
     session, project
 ):
@@ -1719,7 +1726,14 @@ def test_re_rendering_the_same_reading_under_absurd_clocks_is_identical(
     assert early[1].body == late[1].body
     assert early[0].reading_identity == late[0].reading_identity
     assert early[0].container != late[0].container
-    assert "2016" not in early[0].body and "2036" not in late[0].body
+    # Date-shaped tokens, not a bare substring. The body cites database ids —
+    # "segment 2016", "support assessment 1261" — and a sequence climbs with
+    # the rows a run has already made, so `"2016" not in body` fails whenever
+    # some id happens to reach the year under test. It did, in a full-suite
+    # run. What the test means is that no *date* in the body came from the
+    # clock, which is what this asserts.
+    assert _rendered_years(early[0].body).isdisjoint({"2016", "2036"})
+    assert _rendered_years(late[0].body).isdisjoint({"2016", "2036"})
 
 
 def test_a_changed_template_or_mapping_changes_the_reading_identity(session, project):
