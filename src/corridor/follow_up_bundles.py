@@ -258,6 +258,20 @@ CONSEQUENCE_BANDS: tuple[ConsequenceBand, ...] = (
 BANDS_BY_NAME: Mapping[str, ConsequenceBand] = {
     band.name: band for band in CONSEQUENCE_BANDS
 }
+
+# The bands that mean "there is something for the coordinator to do about this
+# now", as against "somebody was asked and the date they named has not come".
+# Every band above is in here except ``AWAITING_ANSWER_BAND``, whose own
+# sentence is that the answer is not late yet: a plan inside its own return
+# window is *waiting*, and telling a coordinator to chase it would be telling
+# them to chase a person who is not late. ``UNBOUNDED_ANSWER_BAND`` is in,
+# because a plan that named no return date has no date that will ever make it
+# due — if it is not actionable now it is never actionable, and the ordering
+# above already puts it above the awaiting band for exactly that reason.
+ACTIONABLE_BANDS: frozenset[str] = frozenset(
+    band.name for band in CONSEQUENCE_BANDS if band.name != AWAITING_ANSWER_BAND
+)
+
 BAND_ORDINALS: Mapping[str, int] = {
     band.name: band.ordinal for band in CONSEQUENCE_BANDS
 }
@@ -676,6 +690,43 @@ def _commitment_items(
     return tuple(made)
 
 
+def plan_band(*, return_date: date | None, today: date) -> str:
+    """Which consequence band one Follow-up Plan's own dates put it in.
+
+    ``_plan_items`` is the only place this was written and it is still the only
+    place it is decided; it is lifted out so a reading that already holds the
+    plans — the cross-project portfolio (#537, #636) holds them for every
+    project it shows — can ask which of them are actionable without rebuilding
+    a whole chase list per project, and without a second opinion about where
+    the line between "due" and "waiting" falls.
+    """
+
+    if return_date is None:
+        return UNBOUNDED_ANSWER_BAND
+    if return_date < today:
+        return OVERDUE_ANSWER_BAND
+    return AWAITING_ANSWER_BAND
+
+
+def actionable_plan_count(needs: Sequence[FollowUpNeed], *, today: date) -> int:
+    """How many live Follow-up Plans are due for coordinator action, not waiting.
+
+    The bundling above turns items into interactions; this counts the plans
+    that would reach an actionable band once they got there. It is deliberately
+    plan-derived only: the commitment and retained-request triggers need the
+    whole accepted projection of every project, which no bounded cross-project
+    reading can afford, so a caller that needs those asks
+    ``read_follow_up_bundles`` for the one project it is looking at.
+    """
+
+    return sum(
+        1
+        for need in needs
+        if plan_band(return_date=need.return_date, today=today)
+        in ACTIONABLE_BANDS
+    )
+
+
 def _plan_items(
     session: Session,
     *,
@@ -740,14 +791,12 @@ def _plan_items(
         )
 
         return_date = plan.return_date.date() if plan.return_date else None
-        if return_date is None:
-            band = UNBOUNDED_ANSWER_BAND
+        band = plan_band(return_date=return_date, today=today)
+        if band == UNBOUNDED_ANSWER_BAND:
             quantity = (today - plan.recorded_at.date()).days
-        elif return_date < today:
-            band = OVERDUE_ANSWER_BAND
+        elif band == OVERDUE_ANSWER_BAND:
             quantity = (today - return_date).days
         else:
-            band = AWAITING_ANSWER_BAND
             quantity = (return_date - today).days
 
         field_name = str((plan.affected_scope or {}).get("field") or "") or (

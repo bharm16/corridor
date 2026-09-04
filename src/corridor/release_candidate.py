@@ -562,15 +562,80 @@ def latest_authorized_package(
     customer has already seen.
     """
 
+    return latest_authorized_packages_by_project(session, (project_id,)).get(
+        project_id
+    )
+
+
+def latest_authorized_packages_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, ReleasePackage | None]:
+    """``latest_authorized_package`` for several projects, in one statement.
+
+    The cross-project reading (#537) needs each project's comparison baseline
+    to decide whether a prepared candidate still stands, and it may not ask for
+    it one project at a time. It may not answer it by a second rule either, so
+    the single-project reader above is this function over one project: the
+    chain head is still the package no other package names as its predecessor,
+    and the clock still gets no vote.
+    """
+
+    ids = tuple(dict.fromkeys(int(value) for value in project_ids))
+    found: dict[int, ReleasePackage | None] = {project_id: None for project_id in ids}
+    if not ids:
+        return found
     later = aliased(ReleasePackage)
-    return session.scalars(
+    for package in session.scalars(
         select(ReleasePackage).where(
-            ReleasePackage.project_id == project_id,
+            ReleasePackage.project_id.in_(ids),
             ~select(later.id)
             .where(later.previous_package_id == ReleasePackage.id)
             .exists(),
         )
-    ).first()
+    ).all():
+        found[int(package.project_id)] = package
+    return found
+
+
+def current_candidates_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, ReleaseCandidate | None]:
+    """The candidate each project is currently offering, in one statement.
+
+    "Currently offering" is the newest one attached, by append-only identifier
+    rather than by ``prepared_at``: the preparation instant is declared by its
+    caller (#634), so a candidate prepared *as at* an earlier cutoff can be
+    attached later, and ordering by the declared instant would offer the
+    superseded one. An older candidate is not deleted and stays authorizable by
+    identifier; it is simply not the one a portfolio row is about.
+
+    ``current_release_candidate`` is the single-project sibling and delegates
+    here, so the Issue section (#536) and the portfolio row (#636) cannot name
+    different candidates for one project.
+    """
+
+    ids = tuple(dict.fromkeys(int(value) for value in project_ids))
+    found: dict[int, ReleaseCandidate | None] = {
+        project_id: None for project_id in ids
+    }
+    if not ids:
+        return found
+    newest = (
+        select(
+            ReleaseCandidate.project_id.label("project_id"),
+            func.max(ReleaseCandidate.id).label("candidate_id"),
+        )
+        .where(ReleaseCandidate.project_id.in_(ids))
+        .group_by(ReleaseCandidate.project_id)
+        .subquery()
+    )
+    for candidate in session.scalars(
+        select(ReleaseCandidate).join(
+            newest, ReleaseCandidate.id == newest.c.candidate_id
+        )
+    ).all():
+        found[int(candidate.project_id)] = candidate
+    return found
 
 
 # --- phase one: bind ------------------------------------------------------
@@ -1327,8 +1392,42 @@ def candidate_is_stale(
     candidate stale without the profile moving at all.
     """
 
+    package = latest_authorized_package(session, int(candidate.project_id))
+    return candidate_staleness_reasons(
+        candidate,
+        inventory=effective_issue_inventory(
+            session, int(candidate.project_id), as_of
+        ),
+        newest_revision_id=int(
+            session.scalar(
+                select(func.max(ProjectRecordRevision.id)).where(
+                    ProjectRecordRevision.project_id == candidate.project_id
+                )
+            )
+            or 0
+        ),
+        current_package_id=None if package is None else int(package.id),
+    )
+
+
+def candidate_staleness_reasons(
+    candidate: ReleaseCandidate,
+    *,
+    inventory: IssueInventory | None,
+    newest_revision_id: int,
+    current_package_id: int | None,
+) -> tuple[str, ...]:
+    """The staleness rule itself, over inputs the caller has already read.
+
+    ``candidate_is_stale`` above is this function plus the three reads it
+    needs, and it is the only reason this one is separate: a cross-project
+    reading (#537, #636) has those three facts loaded for every project it
+    shows and must not go back to the database once per candidate to re-ask
+    them. Two authorities over one staleness rule is the failure #641 exists to
+    prevent, so there is exactly one and this is it.
+    """
+
     reasons: list[str] = []
-    inventory = effective_issue_inventory(session, int(candidate.project_id), as_of)
     if prepared_candidate_is_stale(
         inventory,
         profile_id=int(candidate.issue_profile_id),
@@ -1338,22 +1437,13 @@ def candidate_is_stale(
             "what this project is configured to externally issue changed after "
             "this candidate was prepared"
         )
-    newest = int(
-        session.scalar(
-            select(func.max(ProjectRecordRevision.id)).where(
-                ProjectRecordRevision.project_id == candidate.project_id
-            )
-        )
-        or 0
-    )
-    if newest != int(candidate.accepted_revision_id):
+    if newest_revision_id != int(candidate.accepted_revision_id):
         reasons.append(
-            f"the accepted record moved to revision {newest} after this "
-            f"candidate was prepared from revision {candidate.accepted_revision_id}"
+            f"the accepted record moved to revision {newest_revision_id} after "
+            f"this candidate was prepared from revision "
+            f"{candidate.accepted_revision_id}"
         )
-    package = latest_authorized_package(session, int(candidate.project_id))
-    current = None if package is None else int(package.id)
-    if current != (
+    if current_package_id != (
         None
         if candidate.previous_package_id is None
         else int(candidate.previous_package_id)
@@ -1394,10 +1484,13 @@ def current_release_candidate(
 ) -> ReleaseCandidate | None:
     """The candidate this project's coordinator is being asked about, or none.
 
-    The most recently *prepared* candidate, ordered by the declared preparation
-    instant the row carries and by its own id where two share one. Nothing here
-    reads a clock: ``prepared_at`` is the instant the preparation's caller
-    declared, so the current candidate is the same candidate tomorrow.
+    The single-project sibling of ``current_candidates_by_project``, which it
+    delegates to so the Issue section and the portfolio row cannot name
+    different candidates for one project. That is not a stylistic preference:
+    the two were written in parallel and ordered differently — this one by the
+    declared ``prepared_at``, that one by the append-only identifier — and a
+    caller-declared instant can attach a superseded candidate last (#634).
+    The append-only order is the one that survives that, so it is the only one.
 
     It is deliberately not "the newest candidate that could be authorized".
     Skipping a blocked or stale candidate to reach an older authorizable one
@@ -1406,12 +1499,7 @@ def current_release_candidate(
     newly prepared candidate rather than an older one quietly standing in.
     """
 
-    return session.scalars(
-        select(ReleaseCandidate)
-        .where(ReleaseCandidate.project_id == project_id)
-        .order_by(ReleaseCandidate.prepared_at.desc(), ReleaseCandidate.id.desc())
-        .limit(1)
-    ).first()
+    return current_candidates_by_project(session, (project_id,))[project_id]
 
 
 def candidate_artifacts(

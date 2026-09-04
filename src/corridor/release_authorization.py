@@ -76,7 +76,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import json
-from typing import Any
+from typing import Any, Mapping
 
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
@@ -90,7 +90,11 @@ from corridor.analytics import (
     emit_event,
 )
 from corridor.baseline_adoption import effective_baseline_formats
-from corridor.issue_profile import UPDATED_UCM, effective_issue_inventory
+from corridor.issue_profile import (
+    UPDATED_UCM,
+    IssueInventory,
+    effective_issue_inventory,
+)
 from corridor.models import (
     BLOCKED,
     ProjectRecordRevision,
@@ -400,25 +404,47 @@ def current_issue_state_differences(
     is a portfolio nobody reads.
     """
 
-    package = current_authorized_package(session, project_id)
+    return issue_state_differences(
+        current_authorized_package(session, project_id),
+        newest_revision_id=int(
+            session.scalar(
+                select(func.max(ProjectRecordRevision.id)).where(
+                    ProjectRecordRevision.project_id == project_id
+                )
+            )
+            or 0
+        ),
+        inventory=effective_issue_inventory(session, project_id, as_of),
+        formats=effective_baseline_formats(session, project_id),
+    )
+
+
+def issue_state_differences(
+    package: ReleasePackage | None,
+    *,
+    newest_revision_id: int,
+    inventory: IssueInventory | None,
+    formats: Mapping[str, Any],
+) -> tuple[str, ...]:
+    """The difference rule itself, over inputs the caller has already read.
+
+    ``current_issue_state_differences`` above is this function plus the four
+    reads it needs, and that is the only reason it is separate: a cross-project
+    reading (#537, #636) already holds all four for every project it shows and
+    must not go back to the database once per project to re-ask them. The rule
+    lives here once; nobody derives it a second time.
+    """
+
     if package is None:
         return ("this project has not authorized an issue yet",)
 
     differences: list[str] = []
-    newest = int(
-        session.scalar(
-            select(func.max(ProjectRecordRevision.id)).where(
-                ProjectRecordRevision.project_id == project_id
-            )
-        )
-        or 0
-    )
-    if newest != int(package.accepted_revision_id):
+    if newest_revision_id != int(package.accepted_revision_id):
         differences.append(
-            f"the accepted record moved to revision {newest} after the last "
-            f"issue, which was made from revision {package.accepted_revision_id}"
+            f"the accepted record moved to revision {newest_revision_id} after "
+            f"the last issue, which was made from revision "
+            f"{package.accepted_revision_id}"
         )
-    inventory = effective_issue_inventory(session, project_id, as_of)
     if inventory is None or (
         inventory.profile_id != int(package.issue_profile_id)
         or inventory.profile_version != int(package.issue_profile_version)
@@ -427,7 +453,6 @@ def current_issue_state_differences(
             "what this project is configured to externally issue changed "
             "after the last issue"
         )
-    formats = effective_baseline_formats(session, project_id)
     template = formats.get("output_template")
     mapping = formats.get("field_mapping")
     if template is None or int(template.id) != int(
@@ -765,20 +790,41 @@ def _revalidate(
             " ".join(blockers)
             + " Nothing is released; prepare a fresh candidate and review that.",
         )
-    formats = effective_baseline_formats(session, int(candidate.project_id))
+    replaced = candidate_format_differences(
+        candidate, effective_baseline_formats(session, int(candidate.project_id))
+    )
+    if replaced:
+        raise AuthorizationRefused(TEMPLATE_OR_MAPPING_REPLACED, replaced[0])
+
+
+def candidate_format_differences(
+    candidate: ReleaseCandidate, formats: Mapping[str, Any]
+) -> tuple[str, ...]:
+    """Whether the template and mapping a candidate was rendered through still hold.
+
+    The one thing ``authorization_blockers`` does not cover, stated once. A
+    coordinator can replace either registration between preparation and
+    release, and then the sealed artifacts are not the ones the project now
+    produces. It is public because a cross-project reading (#537, #636) must
+    ask the same question before it calls a candidate ready, and asking it a
+    second way would let a portfolio row promise an authorization that #533
+    would refuse.
+    """
+
+    replaced: list[str] = []
     for kind, format_id, what in (
         ("output_template", candidate.output_template_format_id, "output template"),
         ("field_mapping", candidate.field_mapping_format_id, "field mapping"),
     ):
         registered = formats.get(kind)
         if registered is None or int(registered.id) != int(format_id):
-            raise AuthorizationRefused(
-                TEMPLATE_OR_MAPPING_REPLACED,
+            replaced.append(
                 f"the {what} this project renders through was replaced after "
                 "this candidate was prepared, so the sealed artifacts would "
                 "not be the ones this project now produces. Nothing is "
-                "released; prepare a fresh candidate.",
+                "released; prepare a fresh candidate."
             )
+    return tuple(replaced)
 
 
 def _verify_retained_bytes(
