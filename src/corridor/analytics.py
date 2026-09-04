@@ -39,6 +39,12 @@ receipt already exists or can serve as the historical record:
     receipt alternative: weekly portfolio presentation receipt.
 13. ``project_selection``: A project was selected from the portfolio view.
     Explicit interaction event; no persistent database receipt.
+14. ``follow_up_reading``: The contact-ready follow-up bundles were presented
+    for one project at one declared cutoff (#425, #658). Derivable-receipt
+    alternative: none — the chase list is derived from accepted authority and
+    stores nothing, so being shown it leaves no row behind. The event carries
+    the reading's own content digest, so what a coordinator was shown can be
+    rebuilt from the records rather than trusted from a screenshot.
 
 Every event binds:
 - ``code_revision``: git commit or deployment code version.
@@ -122,6 +128,7 @@ class EventFamily(str, Enum):
     ARTIFACT_REPAIR = "artifact_repair"
     PORTFOLIO_READING = "portfolio_reading"
     PROJECT_SELECTION = "project_selection"
+    FOLLOW_UP_READING = "follow_up_reading"
 
 
 DERIVABLE_RECEIPT_ALTERNATIVES: dict[EventFamily, str] = {
@@ -138,6 +145,9 @@ DERIVABLE_RECEIPT_ALTERNATIVES: dict[EventFamily, str] = {
     EventFamily.ARTIFACT_REPAIR: "Operations reconciliation report",
     EventFamily.PORTFOLIO_READING: "Weekly portfolio presentation receipt",
     EventFamily.PROJECT_SELECTION: "Explicit interaction event; no static database receipt",
+    EventFamily.FOLLOW_UP_READING: (
+        "Explicit presentation event; the chase list is derived and stores nothing"
+    ),
 }
 
 

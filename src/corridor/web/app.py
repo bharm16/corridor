@@ -205,6 +205,7 @@ from corridor.dependency_events import (
     current_scope_decision_filter,
     current_statement_evidence_memberships,
 )
+from corridor.web.follow_up_view import chase_view
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -415,6 +416,10 @@ from corridor.project_portfolio import (
     emit_portfolio_reading,
     emit_project_selection,
     read_portfolio,
+)
+from corridor.follow_up_bundles import (
+    emit_follow_up_reading,
+    read_follow_up_bundles,
 )
 from corridor.project_workflow import read_project_workflow
 from corridor.record_history import (
@@ -4543,12 +4548,20 @@ def _project_workflow_response(
 
     workflow = read_project_workflow(session, project_id=project.id, as_of=now)
     landing = workflow.section(workflow.landing)
+    # The chase list is read here and rendered inside the Follow-up section;
+    # every trigger, bundling and ordering rule stays in the one derivation
+    # (#425), and `chase_view` refuses to render any sequence but the
+    # reading's own (#658).
+    chase = chase_view(
+        read_follow_up_bundles(session, project_id=project.id, as_of=now)
+    )
     response = TEMPLATES.TemplateResponse(
         request,
         "project_workflow.html",
         {
             "project": project,
             "workflow": workflow,
+            "chase": chase,
             "landing": landing,
             # Exactly one element carries `autofocus`: the section the
             # coordinator's work actually starts in.
@@ -4566,6 +4579,15 @@ def _project_workflow_response(
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
+    )
+    # The presentation itself, under the #558 contract, at the cutoff the
+    # reading was bound to rather than at a clock. The Product Proving receipt
+    # above proves which handler served the request; this records what the
+    # chase list said when it did, by its own content digest.
+    emit_follow_up_reading(
+        chase.reading,
+        principal_subject=principal.subject,
+        surface="project_workflow",
     )
     session.commit()
     return response

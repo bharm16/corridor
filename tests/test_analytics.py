@@ -24,7 +24,7 @@ from corridor.source_intake import validate_and_stage
 
 def test_every_event_family_has_stated_derivable_receipt_alternative() -> None:
     """Every event family names its stated derivable-receipt alternative."""
-    assert len(EventFamily) == 13
+    assert len(EventFamily) == 14
     for family in EventFamily:
         alternative = DERIVABLE_RECEIPT_ALTERNATIVES.get(family)
         assert alternative is not None, f"missing derivable receipt alternative for {family}"
