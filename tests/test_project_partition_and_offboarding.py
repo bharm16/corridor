@@ -35,12 +35,13 @@ from __future__ import annotations
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 import os
+import re
 from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import create_engine, select, text
-from sqlalchemy.engine import make_url
+from sqlalchemy import create_engine, event as sa_event, select, text
+from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool, QueuePool
@@ -58,9 +59,16 @@ from corridor.models import (
     SourceSegment,
     WebSession,
 )
+from corridor.object_storage import LocalFilesystemStore
 from corridor.principals import HumanPrincipal
 from corridor.web import auth
-from corridor.web.app import app, get_session
+from corridor.web.app import (
+    app,
+    get_content_store,
+    get_machine_session,
+    get_session,
+    get_web_capability,
+)
 
 OPERATOR = HumanPrincipal("local:operations")
 LEAVER = HumanPrincipal("local:leaver")
@@ -2159,8 +2167,65 @@ def boundary_enabled(monkeypatch):
     monkeypatch.setattr(settings, "live_pilot_web_boundary", True)
 
 
+@pytest.fixture
+def statements_in_flight(monkeypatch):
+    """Every statement issued while a request is in flight (#680's instrument).
+
+    Two halves, and both are needed. `before_cursor_execute` on the `Engine`
+    class catches every statement any engine issues — an ORM load, a raw
+    `text()`, a lazy attribute a template touches, a dependency's own read —
+    so nothing can reach PostgreSQL past it. Wrapping `TestClient.request`
+    brackets the window, so fixture seeding and sign-in are not mistaken for
+    something a route did.
+
+    Recording the statement rather than a route's name is what makes the
+    zero-SQL claim checkable: "the handler did not run" is an assertion about
+    the application, and "no statement named a revoked relation" is an
+    assertion about the database, and only the second one is the invariant.
+    """
+
+    recorded: list[str] = []
+    in_flight = False
+
+    def _record(conn, cursor, statement, parameters, context, executemany):
+        if in_flight:
+            recorded.append(statement)
+
+    sa_event.listen(Engine, "before_cursor_execute", _record)
+    unwrapped = TestClient.request
+
+    def request(self, *args, **kwargs):
+        nonlocal in_flight
+        in_flight = True
+        try:
+            return unwrapped(self, *args, **kwargs)
+        finally:
+            in_flight = False
+
+    monkeypatch.setattr(TestClient, "request", request)
+    yield recorded
+    sa_event.remove(Engine, "before_cursor_execute", _record)
+
+
+def _revoked_relations_touched(statements: list[str]) -> list[str]:
+    """Which relations the boundary denies were named by these statements."""
+
+    return sorted(
+        {
+            relation
+            for statement in statements
+            for relation in web_boundary.DENIED_RELATIONS
+            if re.search(rf"\b{relation}\b", statement)
+        }
+    )
+
+
 def test_every_enabled_pilot_reading_serves_as_the_real_web_login(
-    two_projects, their_pilot_rows, live_pilot_client, boundary_enabled
+    two_projects,
+    their_pilot_rows,
+    live_pilot_client,
+    boundary_enabled,
+    statements_in_flight,
 ):
     """The other half of the revoke: the routes that stay on still work.
 
@@ -2168,8 +2233,14 @@ def test_every_enabled_pilot_reading_serves_as_the_real_web_login(
     way to know is to ask the login that lost the privileges. Each of these
     would answer 500 with `permission denied for table ...` if the revoke had
     reached a relation the route needs.
+
+    The second assertion is the same instrument the refusal tests use, pointed
+    the other way (#694): these routes serve *and* they reach nothing the
+    boundary denies, so the recorded dependency set is a live reading rather
+    than a claim about one.
     """
 
+    statements_in_flight.clear()
     served = {
         path: live_pilot_client.get(path, follow_redirects=False).status_code
         for path in ("/", "/portfolio", "/record/ours", "/review/ours")
@@ -2181,45 +2252,262 @@ def test_every_enabled_pilot_reading_serves_as_the_real_web_login(
         "/record/ours": 200,
         "/review/ours": 200,
     }
+    assert _revoked_relations_touched(statements_in_flight) == []
 
 
 def test_a_route_outside_the_boundary_is_refused_rather_than_half_served(
-    two_projects, live_pilot_client, boundary_enabled
+    two_projects, live_pilot_client, boundary_enabled, statements_in_flight
 ):
     """"Disable the route" is the criterion, and this is the difference it makes.
 
     With the boundary declared, a surface the pilot does not enable answers
-    exactly as a missing project does. Without it — the deployment shape a
-    legacy development clone keeps — the same request reaches the handler and
-    dies on the privilege it no longer has. Both are refusals; only one of
-    them is a refusal a person can read.
+    exactly as a missing project does, and #694 adds the part that makes it a
+    refusal rather than a coincidence: the request issues **no statement at
+    all**. Not "no statement PostgreSQL allowed" — none, because the route
+    never entered a handler.
     """
 
+    statements_in_flight.clear()
     refused = live_pilot_client.get("/ledger/ours", follow_redirects=False)
 
     assert refused.status_code == 404
+    assert statements_in_flight == []
+    assert refused.json() == {"detail": "not found"}
 
 
-def test_the_same_route_without_the_boundary_dies_on_the_revoked_privilege(
-    two_projects, live_pilot_client
+# --- #694 The deployment that has the revoke and not the route half --------
+#
+# #680 shipped the route half declared and off by default and said so: with
+# the flag off, `/ledger/{slug}` reached its handler and died on the privilege
+# it no longer had. That is a real refusal and an unreadable one, and it made
+# PostgreSQL the route-selection mechanism. These are the two states that
+# replace it, and the control that proves the handler really would have gone
+# there.
+
+
+def test_a_route_the_deployment_cannot_serve_refuses_before_it_queries(
+    two_projects, live_pilot_client, statements_in_flight
 ):
-    """Proof the two halves are one boundary, not one boundary and one opinion.
+    """The criterion, whole: refused, and refused before any statement.
 
-    If the revoke were cosmetic this request would render a page. It is the
-    control for the test above: the route gate is what turns a permission
-    error into a refusal, and this asserts it has something real to turn —
-    PostgreSQL's own ``InsufficientPrivilege``, not a 500 that could come from
-    anywhere. Which relation stops it first is not the claim, so the assertion
-    is about the refusal rather than the table that happens to be read first.
+    The flag is off and the reads run as `corridor_web`, which is the shape a
+    live-pilot deployment has the moment it applies the migration and forgets
+    the flag. Every assertion here is one of the four things #694 asks for —
+    a controlled status, a stable internal reason, no statement that reached a
+    revoked relation, and a body carrying neither PostgreSQL's message nor the
+    name of a relation for a reader to go looking for.
     """
 
+    statements_in_flight.clear()
+    refused = live_pilot_client.get("/ledger/ours", follow_redirects=False)
+
+    assert refused.status_code == 503
+    assert refused.json() == {"detail": "live_pilot_web_boundary_disabled"}
+    assert _revoked_relations_touched(statements_in_flight) == []
+    assert statements_in_flight == []
+    assert "permission denied" not in refused.text
+    assert not any(
+        re.search(rf"\b{relation}\b", refused.text)
+        for relation in web_boundary.DENIED_RELATIONS
+    )
+
+
+def test_the_same_route_still_dies_where_the_deployment_kept_its_blanket_read(
+    two_projects, live_pilot_client, statements_in_flight
+):
+    """The control: the handler really does go to a relation it may not read.
+
+    One seam differs from the test above — the login this deployment's reads
+    run as. Declared as the legacy development capability, which the revoke
+    never touched, the boundary is not this deployment's business and the
+    request runs exactly as it always has: into the handler, into a revoked
+    relation, into PostgreSQL's own `InsufficientPrivilege`.
+
+    Without this the refusal test proves nothing, because a route that reaches
+    no revoked relation refuses zero statements whether the guard exists or
+    not. Which relation stops it first is not the claim; that one did is.
+    """
+
+    app.dependency_overrides[get_web_capability] = lambda: "corridor_legacy_dev"
     strict = TestClient(app, base_url="https://testserver")
     strict.cookies = live_pilot_client.cookies
 
+    statements_in_flight.clear()
     with pytest.raises(ProgrammingError) as refused:
         strict.get("/ledger/ours", follow_redirects=False)
 
     assert "permission denied for table" in str(refused.value)
+    assert _revoked_relations_touched(statements_in_flight) != []
+
+
+def test_the_enabled_work_route_refuses_a_legacy_project_the_deployment_cannot_serve(
+    two_projects, live_pilot_client, statements_in_flight
+):
+    """`/work/{slug}` is enabled, and its legacy branch is not — flag or no flag.
+
+    The route gate cannot reach this one: `/work/{slug}` is in the pilot set,
+    and only the project's operating mode decides which of its two branches
+    runs. So the refusal lives at the branch, and it answers by the same state
+    the gate uses rather than by the flag alone — otherwise the deployment
+    that has the revoke and not the flag falls into ADR-0035's Work List and
+    dies inside a template on `dependencies`.
+    """
+
+    statements_in_flight.clear()
+    refused = live_pilot_client.get("/work/ours", follow_redirects=False)
+
+    assert refused.status_code == 503
+    assert refused.json() == {"detail": "live_pilot_web_boundary_disabled"}
+    assert _revoked_relations_touched(statements_in_flight) == []
+
+
+def test_the_work_list_branch_still_reaches_a_revoked_relation_when_it_may(
+    two_projects, live_pilot_client, statements_in_flight
+):
+    """The control for the branch above, and the reason it is not dead code.
+
+    Declared as the legacy development capability the revoke never touched,
+    the same request falls into ADR-0035's Work List and reads `dependencies`
+    — which is the failure the refusal above is preventing. Without this the
+    503 could be guarding a branch that never had a problem.
+    """
+
+    app.dependency_overrides[get_web_capability] = lambda: "corridor_legacy_dev"
+    strict = TestClient(app, base_url="https://testserver")
+    strict.cookies = live_pilot_client.cookies
+
+    statements_in_flight.clear()
+    with pytest.raises(ProgrammingError) as refused:
+        strict.get("/work/ours", follow_redirects=False)
+
+    assert "permission denied for table" in str(refused.value)
+    assert _revoked_relations_touched(statements_in_flight) != []
+
+
+@pytest.fixture
+def cleared_overrides():
+    """Leave the application as this test found it, however it ends."""
+
+    yield
+    app.dependency_overrides.clear()
+
+
+def test_readiness_reports_the_boundary_state_this_deployment_is_in(
+    session, tmp_path, cleared_overrides
+):
+    """A deployment that refuses most of itself must not report healthy.
+
+    `/health` is an enabled route reaching no relation, so it stays served in
+    every state — which is what lets it carry the state that refuses the
+    others. The reading is the same stable reason the refusal gives, so an
+    operator greps one string across the probe and the access log.
+    """
+
+    def _machine():
+        yield session
+
+    app.dependency_overrides[get_machine_session] = _machine
+    app.dependency_overrides[get_content_store] = lambda: LocalFilesystemStore(
+        tmp_path
+    )
+    client = TestClient(app)
+
+    app.dependency_overrides[get_web_capability] = lambda: "corridor_legacy_dev"
+    kept_the_blanket_read = client.get("/health")
+    app.dependency_overrides[get_web_capability] = lambda: "corridor_web"
+    has_the_revoke_only = client.get("/health")
+
+    assert kept_the_blanket_read.status_code == 200
+    assert kept_the_blanket_read.json()["checks"][-1] == {
+        "component": "live_pilot_web_boundary",
+        "healthy": True,
+        "detail": "not_declared",
+    }
+    assert has_the_revoke_only.status_code == 503
+    assert has_the_revoke_only.json()["status"] == "degraded"
+    assert has_the_revoke_only.json()["checks"][-1] == {
+        "component": "live_pilot_web_boundary",
+        "healthy": False,
+        "detail": "live_pilot_web_boundary_disabled",
+    }
+
+
+def test_the_deployment_state_is_derived_from_the_flag_and_the_reading_login():
+    """The one decision the two refusal modes hang from, stated on its own.
+
+    A boolean cannot answer this: both flag-off deployments have the flag off,
+    and only one of them has had 124 relations taken away.
+    """
+
+    assert (
+        web_boundary.boundary_state(declared=True, web_capability="corridor_web")
+        is web_boundary.BoundaryState.ENFORCED
+    )
+    assert (
+        web_boundary.boundary_state(declared=False, web_capability="corridor_web")
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+    assert (
+        web_boundary.boundary_state(
+            declared=False, web_capability="corridor_legacy_dev"
+        )
+        is web_boundary.BoundaryState.NOT_DECLARED
+    )
+
+
+def test_two_halves_that_disagree_are_inconsistent_however_they_are_declared(
+    monkeypatch,
+):
+    """The other inconsistency: an enabled route needing a revoked relation.
+
+    `make check` fails on this, so a deployment can only reach it by shipping
+    past the build guard — which is exactly when a runtime that trusts the
+    flag would serve half a page. Neither the declared nor the undeclared
+    deployment is serving in that state, so neither is told it is.
+    """
+
+    monkeypatch.setattr(
+        web_boundary, "unprotected_route_relations", lambda: ("work_decisions",)
+    )
+
+    assert (
+        web_boundary.boundary_state(
+            declared=True, web_capability="corridor_legacy_dev"
+        )
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+    assert (
+        web_boundary.boundary_state(
+            declared=False, web_capability="corridor_legacy_dev"
+        )
+        is web_boundary.BoundaryState.INCONSISTENT
+    )
+
+
+def test_each_state_answers_an_unapproved_route_in_its_own_way():
+    """404 when the surface is declared, 503 when the deployment is not.
+
+    The status code says whose problem it is. An enforced boundary is serving
+    the surface it declared and the route is simply not part of it; an
+    inconsistent one is misconfigured, and a probe that reads 404 as "fine"
+    would never learn that.
+    """
+
+    outside = ("GET", "/ledger/{slug}")
+    inside = ("GET", "/portfolio")
+
+    assert web_boundary.route_refusal(
+        web_boundary.BoundaryState.ENFORCED, *outside
+    ) == web_boundary.RouteRefusal(404, "not found")
+    assert web_boundary.route_refusal(
+        web_boundary.BoundaryState.INCONSISTENT, *outside
+    ) == web_boundary.RouteRefusal(503, "live_pilot_web_boundary_disabled")
+    assert (
+        web_boundary.route_refusal(web_boundary.BoundaryState.NOT_DECLARED, *outside)
+        is None
+    )
+    for state in web_boundary.BoundaryState:
+        assert web_boundary.route_refusal(state, *inside) is None
 
 
 def test_the_enabled_work_route_refuses_a_project_the_pilot_cannot_serve(
