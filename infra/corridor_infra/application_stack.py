@@ -137,6 +137,13 @@ class CorridorApplicationStack(Stack):
             # than accept sign-ins it cannot fulfil.
             "CORRIDOR_EMAIL_BACKEND": "ses",
             "CORRIDOR_SIGN_IN_SENDER": sign_in_sender,
+            # The origin every sign-in link is built from. Derived from the
+            # public hostname rather than read from the request: base_url is
+            # the caller's own Host header, so a forged host would make
+            # Corridor email the real user a live token pointing elsewhere.
+            "CORRIDOR_PUBLIC_ORIGIN": (
+                f"https://{public_hostname}" if public_hostname else ""
+            ),
             "CORRIDOR_STORAGE_BACKEND": "s3",
             "CORRIDOR_S3_BUCKET": artifact_bucket.bucket_name,
             "CORRIDOR_S3_REGION": Aws.REGION,

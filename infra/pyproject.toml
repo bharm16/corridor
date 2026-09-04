@@ -1,0 +1,30 @@
+# A separate uv project from Corridor's own, deliberately.
+#
+# `aws-cdk-lib` has no business in the application's dependency graph, and the
+# infrastructure toolchain has to be installable and fully locked *before* any
+# AWS credential exists -- a resolution step afterwards would let a compromised
+# release execute while a role that can deploy stacks is active.
+#
+# uv.lock beside this file is what makes `uv sync --frozen` reproducible; the
+# CDK CLI is pinned separately in package.json and installed with `npm ci`.
+[project]
+name = "corridor-infra"
+version = "0.1.0"
+description = "CDK stacks for Corridor's nonproduction AWS environment"
+requires-python = ">=3.12,<3.14"
+dependencies = [
+    "aws-cdk-lib==2.268.0",
+    "constructs==10.8.1",
+    # The current 2.x line. cdk-nag 3.x drops NagSuppressions from its
+    # top-level exports, which every suppression in this project uses.
+    "cdk-nag==2.38.2",
+]
+
+[dependency-groups]
+dev = [
+    "pytest>=8,<10",
+    "pyyaml>=6.0.3",
+]
+
+[tool.uv]
+package = false

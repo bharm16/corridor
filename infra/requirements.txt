@@ -1,8 +1,0 @@
-# Pinned exactly, and the CDK CLI is pinned alongside in package.json, so the
-# library and the CLI cannot drift apart between runs.
-aws-cdk-lib==2.268.0
-constructs==10.8.1
-# The current 2.x line. cdk-nag 3.x drops NagSuppressions from its top-level
-# exports, which every suppression in this project uses; migrating to it is its
-# own change, not a dependency bump folded into this one.
-cdk-nag==2.38.2

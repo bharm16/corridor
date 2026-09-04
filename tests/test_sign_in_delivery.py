@@ -194,6 +194,9 @@ def test_the_web_application_starts_once_delivery_is_configured():
         CORRIDOR_EMAIL_BACKEND="ses",
         CORRIDOR_SIGN_IN_SENDER="no-reply@example.com",
         CORRIDOR_ENVIRONMENT="nonproduction",
+        # Also resolved at import: a deployed environment refuses to start
+        # without the origin its sign-in links are built from.
+        CORRIDOR_PUBLIC_ORIGIN="https://pilot.example.com",
     )
     completed = subprocess.run(
         [sys.executable, "-c", "import corridor.web.auth"],

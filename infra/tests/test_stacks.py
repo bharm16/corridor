@@ -940,3 +940,20 @@ def test_no_other_role_can_send_mail(stacks):
         assert "ses:" not in json.dumps(policy["Properties"]["PolicyDocument"]), (
             logical_id
         )
+
+
+def test_the_web_task_is_told_its_own_public_origin(stacks):
+    """A sign-in link must not be built from the request. The stack derives
+    the origin from the hostname the certificate covers."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition" or "Web" not in logical_id:
+            continue
+        env = {
+            entry["Name"]: entry["Value"]
+            for entry in resource["Properties"]["ContainerDefinitions"][0]["Environment"]
+        }
+        assert env["CORRIDOR_PUBLIC_ORIGIN"] == "https://pilot.example.com"
+        # And it agrees with what a release verifies.
+        outputs = stacks["application"].to_json()["Outputs"]
+        assert outputs["ApplicationUrl"]["Value"] == env["CORRIDOR_PUBLIC_ORIGIN"]

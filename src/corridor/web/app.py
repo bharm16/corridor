@@ -2651,11 +2651,12 @@ def request_sign_in(
             issued = access.issue_sign_in_token(
                 session, normalized, redirect_path=_safe_next(next)
             )
-            link = (
-                str(request.base_url).rstrip("/")
-                + "/sign-in/consume?token="
-                + quote(issued.raw_token)
-            )
+            # Never request.base_url: that is the caller's own Host header,
+            # so a forged host would send the real user a live token pointing
+            # at the attacker. The origin comes from configuration, and only a
+            # local clone is allowed to fall back to the request.
+            origin = auth.PUBLIC_ORIGIN or str(request.base_url).rstrip("/")
+            link = origin + "/sign-in/consume?token=" + quote(issued.raw_token)
             sender.send_sign_in_link(email=normalized, link=link)
     session.commit()
     return TEMPLATES.TemplateResponse(

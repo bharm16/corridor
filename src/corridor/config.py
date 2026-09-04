@@ -96,6 +96,17 @@ class Settings(BaseSettings):
         default="", validation_alias="CORRIDOR_SIGN_IN_SENDER"
     )
 
+    # The origin every sign-in link is built from. A magic link carries a live
+    # one-time credential, so its host may never come from the request: a
+    # forged `Host` (or `X-Forwarded-Host`, or `Forwarded`) would make Corridor
+    # email the real user a valid token pointing at the attacker. Left empty a
+    # development clone falls back to the request, which is why the web
+    # application refuses to start without it anywhere else
+    # (`corridor.web.auth.build_public_origin`).
+    public_origin: str = Field(
+        default="", validation_alias="CORRIDOR_PUBLIC_ORIGIN"
+    )
+
     # The deployment this process runs in. It labels every structured log line
     # (docs/operations/observability-runbook.md) and names nothing else, so a
     # local clone that configures nothing still produces attributable output.

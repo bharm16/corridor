@@ -27,19 +27,21 @@ recreate, which for the database means losing it.
 
 ```bash
 cd infra
-python3 -m venv .venv && ./.venv/bin/pip install -r requirements-dev.txt
+uv sync --frozen                          # its own locked project, not Corridor's
 npm ci                                    # the CDK CLI, pinned in package-lock.json
 export PATH="$PWD/.venv/bin:$PATH"
 
-./.venv/bin/python -m pytest tests -q     # 43 assertions
+uv run python -m pytest tests -q          # 77 assertions
 ./node_modules/.bin/cdk synth --strict --quiet \
   --context corridor:certificateArn=<acm-arn> \
   --context corridor:imageTag=<commit-sha>
 ```
 
-The CLI is pinned in `package.json` and installed with `npm ci`, never
-`npm install --no-save aws-cdk`: an unpinned CLI drifts away from the pinned
-`aws-cdk-lib` between runs, and the pair has to move together.
+`infra/` is its own uv project with its own `uv.lock`, and the CDK CLI is
+pinned in `package.json`. Both are installed with a frozen resolve
+(`uv sync --frozen`, `npm ci`) and both happen *before* any workflow assumes
+an AWS role: a dependency resolution while a credential that can deploy stacks
+is active would let a compromised release use it.
 
 `cdk diff` and `cdk deploy` need credentials and a bootstrapped account; see
 [the runbook](../docs/deployment/nonproduction-aws.md).

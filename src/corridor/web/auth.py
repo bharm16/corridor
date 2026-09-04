@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 from typing import Protocol, runtime_checkable
+from urllib.parse import urlparse
 
 from corridor.config import settings
 
@@ -229,11 +230,65 @@ def build_email_sender(configured=None) -> EmailSender:
     raise EmailDeliveryUnavailable(f"unknown CORRIDOR_EMAIL_BACKEND {backend!r}")
 
 
+class PublicOriginInvalid(RuntimeError):
+    """The configured origin cannot be used to build a credential URL."""
+
+
+def build_public_origin(configured=None) -> str:
+    """The origin every sign-in link is built from, or "" to use the request.
+
+    Returning "" is only ever allowed for a local clone: `make queue` serves on
+    whatever port the developer chose and there is nothing to protect. Every
+    other deployment must configure this, because the alternative is deriving a
+    credential URL from a header the caller controls.
+    """
+
+    configured = configured or settings
+    origin = (configured.public_origin or "").strip().rstrip("/")
+    local = configured.environment in _LOCAL_ENVIRONMENTS
+
+    if not origin:
+        if local:
+            return ""
+        raise PublicOriginInvalid(
+            "CORRIDOR_PUBLIC_ORIGIN is required. Without it a sign-in link is "
+            "built from the request's own Host header, so a forged host makes "
+            "Corridor email the real user a valid token pointing somewhere "
+            "else. Set it to the deployment's public origin, e.g. "
+            "https://pilot.example.com."
+        )
+
+    parsed = urlparse(origin)
+    if parsed.scheme != "https" and not local:
+        raise PublicOriginInvalid(
+            f"CORRIDOR_PUBLIC_ORIGIN must be https, got {parsed.scheme or 'no'} "
+            "scheme; a sign-in token may not travel over plaintext"
+        )
+    if not parsed.hostname:
+        raise PublicOriginInvalid(f"CORRIDOR_PUBLIC_ORIGIN has no host: {origin!r}")
+    if parsed.username or parsed.password:
+        raise PublicOriginInvalid(
+            "CORRIDOR_PUBLIC_ORIGIN must carry no credentials"
+        )
+    if parsed.query or parsed.fragment or parsed.path not in ("", "/"):
+        raise PublicOriginInvalid(
+            "CORRIDOR_PUBLIC_ORIGIN must be a bare origin with no path, query "
+            f"or fragment, got {origin!r}"
+        )
+
+    port = f":{parsed.port}" if parsed.port else ""
+    return f"{parsed.scheme}://{parsed.hostname}{port}"
+
+
 # Resolved at import, so a deployment configured without delivery fails when
 # the web application starts rather than on the first sign-in request. A user
 # hitting the lazy version would see the same success page as always, because
 # /sign-in/request must not disclose whether an address is enrolled.
 _DEFAULT_SENDER: EmailSender = build_email_sender()
+
+# Same reasoning: a misconfigured origin is a startup fault, not something to
+# discover when the first user follows a link to the wrong host.
+PUBLIC_ORIGIN: str = build_public_origin()
 
 
 def get_email_sender() -> EmailSender:
