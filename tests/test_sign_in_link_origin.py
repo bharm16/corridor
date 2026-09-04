@@ -262,5 +262,97 @@ def test_delivery_is_scheduled_as_a_background_task(session, enrolled):
 
     source = inspect.getsource(app_module.request_sign_in)
 
-    assert "background.add_task(_deliver_sign_in_link" in source
+    assert "background.add_task(" in source
+    assert "_deliver_sign_in_link" in source
     assert "sender.send_sign_in_link" not in source
+
+
+# --- a failed delivery must not lock the user out -----------------------
+@pytest.fixture
+def lend_session_to_background(session, monkeypatch):
+    """Point the background task's own factory at this test's transaction.
+
+    `_deliver_sign_in_link` opens a fresh session on purpose -- the request's
+    transaction has committed by the time it runs -- which means its work
+    lands on a different connection and a rollback-scoped test cannot see it.
+    """
+    from contextlib import contextmanager
+
+    from corridor.web import app as app_module
+
+    @contextmanager
+    def _lend():
+        yield session
+
+    monkeypatch.setattr(app_module, "SessionFactory", _lend)
+    return session
+
+
+def test_a_failed_delivery_retires_its_token_so_a_retry_works(
+    session, enrolled, lend_session_to_background
+):
+    """`has_live_token` coalesces duplicate requests, which is right while a
+    link is in someone's inbox and wrong when delivery failed: every retry
+    inside the 15-minute window would find the dead token, issue nothing, and
+    leave an enrolled person unable to sign in. The raw token exists nowhere
+    else once the request is over, so it cannot be resent."""
+    from corridor import access
+
+    client = _client(session, _FailingSender())
+
+    client.post("/sign-in/request", data={"email": ENROLLED, "next": ""})
+
+    # The dead token must not block the next attempt.
+    assert not access.has_live_token(session, ENROLLED), (
+        "an undelivered token is still live; every retry would coalesce onto it"
+    )
+
+    working = _CapturingSender()
+    client = _client(session, working)
+    client.post("/sign-in/request", data={"email": ENROLLED, "next": ""})
+
+    assert working.links, "the retry issued no link"
+
+
+def test_a_successful_delivery_leaves_its_token_alone(session, enrolled):
+    """Retiring on success would spend the link before its recipient sees it."""
+    from corridor import access
+
+    working = _CapturingSender()
+    client = _client(session, working)
+
+    client.post("/sign-in/request", data={"email": ENROLLED, "next": ""})
+
+    assert working.links
+    assert access.has_live_token(session, ENROLLED)
+
+
+def test_retiring_is_idempotent_and_bounded(session, enrolled):
+    """The same single-use guard as consumption: a second attempt changes
+    nothing rather than resurrecting or double-spending a row."""
+    from corridor import access
+
+    issued = access.issue_sign_in_token(session, ENROLLED, redirect_path=None)
+    session.flush()
+
+    assert access.retire_undelivered_sign_in_token(session, issued.raw_token)
+    assert not access.retire_undelivered_sign_in_token(session, issued.raw_token)
+    assert not access.has_live_token(session, ENROLLED)
+
+
+def test_an_unknown_token_retires_nothing(session):
+    from corridor import access
+
+    assert not access.retire_undelivered_sign_in_token(session, "not-a-real-token")
+
+
+def test_a_retired_token_cannot_still_be_spent(session, enrolled):
+    """If the link *was* delivered despite the failure report, it must not
+    remain usable -- retiring is the fail-closed direction."""
+    from corridor import access
+
+    issued = access.issue_sign_in_token(session, ENROLLED, redirect_path=None)
+    session.flush()
+    access.retire_undelivered_sign_in_token(session, issued.raw_token)
+
+    assert access.consume_sign_in_token(session, issued.raw_token) is None

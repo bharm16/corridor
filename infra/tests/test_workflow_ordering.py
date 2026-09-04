@@ -132,17 +132,55 @@ def test_both_dispatch_jobs_validate_before_authenticating():
         assert validate_at < credential_at, job_name
 
 
-def test_the_build_toolchain_is_pinned_by_digest():
-    """A tag is a mutable pointer. These bytes run during both sync steps, in
-    the image that later receives the migration credential -- and the
-    lockfiles do not cover the tool that reads them."""
+def test_every_external_image_is_pinned_by_digest():
+    """A tag is a mutable pointer, and these bytes run with the database
+    credential and the task roles.
+
+    Covers `FROM` as well as `COPY --from`: an earlier version of this test
+    checked only the latter, so it passed while the base image itself was
+    still on a floating tag.
+    """
     import re
 
-    dockerfile = (
-        pathlib.Path(__file__).parents[2] / "Dockerfile"
-    ).read_text()
+    dockerfile = (pathlib.Path(__file__).parents[2] / "Dockerfile").read_text()
 
-    copies = re.findall(r"^COPY --from=(\S+)", dockerfile, re.M)
-    assert copies, "no build stage is copied from"
-    for source in copies:
-        assert "@sha256:" in source, f"{source} is pinned by tag, not digest"
+    references = [
+        match
+        for match in re.findall(r"^FROM\s+(\S+)", dockerfile, re.M)
+        # A later stage may build on an earlier one by name; only external
+        # references need a digest.
+        if "/" in match or ":" in match
+    ]
+    references += re.findall(r"^COPY --from=(\S+)", dockerfile, re.M)
+
+    assert references, "no external image references found"
+    unpinned = [
+        reference for reference in references if "@sha256:" not in reference
+    ]
+    assert not unpinned, f"pinned by tag rather than digest: {unpinned}"
+
+
+@pytest.mark.parametrize(
+    "workflow", ["infra-nonproduction.yml", "app-release.yml"]
+)
+def test_no_credentialed_job_runs_from_an_unreviewed_ref(workflow):
+    """`workflow_dispatch` runs the *selected ref's* YAML, so a job that
+    assumes a role hands that role to whatever the branch says. Checking out a
+    reviewed commit inside the job does not help: the steps around the checkout
+    are the branch's own.
+
+    A read-only-sounding job is not exempt. `corridor-nonprod-cdk-deploy` can
+    assume the CDK deploy bootstrap role, so a `diff` dispatch from a branch
+    could call deployment APIs directly instead of the advertised command.
+    """
+    for job_name, job in _jobs(workflow).items():
+        steps = job.get("steps") or []
+        if not any(
+            CREDENTIAL_ACTION in str(step.get("uses", "")) for step in steps
+        ):
+            continue
+        condition = str(job.get("if", ""))
+        assert "refs/heads/main" in condition, (
+            f"{workflow}:{job_name} assumes an AWS role without a main-only "
+            "guard, so an unreviewed branch's YAML can use it"
+        )

@@ -11,7 +11,10 @@
 # demand, and doing that inside a running task would be slow, silent and
 # unreliable.
 
-FROM python:3.12-slim-bookworm AS base
+# Pinned by digest for the same reason as uv below: a moved tag changes the
+# Python and OS bytes that later run with the database credential and the
+# task roles, with no change in this repository to review.
+FROM python:3.12-slim-bookworm@sha256:782412e85d0f0984994c290652577d4018aff08145c85b262bb63dc0c7522254 AS base
 
 # `uv` is not merely a build tool here: the render subprocess invokes it at
 # run time, so its version is part of the runtime contract.

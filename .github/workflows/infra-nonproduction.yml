@@ -207,7 +207,15 @@ jobs:
             uv run --project workers/render --frozen python -c "import cv2; print(cv2.__version__)"
 
   diff:
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'diff'
+    # main only, like deploy. A dispatch runs the *selected ref's* YAML, and
+    # this job assumes corridor-nonprod-cdk-deploy -- which can assume the CDK
+    # deploy bootstrap role. A branch could therefore call deployment APIs
+    # directly instead of the advertised `cdk diff`, so "read-only" describes
+    # the command, not the credential.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.action == 'diff'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       STACK: ${{ inputs.stack }}

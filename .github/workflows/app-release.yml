@@ -50,6 +50,11 @@ env:
 
 jobs:
   release:
+    # main only. Validating that `commit_sha` is on main proves the *image*
+    # is reviewed; it says nothing about this workflow file, which comes from
+    # whichever ref the dispatch selected. Unmerged YAML could add steps after
+    # the credential and use the role's ECR, ECS and PassRole authority.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: nonproduction
     permissions:

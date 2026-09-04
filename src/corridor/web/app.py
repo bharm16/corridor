@@ -2622,23 +2622,41 @@ def sign_in_form(request: Request, next: str = "", session: Session = Depends(ge
 
 
 def _deliver_sign_in_link(
-    sender: auth.EmailSender, email: str, link: str
+    sender: auth.EmailSender, email: str, link: str, raw_token: str
 ) -> None:
     """Send the link, and let no outcome reach the caller.
 
     Runs after the response has been returned. A delivery failure is a real
     operational event and is logged as one, with the recipient and the bounded
     reason -- never the link, which is a live credential.
+
+    On failure the token is retired. It reached nobody, and `has_live_token`
+    would otherwise make every retry inside its 15-minute lifetime coalesce
+    onto the dead one: the caller keeps seeing the same success page while no
+    link is ever issued or sent. Its own session, because the request's
+    transaction committed before this ran.
     """
 
     try:
         sender.send_sign_in_link(email=email, link=link)
+        return
     except auth.EmailDeliveryUnavailable as error:
-        telemetry.log_event(
-            logging.getLogger("corridor.auth"),
-            "sign_in_link_delivery_failed",
-            reason=str(error),
-        )
+        reason = str(error)
+
+    retired = False
+    try:
+        with SessionFactory() as session:
+            retired = access.retire_undelivered_sign_in_token(session, raw_token)
+            session.commit()
+    except Exception:  # noqa: BLE001 - the response is already sent
+        retired = False
+
+    telemetry.log_event(
+        logging.getLogger("corridor.auth"),
+        "sign_in_link_delivery_failed",
+        reason=reason,
+        token_retired=retired,
+    )
 
 
 @app.post("/sign-in/request", response_class=HTMLResponse)
@@ -2696,7 +2714,9 @@ def request_sign_in(
             # tell an unauthenticated caller which addresses are enrolled. That
             # is exactly what this endpoint's identical answer exists to
             # prevent, and it would undo it through the side door.
-            background.add_task(_deliver_sign_in_link, sender, normalized, link)
+            background.add_task(
+                _deliver_sign_in_link, sender, normalized, link, issued.raw_token
+            )
     session.commit()
     return TEMPLATES.TemplateResponse(
         request,
