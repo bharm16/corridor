@@ -22,7 +22,10 @@ with explicit expiry and revocation checked on every request, so a revoked
 session or membership takes effect immediately.  The HTTP adapter owns cookies
 and request-forgery tokens; this module owns the records and the rules.
 
-Two further boundaries live here (#531, ratifying #503).
+Two further boundaries live here (#531, ratifying #503), and #657 completes
+both: one transaction holds one project-authorization scope, and every relation
+the web capability can read carries a recorded answer to how the partition
+covers it (``PARTITIONED_RELATIONS`` and the three lists beside it).
 
 - **Partition** — membership is also a *data* boundary, not only a rule the
   readers agree to keep.  ``open_project_partition`` asks PostgreSQL to prove
@@ -97,6 +100,12 @@ ATTEMPT_WINDOW = timedelta(minutes=15)
 MAX_ISSUE_PER_EMAIL = 5
 MAX_ISSUE_PER_IP = 20
 MAX_CONSUME_PER_IP = 30
+
+# The SQLSTATE the partition commands raise when a transaction is asked for a
+# second, different scope. Class 25 is "invalid transaction state", which is
+# what this is: the request is well formed and the principal may even be
+# entitled to it, but not here and not now (#662).
+_SCOPE_CONFLICT = "25000"
 
 ISSUE_EMAIL = "issue_email"
 ISSUE_IP = "issue_ip"
@@ -741,10 +750,904 @@ def deprovision_principal(
     )
 
 
+# --- What the partition covers, relation by relation (#657) ---------------
+#
+# ADR-0083 makes the project a data-partition boundary inside the customer
+# database.  A boundary that covers some relations and not others is not a
+# boundary, so every relation ``corridor_web`` can read is classified here and
+# ``tests/test_architecture.py`` refuses a new one that is not.
+#
+# The classification is deliberately not "every relation gets a policy".  Some
+# relations are the partition's own inputs and partitioning them would make the
+# partition unreachable.  Some are genuinely the whole customer database's.
+# One is a view that is answered by the partitioned tables under it.  And some
+# are project-scoped, directly selectable, and simply not covered yet — those
+# are named with what is missing, because an honest list of holes is worth more
+# than a list that reads as complete.
+#
+# ``NOT_YET_PARTITIONED_CEILING`` is a ratchet in the shape the migration
+# policy already uses: it may fall and must never rise.  A new project-scoped
+# relation therefore has to be partitioned, or has to displace one that is.
+
+PARTITION_CLASSIFICATIONS = (
+    "partitioned",
+    "authorization input",
+    "protected through another relation",
+    "customer-wide",
+    "not yet partitioned",
+)
+
+PARTITIONED_RELATIONS: frozenset[str] = frozenset(
+    {
+        "candidates",
+        "delta_decision_supports",
+        "delta_deferrals",
+        "delta_dispositions",
+        "delta_follow_up_plan_evidence",
+        "delta_follow_up_plans",
+        "delta_groups",
+        "delta_record_decisions",
+        "delta_review_packet_children",
+        "delta_review_packet_receipts",
+        "delta_review_packet_reversals",
+        "delta_review_packet_supports",
+        "delta_supersessions",
+        "dependency_events",
+        "evidence_link_sources",
+        "extracted_proposal_facts",
+        "extracted_proposals",
+        "fact_applies_to",
+        "fact_closure_results",
+        "fact_closure_sources",
+        "fact_decisions",
+        "fact_dispositions",
+        "fact_sources",
+        "fact_statement_timings",
+        "facts",
+        "project_baseline_adoptions",
+        "project_baseline_format_manifests",
+        "project_baseline_formats",
+        "project_baseline_source_rows",
+        "project_baseline_sources",
+        "project_issue_profile_artifacts",
+        "project_issue_profiles",
+        "project_record_revisions",
+        "proposed_deltas",
+        "record_inclusion_requests",
+        "recorded_verbal_origin_backfill_receipts",
+        "recorded_verbal_origin_fact_digests",
+        "recorded_verbal_origin_statements",
+        "recorded_verbal_origins",
+        "release_candidate_artifacts",
+        "release_candidates",
+        "release_package_artifacts",
+        "release_packages",
+        "release_preparation_refusals",
+        "source_fact_append_receipts",
+        "source_segments",
+        "support_assessment_sources",
+        "support_assessments",
+    }
+)
+
+AUTHORIZATION_INPUT_RELATIONS: dict[str, str] = {
+    "person_identities": (
+        "identity, not project data; the sign-in path reads it before any "
+        "project is named"
+    ),
+    "project_roster_entries": (
+        "a declared partition is derived from it: `resolve_membership` reads "
+        "it before the declaration, and both proving commands re-prove "
+        "against it as their own owner. Partitioning it would make the "
+        "partition unreachable"
+    ),
+    "projects": (
+        "the registry a slug is resolved against, read by the gate before any "
+        "partition exists"
+    ),
+    "sign_in_attempts": (
+        "identity, not project data; the backoff counter is keyed by email "
+        "and address, never by project"
+    ),
+    "sign_in_tokens": (
+        "identity, not project data; a link is minted and spent before any "
+        "membership is resolved"
+    ),
+    "web_sessions": (
+        "identity, not project data; every request resolves the cookie here "
+        "before it knows which project it is for"
+    ),
+}
+
+PROTECTED_RELATIONS: dict[str, str] = {
+    "current_project_record": (
+        "a view over `fact_decisions` and `facts`, both partitioned. #657 set "
+        "`security_invoker` on it, so it reads as the caller and the "
+        "partition on the tables under it is what answers the query. Without "
+        "that the schema owner's row-level security bypass reached straight "
+        "through it"
+    ),
+}
+
+CUSTOMER_WIDE_RELATIONS: dict[str, str] = {
+    "audit_log": (
+        "the append-only attribution ledger of the whole customer database. "
+        "Offboarding keeps authorship (ADR-0081) and the identity export "
+        "reads it across projects, so it is not one project's rows"
+    ),
+    "external_orgs": (
+        "the organization registry. #331 is explicit that enrollment writes "
+        "no organization-registry row: being in it is not project data"
+    ),
+    "extractor_configurations": (
+        "one sealed extractor receipt per digest, shared by every run in the "
+        "database. #605 de-duplicated it precisely because it is not per- "
+        "project and carries no project column"
+    ),
+}
+
+NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
+    "active_extraction_runs": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, `extraction_runs`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "active_run_declarations": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, `extraction_runs`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "assertions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, "
+        "`evidence_links`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "assignment_notification_attempts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "assignment_notification_dispatches": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "assignment_notification_feedback": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "assignment_notifications": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "automatic_carry_forward_outcomes": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "automatic_carry_forward_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "candidate_dispositions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `candidates`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "cohort_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "commitment_lineages": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "condition_resolutions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependency_events`, "
+        "`evidence_links`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "connector_checkpoint_advance_deliveries": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "connector_checkpoint_advances": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "coordination_summary_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "coordination_summary_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "dependencies": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "dependency_admission_outcomes": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `candidates`, `dependencies`, "
+        "`policy_runs`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "dependency_dismissals": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "dependency_event_evidence": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependency_events`, "
+        "`evidence_links`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "dependency_event_migration_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependency_events`, and a "
+        "direct-id select as `corridor_web` is not refused"
+    ),
+    "dependency_event_scope_decisions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependency_events`, and a "
+        "direct-id select as `corridor_web` is not refused"
+    ),
+    "dependency_event_scopes": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, "
+        "`dependency_event_scope_decisions`, `dependency_events`, and a "
+        "direct-id select as `corridor_web` is not refused"
+    ),
+    "dependency_event_timings": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependency_events`, and a "
+        "direct-id select as `corridor_web` is not refused"
+    ),
+    "dependency_evidence_sufficiencies": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, "
+        "`dependency_event_scopes`, `evidence_links`, and a direct-id select "
+        "as `corridor_web` is not refused"
+    ),
+    "discovered_references": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "dispute_history_resolutions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `assertions`, `dependencies`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "dispute_settlements": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "doc_pages": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "document_notification_attempts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "document_notification_dispatches": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "document_notifications": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "document_quarantines": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "document_rendition_derivations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "documentation_field_confirmations": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, "
+        "`evidence_links`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "documents": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "due_action_notification_attempts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "due_action_notification_dispatches": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "due_action_notifications": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "due_work_occurrences": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `due_work_schedules`, and a "
+        "direct-id select as `corridor_web` is not refused"
+    ),
+    "due_work_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "due_work_schedules": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "event_admission_acceptance_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "event_admission_activations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "event_admission_outcomes": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, "
+        "`candidate_dispositions`, `candidates`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "event_cohort_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_candidate_review_starts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_capture_contracts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_capture_results": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_evaluation_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through no foreign key, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "evidence_investigation_packet_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `evidence_investigation_runs`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "evidence_investigation_review_observations": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through "
+        "`evidence_investigation_shadow_cases`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "evidence_investigation_runs": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_shadow_cases": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "evidence_investigation_shadow_executions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `evidence_investigation_runs`, "
+        "`evidence_investigation_shadow_cases`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "evidence_investigation_shadow_outcomes": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through "
+        "`evidence_investigation_shadow_cases`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "evidence_investigation_step_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `evidence_investigation_runs`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "evidence_links": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, `documents`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "external_report_artifacts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "external_report_releases": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "extraction_failure_diagnosis_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "extraction_failure_diagnosis_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "extraction_measurement_case_states": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "extraction_run_candidates": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `candidates`, "
+        "`extraction_runs`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "extraction_runs": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, "
+        "`extractor_configurations`, and a direct-id select as `corridor_web` "
+        "is not refused"
+    ),
+    "follow_up_plan_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, `dependencies`, "
+        "`project_roster_entries`, and a direct-id select as `corridor_web` "
+        "is not refused"
+    ),
+    "follow_up_plan_reversals": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, "
+        "`follow_up_plan_receipts`, `work_decisions`, and a direct-id select "
+        "as `corridor_web` is not refused"
+    ),
+    "inbound_messages": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "inbound_route_triage": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "inbound_thread_readings": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `candidates`, "
+        "`inbound_messages`, `inbound_threads`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "inbound_threads": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "intake_project_identifiers": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "key_date_draft_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "key_date_draft_row_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `key_date_draft_receipts`, and "
+        "a direct-id select as `corridor_web` is not refused"
+    ),
+    "legacy_ledger_archives": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "milestone_registrations": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `milestones`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "milestones": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "operative_support": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, "
+        "`dependency_event_scopes`, `evidence_links`, and a direct-id select "
+        "as `corridor_web` is not refused"
+    ),
+    "organization_identity_activations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "organization_identity_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "page_processing_failures": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "page_render_derivatives": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "policy_approvals": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "policy_runs": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "processing_artifacts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "production_run_explanation_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "production_run_explanation_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "project_check_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "push_intake_credentials": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "reconfirmation_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, `candidates`, "
+        "`dependencies`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "report_runs": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "retention_holds": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "retention_manifest_items": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "retention_manifests": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through no foreign key, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "retention_references": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "retired_automatic_carry_forward_policy_activations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "retired_dependency_statuses": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "revision_change_explanation_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "revision_change_explanation_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "revision_comparison_findings": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `revision_comparison_runs`, and "
+        "a direct-id select as `corridor_web` is not refused"
+    ),
+    "revision_comparison_runs": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "revision_reconciliation_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "schedule_governing_derivations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "schedule_link_activations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "schedule_link_receipts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "scheduled_report_publications": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "source_deliveries": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "source_fetch_attempts": (
+        "read or written by the transport-authenticated ingress paths, which "
+        "carry no person's membership and so declare no partition. "
+        "`email_intake` selects Dependency and Document with no project "
+        "predicate on the frozen global-address route (ADR-0059); "
+        "partitioning these would refuse a working ingress that this ticket "
+        "may not rewrite"
+    ),
+    "source_intake_draft_configurations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "source_intake_draft_requests": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "stated_by_people": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "statement_coordination_receipts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, "
+        "`candidate_dispositions`, `candidates`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "statement_coordination_reversal_effects": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through "
+        "`statement_coordination_reversals`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "statement_coordination_reversals": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `audit_log`, "
+        "`candidate_dispositions`, `candidates`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "statement_suggestion_eligibility_declarations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "statement_suggestion_protection_ends": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through "
+        "`statement_suggestion_protections`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "statement_suggestion_protections": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "subject_candidate_suggestions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `subject_resolution_attempts`, "
+        "`subject_resolution_candidates`, and a direct-id select as "
+        "`corridor_web` is not refused"
+    ),
+    "subject_resolution_attempts": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "subject_resolution_candidates": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `dependencies`, `documents`, "
+        "`external_orgs`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+    "subject_resolution_decisions": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "token_layers": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `documents`, and a direct-id "
+        "select as `corridor_web` is not refused"
+    ),
+    "unreadable_cell_admission_activations": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "unreadable_cell_reading_profiles": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "unreadable_cell_reading_runs": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "unreadable_cell_reading_steps": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `unreadable_cell_reading_runs`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "unreadable_cell_resolutions": (
+        "project-scoped and directly selectable; the policy is mechanical but "
+        "proving it refuses no working reader is not, and #657 partitioned "
+        "the record and decision families first"
+    ),
+    "work_decision_milestone_impacts": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `milestones`, `work_decisions`, "
+        "and a direct-id select as `corridor_web` is not refused"
+    ),
+    "work_decisions": (
+        "carries no project column, so a partition policy has nothing to "
+        "test. Its project is reached through `commitment_lineages`, "
+        "`dependencies`, and a direct-id select as `corridor_web` is not "
+        "refused"
+    ),
+}
+
+NOT_YET_PARTITIONED_CEILING = 130
+
+
+def classify_relation(name: str) -> tuple[str, str]:
+    """How the partition answers this relation, and why, or ``("", "")``.
+
+    An empty answer is the ratchet's whole point: a relation nobody classified
+    is a relation nobody decided about, and that is what fails the build rather
+    than what quietly reads across projects.
+    """
+    if name in PARTITIONED_RELATIONS:
+        return ("partitioned", "carries the project-partition policy")
+    for classification, relations in (
+        ("authorization input", AUTHORIZATION_INPUT_RELATIONS),
+        ("protected through another relation", PROTECTED_RELATIONS),
+        ("customer-wide", CUSTOMER_WIDE_RELATIONS),
+        ("not yet partitioned", NOT_YET_PARTITIONED_RELATIONS),
+    ):
+        if name in relations:
+            return (classification, relations[name])
+    return ("", "")
+
+
+def unclassified_relations(names: Iterable[str]) -> tuple[str, ...]:
+    """The relations nothing in this module has an answer for, in order."""
+    return tuple(
+        sorted(name for name in names if classify_relation(name)[0] == "")
+    )
+
+
 # --- The project data partition -------------------------------------------
 
 class PartitionRefused(AccessError):
     """The database would not declare this partition."""
+
+
+class PartitionScopeConflict(AccessError):
+    """This transaction already declared a different project-authorization scope.
+
+    A separate class from ``PartitionRefused`` on purpose.  A refusal is an
+    answer about *this person and this project* — a caller may legitimately
+    catch it and offer something narrower.  A conflict is an answer about the
+    *transaction*: two scopes were asked for inside one unit of work, which is
+    a defect in the caller rather than a fact about the roster, and swallowing
+    it would hide exactly the confusion #662 asked to be refused.
+    """
+
+
+def _sqlstate(error: DBAPIError) -> str:
+    """The PostgreSQL error code, or the empty string if the driver hid it."""
+    return str(getattr(error.orig, "sqlstate", "") or "")
 
 
 def open_project_partition(
@@ -782,6 +1685,11 @@ def open_project_partition(
                 select(func.open_project_partition(principal_subject, project_id))
             )
     except DBAPIError as error:
+        if _sqlstate(error) == _SCOPE_CONFLICT:
+            raise PartitionScopeConflict(
+                "this transaction already declared a different "
+                "project-authorization scope"
+            ) from error
         raise PartitionRefused(
             f"no active membership of project {project_id}"
         ) from error
@@ -796,16 +1704,51 @@ def open_member_project_partition(
     A principal with no active membership left declares the empty partition,
     which is what an offboarded person's still-open connection should be able
     to read: nothing.
+
+    The scope this declares is identified by *this person's membership*, not by
+    the ids that membership currently resolves to, so declaring it twice in one
+    transaction is idempotent even if the roster moved in between.  Declaring
+    it after a single project, or for a second principal, is a scope change and
+    is refused (#662).  Like ``open_project_partition`` it runs in a savepoint,
+    so a refused declaration leaves the caller holding what it already had.
     """
-    scoped = session.scalar(
-        select(func.open_member_project_partition(principal_subject))
-    )
+    try:
+        with session.begin_nested():
+            scoped = session.scalar(
+                select(func.open_member_project_partition(principal_subject))
+            )
+    except DBAPIError as error:
+        if _sqlstate(error) == _SCOPE_CONFLICT:
+            raise PartitionScopeConflict(
+                "this transaction already declared a different "
+                "project-authorization scope"
+            ) from error
+        raise PartitionRefused(
+            "the cross-project partition was refused"
+        ) from error
     return tuple(int(value) for value in (scoped or ()))
 
 
 def close_project_partition(session: Session) -> None:
-    """Give up the declared partition; what remains is the empty one."""
+    """Give up the declared partition; what remains is the empty one.
+
+    Giving up the *reading* is not giving up the transaction's declared scope.
+    A closed partition can be reopened as the same scope, and cannot be
+    reopened as another project's or another person's, because closing is a
+    caller saying it is finished — not a caller acquiring permission to start
+    somewhere else (#662).
+    """
     session.execute(select(func.close_project_partition()))
+
+
+def current_partition_declaration(session: Session) -> str | None:
+    """The scope this transaction declared, as the database sealed it.
+
+    ``None`` means nothing has been declared yet, which is every transaction's
+    starting state including on a pooled connection: the declaration is
+    transaction-local, so it reverts when the transaction ends.
+    """
+    return session.scalar(select(func.current_partition_declaration()))
 
 
 def current_project_partition(session: Session) -> tuple[int, ...] | None:

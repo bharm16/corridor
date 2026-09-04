@@ -23,7 +23,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.work_decisions import CoordinationSubject, assign_internal_owner
-from access_support import seed_membership
+from access_support import request_scoped, seed_membership
 
 COORDINATOR = HumanPrincipal("local:web-coordinator")
 ASSIGNEE = HumanPrincipal("local:web-assignee")
@@ -50,9 +50,24 @@ def project(session):
     return project
 
 
-def _acting_client(session, principal):
-    def override_session():
-        yield session
+def _acting_client(session, principal, *, per_request_transaction=False):
+    """A client acting as ``principal`` over the test's session.
+
+    ``per_request_transaction`` gives each simulated request the transaction
+    boundary a real request has (``access_support.request_scoped``). A test
+    that signs in as two people needs it: the project-authorization scope is
+    declared per request and one transaction holds one, so without a boundary
+    the second person's request inherits the first person's declaration and is
+    refused (#657, #662). That boundary rolls each request back, so only a test
+    whose requests read may ask for it — a test that asserts what a request
+    wrote must keep the shared session.
+    """
+    if per_request_transaction:
+        override_session = request_scoped(session)
+    else:
+
+        def override_session():
+            yield session
 
     app.dependency_overrides[get_session] = override_session
     app.dependency_overrides[get_human_principal] = lambda: principal
@@ -108,16 +123,22 @@ def _assignment(session, project, assignee=ASSIGNEE, email="assignee@example.com
 
 
 def test_inbox_shows_only_the_signed_in_members_own_assignments(session, project):
+    """Two people read the same project's inbox; each sees only their own.
+
+    Both requests only read, so each takes a real request's transaction
+    boundary: the scope a request declares names the person as well as the
+    project, and a transaction holds one (#657, #662).
+    """
     _assignment(session, project)
     seed_membership(session, project, OTHER_MEMBER, designations=(access.COORDINATION,))
 
-    assignee_client = _acting_client(session, ASSIGNEE)
+    assignee_client = _acting_client(session, ASSIGNEE, per_request_transaction=True)
     response = assignee_client.get("/assignments/notify-web/inbox")
     assert response.status_code == 200
     assert "Constraint NW-1" in response.text
 
     # A different member sees none of the assignee's inbox.
-    other_client = _acting_client(session, OTHER_MEMBER)
+    other_client = _acting_client(session, OTHER_MEMBER, per_request_transaction=True)
     other_response = other_client.get("/assignments/notify-web/inbox")
     assert other_response.status_code == 200
     assert "Constraint NW-1" not in other_response.text

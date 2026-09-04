@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "f5d998cef07f8c6df744eb20434bfe411789631fdf0a3f6b208b03571bac7ef8"
+    "aa659098ff5389bfc49f122b1b48431ade078cc52d4af3c32039f5590c9952ce"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

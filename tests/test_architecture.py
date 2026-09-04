@@ -1123,3 +1123,129 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
         "VALUE_COPYING_CARRIERS names a column that no longer exists; remove "
         "the entry so the ratchet keeps measuring what is left"
     )
+
+
+# Two relations exist in the migrated database and in no model: the accepted
+# record's projection, which is a view, and one retired activation table the
+# models never mapped.  The static ratchet below reads the models, so they are
+# named here rather than being silently outside it.
+UNMAPPED_WEB_READABLE_RELATIONS = frozenset(
+    {
+        "current_project_record",
+        "retired_automatic_carry_forward_policy_activations",
+    }
+)
+
+
+def test_every_relation_the_web_capability_can_read_is_classified():
+    """A new relation fails until somebody decides how the partition answers it.
+
+    This is the ratchet #657 exists for.  Coverage established once decays the
+    moment the next table lands: #531 partitioned four relations, #640, #529
+    and #533 each remembered to carry their own, and 116 others accumulated
+    underneath answering a direct-id lookup with another customer project's
+    row.  Nothing failed, because nothing was measuring.
+
+    The measurement is static on purpose — `make check` runs this file with no
+    database — so it reads the mapped relations rather than the live catalog.
+    The live half, that a relation classified as partitioned really carries the
+    policy, is proved against real PostgreSQL in
+    `tests/test_project_partition_and_offboarding.py`.
+    """
+
+    from corridor import access
+    from corridor.models import Base
+
+    relations = set(Base.metadata.tables) | UNMAPPED_WEB_READABLE_RELATIONS
+    unclassified = access.unclassified_relations(relations)
+
+    assert unclassified == (), (
+        "these relations have no recorded answer to 'how does the project "
+        "partition cover this?': " + ", ".join(unclassified) + ". Add the "
+        "policy and list it in access.PARTITIONED_RELATIONS, or record in "
+        "access.py which of the other classifications applies and why"
+    )
+
+
+def test_the_classification_names_no_relation_that_no_longer_exists():
+    """A stale entry is a hole that reads as covered; the ratchet measures both ways."""
+
+    from corridor import access
+    from corridor.models import Base
+
+    classified = (
+        set(access.PARTITIONED_RELATIONS)
+        | set(access.AUTHORIZATION_INPUT_RELATIONS)
+        | set(access.PROTECTED_RELATIONS)
+        | set(access.CUSTOMER_WIDE_RELATIONS)
+        | set(access.NOT_YET_PARTITIONED_RELATIONS)
+    )
+    relations = set(Base.metadata.tables) | UNMAPPED_WEB_READABLE_RELATIONS
+
+    assert sorted(classified - relations) == []
+
+
+def test_no_relation_carries_two_classifications():
+    """Exactly one answer each, or the list means nothing."""
+
+    from corridor import access
+
+    groups = (
+        set(access.PARTITIONED_RELATIONS),
+        set(access.AUTHORIZATION_INPUT_RELATIONS),
+        set(access.PROTECTED_RELATIONS),
+        set(access.CUSTOMER_WIDE_RELATIONS),
+        set(access.NOT_YET_PARTITIONED_RELATIONS),
+    )
+    overlaps = sorted(
+        name
+        for index, group in enumerate(groups)
+        for other in groups[index + 1 :]
+        for name in group & other
+    )
+
+    assert overlaps == []
+
+
+def test_the_uncovered_list_may_fall_and_may_never_rise():
+    """The same ratchet shape the migration window uses (#548).
+
+    Naming a hole is how it gets closed, not a place to put the next one. A
+    change that partitions a relation lowers the ceiling and holds the gain; a
+    change that adds a project-scoped relation cannot pay for it by widening
+    the list.
+    """
+
+    from corridor import access
+
+    outstanding = len(access.NOT_YET_PARTITIONED_RELATIONS)
+
+    assert outstanding <= access.NOT_YET_PARTITIONED_CEILING, (
+        f"{outstanding} relations are project-scoped and unpartitioned, above "
+        f"the recorded {access.NOT_YET_PARTITIONED_CEILING}. Partition the new "
+        "relation instead of adding it to the list"
+    )
+    assert outstanding >= access.NOT_YET_PARTITIONED_CEILING, (
+        f"the list is down to {outstanding}; lower "
+        "NOT_YET_PARTITIONED_CEILING in corridor.access to hold the gain"
+    )
+
+
+def test_every_recorded_reason_says_something_specific():
+    """A classification without a reason is a checkbox, not a decision."""
+
+    from corridor import access
+
+    vague = sorted(
+        name
+        for relations in (
+            access.AUTHORIZATION_INPUT_RELATIONS,
+            access.PROTECTED_RELATIONS,
+            access.CUSTOMER_WIDE_RELATIONS,
+            access.NOT_YET_PARTITIONED_RELATIONS,
+        )
+        for name, reason in relations.items()
+        if len(reason.split()) < 8
+    )
+
+    assert vague == []

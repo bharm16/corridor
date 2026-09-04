@@ -30,6 +30,7 @@ from corridor.models import (
     FactDecision,
     FactSource,
     Project,
+    ProjectRosterEntry,
     SourceSegment,
     SupportAssessment,
 )
@@ -726,6 +727,18 @@ def test_the_web_capability_records_a_support_assessment_only_through_the_comman
                 ordinal=1,
             )
         )
+        # The assessment relation is partitioned (#657), so the login that
+        # reads its own append back has to be able to declare a partition for
+        # the project it is appending to. The command itself runs as its own
+        # unpartitioned owner and needs nothing from this.
+        owner.add(
+            ProjectRosterEntry(
+                project_id=project.id,
+                principal_subject="local:alice",
+                display_name="Alice",
+                active=True,
+            )
+        )
         project_id, document_id, segment_id, fact_id = (
             project.id, document.id, segment.id, fact.id
         )
@@ -750,6 +763,10 @@ def test_the_web_capability_records_a_support_assessment_only_through_the_comman
                 ),
                 {"project_id": project_id, "fact_id": fact_id, "segments": [segment_id]},
             ).scalar_one()
+            web.execute(
+                text("select open_project_partition('local:alice', :project_id)"),
+                {"project_id": project_id},
+            )
             stored = web.execute(
                 text(
                     "select a.project_id, a.document_id, a.proposition_kind, a.fact_id, "
