@@ -1,0 +1,100 @@
+{% import "_primitives.html" as ui -%}
+{#
+  Every adopted project this coordinator holds, on one page (#537).
+
+  The page is a reading and nothing else. It has no form, no button, and no
+  input: there is no portfolio-work table to tick, no completion action, and no
+  way to defer or reassign a project from here. Each row's state is derived on
+  every request from the same records the project's own week is derived from
+  (#536), so a decision, a plan, a source, or a template registered anywhere
+  changes this page at once and nothing has to be marked done.
+
+  Each project appears exactly once. The link goes to `/work/{slug}`, which
+  opens on the first section of that project's week still holding work, so the
+  portfolio never has to name a section the project itself would disagree with.
+
+  ADR-0085's three visible consequence levels are deliberately absent, for the
+  reason `project_workflow.py` records: they project onto a per-project content
+  inventory ADR-0091 says is not modelled.
+
+  No customer label is coined here. Every state prints the words #536 already
+  prints for the same fact, and `Review Packet` and `Release Package` stay
+  internal names and appear nowhere.
+
+  There is no script. A quiet project is listed in words as needing nothing, so
+  the answer costs no click; the first project still waiting is the one element
+  carrying `autofocus`, so a keyboard user and a screen reader both start where
+  the work is.
+#}
+<!doctype html>
+<meta charset="utf-8">
+<title>Your projects this week — Corridor</title>
+<style>
+  :root { --line:#e2e2e2; --muted:#666; }
+  * { box-sizing:border-box; }
+  body { margin:0; color:#111; background:#fff; font:15px/1.5 system-ui,sans-serif; }
+  a { color:#06c; }
+  header { display:flex; justify-content:space-between; align-items:baseline;
+           padding:.8rem 1.2rem; border-bottom:1px solid var(--line); }
+  main { max-width:56rem; margin:2rem auto; padding:0 1.2rem 4rem; }
+  h1 { font-size:1.55rem; margin:0 0 .25rem; }
+  .lead { color:var(--muted); margin:0 0 1.5rem; }
+  .project { border:1px solid var(--line); border-radius:7px;
+             padding:.9rem 1.1rem; margin:1rem 0; }
+  .project > h2 { font-size:1.15rem; margin:0 0 .35rem; }
+  .project dl.facts { display:grid; grid-template-columns:auto 1fr;
+                      gap:.15rem .8rem; margin:.4rem 0 .6rem; }
+  .project dl.facts dt { color:var(--muted); }
+  .project dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
+  .quiet { color:var(--muted); font-size:.9rem; }
+</style>
+{{ ui.styles() }}
+
+<header>
+  <b>Corridor</b>
+  <span class="quiet">{{ email }}</span>
+</header>
+
+<main>
+  <h1>Your projects this week</h1>
+  <p class="lead">
+    Every project you coordinate, with what each one needs before its next
+    issue. Sources captured up to {{ cutoff }} are included. Reading this page
+    records nothing about any project, and there is nothing here to mark done.
+  </p>
+
+  {%- if not portfolio.standings %}
+  <p>
+    You coordinate no project whose baseline has been adopted. A project whose
+    record still comes from the legacy path keeps its own work list.
+  </p>
+  {%- else %}
+
+  <p>
+    {{ portfolio.waiting|length }} of {{ portfolio.standings|length }}
+    project{{ "" if portfolio.standings|length == 1 else "s" }} need
+    attention at this cutoff. The rest are listed below and need nothing, so
+    there is no reason to open them.
+  </p>
+
+  {%- for row in portfolio.standings %}
+  <section class="project" id="project-{{ row.slug }}" tabindex="-1"
+           {%- if row.slug == focus %} autofocus{% endif %}
+           aria-labelledby="project-{{ row.slug }}-heading">
+    <h2 id="project-{{ row.slug }}-heading">{{ row.name }}</h2>
+    <p>{{ ui.state(state_label(row.tone, row.sentence)) }}</p>
+    {{ ui.fact_list(row.counts) }}
+    <p>
+      <a href="/work/{{ row.slug }}?from=portfolio">Open {{ row.name }}</a>
+    </p>
+  </section>
+  {%- endfor %}
+
+  <p class="quiet">
+    Each project's state is worked out from its own decisions, Follow-up Plans,
+    delivered sources, and registered output template every time this page is
+    read. Nothing here is stored, owned, scheduled, or completed separately
+    from those records.
+  </p>
+  {%- endif %}
+</main>

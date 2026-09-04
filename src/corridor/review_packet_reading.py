@@ -454,19 +454,255 @@ def standing_accepted_revisions(
     one subject, read once for the whole project.
     """
 
+    return standing_accepted_revisions_by_project(session, (project_id,)).get(
+        project_id, {}
+    )
+
+
+# --- the same queries, asked once for many projects ------------------------
+#
+# A cross-project reading (#537) needs exactly the inputs above for every
+# project it shows.  Asking for them one project at a time is one database
+# round trip per project, which is the thing that ticket forbids, so each
+# loader below is the batched form and the single-project one above delegates
+# to it.  There is no second copy of any rule: the derivation that turns these
+# rows into standings is ``standing_sets``, and both readers call it.
+
+
+def _by_project(
+    project_ids: Sequence[int],
+) -> tuple[tuple[int, ...], bool]:
+    """De-duplicated ids, and whether there is anything at all to ask about."""
+
+    unique = tuple(dict.fromkeys(int(value) for value in project_ids))
+    return unique, bool(unique)
+
+
+def resolved_delta_ids_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, set[int]]:
+    """Every delta a semantic disposition has already settled (#519)."""
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, set[int]] = {project_id: set() for project_id in ids}
+    if not any_ids:
+        return found
+    for project_id, delta_id in session.execute(
+        select(DeltaDisposition.project_id, DeltaDisposition.delta_id).where(
+            DeltaDisposition.project_id.in_(ids)
+        )
+    ).all():
+        found[int(project_id)].add(int(delta_id))
+    return found
+
+
+def superseding_delta_ids_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, dict[int, int]]:
+    """Each replaced delta and the newer occurrence that replaced it (#518)."""
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, dict[int, int]] = {project_id: {} for project_id in ids}
+    if not any_ids:
+        return found
+    for project_id, prior, superseding in session.execute(
+        select(
+            DeltaSupersession.project_id,
+            DeltaSupersession.prior_delta_id,
+            DeltaSupersession.superseding_delta_id,
+        ).where(DeltaSupersession.project_id.in_(ids))
+    ).all():
+        found[int(project_id)][int(prior)] = int(superseding)
+    return found
+
+
+def live_deferrals_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, dict[int, DeltaDeferral]]:
+    """The newest unreversed scheduling receipt for each delta.
+
+    A packet Undo compensates for its scheduling receipts, so a reversed
+    deferral no longer holds anything out — the same rule
+    ``delta_resolution.live_delta_status`` applies, with the newest receipt
+    winning, because a later schedule is the one in force.
+    """
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, dict[int, DeltaDeferral]] = {
+        project_id: {} for project_id in ids
+    }
+    if not any_ids:
+        return found
+    reversed_receipts = (
+        select(DeltaReviewPacketChild.deferral_id)
+        .join(
+            DeltaReviewPacketReversal,
+            DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
+        )
+        .where(DeltaReviewPacketChild.deferral_id.is_not(None))
+    )
+    for row in session.scalars(
+        select(DeltaDeferral)
+        .where(
+            DeltaDeferral.project_id.in_(ids),
+            ~DeltaDeferral.id.in_(reversed_receipts),
+        )
+        .order_by(DeltaDeferral.id)
+    ).all():
+        found[int(row.project_id)][int(row.delta_id)] = row
+    return found
+
+
+def standing_accepted_revisions_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, dict[tuple[str, str], int]]:
+    """``standing_accepted_revisions`` for several projects in one statement."""
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, dict[tuple[str, str], int]] = {
+        project_id: {} for project_id in ids
+    }
+    if not any_ids:
+        return found
     rows = session.execute(
         select(
+            FactDecision.project_id,
             FactDecision.subject_key,
             FactDecision.fact_type,
             func.max(FactDecision.revision_id),
         )
         .where(
-            FactDecision.project_id == project_id,
+            FactDecision.project_id.in_(ids),
             FactDecision.superseded_by.is_(None),
         )
-        .group_by(FactDecision.subject_key, FactDecision.fact_type)
+        .group_by(
+            FactDecision.project_id, FactDecision.subject_key, FactDecision.fact_type
+        )
     ).all()
-    return {(subject, field): int(revision) for subject, field, revision in rows}
+    for project_id, subject, field, revision in rows:
+        found[int(project_id)][(subject, field)] = int(revision)
+    return found
+
+
+def proposed_deltas_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, tuple[ProposedDelta, ...]]:
+    """Every Proposed Delta of each project, in append-only identifier order."""
+
+    ids, any_ids = _by_project(project_ids)
+    collected: dict[int, list[ProposedDelta]] = {
+        project_id: [] for project_id in ids
+    }
+    if not any_ids:
+        return {project_id: () for project_id in ids}
+    for delta in session.scalars(
+        select(ProposedDelta)
+        .where(ProposedDelta.project_id.in_(ids))
+        .order_by(ProposedDelta.id)
+    ).all():
+        collected[int(delta.project_id)].append(delta)
+    return {
+        project_id: tuple(rows) for project_id, rows in collected.items()
+    }
+
+
+def accepted_revision_ids_by_project(
+    session: Session, project_ids: Sequence[int]
+) -> dict[int, int | None]:
+    """The revision each project's record currently stands on, or ``None``.
+
+    The same expression ``read_open_deltas`` uses for one project, so a
+    cross-project reading names the same accepted revision the project's own
+    week does.
+    """
+
+    ids, any_ids = _by_project(project_ids)
+    found: dict[int, int | None] = {project_id: None for project_id in ids}
+    if not any_ids:
+        return found
+    for project_id, revision_id in session.execute(
+        select(
+            ProjectRecordRevision.project_id,
+            func.max(ProjectRecordRevision.id),
+        )
+        .where(ProjectRecordRevision.project_id.in_(ids))
+        .group_by(ProjectRecordRevision.project_id)
+    ).all():
+        found[int(project_id)] = int(revision_id) if revision_id is not None else None
+    return found
+
+
+# --- the standing rule, shared by both readers -----------------------------
+
+
+@dataclass(frozen=True, slots=True)
+class DeltaStandingSets:
+    """Which deltas are open, stale, held out by a deferral, and actionable.
+
+    This is the whole of ADR-0083's open state and ADR-0084's scheduling, with
+    nothing about items, bands, or presentation in it.  ``read_open_deltas``
+    below builds its standings from this, and the cross-project portfolio
+    reading (#537) builds its own from the same call over batched inputs, so
+    the two cannot disagree about what is waiting.
+    """
+
+    open_ids: tuple[int, ...]
+    stale_ids: frozenset[int]
+    held: Mapping[int, DeltaDeferral]
+    actionable: tuple[ProposedDelta, ...]
+
+    @property
+    def actionable_ids(self) -> tuple[int, ...]:
+        return tuple(delta.id for delta in self.actionable)
+
+
+def standing_sets(
+    deltas: Sequence[ProposedDelta],
+    *,
+    resolved: set[int],
+    superseded_by: Mapping[int, int],
+    schedules: Mapping[int, DeltaDeferral],
+    standing: Mapping[tuple[str, str], int],
+    as_of: datetime,
+) -> DeltaStandingSets:
+    """Place every delta of one project, from rows already read.
+
+    Pure: it opens no session and reads no clock.  ``as_of`` is the cutoff its
+    caller declared, and "a newer source version arrived" is answered from
+    append-only identifier order exactly as ADR-0084 requires.
+    """
+
+    # Open under ADR-0083, before scheduling and staleness are considered.
+    open_rows = [
+        delta
+        for delta in deltas
+        if delta.id not in resolved and delta.id not in superseded_by
+    ]
+    stale_ids = frozenset(
+        delta.id for delta in open_rows if is_stale(delta, standing)
+    )
+    live_rows = [delta for delta in open_rows if delta.id not in stale_ids]
+
+    # ADR-0084's wake conditions.  A newer *independent* occurrence for the
+    # same subject and field is read from append-only identifier order, and a
+    # changed accepted value is already the staleness exit above.
+    woken = _woken_by_a_newer_source(live_rows)
+
+    held: dict[int, DeltaDeferral] = {}
+    for delta in live_rows:
+        schedule = schedules.get(delta.id)
+        if schedule is None or delta.id in woken:
+            continue
+        if schedule.deferred_until is not None and schedule.deferred_until <= as_of:
+            continue
+        held[delta.id] = schedule
+
+    return DeltaStandingSets(
+        open_ids=tuple(delta.id for delta in open_rows),
+        stale_ids=stale_ids,
+        held=held,
+        actionable=tuple(delta for delta in live_rows if delta.id not in held),
+    )
 
 
 def recorded_baseline_revision(recorded: str | None) -> int | None:
@@ -593,30 +829,17 @@ def read_open_deltas(
     schedules = _live_deferrals(session, project_id)
     standing = standing_accepted_revisions(session, project_id=project_id)
 
-    # Open under ADR-0083, before scheduling and staleness are considered.
-    open_rows = [
-        delta
-        for delta in deltas
-        if delta.id not in resolved and delta.id not in superseded_by
-    ]
-    stale_ids = {delta.id for delta in open_rows if is_stale(delta, standing)}
-    live_rows = [delta for delta in open_rows if delta.id not in stale_ids]
-
-    # ADR-0084's wake conditions.  A newer *independent* occurrence for the
-    # same subject and field is read from append-only identifier order, and a
-    # changed accepted value is already the staleness exit above.
-    woken = _woken_by_a_newer_source(live_rows)
-
-    held: dict[int, DeltaDeferral] = {}
-    for delta in live_rows:
-        schedule = schedules.get(delta.id)
-        if schedule is None or delta.id in woken:
-            continue
-        if schedule.deferred_until is not None and schedule.deferred_until <= as_of:
-            continue
-        held[delta.id] = schedule
-
-    actionable = [delta for delta in live_rows if delta.id not in held]
+    sets = standing_sets(
+        deltas,
+        resolved=resolved,
+        superseded_by=superseded_by,
+        schedules=schedules,
+        standing=standing,
+        as_of=as_of,
+    )
+    stale_ids = sets.stale_ids
+    held = sets.held
+    actionable = list(sets.actionable)
     contradicted = _contradicted_keys(actionable)
     commitments = _explicitly_scoped_commitments(session, project_id, actionable)
 
@@ -1093,53 +1316,12 @@ def _require_offered(
 
 
 def _resolved_ids(session: Session, project_id: int) -> set[int]:
-    return set(
-        session.scalars(
-            select(DeltaDisposition.delta_id).where(
-                DeltaDisposition.project_id == project_id
-            )
-        ).all()
-    )
+    return resolved_delta_ids_by_project(session, (project_id,)).get(project_id, set())
 
 
 def _superseded_by(session: Session, project_id: int) -> dict[int, int]:
-    return {
-        int(prior): int(superseding)
-        for prior, superseding in session.execute(
-            select(
-                DeltaSupersession.prior_delta_id,
-                DeltaSupersession.superseding_delta_id,
-            ).where(DeltaSupersession.project_id == project_id)
-        ).all()
-    }
+    return superseding_delta_ids_by_project(session, (project_id,)).get(project_id, {})
 
 
 def _live_deferrals(session: Session, project_id: int) -> dict[int, DeltaDeferral]:
-    """The newest unreversed scheduling receipt for each delta.
-
-    A packet Undo compensates for its scheduling receipts, so a reversed
-    deferral no longer holds anything out — the same rule
-    ``delta_resolution.live_delta_status`` applies, read for the whole project
-    at once and with the newest receipt winning, because a later schedule is
-    the one in force.
-    """
-
-    reversed_receipts = (
-        select(DeltaReviewPacketChild.deferral_id)
-        .join(
-            DeltaReviewPacketReversal,
-            DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
-        )
-        .where(DeltaReviewPacketChild.deferral_id.is_not(None))
-    )
-    newest: dict[int, DeltaDeferral] = {}
-    for row in session.scalars(
-        select(DeltaDeferral)
-        .where(
-            DeltaDeferral.project_id == project_id,
-            ~DeltaDeferral.id.in_(reversed_receipts),
-        )
-        .order_by(DeltaDeferral.id)
-    ).all():
-        newest[int(row.delta_id)] = row
-    return newest
+    return live_deferrals_by_project(session, (project_id,)).get(project_id, {})

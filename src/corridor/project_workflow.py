@@ -66,7 +66,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.baseline_adoption import effective_baseline_formats
+from corridor.baseline_adoption import effective_baseline_formats_by_project
 from corridor.models import (
     BaselineSourceRow,
     DeltaFollowUpPlan,
@@ -176,6 +176,24 @@ class ProjectWorkflow:
                 return section.name
         return self.sections[0].name
 
+    @property
+    def changes_awaiting_decision(self) -> tuple[int, ...]:
+        """Every actionable proposed change with no live Follow-up Plan.
+
+        The same set the review section counts questions over: each actionable
+        delta is offered by exactly one item (#494), so a question is still
+        waiting on the coordinator's own judgement exactly when one of these
+        is. It is named here so the cross-project reading (#537) counts the
+        same thing rather than a second thing that resembles it.
+        """
+
+        planned = {need.delta_id for need in self.follow_up}
+        return tuple(
+            delta_id
+            for delta_id in self.review.reading.actionable_delta_ids
+            if delta_id not in planned
+        )
+
     def section(self, name: str) -> WorkflowSection | None:
         for section in self.sections:
             if section.name == name:
@@ -241,8 +259,33 @@ def outstanding_follow_up(
     recorded it was undone, and an act that never stood raises no ask.
     """
 
-    if not open_delta_ids:
-        return ()
+    return outstanding_follow_up_by_project(
+        session, open_delta_ids={project_id: tuple(open_delta_ids)}
+    ).get(project_id, ())
+
+
+def outstanding_follow_up_by_project(
+    session: Session, *, open_delta_ids: Mapping[int, Sequence[int]]
+) -> dict[int, tuple[FollowUpNeed, ...]]:
+    """``outstanding_follow_up`` for several projects, in three statements.
+
+    The cross-project reading (#537) must not ask this once per project, and
+    it must not answer it differently either, so the single-project reader
+    above is this function over one project.
+    """
+
+    found: dict[int, tuple[FollowUpNeed, ...]] = {
+        project_id: () for project_id in open_delta_ids
+    }
+    live = {
+        project_id: tuple(delta_ids)
+        for project_id, delta_ids in open_delta_ids.items()
+        if delta_ids
+    }
+    if not live:
+        return found
+    project_ids = tuple(live)
+    every_open = tuple({delta_id for ids in live.values() for delta_id in ids})
     undone = (
         select(DeltaReviewPacketChild.follow_up_plan_id)
         .join(
@@ -250,7 +293,7 @@ def outstanding_follow_up(
             DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
         )
         .where(
-            DeltaReviewPacketChild.project_id == project_id,
+            DeltaReviewPacketChild.project_id.in_(project_ids),
             DeltaReviewPacketChild.follow_up_plan_id.is_not(None),
         )
     )
@@ -261,57 +304,75 @@ def outstanding_follow_up(
             ProposedDelta.id == DeltaFollowUpPlan.delta_id,
         )
         .where(
-            DeltaFollowUpPlan.project_id == project_id,
-            ProposedDelta.project_id == project_id,
-            DeltaFollowUpPlan.delta_id.in_(tuple(open_delta_ids)),
+            DeltaFollowUpPlan.project_id.in_(project_ids),
+            ProposedDelta.project_id == DeltaFollowUpPlan.project_id,
+            DeltaFollowUpPlan.delta_id.in_(every_open),
             DeltaFollowUpPlan.id.not_in(undone),
         )
         .order_by(DeltaFollowUpPlan.id)
     ).all()
+    # One project's plan may name a delta that another project has open; the
+    # membership test above is deliberately per project, not over the union.
+    rows = [
+        (plan, delta)
+        for plan, delta in rows
+        if plan.delta_id in set(live.get(plan.project_id, ()))
+    ]
     if not rows:
-        return ()
+        return found
     names = _subject_names(
         session,
-        project_id,
+        project_ids,
         {delta.target_subject_identity for _, delta in rows},
     )
-    return tuple(
-        FollowUpNeed(
-            plan_id=plan.id,
-            delta_id=plan.delta_id,
-            revision_id=plan.revision_id,
-            subject_name=names.get(
-                delta.target_subject_identity, delta.target_subject_identity
-            ),
-            field_name=(
-                field_label(delta.target_field)
-                if delta.target_field
-                else "the whole record row"
-            ),
-            open_question=plan.open_question,
-            responsible=(
-                plan.responsible_principal or plan.responsible_organization or ""
-            ),
-            return_date=plan.return_date.date() if plan.return_date else None,
+    collected: dict[int, list[FollowUpNeed]] = {
+        project_id: [] for project_id in open_delta_ids
+    }
+    for plan, delta in rows:
+        collected[plan.project_id].append(
+            FollowUpNeed(
+                plan_id=plan.id,
+                delta_id=plan.delta_id,
+                revision_id=plan.revision_id,
+                subject_name=names.get(
+                    (plan.project_id, delta.target_subject_identity),
+                    delta.target_subject_identity,
+                ),
+                field_name=(
+                    field_label(delta.target_field)
+                    if delta.target_field
+                    else "the whole record row"
+                ),
+                open_question=plan.open_question,
+                responsible=(
+                    plan.responsible_principal or plan.responsible_organization or ""
+                ),
+                return_date=plan.return_date.date() if plan.return_date else None,
+            )
         )
-        for plan, delta in rows
+    found.update(
+        (project_id, tuple(needs)) for project_id, needs in collected.items()
     )
+    return found
 
 
 def _subject_names(
-    session: Session, project_id: int, identities: set[str]
-) -> dict[str, str]:
+    session: Session, project_ids: Sequence[int], identities: set[str]
+) -> dict[tuple[int, str], str]:
     """The customer's own identifier for each subject, where one was adopted."""
 
-    if not identities:
+    if not identities or not project_ids:
         return {}
     rows = session.scalars(
         select(BaselineSourceRow).where(
-            BaselineSourceRow.project_id == project_id,
+            BaselineSourceRow.project_id.in_(tuple(project_ids)),
             BaselineSourceRow.record_subject_key.in_(tuple(identities)),
         )
     ).all()
-    return {row.record_subject_key: row.business_identity for row in rows}
+    return {
+        (row.project_id, row.record_subject_key): row.business_identity
+        for row in rows
+    }
 
 
 # --- issue readiness -------------------------------------------------------
@@ -329,32 +390,50 @@ def issue_readiness(
     template cannot produce the artifact the issue is defined by.
     """
 
-    problems: list[ReadinessProblem] = []
-    if "output_template" not in effective_baseline_formats(session, project_id):
-        problems.append(
-            ReadinessProblem(
-                NO_OUTPUT_TEMPLATE,
-                "No output template is registered, so the customer's own "
-                "workbook cannot be produced for this issue.",
+    return issue_readiness_by_project(session, project_ids=(project_id,)).get(
+        project_id, ()
+    )
+
+
+def issue_readiness_by_project(
+    session: Session, *, project_ids: Sequence[int]
+) -> dict[int, tuple[ReadinessProblem, ...]]:
+    """``issue_readiness`` for several projects, in two statements."""
+
+    ids = tuple(dict.fromkeys(int(value) for value in project_ids))
+    problems: dict[int, list[ReadinessProblem]] = {
+        project_id: [] for project_id in ids
+    }
+    if not ids:
+        return {}
+    formats = effective_baseline_formats_by_project(session, ids)
+    for project_id in ids:
+        if "output_template" not in formats.get(project_id, {}):
+            problems[project_id].append(
+                ReadinessProblem(
+                    NO_OUTPUT_TEMPLATE,
+                    "No output template is registered, so the customer's own "
+                    "workbook cannot be produced for this issue.",
+                )
             )
-        )
     unread = session.scalars(
         select(Document)
         .where(
-            Document.project_id == project_id,
+            Document.project_id.in_(ids),
             Document.parse_status != "parsed",
         )
         .order_by(Document.id)
     ).all()
-    problems.extend(
-        ReadinessProblem(
-            UNREAD_SOURCE,
-            f"{document.filename} was delivered but could not be read "
-            f"({document.parse_status}), so this issue's coverage is incomplete.",
+    for document in unread:
+        problems[int(document.project_id)].append(
+            ReadinessProblem(
+                UNREAD_SOURCE,
+                f"{document.filename} was delivered but could not be read "
+                f"({document.parse_status}), so this issue's coverage is "
+                "incomplete.",
+            )
         )
-        for document in unread
-    )
-    return tuple(problems)
+    return {project_id: tuple(rows) for project_id, rows in problems.items()}
 
 
 # --- the sections ----------------------------------------------------------
