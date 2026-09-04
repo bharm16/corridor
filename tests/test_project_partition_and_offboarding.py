@@ -12,6 +12,14 @@ login against committed rows and run the query a careless reader would write —
 one project's rows. They also forge the session setting by hand and assert the
 forged partition is the empty one.
 
+**A seal belongs to one transaction (#676).** Sealing the scope was not enough
+on its own: the web login can read both the scope setting and its seal, and
+before #676 it could replay that genuine pair with ``set_config`` in a later
+transaction on the same pooled connection and be believed. So the replay tests
+capture what a legitimate reading left behind, commit, and try it again on the
+same physical connection — including after the principal has been offboarded,
+which is the guarantee the replay actually defeats.
+
 **Revocation.** "Tests proving revoked access" cannot mean asserting that
 ``active`` became false. So the offboarding tests drive the real HTTP routes
 with the cookie a real magic link established, offboard the person, and assert
@@ -33,9 +41,9 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.engine import make_url
-from sqlalchemy.exc import ProgrammingError
+from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
-from sqlalchemy.pool import NullPool
+from sqlalchemy.pool import NullPool, QueuePool
 
 from corridor import access, audit, identity_audit
 from corridor.config import settings
@@ -944,6 +952,385 @@ def test_offboarding_leaves_a_live_connection_with_the_empty_partition(
             access.open_project_partition(
                 web, principal_subject=LEAVER.subject, project_id=ours
             )
+    web_connection.rollback()
+
+
+# --- A seal belongs to one transaction (#676) ------------------------------
+
+# Everything a legitimate declaration leaves on the connection, and therefore
+# everything a replay has to work with. The web login may read all four; that
+# is not the defect and no privilege is added to stop it.
+SCOPE_SETTINGS = (
+    "corridor.project_partition",
+    "corridor.project_partition_seal",
+)
+DECLARATION_SETTINGS = (
+    "corridor.project_partition_declaration",
+    "corridor.project_partition_declaration_seal",
+)
+
+
+def _capture(web, names) -> dict[str, str]:
+    """Read the named settings exactly as the deployed login can."""
+
+    captured = {
+        name: web.scalar(text("select current_setting(:name, true)"), {"name": name})
+        for name in names
+    }
+    assert all(value for value in captured.values()), (
+        f"nothing was captured to replay, so the test would prove nothing: {captured}"
+    )
+    return captured
+
+
+def _replay(web, captured: dict[str, str]) -> None:
+    """Put the genuine values back, by hand, in whatever transaction we are in."""
+
+    for name, value in captured.items():
+        web.execute(
+            text("select set_config(:name, :value, true)"),
+            {"name": name, "value": value},
+        )
+
+
+def _declaration_refused(web) -> str:
+    """Read the declaration, requiring it to fail closed, and return the SQLSTATE."""
+
+    with pytest.raises(DBAPIError) as refused:
+        access.current_partition_declaration(web)
+    assert "not one the database sealed" in str(refused.value)
+    return str(getattr(refused.value.orig, "sqlstate", ""))
+
+
+@pytest.fixture
+def pooled_web_engine(runtime_database):
+    """The deployed login behind a real pool, so one connection outlives one transaction.
+
+    #676 crosses a transaction boundary while keeping the physical connection,
+    which is exactly what a pooled deployment does between two requests.
+    ``pool_size=1`` with no overflow makes that reuse certain rather than
+    likely, and every test below asserts ``pg_backend_pid()`` is unchanged, so
+    a pool that quietly opened a second connection cannot let a replay test
+    pass for the wrong reason.
+    """
+
+    web_engine = create_engine(
+        _web_url(runtime_database.name),
+        poolclass=QueuePool,
+        pool_size=1,
+        max_overflow=0,
+        future=True,
+    )
+    yield web_engine
+    web_engine.dispose()
+
+
+def _open_and_capture(pooled_web_engine, project_id: int) -> tuple[int, dict[str, str]]:
+    """One legitimate reading of one project, committed, with what it left behind."""
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        backend_pid = web.scalar(text("select pg_backend_pid()"))
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=project_id
+        )
+        captured = _capture(web, SCOPE_SETTINGS + DECLARATION_SETTINGS)
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+        web.commit()
+    return backend_pid, captured
+
+
+def test_opening_a_partition_assigns_a_transaction_id(two_projects, web_connection):
+    """The accepted cost of #676, asserted rather than assumed.
+
+    Binding a seal to ``pg_current_xact_id()`` means a request that only reads
+    stops being id-less. That is the documented price of the boundary, so it is
+    recorded as a fact of the seam and not left to a comment nobody checks.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        assert web.scalar(text("select pg_current_xact_id_if_assigned()")) is None
+
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        assert web.scalar(text("select pg_current_xact_id_if_assigned()")) is not None
+    web_connection.rollback()
+
+
+def test_a_genuine_scope_and_declaration_replayed_later_reads_nothing(
+    two_projects, pooled_web_engine
+):
+    """The defect, closed: the honest pair is worth nothing in the next transaction.
+
+    Nothing here is forged. Every value was minted by the database for a
+    principal who was entitled to it, on this very connection, a moment ago.
+    What the connection no longer has is the transaction that earned them.
+    """
+
+    ours, _theirs = two_projects
+    backend_pid, captured = _open_and_capture(pooled_web_engine, ours)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        _replay(web, captured)
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert _declaration_refused(web) == "25000"
+        web.rollback()
+
+
+def test_replay_still_fails_after_the_principal_is_offboarded(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """The guarantee the replay actually defeated, restored.
+
+    ``deprovision_principal`` is the whole offboarding act, and before #676 it
+    left every connection that had ever read a project able to read it again by
+    putting four settings back. Revoking after the reading, rather than before,
+    is the point: the values are genuine and the membership behind them is gone.
+    """
+
+    ours, _theirs = two_projects
+    backend_pid, captured = _open_and_capture(pooled_web_engine, ours)
+
+    with runtime_database.session_factory.begin() as owner:
+        access.deprovision_principal(owner, principal=LEAVER, operator=OPERATOR)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        _replay(web, captured)
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert _declaration_refused(web) == "25000"
+        web.rollback()
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+        web.rollback()
+
+
+def test_replaying_only_the_scope_pair_buys_no_rows(two_projects, pooled_web_engine):
+    """The two seals are independent, so each has to refuse on its own.
+
+    Replaying the scope without the declaration is the cheaper attack: it needs
+    no declaration at all, only the setting row-level security actually reads.
+    """
+
+    ours, _theirs = two_projects
+    backend_pid, captured = _open_and_capture(pooled_web_engine, ours)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        _replay(web, {name: captured[name] for name in SCOPE_SETTINGS})
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+        # Nothing was declared, so the declaration reads as the empty one
+        # rather than refusing: this attempt never touched that half.
+        assert access.current_partition_declaration(web) is None
+        web.rollback()
+
+
+def test_replaying_only_the_declaration_pair_refuses_every_declaration(
+    member_of_both, pooled_web_engine
+):
+    """And the other half, alone, fails closed instead of opening the gate.
+
+    The principal is still a member here, so the declaration this replays is
+    one the database would grant on request. It is refused anyway, because an
+    unverifiable declaration refuses everything after it (#657) and a
+    declaration from a finished transaction is unverifiable (#676).
+    """
+
+    ours, _theirs = member_of_both
+    backend_pid, captured = _open_and_capture(pooled_web_engine, ours)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        _replay(web, {name: captured[name] for name in DECLARATION_SETTINGS})
+
+        assert access.current_project_partition(web) is None
+
+        with pytest.raises(access.PartitionScopeConflict):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=ours
+            )
+        assert web.scalars(select(SourceSegment)).all() == []
+
+        # Last, because this one raises outside a savepoint and so leaves the
+        # transaction aborted: refusing a declaration is the database's answer,
+        # not a recoverable one the way a refused *declaration attempt* is.
+        assert _declaration_refused(web) == "25000"
+        web.rollback()
+
+
+def test_a_genuine_member_reading_replayed_later_reads_nothing(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """The cross-project partition is sealed by the same rule, so it replays no better.
+
+    Both partitions have to be covered or the weaker one is the way in: the
+    member reading is the scope an offboarded person's connection is meant to
+    end up holding, empty.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=pooled_web_engine) as web:
+        backend_pid = web.scalar(text("select pg_backend_pid()"))
+        assert access.open_member_project_partition(
+            web, principal_subject=LEAVER.subject
+        ) == (ours,)
+        captured = _capture(web, SCOPE_SETTINGS + DECLARATION_SETTINGS)
+        assert len(web.scalars(select(SourceSegment)).all()) == 1
+        web.commit()
+
+    with runtime_database.session_factory.begin() as owner:
+        access.deprovision_principal(owner, principal=LEAVER, operator=OPERATOR)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        _replay(web, captured)
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert _declaration_refused(web) == "25000"
+        web.rollback()
+
+
+def test_a_replay_that_arms_a_transaction_id_of_its_own_still_reads_nothing(
+    runtime_database, two_projects, pooled_web_engine
+):
+    """The replay that the fail-closed check alone does not catch.
+
+    Refusing a transaction that has *no* id assigned is the cheap half of #676,
+    and it is the half a replay usually meets, because a reading request never
+    assigns one by itself. But the web login can assign one whenever it likes —
+    ``select pg_current_xact_id()``, or any write — and a seal that merely
+    required *some* id would then verify a replayed pair against a transaction
+    that never earned it.
+
+    So this replays against an armed transaction, which is the case that can
+    only fail because the id is *in the sealed material*. Both seals are
+    replayed, and the principal is offboarded first, so nothing but the
+    binding is left to refuse it.
+    """
+
+    ours, _theirs = two_projects
+    backend_pid, captured = _open_and_capture(pooled_web_engine, ours)
+
+    with runtime_database.session_factory.begin() as owner:
+        access.deprovision_principal(owner, principal=LEAVER, operator=OPERATOR)
+
+    with OrmSession(bind=pooled_web_engine) as web:
+        assert web.scalar(text("select pg_backend_pid()")) == backend_pid
+        armed = web.scalar(text("select pg_current_xact_id()"))
+        assert web.scalar(text("select pg_current_xact_id_if_assigned()")) == armed
+        _replay(web, captured)
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+        assert _declaration_refused(web) == "25000"
+        web.rollback()
+
+
+def test_a_transaction_may_restore_its_own_settings_by_hand(
+    two_projects, web_connection
+):
+    """What is refused is the *later* transaction, not `set_config` itself.
+
+    Without this the replay tests above would pass just as well if the seal had
+    been broken outright, or if any hand-written setting poisoned the scope
+    forever. Here the same values go back on the same transaction that earned
+    them, and the reading resumes — so the refusals above are about transaction
+    identity and nothing else.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        captured = _capture(web, SCOPE_SETTINGS + DECLARATION_SETTINGS)
+
+        access.close_project_partition(web)
+        assert access.current_project_partition(web) is None
+
+        _replay(web, captured)
+
+        assert access.current_project_partition(web) == (ours,)
+        assert (
+            access.current_partition_declaration(web)
+            == f"project:{LEAVER.subject}:{ours}"
+        )
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+    web_connection.rollback()
+
+
+def test_redeclaring_the_same_scope_seals_it_to_the_same_transaction(
+    two_projects, web_connection
+):
+    """Idempotence survives the binding: the same scope, sealed twice, is one seal.
+
+    If the seal moved between two declarations of the same scope inside one
+    transaction — as it would over a clock reading — #657's idempotence would
+    hold only by accident of which seal was read last.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        first = _capture(web, SCOPE_SETTINGS + DECLARATION_SETTINGS)
+
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        assert _capture(web, SCOPE_SETTINGS + DECLARATION_SETTINGS) == first
+        assert access.current_project_partition(web) == (ours,)
+    web_connection.rollback()
+
+
+def test_a_refusal_before_any_scope_does_not_spoil_the_scope_that_follows(
+    two_projects, web_connection
+):
+    """The transaction id an aborted savepoint assigned is still this transaction's.
+
+    ``open_project_partition`` proves membership by raising inside a savepoint
+    (#654). A refusal can therefore be the thing that first assigns the
+    transaction id, and the savepoint that aborts does not hand a *top-level*
+    id back. If the seal had been bound to anything a subtransaction owns, the
+    declaration after this refusal would seal against an id the verifier could
+    no longer see.
+    """
+
+    ours, theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        assert access.current_project_partition(web) == (ours,)
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
     web_connection.rollback()
 
 
