@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -224,6 +224,13 @@ clean-test-databases:
 
 storage:
 	uv run python -m corridor.storage_cli $(ARGS)
+
+# The identity and authorization export (#531): every enrollment, sign-in,
+# sign-out, designation change, and deprovisioning act, oldest first. Resume a
+# previous export with the id it ended on; nothing else narrows it.
+#   make identity-audit ARGS="--format=csv --after-id=9100"
+identity-audit:
+	uv run python -m corridor.identity_audit_cli $(ARGS)
 
 # Plan first; execute requires the exact manifest digest. Holds and lifts are
 # separate attributable commands through CORRIDOR_HUMAN_PRINCIPAL.

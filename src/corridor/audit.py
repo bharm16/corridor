@@ -74,10 +74,29 @@ COMMITMENT_LINEAGE = "commitment_lineage"
 # confirmation (#349). The confirmation binds the acting person to one exact
 # Document; extraction and admission remain the machine's separate, later acts.
 DOCUMENT = "document"
+# The stable subject a verified email resolves to (#531).  Sign-in, sign-out,
+# and deprovisioning are acts about a *person*, not about one project, so they
+# are recorded against the identity rather than smeared across whichever
+# projects the person happened to be enrolled on.  A principal that never
+# enrolled through `enroll_member` carries no identity row; those entries use
+# entity id 0, which no `person_identities` row can ever have.
+PERSON_IDENTITY = "person_identity"
 
 ENTITY_TYPES = frozenset(
-    {DEPENDENCY, CANDIDATE, MILESTONE, PROJECT, COMMITMENT_LINEAGE, DOCUMENT}
+    {
+        DEPENDENCY,
+        CANDIDATE,
+        MILESTONE,
+        PROJECT,
+        COMMITMENT_LINEAGE,
+        DOCUMENT,
+        PERSON_IDENTITY,
+    }
 )
+
+# `person_identities.id` is a bigserial, so 0 is unreachable and can stand for
+# "this act names a principal that no verified email is bound to".
+UNBOUND_IDENTITY = 0
 
 # Every act this system records against the Ledger. `entity_type` was
 # checked against its three constants while `action` stayed free text, so
@@ -190,6 +209,24 @@ DISMISS_CONDITION = "dismiss_condition"
 # the exact transaction as the Project Record revision and the operating-mode
 # transition it authorizes, and a rolled-back adoption records nothing.
 ADOPT_BASELINE = "adopt_baseline"
+# The identity and authorization acts a pilot has to be able to export (#531,
+# #503).  Enrollment already had ENROLL_PROJECT_MEMBER; these complete the
+# picture a customer's security review asks for — when a session was
+# established, when one was given up, and when a person was taken off the
+# system entirely.  SIGN_IN is written where the session record is written, so
+# a rolled-back sign-in leaves no claim that one happened.
+SIGN_IN = "sign_in"
+SIGN_OUT = "sign_out"
+# One project membership deactivated as part of offboarding, scoped to the one
+# project it removes, exactly as ENROLL_PROJECT_MEMBER is scoped to the one
+# project it grants.
+DEPROVISION_PROJECT_MEMBER = "deprovision_project_member"
+# The whole offboarding act: every membership deactivated, every live session
+# revoked, every pending sign-in link spent.  The identity binding itself is
+# deliberately *not* removed — an accepted decision keeps the human principal
+# that made it, and an export that could not name that person any more would be
+# a worse record, not a safer one (#503, ADR-0081).
+DEPROVISION_PRINCIPAL = "deprovision_principal"
 
 AUTOMATIC_CARRY_FORWARD_ACTOR = "corridor:automatic-carry-forward"
 DEPENDENCY_ADMISSION_ACTOR = "corridor:dependency-admission"
@@ -247,6 +284,10 @@ ACTIONS = frozenset(
         CLEAR_CONDITION,
         DISMISS_CONDITION,
         ADOPT_BASELINE,
+        SIGN_IN,
+        SIGN_OUT,
+        DEPROVISION_PROJECT_MEMBER,
+        DEPROVISION_PRINCIPAL,
         FLAG_INCORRECT_ASSIGNMENT,
     }
 )
