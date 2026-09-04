@@ -82,6 +82,20 @@ class Settings(BaseSettings):
         default=False, validation_alias="CORRIDOR_LIVE_PILOT_WEB_BOUNDARY"
     )
 
+    # How a sign-in link reaches the person who asked for it. "logging" is the
+    # fail-safe default that delivers nothing, so a deployment that forgets to
+    # configure delivery cannot quietly issue links nobody receives -- the web
+    # application refuses to start with it outside development and test
+    # (`corridor.web.auth.build_email_sender`).
+    email_backend: str = Field(
+        default="logging", validation_alias="CORRIDOR_EMAIL_BACKEND"
+    )
+    # The verified SES identity every sign-in link is sent from. Required by
+    # the "ses" backend; SES rejects an unverified sender outright.
+    sign_in_sender_address: str = Field(
+        default="", validation_alias="CORRIDOR_SIGN_IN_SENDER"
+    )
+
     # The deployment this process runs in. It labels every structured log line
     # (docs/operations/observability-runbook.md) and names nothing else, so a
     # local clone that configures nothing still produces attributable output.

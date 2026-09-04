@@ -36,6 +36,12 @@ from constructs import Construct
 # The port `make queue` serves on: uvicorn corridor.web.app:app --port 8412.
 CORRIDOR_APP_PORT = 8412
 
+# The only addresses whose forwarding headers the web process trusts. The ALB
+# lives in these subnets and nothing else can reach the task's port, so a
+# header arriving from anywhere else is a caller trying to choose its own
+# rate-limit identity.
+CORRIDOR_VPC_CIDR = "10.20.0.0/16"
+
 # Every role Corridor creates lives here. The CloudFormation execution policy
 # only permits role writes on this path, so a stack cannot quietly create a
 # role somewhere the policy does not constrain.
@@ -49,7 +55,7 @@ class CorridorNetworkStack(Stack):
         self.vpc = ec2.Vpc(
             self,
             "Vpc",
-            ip_addresses=ec2.IpAddresses.cidr("10.20.0.0/16"),
+            ip_addresses=ec2.IpAddresses.cidr(CORRIDOR_VPC_CIDR),
             max_azs=2,
             nat_gateways=0,
             enable_dns_support=True,

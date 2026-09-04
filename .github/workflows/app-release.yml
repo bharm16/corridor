@@ -2,9 +2,7 @@
 #
 # Separate from infra-nonproduction.yml because it is separate work with a
 # separate identity. This workflow never deploys a stack; it registers new task
-# definition revisions and moves resources CloudFormation already created. Its
-# role holds no cloudformation write authority and cannot assume the CDK
-# bootstrap roles.
+# definition revisions and moves resources CloudFormation already created.
 #
 # Pushing a tag to ECR does not change an existing task definition, so pushing
 # and then running the stack's task definition would run the *previous* image
@@ -14,8 +12,11 @@
 # The web service is drained before the migration. Leaving it up would let the
 # old image keep serving while the migration changes the schema underneath it.
 # That makes this a maintenance-window release, which is the right trade for a
-# synthetic environment with no availability requirement; expand/contract can be
-# designed when there is one.
+# synthetic environment with no availability requirement.
+#
+# The locked Python environment is built *before* AWS credentials exist. An
+# unpinned install afterwards would hand unreviewed bytes a credential that can
+# push images, register task definitions and run the migration.
 name: app-release
 
 on:
@@ -35,9 +36,8 @@ on:
 permissions:
   contents: read
 
-# Shared with infra-nonproduction.yml. A stack deploy that rewrites task
-# definitions while a release is registering revisions against them races, so
-# every mutation of this environment queues behind every other.
+# Shared with infra-nonproduction.yml: every mutation of this environment
+# queues behind every other.
 concurrency:
   group: corridor-nonproduction-mutation
   cancel-in-progress: false
@@ -74,9 +74,20 @@ jobs:
           git merge-base --is-ancestor "$COMMIT_SHA" origin/main \
             || { echo "::error::$COMMIT_SHA is not an ancestor of origin/main"; exit 1; }
 
-      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
-        with: { python-version: "3.12" }
+      # --- everything below this line runs with no AWS credentials --------
+      - uses: astral-sh/setup-uv@e58605a9b6da7c637471fab8847a5e5a6b8df081
+        with:
+          version: "0.10.3"
 
+      - name: Build the locked environment before any credential exists
+        run: |
+          uv sync --locked
+          uv run python -c "import boto3; print('boto3', boto3.__version__)"
+
+      - name: Validate the release helper against its own tests
+        run: uv run pytest tests/test_register_ecs_release_task_definitions.py -q
+
+      # --- credentials from here on ---------------------------------------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
           role-to-assume: arn:aws:iam::810100779593:role/corridor/nonproduction/corridor-nonprod-app-release
@@ -87,33 +98,57 @@ jobs:
           aws cloudformation describe-stacks --stack-name CorridorApplication \
             --query 'Stacks[0].Outputs' --output json > outputs.json \
             || { echo "::error::CorridorApplication is not deployed yet"; exit 1; }
-          python3 - <<'PY' >> "$GITHUB_ENV"
-          import json, os
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import json
           outputs = {o["OutputKey"]: o["OutputValue"] for o in json.load(open("outputs.json"))}
-          for key, name in (
-              ("RepositoryUri", "REPOSITORY_URI"),
-              ("WebServiceName", "WEB_SERVICE"),
-              ("TaskSubnetIds", "TASK_SUBNETS"),
-              ("MigrationSecurityGroupId", "MIGRATION_SG"),
-              ("MigrationTaskDefinitionArn", "BASE_MIGRATION_TD"),
-              ("BatchTaskDefinitionArn", "BASE_BATCH_TD"),
-              ("WebTaskDefinitionArn", "BASE_WEB_TD"),
-          ):
+          wanted = {
+              "RepositoryUri": "REPOSITORY_URI",
+              "WebServiceName": "WEB_SERVICE",
+              "TaskSubnetIds": "TASK_SUBNETS",
+              "MigrationSecurityGroupId": "MIGRATION_SG",
+              "MigrationTaskDefinitionArn": "BASE_MIGRATION_TD",
+              "BatchTaskDefinitionArn": "BASE_BATCH_TD",
+              "WebTaskDefinitionArn": "BASE_WEB_TD",
+              "ApplicationUrl": "APPLICATION_URL",
+          }
+          for key, name in wanted.items():
               value = outputs.get(key)
-              if not value:
-                  raise SystemExit(f"stack output {key} is missing")
+              if not value or value == "not-configured":
+                  raise SystemExit(f"stack output {key} is missing or unset")
               print(f"{name}={value}")
           PY
 
-      - name: Build and push the image under its commit SHA
+      # A retry of a failed release re-runs the same commit. The repository is
+      # tag-immutable, so pushing again is rejected before the workflow reaches
+      # recovery. Reuse the existing image, but only after proving it is this
+      # commit's image and not something else wearing the tag.
+      - name: Publish the image, or adopt the one already published
         run: |
           aws ecr get-login-password --region "$AWS_REGION" \
             | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
-          docker build -t "$REPOSITORY_URI:$COMMIT_SHA" .
-          docker push "$REPOSITORY_URI:$COMMIT_SHA"
 
-      - name: Resolve the immutable digest
-        run: |
+          EXISTING=$(aws ecr describe-images --repository-name corridor \
+            --image-ids "imageTag=$COMMIT_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text 2>/dev/null || true)
+
+          if [ -n "$EXISTING" ] && [ "$EXISTING" != "None" ]; then
+            echo "tag $COMMIT_SHA already published as $EXISTING; verifying identity"
+            docker pull --quiet "$REPOSITORY_URI@$EXISTING"
+            REVISION=$(docker inspect --format \
+              '{{index .Config.Labels "org.opencontainers.image.revision"}}' \
+              "$REPOSITORY_URI@$EXISTING")
+            if [ "$REVISION" != "$COMMIT_SHA" ]; then
+              echo "::error::$EXISTING is tagged $COMMIT_SHA but was built from '$REVISION'"
+              exit 1
+            fi
+            echo "IMAGE_DIGEST=$EXISTING" >> "$GITHUB_ENV"
+            echo "adopted the existing image"
+            exit 0
+          fi
+
+          docker build --build-arg "GIT_REVISION=$COMMIT_SHA" \
+            -t "$REPOSITORY_URI:$COMMIT_SHA" .
+          docker push "$REPOSITORY_URI:$COMMIT_SHA"
           DIGEST=$(aws ecr describe-images --repository-name corridor \
             --image-ids "imageTag=$COMMIT_SHA" \
             --query 'imageDetails[0].imageDigest' --output text)
@@ -125,15 +160,14 @@ jobs:
 
       - name: Register task definition revisions bound to that digest
         run: |
-          pip install --quiet boto3
-          python3 scripts/register_ecs_release_task_definitions.py \
+          uv run python scripts/register_ecs_release_task_definitions.py \
             --repository-uri "$REPOSITORY_URI" \
             --digest "$IMAGE_DIGEST" \
             --commit-sha "$COMMIT_SHA" \
             --web-task-definition "$BASE_WEB_TD" \
             --migration-task-definition "$BASE_MIGRATION_TD" \
             --batch-task-definition "$BASE_BATCH_TD" > released.json
-          python3 - <<'PY' >> "$GITHUB_ENV"
+          uv run python - <<'PY' >> "$GITHUB_ENV"
           import json
           released = json.load(open("released.json"))
           for role, name in (("web", "WEB_TD"), ("migration", "MIGRATION_TD"), ("batch", "BATCH_TD")):
@@ -163,24 +197,24 @@ jobs:
             --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$MIGRATION_SG],assignPublicIp=ENABLED}" \
             --output json > run-task.json
 
-          FAILURES=$(python3 -c "import json;print(json.dumps(json.load(open('run-task.json')).get('failures',[])))")
-          if [ "$FAILURES" != "[]" ]; then
-            echo "::error::run-task reported failures: $FAILURES"
-            exit 1
-          fi
-          TASK_ARN=$(python3 -c "
+          TASK_ARN=$(uv run python - <<'PY'
           import json, sys
-          tasks = json.load(open('run-task.json')).get('tasks') or []
+          response = json.load(open("run-task.json"))
+          failures = response.get("failures") or []
+          if failures:
+              sys.exit(f"run-task reported failures: {failures}")
+          tasks = response.get("tasks") or []
           if not tasks:
-              sys.exit('run-task started no task')
-          print(tasks[0]['taskArn'])
-          ")
+              sys.exit("run-task started no task")
+          print(tasks[0]["taskArn"])
+          PY
+          )
           echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
 
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
           aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
             --output json > stopped.json
-          python3 - <<'PY'
+          uv run python - <<'PY'
           import json, sys
           task = json.load(open("stopped.json"))["tasks"][0]
           reason = task.get("stoppedReason", "")
@@ -199,20 +233,18 @@ jobs:
           aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
           echo "web service stable at $WEB_DESIRED_COUNT on $WEB_TD"
 
+      # Through the certificate's own hostname. The load balancer's generated
+      # name is not covered by the certificate, so curl would fail hostname
+      # verification after an otherwise-successful release.
       - name: Verify the service answers
         if: inputs.web_desired_count != '0'
         run: |
-          DNS=$(python3 -c "
-          import json
-          outputs = {o['OutputKey']: o['OutputValue'] for o in json.load(open('outputs.json'))}
-          print(outputs['LoadBalancerDns'])
-          ")
           for _ in $(seq 1 30); do
-            if curl -fsS "https://$DNS/livez" >/dev/null 2>&1; then break; fi
+            if curl -fsS "$APPLICATION_URL/livez" >/dev/null 2>&1; then break; fi
             sleep 10
           done
-          curl -fsS "https://$DNS/livez"
-          curl -fsS "https://$DNS/readyz"
+          curl -fsS "$APPLICATION_URL/livez"
+          curl -fsS "$APPLICATION_URL/readyz"
 
       - name: Record what was released
         if: always()
@@ -221,10 +253,11 @@ jobs:
             echo "### Release"
             echo
             echo "- commit: \`$COMMIT_SHA\`"
-            echo "- digest: \`${IMAGE_DIGEST:-not pushed}\`"
+            echo "- digest: \`${IMAGE_DIGEST:-not published}\`"
             echo "- web task definition: \`${WEB_TD:-not registered}\`"
             echo "- migration task definition: \`${MIGRATION_TD:-not registered}\`"
             echo "- batch task definition: \`${BATCH_TD:-not registered}\`"
             echo "- migration task: \`${MIGRATION_TASK_ARN:-not run}\`"
+            echo "- url: \`${APPLICATION_URL:-unknown}\`"
             echo "- web desired count: \`$WEB_DESIRED_COUNT\` (was \`${PREVIOUS_DESIRED:-unknown}\`)"
           } >> "$GITHUB_STEP_SUMMARY"

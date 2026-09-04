@@ -13,6 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Protocol, runtime_checkable
 
+from corridor.config import settings
+
 from sqlalchemy.orm import Session
 from starlette.requests import Request
 from starlette.responses import Response
@@ -135,9 +137,106 @@ class RecordingEmailSender:
         self.sent.append((email, link))
 
 
-_DEFAULT_SENDER = LoggingEmailSender()
+class EmailDeliveryUnavailable(RuntimeError):
+    """Delivery is not configured, or the provider refused the message."""
+
+
+class SesEmailSender:
+    """Delivers the link through Amazon SES.
+
+    The link is a live credential, so it appears in the message body and
+    nowhere else: not in a log line, not in an exception, not in the bounded
+    failure this raises. A delivery failure has to be visible -- a deployment
+    that silently swallows it reports success to someone who will never receive
+    anything -- but it carries the recipient and SES's own error code only.
+    """
+
+    def __init__(self, *, sender: str, region: str, client=None) -> None:
+        if not sender:
+            raise EmailDeliveryUnavailable(
+                "CORRIDOR_SIGN_IN_SENDER is required by the ses backend; SES "
+                "refuses an unverified sender identity"
+            )
+        self.sender = sender
+        self._client = client
+        self._region = region
+
+    @property
+    def client(self):
+        if self._client is None:  # pragma: no cover - constructed in deployment
+            import boto3
+
+            self._client = boto3.client("ses", region_name=self._region)
+        return self._client
+
+    def send_sign_in_link(self, *, email: str, link: str) -> None:
+        try:
+            self.client.send_email(
+                Source=self.sender,
+                Destination={"ToAddresses": [email]},
+                Message={
+                    "Subject": {"Data": "Your Corridor sign-in link"},
+                    "Body": {
+                        "Text": {
+                            "Data": (
+                                "Open this link to sign in to Corridor. It can "
+                                f"be used once and then expires.\n\n{link}\n"
+                            )
+                        }
+                    },
+                },
+            )
+        except Exception as error:  # noqa: BLE001 - bounded, and never the link
+            code = getattr(error, "response", {}).get("Error", {}).get("Code")
+            raise EmailDeliveryUnavailable(
+                f"sign-in link could not be delivered to {email}"
+                + (f" ({code})" if code else "")
+            ) from None
+
+
+# Deployments that may run without real delivery. Anything else refuses to
+# start rather than reporting success to a person who receives nothing.
+_LOCAL_ENVIRONMENTS = frozenset({"development", "test"})
+
+
+def build_email_sender(configured=None) -> EmailSender:
+    """The deployment's sender, or a refusal to start without one.
+
+    `/sign-in/request` answers the same way whether or not a link was actually
+    delivered, which is right -- it must not disclose whether an address is
+    enrolled -- but it means a missing adapter is invisible from the outside.
+    A deployed environment therefore fails closed here, at startup, instead of
+    accepting sign-in requests it cannot fulfil.
+    """
+
+    configured = configured or settings
+    backend = (configured.email_backend or "logging").lower()
+
+    if backend == "ses":
+        return SesEmailSender(
+            sender=configured.sign_in_sender_address,
+            region=configured.storage_s3_region or "us-east-2",
+        )
+    if backend == "logging":
+        if configured.environment not in _LOCAL_ENVIRONMENTS:
+            raise EmailDeliveryUnavailable(
+                f"CORRIDOR_EMAIL_BACKEND=logging delivers nothing, and "
+                f"CORRIDOR_ENVIRONMENT={configured.environment!r} is a deployed "
+                "environment. Nobody could complete a sign-in. Set "
+                "CORRIDOR_EMAIL_BACKEND=ses and CORRIDOR_SIGN_IN_SENDER."
+            )
+        return LoggingEmailSender()
+    raise EmailDeliveryUnavailable(f"unknown CORRIDOR_EMAIL_BACKEND {backend!r}")
+
+
+# Resolved at import, so a deployment configured without delivery fails when
+# the web application starts rather than on the first sign-in request. A user
+# hitting the lazy version would see the same success page as always, because
+# /sign-in/request must not disclose whether an address is enrolled.
+_DEFAULT_SENDER: EmailSender = build_email_sender()
 
 
 def get_email_sender() -> EmailSender:
     """FastAPI dependency; overridden in tests with a recording sender."""
+
     return _DEFAULT_SENDER

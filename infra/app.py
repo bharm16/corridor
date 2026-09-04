@@ -65,6 +65,8 @@ CorridorApplicationStack(
     image_tag=ctx("imageTag", ""),
     web_desired_count=int(app.node.try_get_context("corridor:webDesiredCount") or 0),
     certificate_arn=ctx("certificateArn", ""),
+    public_hostname=ctx("publicHostname", ""),
+    sign_in_sender=ctx("signInSender", ""),
 )
 
 for key, value in {

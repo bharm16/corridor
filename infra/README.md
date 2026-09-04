@@ -68,6 +68,12 @@ the template that would actually deploy:
 - the image tag is immutable and never the `bootstrap` placeholder
 - the bootstrap policies scope `PassRole`, confine roles to Corridor's path,
   and refuse to create a role without the permissions boundary
+- the web role cannot delete an artifact; deletion stays with the batch
+  retention capability that runs the deletion policy
+- the web command trusts forwarded headers only from the VPC, so one caller
+  cannot spend the sign-in allowance for everybody
+- a certificate requires the hostname it covers, and serving requires a
+  verified sign-in sender
 
 Those were mutation-tested: collapsing the three execution roles back
 into one makes both fail.

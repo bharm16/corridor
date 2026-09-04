@@ -23,6 +23,8 @@
     "@aws-cdk/core:defaultCrossStackReferences": "strong",
     "@aws-cdk/core:permissionsBoundary": {
       "name": "CorridorDelegatedRoleBoundary"
-    }
+    },
+    "corridor:publicHostname": "",
+    "corridor:signInSender": ""
   }
 }

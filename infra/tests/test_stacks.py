@@ -66,6 +66,8 @@ def _build(**overrides):
         image_tag="0123456789abcdef0123456789abcdef01234567",
         web_desired_count=0,
         certificate_arn=DUMMY_CERT,
+        public_hostname="pilot.example.com",
+        sign_in_sender="no-reply@example.com",
     )
     kwargs.update(overrides)
     application = CorridorApplicationStack(app, "A", env=ENV, **kwargs)
@@ -102,6 +104,8 @@ def stacks():
         image_tag="0123456789abcdef0123456789abcdef01234567",
         web_desired_count=0,
         certificate_arn=DUMMY_CERT,
+        public_hostname="pilot.example.com",
+        sign_in_sender="no-reply@example.com",
     )
     return {
         "foundation": Template.from_stack(foundation),
@@ -787,3 +791,115 @@ def test_the_web_boundary_is_declared_wherever_reads_run_as_corridor_web(stacks)
             assert env.get("CORRIDOR_LIVE_PILOT_WEB_BOUNDARY") == "true", (
                 f"{logical_id} does not declare the live-pilot web boundary"
             )
+
+
+# --- least privilege on the artifact bucket ----------------------------
+def test_the_web_role_cannot_delete_an_artifact(stacks):
+    """grant_read_write includes s3:DeleteObject*. An internet-facing process
+    holding it can bypass S3ObjectStore.delete_under_policy, its DeletionPermit
+    and any retention hold; versioning keeps the bytes but every record
+    reference to that key stops resolving."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, policy in template.items():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        roles = json.dumps(policy["Properties"].get("Roles"))
+        if "WebTaskRole" not in roles:
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            actions = [action] if isinstance(action, str) else action
+            for entry in actions:
+                assert not entry.lower().startswith("s3:deleteobject"), (
+                    f"{logical_id} grants the web role {entry}"
+                )
+
+
+def test_the_web_role_can_still_read_and_write_artifacts(stacks):
+    """Removing deletion must not remove the store's actual work."""
+    template = stacks["application"].to_json()["Resources"]
+    granted: set[str] = set()
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "WebTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            granted.update([action] if isinstance(action, str) else action)
+    assert any(a.startswith("s3:GetObject") for a in granted), granted
+    assert any(a.startswith("s3:PutObject") for a in granted), granted
+    assert any(a.startswith("s3:List") for a in granted), granted
+
+
+def test_deletion_stays_with_the_batch_retention_capability(stacks):
+    """Corridor's deletion policy runs in the batch capability, so that is the
+    identity that may delete."""
+    template = stacks["application"].to_json()["Resources"]
+    granted: set[str] = set()
+    for policy in template.values():
+        if policy.get("Type") != "AWS::IAM::Policy":
+            continue
+        if "BatchTaskRole" not in json.dumps(policy["Properties"].get("Roles")):
+            continue
+        for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+            action = statement.get("Action")
+            granted.update([action] if isinstance(action, str) else action)
+    assert any(a.lower().startswith("s3:deleteobject") for a in granted), granted
+
+
+# --- client identity behind the load balancer --------------------------
+def test_the_web_command_trusts_only_the_vpc_for_forwarded_headers(stacks):
+    """Without this the ASGI client address is the ALB node and every caller
+    shares one rate-limit identity, so one anonymous caller can exhaust the
+    sign-in allowance for everybody."""
+    template = stacks["application"].to_json()["Resources"]
+    web = [
+        resource
+        for logical_id, resource in template.items()
+        if resource["Type"] == "AWS::ECS::TaskDefinition" and "Web" in logical_id
+    ]
+    assert len(web) == 1
+    command = web[0]["Properties"]["ContainerDefinitions"][0]["Command"]
+    assert "--proxy-headers" in command
+    index = command.index("--forwarded-allow-ips")
+    assert command[index + 1] == "10.20.0.0/16", command
+    assert "*" not in command, "forwarded headers must not be trusted from anywhere"
+
+
+# --- sign-in delivery ---------------------------------------------------
+def test_the_web_task_selects_a_real_delivery_adapter(stacks):
+    """The logging sender delivers nothing, and /sign-in/request reports
+    success either way, so a deployment without an adapter looks healthy while
+    nobody can authenticate."""
+    template = stacks["application"].to_json()["Resources"]
+    for logical_id, resource in template.items():
+        if resource["Type"] != "AWS::ECS::TaskDefinition" or "Web" not in logical_id:
+            continue
+        env = {
+            entry["Name"]: entry["Value"]
+            for entry in resource["Properties"]["ContainerDefinitions"][0]["Environment"]
+        }
+        assert env["CORRIDOR_EMAIL_BACKEND"] == "ses"
+        assert env["CORRIDOR_SIGN_IN_SENDER"] == "no-reply@example.com"
+
+
+def test_serving_without_a_sign_in_sender_is_refused():
+    with pytest.raises(ValueError, match="signInSender is required"):
+        _build(sign_in_sender="", web_desired_count=1)
+
+
+# --- the hostname a release can actually verify ------------------------
+def test_a_certificate_requires_the_hostname_it_covers():
+    """An ACM certificate covers a domain, never the generated ELB name, so a
+    release verifying the load balancer's own hostname fails certificate
+    validation after every otherwise-successful deployment."""
+    with pytest.raises(ValueError, match="publicHostname is required"):
+        _build(public_hostname="")
+
+
+def test_the_application_url_is_the_certificate_covered_hostname(stacks):
+    outputs = stacks["application"].to_json()["Outputs"]
+    assert outputs["ApplicationUrl"]["Value"] == "https://pilot.example.com"
+    # The raw name is still reported, for operators; it is never probed.
+    assert "LoadBalancerDns" in outputs

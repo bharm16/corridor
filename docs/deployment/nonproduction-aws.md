@@ -21,6 +21,8 @@ before `cdk bootstrap`:
 | **Cost Explorer enabled** | **not enabled** | you, console (root must first activate IAM billing access) |
 | **Budget + alerts** | **none** | you, console |
 | **ACM certificate for the ALB** | **none** | you |
+| **Public hostname** (`corridor:publicHostname`) | **none** | you, Route 53 or your DNS |
+| **SES sender identity** (`corridor:signInSender`) | **none** | you, SES console |
 | **Bootstrap policies created** | written, not created | you, one `aws iam create-policy` each |
 | Container image | built and smoke-tested in CI | done |
 | RDS minor version still offered | verify | `aws rds describe-db-engine-versions --engine postgres --engine-version 16` |
@@ -56,6 +58,32 @@ created can authenticate, confirms web answers `/livez` and `/readyz`, checks
 that batch holds no other role's password, and resolves the render environment
 with the network disabled.
 
+### The hostname, the certificate and the sender
+
+Three deployment inputs have no sensible default and the stack refuses without
+them. The recommendation is one domain for all three: `pilot.<domain>` as the
+public hostname, an ACM certificate in `us-east-2` covering it, and
+`no-reply@<domain>` as the SES sender.
+
+**`corridor:publicHostname`** is what a release actually verifies. An ACM
+certificate covers a domain, never the generated `*.elb.amazonaws.com` name, so
+probing the load balancer's own hostname fails certificate validation after
+every otherwise-successful deployment. The stack outputs `ApplicationUrl` from
+this value and the release workflow curls that; `LoadBalancerDns` is still
+reported for operators but never probed. Point a Route 53 alias (or your own
+DNS) at the load balancer.
+
+**`corridor:signInSender`** must be an SES identity you have verified. Without
+a delivery adapter `/sign-in/request` reports success and sends nothing, and
+because that endpoint answers identically whether or not an address is enrolled
+-- which is correct, it must not disclose enrolment -- the failure is invisible
+from outside. The web application therefore refuses to start in any deployed
+environment configured with the logging sender.
+
+SES sandbox is enough for an internal rehearsal provided both the sender
+identity and your own recipient address are verified. Request production access
+before inviting anyone else, or their links will be rejected.
+
 ### The ALB certificate
 
 Without `corridor:certificateArn` in context, the stack synthesizes an **HTTP**
@@ -69,7 +97,8 @@ redirect and `TLS13_RES`.
 
 Nothing below has been run.
 
-1. Complete every prerequisite above.
+1. Complete every prerequisite above, including the hostname, certificate and
+   verified SES sender.
 2. Review the PR; run `pytest infra/tests` and `cdk synth --strict`.
 3. Create the two bootstrap policies, then bootstrap with them. See
    [`infra/bootstrap/README.md`](../../infra/bootstrap/README.md) for the exact

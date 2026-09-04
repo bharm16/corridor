@@ -79,6 +79,12 @@ RUN useradd --system --create-home --uid 10001 corridor \
     && chown -R corridor:corridor /opt/corridor
 USER corridor
 
+# The commit this image was built from, so a retried release can prove an
+# existing tag is the same image rather than pushing over it.
+ARG GIT_REVISION=""
+LABEL org.opencontainers.image.revision="$GIT_REVISION"
+LABEL org.opencontainers.image.source="https://github.com/bharm16/corridor"
+
 # Fails closed: the entrypoint refuses to start without a role.
 ENV CORRIDOR_TASK_ROLE=""
 

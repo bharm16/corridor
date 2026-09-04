@@ -51,7 +51,11 @@ from aws_cdk import (
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
-from .network_stack import CORRIDOR_APP_PORT, CORRIDOR_ROLE_PATH
+from .network_stack import (
+    CORRIDOR_APP_PORT,
+    CORRIDOR_ROLE_PATH,
+    CORRIDOR_VPC_CIDR,
+)
 
 
 class CorridorApplicationStack(Stack):
@@ -72,6 +76,8 @@ class CorridorApplicationStack(Stack):
         image_tag: str,
         web_desired_count: int,
         certificate_arn: str = "",
+        public_hostname: str = "",
+        sign_in_sender: str = "",
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -126,6 +132,11 @@ class CorridorApplicationStack(Stack):
             # environment down. Found by running the container, not by reading
             # the stack.
             "CORRIDOR_LIVE_PILOT_WEB_BOUNDARY": "true",
+            # Without a real adapter /sign-in/request reports success and
+            # delivers nothing, and the application refuses to start rather
+            # than accept sign-ins it cannot fulfil.
+            "CORRIDOR_EMAIL_BACKEND": "ses",
+            "CORRIDOR_SIGN_IN_SENDER": sign_in_sender,
             "CORRIDOR_STORAGE_BACKEND": "s3",
             "CORRIDOR_S3_BUCKET": artifact_bucket.bucket_name,
             "CORRIDOR_S3_REGION": Aws.REGION,
@@ -160,10 +171,28 @@ class CorridorApplicationStack(Stack):
                 "0.0.0.0",
                 "--port",
                 str(CORRIDOR_APP_PORT),
+                # Without these the ASGI client address is the ALB node, so
+                # auth.client_scope throttles every caller under one of a
+                # handful of private addresses: one anonymous caller can
+                # exhaust the sign-in allowance for everybody. client_scope
+                # deliberately ignores raw X-Forwarded-For -- forging it would
+                # let a caller reset its own backoff -- so the header has to be
+                # resolved here, and only from the VPC the ALB sits in.
+                "--proxy-headers",
+                "--forwarded-allow-ips",
+                CORRIDOR_VPC_CIDR,
             ],
             port=CORRIDOR_APP_PORT,
         )
-        artifact_bucket.grant_read_write(web_role)
+        # Read and write, never delete. grant_read_write includes
+        # s3:DeleteObject*, which would let a compromised internet-facing
+        # process bypass S3ObjectStore.delete_under_policy, its DeletionPermit
+        # and any retention hold. Versioning keeps the bytes recoverable but
+        # every record reference to that key stops resolving, which is the part
+        # that matters. Deletion stays with the batch retention capability,
+        # which is the thing that actually runs the policy.
+        artifact_bucket.grant_read(web_role)
+        artifact_bucket.grant_put(web_role)
 
         self.web_service = ecs.FargateService(
             self,
@@ -203,7 +232,10 @@ class CorridorApplicationStack(Stack):
             # Overridden per RunTask; carry-forward is the routine one.
             command=["python", "-m", "corridor.automatic_carry_forward_cli"],
         )
+        # The retention capability. This is the identity that runs Corridor's
+        # deletion policy, so it is the one that may delete.
         artifact_bucket.grant_read_write(batch_role)
+        artifact_bucket.grant_delete(batch_role)
 
         # --- migration ---------------------------------------------------
         migration_task, migration_role, migration_exec = self._task(
@@ -294,6 +326,20 @@ class CorridorApplicationStack(Stack):
         # Without a certificate the stack still synthesises, so the network and
         # data stacks can be deployed and the service can exist at zero, but it
         # gets no listener and therefore no way in.
+        if certificate_arn and not public_hostname:
+            raise ValueError(
+                "corridor:publicHostname is required alongside a certificate. "
+                "An ACM certificate covers a domain, never the generated "
+                "*.elb.amazonaws.com name, so a release that verified the load "
+                "balancer's own hostname would fail certificate validation "
+                "after every otherwise-successful deployment."
+            )
+        if not sign_in_sender and web_desired_count > 0:
+            raise ValueError(
+                "corridor:signInSender is required before the web service can "
+                "serve traffic. Without a verified SES identity no sign-in "
+                "link can be delivered and nobody can authenticate."
+            )
         if not certificate_arn and web_desired_count > 0:
             raise ValueError(
                 "corridor:certificateArn is required before the web service "
@@ -341,6 +387,17 @@ class CorridorApplicationStack(Stack):
         )
 
         CfnOutput(self, "LoadBalancerDns", value=self.alb.load_balancer_dns_name)
+        # What a release actually verifies. The load balancer's own name is not
+        # covered by the certificate, so it is reported but never probed.
+        CfnOutput(
+            self,
+            "ApplicationUrl",
+            value=(
+                f"https://{public_hostname}"
+                if public_hostname
+                else "not-configured"
+            ),
+        )
         CfnOutput(self, "RepositoryUri", value=self.repository.repository_uri)
         CfnOutput(self, "ClusterName", value=cluster.cluster_name)
         CfnOutput(self, "ClusterArn", value=cluster.cluster_arn)
