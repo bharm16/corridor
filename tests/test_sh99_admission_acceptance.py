@@ -317,24 +317,9 @@ def test_replay_refuses_a_shared_database_at_a_different_migration_head(monkeypa
     assert not (tmp_path / "bundle").exists()
 
 
-def test_dump_source_database_uses_the_explicit_runtime_compose_root(
-    monkeypatch, tmp_path
-):
-    dump_path = tmp_path / "source.dump"
-    seen: dict[str, object] = {}
-
-    def fake_run(*args, **kwargs):
-        seen["cwd"] = kwargs["cwd"]
-        seen["argv"] = kwargs["args"][0] if "args" in kwargs else args[0]
-        kwargs["stdout"].write(b"dump-bytes")
-        return subprocess.CompletedProcess(
-            seen["argv"], 0, stdout=b"", stderr=b""
-        )
-
-    monkeypatch.setattr("corridor.rehearsal_environment.subprocess.run", fake_run)
-
-    environment = SealedRehearsalEnvironment(
-        source_database_url="postgresql://corridor:corridor@localhost:5433/corridor",
+def _sealed_environment(tmp_path) -> SealedRehearsalEnvironment:
+    return SealedRehearsalEnvironment(
+        source_database_url="postgresql://corridor:secret@localhost:5433/corridor",
         checkout={"revision": "a" * 40},
         checkout_migration_head="head",
         database_migration_head="head",
@@ -342,9 +327,42 @@ def test_dump_source_database_uses_the_explicit_runtime_compose_root(
         repo_root=tmp_path,
         compose_root=tmp_path,
     )
-    environment.capture(dump_path)
+
+
+def _record_client(monkeypatch, seen: dict, *, compose_running: bool):
+    """Record one captured client invocation on a chosen PostgreSQL route."""
+
+    monkeypatch.setattr(
+        "corridor.rehearsal_environment._compose_service_is_running",
+        lambda compose_root: compose_running,
+    )
+
+    def fake_run(*args, **kwargs):
+        seen["cwd"] = kwargs["cwd"]
+        seen["env"] = kwargs.get("env")
+        seen["argv"] = kwargs["args"][0] if "args" in kwargs else args[0]
+        if "stdin" in kwargs:
+            seen["stdin_bytes"] = kwargs["stdin"].read()
+        else:
+            kwargs["stdout"].write(b"dump-bytes")
+        return subprocess.CompletedProcess(
+            seen["argv"], 0, stdout=b"", stderr=b""
+        )
+
+    monkeypatch.setattr("corridor.rehearsal_environment.subprocess.run", fake_run)
+
+
+def test_dump_source_database_uses_the_explicit_runtime_compose_root(
+    monkeypatch, tmp_path
+):
+    dump_path = tmp_path / "source.dump"
+    seen: dict[str, object] = {}
+    _record_client(monkeypatch, seen, compose_running=True)
+
+    _sealed_environment(tmp_path).capture(dump_path)
 
     assert seen["cwd"] == tmp_path.resolve()
+    assert seen["argv"][:5] == ["docker", "compose", "exec", "-T", "postgres"]
     assert dump_path.read_bytes() == b"dump-bytes"
 
 
@@ -354,30 +372,71 @@ def test_restore_source_database_uses_the_explicit_runtime_compose_root(
     dump_path = tmp_path / "source.dump"
     dump_path.write_bytes(b"dump-bytes")
     seen: dict[str, object] = {}
+    _record_client(monkeypatch, seen, compose_running=True)
 
-    def fake_run(*args, **kwargs):
-        seen["cwd"] = kwargs["cwd"]
-        seen["argv"] = kwargs["args"][0] if "args" in kwargs else args[0]
-        seen["stdin_bytes"] = kwargs["stdin"].read()
-        return subprocess.CompletedProcess(
-            seen["argv"], 0, stdout=b"", stderr=b""
-        )
-
-    monkeypatch.setattr("corridor.rehearsal_environment.subprocess.run", fake_run)
-
-    environment = SealedRehearsalEnvironment(
-        source_database_url="postgresql://corridor:corridor@localhost:5433/corridor",
-        checkout={"revision": "a" * 40},
-        checkout_migration_head="head",
-        database_migration_head="head",
-        source_database={"database": "corridor", "username": "corridor"},
-        repo_root=tmp_path,
-        compose_root=tmp_path,
-    )
-    environment.restore(dump_path, "corridor_clone")
+    _sealed_environment(tmp_path).restore(dump_path, "corridor_clone")
 
     assert seen["cwd"] == tmp_path.resolve()
+    assert seen["argv"][:5] == ["docker", "compose", "exec", "-T", "postgres"]
     assert seen["stdin_bytes"] == b"dump-bytes"
+
+
+def test_capture_reaches_the_configured_server_directly_without_compose(
+    monkeypatch, tmp_path
+):
+    """No Compose service is not "no PostgreSQL" — it is the CI arrangement.
+
+    The runner image serves the configured URL itself (#595), so the rehearsal
+    addresses that URL with the client on PATH rather than skipping (#639).
+    """
+
+    dump_path = tmp_path / "source.dump"
+    seen: dict[str, object] = {}
+    _record_client(monkeypatch, seen, compose_running=False)
+
+    _sealed_environment(tmp_path).capture(dump_path)
+
+    argv = seen["argv"]
+    assert argv[0] == "pg_dump"
+    assert "docker" not in argv
+    assert argv[-8:] == [
+        "--host",
+        "localhost",
+        "--port",
+        "5433",
+        "--username",
+        "corridor",
+        "--dbname",
+        "corridor",
+    ]
+    assert seen["env"]["PGPASSWORD"] == "secret"
+
+
+def test_restore_reaches_the_configured_server_directly_without_compose(
+    monkeypatch, tmp_path
+):
+    dump_path = tmp_path / "source.dump"
+    dump_path.write_bytes(b"dump-bytes")
+    seen: dict[str, object] = {}
+    _record_client(monkeypatch, seen, compose_running=False)
+
+    _sealed_environment(tmp_path).restore(dump_path, "corridor_clone")
+
+    argv = seen["argv"]
+    assert argv[0] == "pg_restore"
+    assert "docker" not in argv
+    assert argv[-8:] == [
+        "--host",
+        "localhost",
+        "--port",
+        "5433",
+        "--username",
+        "corridor",
+        "--dbname",
+        "corridor_clone",
+    ]
+    assert seen["stdin_bytes"] == b"dump-bytes"
+    assert seen["env"]["PGPASSWORD"] == "secret"
 
 
 def test_public_verifier_rejects_a_tampered_real_sh99_receipt(tmp_path):

@@ -36,6 +36,7 @@ from corridor.extraction_runs import (
     declare_single_run_documents_by_policy,
     record_extraction_run,
 )
+from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import (
     Candidate,
     DocPage,
@@ -226,7 +227,7 @@ def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):
             ],
         },
         "migration_rehearsal": {
-            "predecessor": "a257c9e6f204",
+            "predecessor": SUPPORTED_FROM_REVISION,
             "head": migration_head,
             "status": "passed",
             "fresh_head": migration_head,

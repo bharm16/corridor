@@ -32,6 +32,7 @@ from corridor.event_admission_acceptance import (
     record_acceptance_receipt,
 )
 from corridor.extraction_runs import record_extraction_run
+from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import (
     ActiveExtractionRun,
     ActiveRunDeclaration,
@@ -154,7 +155,7 @@ def _passing_acceptance_receipt(session, project: Project) -> dict:
             ],
         },
         "migration_rehearsal": {
-            "predecessor": "a257c9e6f204",
+            "predecessor": SUPPORTED_FROM_REVISION,
             "head": migration_head,
             "status": "passed",
             "fresh_head": migration_head,
