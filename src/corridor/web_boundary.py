@@ -36,7 +36,11 @@ Three consequences are deliberate and worth stating out loud.
   pointing ``WEB_DATABASE_URL`` at the opt-in ``corridor_legacy_dev`` login,
   which keeps the blanket read the schema dump grants it.  The two halves are
   bound by ``tests/test_architecture.py``: a route may be enabled only if
-  every relation recorded for it survives the revoke.
+  every relation recorded for it survives the revoke.  #694 finished the
+  declared half: "declared" is now a three-valued state rather than a
+  boolean, so the deployment that has the revoke and not the flag refuses
+  before the handler instead of letting PostgreSQL answer.  See the second
+  block below.
 
 - **Machine traffic is not human traffic.**  ``/intake/inbound`` and
   ``/health`` carry no person, no membership and therefore no partition.
@@ -65,6 +69,7 @@ test that drives these routes as ``corridor_web`` itself.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from enum import Enum
 
 from corridor import access
 
@@ -477,3 +482,114 @@ def unprotected_route_relations() -> tuple[str, ...]:
     """
 
     return tuple(sorted(pilot_relations() - PROTECTED_RELATIONS))
+
+
+# --- #694 What the deployment does when the boundary is not enforced -------
+#
+# #680 shipped the route half as a declared flag defaulting off, and left the
+# flag-off behaviour as a stated partial: the route reached its handler, the
+# handler queried a revoked relation, and PostgreSQL answered ``permission
+# denied for table ...``. The database refusal is defence in depth and stays.
+# It must not be the route-selection mechanism, and its message must never be
+# what a person reads.
+#
+# So the deployment has a *state*, not a boolean, and it is derived rather
+# than asserted, because the flag alone cannot tell the two flag-off
+# deployments apart:
+#
+# - a legacy development clone points ``WEB_DATABASE_URL`` at the opt-in
+#   ``corridor_legacy_dev`` login, which kept the blanket read (ADR-0081), so
+#   nothing is revoked and nothing may be refused; and
+# - a live-pilot deployment that forgot the flag runs the same routes on
+#   ``corridor_web``, which holds nothing on 124 relations.
+#
+# Which of the two it is, is answered by the login the request's own reads run
+# as. That is the same fact the revoke was aimed at, so the two cannot drift,
+# and it is read off the session's bind rather than queried, so deciding it
+# issues no statement of any kind.
+
+# The login the migration revoked. A deployment reading as this one has the
+# database half of the boundary applied to it whatever the flag says.
+LIVE_PILOT_WEB_CAPABILITY = "corridor_web"
+
+# The stable internal reason, carried by both the refusal and the readiness
+# probe so an operator greps one string. It names no relation and no
+# credential; it is the deployment's configuration, not the request's fault.
+BOUNDARY_DISABLED_REASON = "live_pilot_web_boundary_disabled"
+
+# What an unapproved route says when the boundary *is* enforced. A disabled
+# surface should not advertise that it exists, so this is the same answer a
+# missing project gets.
+ROUTE_NOT_FOUND_DETAIL = "not found"
+
+# The readiness component name. `/health` is itself a pilot route reaching no
+# relation, so it stays served in every state and can report the state.
+HEALTH_COMPONENT = "live_pilot_web_boundary"
+
+
+class BoundaryState(Enum):
+    """Whether this deployment can serve the routes outside the pilot set."""
+
+    #: The flag is declared. The pilot set is the surface; everything else is
+    #: refused as missing.
+    ENFORCED = "enforced"
+    #: The flag is off and this deployment's web login kept the blanket read.
+    #: Nothing was taken away, so nothing is refused: the frozen legacy
+    #: surfaces run as they always have.
+    NOT_DECLARED = "not_declared"
+    #: The two halves disagree — either the flag is off while the reads run as
+    #: the revoked live-pilot capability, or an enabled route needs a relation
+    #: the revoke takes away. Refuse rather than let PostgreSQL answer.
+    INCONSISTENT = "inconsistent"
+
+
+@dataclass(frozen=True)
+class RouteRefusal:
+    """A controlled answer, decided before the handler and before any query."""
+
+    status_code: int
+    detail: str
+
+
+def boundary_state(*, declared: bool, web_capability: str) -> BoundaryState:
+    """The deployment's state, from the declared flag and the reading login."""
+
+    if unprotected_route_relations():
+        # An enabled route needs a relation the revoke takes away. `make check`
+        # fails on this, so reaching it at runtime means the build guard was
+        # bypassed; refuse anyway rather than serve half a page.
+        return BoundaryState.INCONSISTENT
+    if declared:
+        return BoundaryState.ENFORCED
+    if web_capability == LIVE_PILOT_WEB_CAPABILITY:
+        return BoundaryState.INCONSISTENT
+    return BoundaryState.NOT_DECLARED
+
+
+def health_detail(state: BoundaryState) -> str:
+    """The bounded reason code the readiness probe carries for this state."""
+
+    if state is BoundaryState.INCONSISTENT:
+        return BOUNDARY_DISABLED_REASON
+    return state.value
+
+
+def route_refusal(
+    state: BoundaryState, method: str, template: str
+) -> RouteRefusal | None:
+    """How this deployment answers one route, or None to run its handler.
+
+    The invariant, stated once: a route this deployment cannot serve never
+    enters a handler that depends on a revoked relation. The status code
+    distinguishes whose problem it is — an enforced boundary is serving its
+    declared surface and the route is simply not part of it, while an
+    inconsistent one is misconfigured and says so.
+    """
+
+    if state is BoundaryState.NOT_DECLARED:
+        return None
+    if route_is_enabled(method, template):
+        return None
+    if state is BoundaryState.ENFORCED:
+        return RouteRefusal(404, ROUTE_NOT_FOUND_DETAIL)
+    return RouteRefusal(503, BOUNDARY_DISABLED_REASON)

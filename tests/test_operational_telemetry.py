@@ -559,6 +559,10 @@ def test_the_health_endpoint_reports_every_component_and_the_due_work_signals(
         "database",
         "object_storage",
         "worker_heartbeat",
+        # #694 The live-pilot route boundary is a readiness reading: a
+        # deployment holding the revoke without the route half serves almost
+        # nothing, and every other component here would be green.
+        "live_pilot_web_boundary",
     ]
     assert all(check["healthy"] for check in body["checks"])
     assert {signal["name"] for signal in body["signals"]} >= {

@@ -73,9 +73,11 @@ class Settings(BaseSettings):
     # application half, and it is declared rather than assumed because a
     # legacy development deployment still runs the frozen surfaces (ADR-0081)
     # by pointing `web_database_url` at the opt-in `corridor_legacy_dev`
-    # login, which keeps the blanket read. Left off, the routes are all
-    # reachable and the ones outside `corridor.web_boundary` simply have no
-    # data to read as `corridor_web`.
+    # login, which keeps the blanket read. Left off, that is the deployment
+    # this serves: every route reachable, because nothing was taken away.
+    # Left off on a deployment whose reads run as `corridor_web`, the two
+    # halves disagree, and #694 refuses the affected routes rather than
+    # letting PostgreSQL answer — see `corridor.web_boundary.boundary_state`.
     live_pilot_web_boundary: bool = Field(
         default=False, validation_alias="CORRIDOR_LIVE_PILOT_WEB_BOUNDARY"
     )

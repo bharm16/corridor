@@ -35,10 +35,20 @@ template is logged, never the request path, because a path carries slugs.
 `GET /health` is unauthenticated and answers with component names, bounded
 reason codes, and counts only. It distinguishes `application` (the process is
 serving), `database` (the configured credential completed a round trip),
-`object_storage` (the backend's own probe answered), and `worker_heartbeat`
+`object_storage` (the backend's own probe answered), `worker_heartbeat`
 (an attempt was claimed or retained within the tightest enabled schedule's
-cadence, twice over). Any unhealthy component answers `503` with
-`status: degraded`; the body also carries the Due Work signals below.
+cadence, twice over), and `live_pilot_web_boundary` (#694). Any unhealthy
+component answers `503` with `status: degraded`; the body also carries the
+Due Work signals below.
+
+`live_pilot_web_boundary` reads `enforced` when the deployment declares
+`CORRIDOR_LIVE_PILOT_WEB_BOUNDARY`, `not_declared` when it does not and its
+web reads run as a login that kept the blanket read, and
+`live_pilot_web_boundary_disabled` — unhealthy — when the two halves
+disagree: the migration has revoked 124 relations from `corridor_web` and the
+route half is undeclared, so every route outside the pilot set refuses `503`
+with that same reason. **The fix is to set the flag**, not to restore the
+grants.
 
 ## Metrics
 

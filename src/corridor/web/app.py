@@ -69,7 +69,7 @@ from corridor.candidate_statement_facts import (
 from corridor.db import WebSession as SessionFactory
 from corridor.db import WorkerSession as MachineSessionFactory
 from corridor.object_storage import ObjectStore, content_store
-from corridor.operational_health import runtime_report
+from corridor.operational_health import ComponentHealth, runtime_report
 from corridor.telemetry import (
     ROLE_WEB,
     RequestCorrelationMiddleware,
@@ -572,11 +572,20 @@ def get_session():
 # `source_deliveries` at all. It opens no new credential: this process
 # already builds the worker engine at import.
 #
-# `refuse_routes_outside_the_pilot_boundary` is the route half. It matches
-# the request against the router's own templates rather than a second copy of
-# the paths, so a renamed route cannot drift away from the list quietly, and
-# it answers an unlisted route with the same 404 a missing project gets — a
-# disabled surface should not advertise that it exists.
+# `refuse_routes_the_boundary_cannot_serve` is the route half (#680, #694).
+# It reads the route's own template out of the matched scope rather than a
+# second copy of the paths, so a renamed route cannot drift away from the list
+# quietly, and it is a router-level dependency rather than middleware because
+# that is the last thing FastAPI resolves before a handler's own dependencies
+# and therefore before any statement one of them would issue.
+#
+# `get_web_capability` is what tells the two flag-off deployments apart, and
+# it is why #694 is not a second boolean. A legacy development clone reads as
+# `corridor_legacy_dev` and lost nothing, so it may not be refused; a
+# live-pilot deployment that forgot the flag reads as `corridor_web` and holds
+# nothing on 124 relations, so it must be. Both facts are the login the
+# request's own reads run as, taken off the session's bind — no query, and no
+# second thing to keep in step with the revoke.
 #
 # `_refuse_legacy_project_under_the_boundary` is the one place a route this
 # boundary *enables* still has to refuse: `/work/{slug}` renders ADR-0035's
@@ -591,31 +600,68 @@ def get_machine_session():
         yield session
 
 
-@app.middleware("http")
-async def refuse_routes_outside_the_pilot_boundary(request: Request, call_next):
-    if settings.live_pilot_web_boundary:
-        method = request.method.upper()
-        for route in app.routes:
-            template = getattr(route, "path", None)
-            if template is None or not route.path_regex.match(request.url.path):
-                continue
-            if method not in (route.methods or ()):
-                continue
-            if not web_boundary.route_is_enabled(method, template):
-                return JSONResponse(
-                    {"detail": "not found"}, status_code=404
-                )
-            break
-    return await call_next(request)
+def get_web_capability(session: Session = Depends(get_session)) -> str:
+    """The database login this request's human reads run as.
+
+    Read off the bind, so it costs no statement and cannot disagree with the
+    capability the revoke was aimed at. An unrecognizable bind answers with no
+    capability, which leaves the deployment undeclared: the boundary's enabled
+    half never depends on this, only the detection of a flag-off deployment
+    that has the revoke does.
+    """
+
+    try:
+        bind = session.get_bind()
+        return getattr(bind, "engine", bind).url.username or ""
+    except Exception:  # pragma: no cover - a substituted seam without a bind
+        return ""
 
 
-def _refuse_legacy_project_under_the_boundary(project: Project) -> None:
+def get_live_pilot_boundary_state(
+    capability: str = Depends(get_web_capability),
+) -> web_boundary.BoundaryState:
+    """Whether this deployment enforces the boundary, lost nothing, or disagrees."""
+
+    return web_boundary.boundary_state(
+        declared=settings.live_pilot_web_boundary, web_capability=capability
+    )
+
+
+def refuse_routes_the_boundary_cannot_serve(
+    request: Request,
+    state: web_boundary.BoundaryState = Depends(get_live_pilot_boundary_state),
+) -> None:
+    """Answer a route this deployment cannot serve, before its handler runs."""
+
+    route = request.scope.get("route")
+    template = getattr(route, "path", None)
+    if template is None:
+        return
+    request.state.live_pilot_boundary = state
+    refusal = web_boundary.route_refusal(state, request.method.upper(), template)
+    if refusal is not None:
+        raise HTTPException(refusal.status_code, refusal.detail)
+
+
+# Registered on the router before the first route is declared, because
+# `add_api_route` snapshots the router's dependencies at decoration time.
+app.router.dependencies.append(Depends(refuse_routes_the_boundary_cannot_serve))
+
+
+def _refuse_legacy_project_under_the_boundary(
+    request: Request, project: Project
+) -> None:
     """A pilot deployment serves adopted projects; the legacy list has no data."""
 
-    if settings.live_pilot_web_boundary:
+    state = getattr(
+        request.state, "live_pilot_boundary", web_boundary.BoundaryState.NOT_DECLARED
+    )
+    if state is web_boundary.BoundaryState.ENFORCED:
         raise HTTPException(
             404, f"no project {project.slug!r}"
         )
+    if state is web_boundary.BoundaryState.INCONSISTENT:
+        raise HTTPException(503, web_boundary.BOUNDARY_DISABLED_REASON)
 
 
 def get_content_store() -> ObjectStore:
@@ -628,12 +674,20 @@ def get_content_store() -> ObjectStore:
 def health(
     session: Session = Depends(get_machine_session),
     store: ObjectStore = Depends(get_content_store),
+    boundary: web_boundary.BoundaryState = Depends(get_live_pilot_boundary_state),
 ) -> Response:
     """Report application, database, object-storage, and worker-heartbeat state.
 
     Unauthenticated on purpose: a platform probe has no principal. It therefore
     answers with component names, bounded reason codes, and counts only — no
     project, no principal, and no driver message (#491A).
+
+    The live-pilot boundary is a fifth component (#694). A deployment whose
+    web capability has lost 124 relations while the route half is undeclared
+    is not serving; readiness has to say so, because every other reading it
+    takes would be green while most of the product answered `permission
+    denied`. `/health` is itself an enabled route reaching no relation, so it
+    stays served in every state and can report the state that refuses others.
     """
 
     report = runtime_report(
@@ -641,6 +695,17 @@ def health(
         now=datetime.now(timezone.utc),
         store=store,
         role=ROLE_WEB,
+    )
+    report = replace(
+        report,
+        checks=report.checks
+        + (
+            ComponentHealth(
+                web_boundary.HEALTH_COMPONENT,
+                boundary is not web_boundary.BoundaryState.INCONSISTENT,
+                web_boundary.health_detail(boundary),
+            ),
+        ),
     )
     return JSONResponse(
         report.as_dict(), status_code=200 if report.healthy else 503
@@ -5049,7 +5114,7 @@ def coordinator_home(
         return _project_workflow_response(
             request, project, principal, session, now=now
         )
-    _refuse_legacy_project_under_the_boundary(project)
+    _refuse_legacy_project_under_the_boundary(request, project)
     work_list = build_work_list(
         session,
         project.id,
