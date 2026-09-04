@@ -36,6 +36,16 @@ one are both un-offerable for the same reason and by the same authority: what
 stands in the way is bound into the candidate's own identity, so it is cleared
 by preparing a fresh candidate and never by pressing anything here.
 
+**A candidate the project moved past stays on the page.**
+``FRESH_PREPARATION`` promises that an un-offerable candidate "stays listed here
+as it was prepared, so what was proposed to the customer and refused is not
+lost", and that promise used to end the moment the fresh candidate it asks for
+existed: ``current_release_candidate`` names the newest one and the old one left
+the screen without a word. ``superseded`` keeps them, read-only, with what they
+were prepared under and what became of them. Nothing about them is re-derived —
+today's staleness against yesterday's candidate would describe a state that
+never existed — and nothing about them is offered as an act.
+
 **No predecessor is invented.** ADR-0086 requires a project's first issue to be
 valid with nothing before it, and the predecessor is read from the candidate's
 own ``previous_package_id`` — never the newest package by timestamp, never the
@@ -214,6 +224,33 @@ class ArtifactRow:
 
 
 @dataclass(frozen=True, slots=True)
+class SupersededCandidate:
+    """One candidate this project has moved past, as history and nothing else.
+
+    ``FRESH_PREPARATION`` tells a coordinator that an un-offerable candidate
+    "stays listed here as it was prepared, so what was proposed to the customer
+    and refused is not lost". That promise held only until the fresh candidate
+    it asks for existed: ``current_release_candidate`` names the newest one, and
+    the candidate the coordinator had just been reading about left the screen
+    with nothing to say where it went.
+
+    So the earlier candidates stay, read-only, with what they were prepared
+    under and what became of them. Nothing here is re-derived: the staleness or
+    blockers of a candidate the project has moved past are the reading of a
+    moment that has gone, and printing today's answer against yesterday's
+    candidate would describe a state that never existed. What became of it is a
+    fact — a package names it, or a later candidate replaced it.
+    """
+
+    candidate_id: int
+    prepared_at: datetime
+    prepared_by_principal: str
+    coverage_identity: str
+    accepted_revision_id: int
+    outcome: str
+
+
+@dataclass(frozen=True, slots=True)
 class BoundDeclaration:
     """What the candidate's immutable input declaration says it was bound to.
 
@@ -260,6 +297,7 @@ class IssueView:
     coverage: DerivedCoverageReading | None = None
     preparation: PreparationStanding | None = None
     accepted_revision_id: int | None = None
+    superseded: tuple[SupersededCandidate, ...] = ()
 
     @property
     def prepared(self) -> bool:
@@ -463,6 +501,7 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
             preparation=preparation,
             accepted_revision_id=accepted_revision_id,
         )
+    superseded = _superseded(session, project_id, current_id=int(candidate.id))
 
     package = session.scalars(
         select(ReleasePackage).where(ReleasePackage.candidate_id == candidate.id)
@@ -499,6 +538,51 @@ def issue_view(session: Session, *, project_id: int, as_of: datetime) -> IssueVi
         coverage=coverage,
         preparation=preparation,
         accepted_revision_id=accepted_revision_id,
+        superseded=superseded,
+    )
+
+
+def _superseded(
+    session: Session, project_id: int, *, current_id: int
+) -> tuple[SupersededCandidate, ...]:
+    """Every candidate this project has moved past, newest first.
+
+    Ordered by the append-only identifier and never by ``prepared_at``: the
+    preparation instant is the caller's declaration, and a superseded candidate
+    can carry a later one (#634). The order candidates were attached in is the
+    order they succeeded each other.
+    """
+
+    earlier = session.scalars(
+        select(ReleaseCandidate)
+        .where(
+            ReleaseCandidate.project_id == project_id,
+            ReleaseCandidate.id != current_id,
+        )
+        .order_by(ReleaseCandidate.id.desc())
+    ).all()
+    if not earlier:
+        return ()
+    authorized = {
+        int(package.candidate_id): int(package.sequence_number)
+        for package in session.scalars(
+            select(ReleasePackage).where(ReleasePackage.project_id == project_id)
+        ).all()
+    }
+    return tuple(
+        SupersededCandidate(
+            candidate_id=int(one.id),
+            prepared_at=one.prepared_at,
+            prepared_by_principal=one.prepared_by_principal,
+            coverage_identity=one.coverage_identity,
+            accepted_revision_id=int(one.accepted_revision_id),
+            outcome=(
+                f"approved and sent as issue {authorized[int(one.id)]}"
+                if int(one.id) in authorized
+                else "never approved; a later candidate replaced it"
+            ),
+        )
+        for one in earlier
     )
 
 

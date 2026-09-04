@@ -399,6 +399,33 @@
          ]) }}
       {%- endif %}
 
+      {#
+        The candidates this project has moved past.
+
+        Read-only, and deliberately so: `FRESH_PREPARATION` promises that a
+        candidate the customer could not be sent "stays listed here as it was
+        prepared", and that promise has to survive the fresh candidate it asks
+        for. There is no control in this table and there never may be — an act
+        offered against a superseded candidate is the duplicate action
+        ADR-0085's exactly-once rule refuses.
+      #}
+      {%- if issue.superseded %}
+      <h4>Earlier candidates for this issue, kept as history</h4>
+      {% call ui.record_table(
+           "Every candidate this project has moved past, newest first",
+           ["Prepared", "Prepared by", "From record revision", "Coverage it was prepared under", "What became of it"]) %}
+        {%- for one in issue.superseded %}
+        <tr>
+          <th scope="row">{{ one.prepared_at.isoformat() }}</th>
+          <td>{{ one.prepared_by_principal }}</td>
+          <td>{{ one.accepted_revision_id }}</td>
+          <td>{{ one.coverage_identity }}</td>
+          <td>{{ one.outcome }}</td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+      {%- endif %}
+
       {%- if issue.may_authorize %}
       <form method="post" action="/work/{{ project.slug }}/issue/authorize">
         <input type="hidden" name="candidate_id" value="{{ issue.candidate.id }}">

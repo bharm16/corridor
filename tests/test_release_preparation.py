@@ -45,6 +45,7 @@ from corridor.release_preparation import (
     PREPARING,
     PreparationRequestRefused,
     pending_request_ids,
+    preparation_idempotency_key,
     preparation_standing,
     request_preparation,
 )
@@ -382,6 +383,59 @@ def test_an_attempt_cannot_name_a_candidate_and_a_failure_together(
             )
         )
         session.flush()
+
+
+def test_the_request_key_holds_until_an_attempt_finishes(session, adopted):
+    """What makes a resubmission a convergence and a retry a second request.
+
+    ``issue_readiness`` tells a coordinator whose preparation produced nothing
+    that "asking for it again is what puts it right". A key derived from the
+    confirmed declaration alone made that untrue: with the inputs unmoved — a
+    lost database, template bytes a resolver could not retrieve — the retry
+    converged on the request that had already failed and no worker picked
+    anything up.
+    """
+
+    configure(session, adopted)
+    declaration = declared(session, adopted)
+    project_id = adopted.project.id
+
+    def key():
+        return preparation_idempotency_key(
+            session, project_id=project_id, declaration=declaration
+        )
+
+    first_key = key()
+    first = ask(session, adopted, declaration, idempotency_key=first_key)
+    session.flush()
+    # While a worker still holds the request, a resubmitted form converges.
+    assert key() == first_key
+    assert ask(session, adopted, declaration, idempotency_key=key()).id == first.id
+
+    record_failed_attempt(
+        session,
+        request_id=first.id,
+        project_id=project_id,
+        reason="the customer's template bytes could not be retrieved",
+        started_at=STARTED_AT,
+        finished_at=FINISHED_AT,
+    )
+    session.flush()
+
+    retry_key = key()
+    assert retry_key != first_key
+    second = ask(session, adopted, declaration, idempotency_key=retry_key)
+    session.flush()
+    assert second.id != first.id
+    assert _requests(session, adopted) == 2
+
+    # And the second request holds the key too. The boundary is the newest
+    # finished attempt for the *project*: the newest request now carries none,
+    # so a key taken from the derived standing would append a third request on
+    # every refresh of a week that is already being prepared.
+    assert key() == retry_key
+    assert ask(session, adopted, declaration, idempotency_key=key()).id == second.id
+    assert _requests(session, adopted) == 2
 
 
 # --- what a failure becomes -------------------------------------------------

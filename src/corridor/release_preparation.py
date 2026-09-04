@@ -22,8 +22,11 @@ claim and then complete, because completing one would need an UPDATE and every
 release relation refuses one. The consequence is deliberate and worth stating:
 a request whose worker died is indistinguishable from one still running, and
 both read as *preparing*. That is the honest reading — Corridor does not know
-which — and clearing it is a second request, which the coordinator can make
-because the section never stops offering the act.
+which. **A coordinator cannot clear it**: the Issue section offers no act while
+a request is in flight, deliberately, so that refreshing the page cannot queue a
+second preparation of the same issue, and nothing else appends the attempt that
+would end the wait. An abandoned request therefore holds the section until an
+operator records one, and that gap is open work rather than a decided design.
 
 **Three outcomes, kept apart, and no partial candidate.** #529 already
 guarantees that: a refusal writes no candidate row and no artifact row, and a
@@ -187,6 +190,45 @@ def request_preparation(
     session.add(row)
     session.flush()
     return row
+
+
+def preparation_idempotency_key(
+    session: Session,
+    *,
+    project_id: int,
+    declaration: IssueCoverageDeclaration,
+) -> str:
+    """The key one confirmation of one reading converges on, until it finishes.
+
+    The digest of the confirmed declaration alone is not enough, and the
+    difference is the whole of what a retry means. ``issue_readiness`` tells a
+    coordinator whose preparation produced nothing that "asking for it again is
+    what puts it right", and a key that named only the declaration made that
+    sentence untrue: the retry would converge on the request that had already
+    failed, nothing would be appended, no worker would pick anything up, and
+    the project would be stuck at that cutoff for as long as its inputs did not
+    happen to move. A transient failure — a lost database, template bytes a
+    resolver could not retrieve — is exactly the case where the inputs do not
+    move.
+
+    So the key is the confirmed reading *and* the attempt this project has
+    already finished. Within one preparation it does not change, so a
+    resubmitted form, a retried POST and a second click all converge on the one
+    request; once an attempt has finished, it does change, so asking again is a
+    second request a worker can actually run.
+
+    The boundary is the newest finished attempt for the **project**, not the
+    newest for the request the standing happens to name: while a second request
+    is in flight the standing carries no attempt at all, and a key derived from
+    that would append a third request on every refresh.
+    """
+
+    latest = session.scalar(
+        select(func.max(ReleasePreparationAttempt.id)).where(
+            ReleasePreparationAttempt.project_id == int(project_id)
+        )
+    )
+    return f"prepare:{declaration.declaration_digest}:after:{int(latest or 0)}"
 
 
 # --- what a worker has left to do --------------------------------------------
