@@ -13,6 +13,7 @@ receipt.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import os
 from pathlib import Path
 import re
 import subprocess
@@ -86,28 +87,31 @@ class SealedRehearsalEnvironment:
         )
 
     def capture(self, dump_path: Path) -> None:
-        """Capture PostgreSQL data from the local Compose source, read-only."""
+        """Capture PostgreSQL data from the pinned local source, read-only."""
         dump_path = Path(dump_path)
+        argv, environment = self._client(
+            "pg_dump",
+            (
+                "--format=custom",
+                "--data-only",
+                "--no-owner",
+                "--no-privileges",
+                # Two rows every migrated database writes for itself, so a
+                # clone already holds its own and a copy collides with it.
+                # The partition seal (#531) is a per-database key the schema
+                # generates and only ever derives a session value from — no
+                # stored row is sealed with it — so the clone keeping its own
+                # is the correct restore, not a lost one.
+                "--exclude-table-data=alembic_version",
+                "--exclude-table-data=project_partition_secrets",
+            ),
+            self.source_database["database"],
+        )
         with dump_path.open("wb") as output:
             completed = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "exec",
-                    "-T",
-                    "postgres",
-                    "pg_dump",
-                    "--format=custom",
-                    "--data-only",
-                    "--no-owner",
-                    "--no-privileges",
-                    "--exclude-table-data=alembic_version",
-                    "--username",
-                    self.source_database["username"],
-                    "--dbname",
-                    self.source_database["database"],
-                ],
+                argv,
                 cwd=self.compose_root,
+                env=environment,
                 stdout=output,
                 stderr=subprocess.PIPE,
                 text=False,
@@ -124,26 +128,22 @@ class SealedRehearsalEnvironment:
         """Restore captured data only into an already-migrated disposable clone."""
         if not _DATABASE_NAME.fullmatch(database_name):
             raise ValueError("disposable database name is invalid")
+        argv, environment = self._client(
+            "pg_restore",
+            (
+                "--data-only",
+                "--disable-triggers",
+                "--exit-on-error",
+                "--no-owner",
+                "--no-privileges",
+            ),
+            database_name,
+        )
         with Path(dump_path).open("rb") as source:
             completed = subprocess.run(
-                [
-                    "docker",
-                    "compose",
-                    "exec",
-                    "-T",
-                    "postgres",
-                    "pg_restore",
-                    "--data-only",
-                    "--disable-triggers",
-                    "--exit-on-error",
-                    "--no-owner",
-                    "--no-privileges",
-                    "--username",
-                    self.source_database["username"],
-                    "--dbname",
-                    database_name,
-                ],
+                argv,
                 cwd=self.compose_root,
+                env=environment,
                 stdin=source,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
@@ -156,6 +156,54 @@ class SealedRehearsalEnvironment:
                 + (f": {detail[-1]}" if detail else "")
             )
 
+    def _client(
+        self, program: str, arguments: tuple[str, ...], database: str
+    ) -> tuple[list[str], dict[str, str] | None]:
+        """Reach the configured PostgreSQL, through Compose only when it runs it.
+
+        Both routes address the same pinned server; only the client binary
+        differs.  A rehearsal used to be able to reach it one way, so the one
+        test that executed this path skipped wherever Compose was absent —
+        which includes CI, where PostgreSQL comes from the runner image
+        instead (#639, #595).  Neither route is an opt-out: when the server
+        cannot be reached the rehearsal fails, as it always did.
+        """
+
+        if _compose_service_is_running(self.compose_root):
+            return (
+                [
+                    "docker",
+                    "compose",
+                    "exec",
+                    "-T",
+                    "postgres",
+                    program,
+                    *arguments,
+                    "--username",
+                    self.source_database["username"],
+                    "--dbname",
+                    database,
+                ],
+                None,
+            )
+        url = make_url(self.source_database_url)
+        argv = [
+            program,
+            *arguments,
+            "--host",
+            str(url.host or "localhost"),
+            "--port",
+            str(url.port or 5432),
+            "--username",
+            self.source_database["username"],
+            "--dbname",
+            database,
+        ]
+        environment = dict(os.environ)
+        if url.password:
+            environment["PGPASSWORD"] = str(url.password)
+        return argv, environment
+
     @staticmethod
     def clone_url(admin_url: str, database_name: str) -> str:
         if not _DATABASE_NAME.fullmatch(database_name):
@@ -163,6 +211,22 @@ class SealedRehearsalEnvironment:
         return make_url(admin_url).set(database=database_name).render_as_string(
             hide_password=False
         )
+
+
+def _compose_service_is_running(compose_root: Path) -> bool:
+    """Whether this checkout's own Compose stack is serving PostgreSQL here."""
+
+    try:
+        completed = subprocess.run(
+            ["docker", "compose", "ps", "--status", "running", "--quiet", "postgres"],
+            cwd=compose_root,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return False
+    return completed.returncode == 0 and bool(completed.stdout.strip())
 
 
 def _git(repo_root: Path, *args: str) -> str:

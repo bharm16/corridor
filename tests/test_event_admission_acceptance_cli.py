@@ -25,6 +25,7 @@ from corridor.event_admission_acceptance import (
     suspend_unknown_scope_admission,
 )
 from corridor.event_admission_acceptance_cli import main
+from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import Project
 from corridor import policy
 
@@ -126,7 +127,7 @@ def _activation_receipt(session, project, *, eligible: bool) -> dict:
             ),
         },
         "migration_rehearsal": {
-            "predecessor": "a257c9e6f204",
+            "predecessor": SUPPORTED_FROM_REVISION,
             "head": migration_head,
             "status": "passed",
             "fresh_head": migration_head,

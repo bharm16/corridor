@@ -70,6 +70,7 @@ from corridor.m8_acceptance_database import (
     provision_disposable_postgres,
     read_migration_head,
 )
+from corridor.migrations.policy import CURRENT_HEAD, SUPPORTED_FROM_REVISION
 from corridor.rehearsal_environment import SealedRehearsalEnvironment
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.project_lock import lock_project
@@ -84,6 +85,12 @@ from corridor.work_list import build_work_list
 SELECTION_RULE = "current-active-run-pending-event-candidates-v1"
 RECEIPT_VERSION = "corridor.event-admission-unknown-scope-acceptance.v1"
 ACTIVATION_ACTOR = "corridor:event-admission-activation"
+# Why a recorded migration rehearsal is not current proof. These are reasons,
+# not corruption claims: the receipt bytes stay valid and stay history (#639).
+RETIRED_PREDECESSOR_REFUSAL = "predecessor_outside_supported_migration_window"
+NO_MIGRATION_REHEARSAL = "no_migration_rehearsal_recorded"
+UNREHEARSED_MIGRATION_HEAD = "no_migration_head_rehearsed"
+FAILED_MIGRATION_REHEARSAL = "migration_rehearsal_did_not_pass"
 PROMOTION_GATE_NAMES = frozenset(
     {
         "eligible_case_observed",
@@ -913,20 +920,40 @@ def _promotion_gates(opt_in: dict[str, Any]) -> dict[str, bool]:
     return gates
 
 
+def migration_rehearsal_refusal(migration: Any) -> str | None:
+    """Name why a recorded rehearsal is not current proof, or ``None`` when it is.
+
+    A receipt naming a predecessor the consolidation retired stays immutable
+    historical evidence and stays integrity-valid — it is simply outside the
+    executable window, so it can be replayed against nothing and can prove
+    nothing about the schema running now (#639).  Saying that by name keeps it
+    distinct from the two states it is not: a corrupt receipt, and a receipt
+    whose rehearsal genuinely failed.
+    """
+
+    if not isinstance(migration, dict):
+        return NO_MIGRATION_REHEARSAL
+    if migration.get("predecessor") != SUPPORTED_FROM_REVISION:
+        return RETIRED_PREDECESSOR_REFUSAL
+    if not isinstance(migration.get("head"), str):
+        return UNREHEARSED_MIGRATION_HEAD
+    if (
+        migration.get("status") != "passed"
+        or migration.get("fresh_status") != "passed"
+        or migration.get("fresh_head") != migration.get("head")
+    ):
+        return FAILED_MIGRATION_REHEARSAL
+    return None
+
+
 def _receipt_promotion_gates(receipt: dict[str, Any]) -> dict[str, bool]:
     opt_in = receipt.get("opt_in")
-    migration = receipt.get("migration_rehearsal")
     if not isinstance(opt_in, dict):
         raise ValueError("acceptance receipt is missing the opt-in result")
     gates = {
         **_promotion_gates(opt_in),
         "fresh_and_predecessor_migrations_passed": (
-            isinstance(migration, dict)
-            and migration.get("status") == "passed"
-            and migration.get("predecessor") == "a257c9e6f204"
-            and isinstance(migration.get("head"), str)
-            and migration.get("fresh_status") == "passed"
-            and migration.get("fresh_head") == migration.get("head")
+            migration_rehearsal_refusal(receipt.get("migration_rehearsal")) is None
         ),
     }
     assert set(gates) == PROMOTION_GATE_NAMES
@@ -936,7 +963,20 @@ def _receipt_promotion_gates(receipt: dict[str, Any]) -> dict[str, bool]:
 def _rehearse_predecessor_upgrade(
     postgres_admin_url: str, *, expected_head: str
 ) -> dict[str, str]:
-    predecessor = "a257c9e6f204"
+    """Rehearse the supported window itself: SUPPORTED_FROM_REVISION -> CURRENT_HEAD.
+
+    The revision to upgrade from is read from ``migrations.policy`` and never
+    written here.  A literal was written here once; #548 retired it, and
+    because the only test that executed this path skipped wherever Docker
+    Compose was absent, the run kept asking Alembic for a revision the
+    executable graph no longer holds (#639).
+    """
+
+    if expected_head != CURRENT_HEAD:
+        raise ValueError(
+            "checked-out migration head is not the head migrations/policy.py records"
+        )
+    predecessor = SUPPORTED_FROM_REVISION
     with provision_disposable_postgres(
         postgres_admin_url,
         repo_root=REPO_ROOT,

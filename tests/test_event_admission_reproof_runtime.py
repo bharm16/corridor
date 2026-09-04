@@ -48,6 +48,7 @@ from corridor.event_admission_acceptance import (
     suspend_unknown_scope_admission,
 )
 from corridor.event_admission_reproof import execute_scheduled_reproof
+from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import (
     EventAdmissionAcceptanceReceipt,
     EventAdmissionActivation,
@@ -112,7 +113,7 @@ def _acceptance_receipt(session, project, *, source_revision, migration_head, el
             ),
         },
         "migration_rehearsal": {
-            "predecessor": "a257c9e6f204",
+            "predecessor": SUPPORTED_FROM_REVISION,
             "head": migration_head,
             "status": "passed",
             "fresh_head": migration_head,

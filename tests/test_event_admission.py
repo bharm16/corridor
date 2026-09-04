@@ -21,7 +21,6 @@ import json
 from copy import deepcopy
 from datetime import date
 from pathlib import Path
-import subprocess
 from threading import Event
 from uuid import uuid4
 
@@ -71,6 +70,7 @@ from corridor.extraction_runs import (
     declare_single_run_documents,
     record_extraction_run,
 )
+from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import (
     AuditLog,
     Candidate,
@@ -1379,7 +1379,7 @@ def _activation_receipt(
         "reason_version": UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
         "opt_in": opt_in,
         "migration_rehearsal": {
-            "predecessor": "a257c9e6f204",
+            "predecessor": SUPPORTED_FROM_REVISION,
             "head": migration_head,
             "status": "passed",
             "fresh_head": migration_head,
@@ -1935,27 +1935,12 @@ def test_competing_activation_then_suspension_leaves_policy_suspended(
 def test_replay_cli_keeps_passing_proof_when_suspension_vetoes_activation(
     event_admission_isolated_database, capsys
 ):
-    try:
-        compose_postgres = subprocess.run(
-            [
-                "docker",
-                "compose",
-                "ps",
-                "--status",
-                "running",
-                "--quiet",
-                "postgres",
-            ],
-            cwd=Path(__file__).resolve().parents[1],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except OSError:
-        pytest.skip("real replay requires the local Docker Compose Postgres service")
-    if compose_postgres.returncode or not compose_postgres.stdout.strip():
-        pytest.skip("real replay requires the local Docker Compose Postgres service")
-
+    # No Compose probe here. This test used to skip unless `docker compose ps`
+    # reported a running service from the repository root, so it never ran in
+    # CI — where PostgreSQL comes from the runner image — and the retired
+    # predecessor it replays went unnoticed for a whole consolidation (#639).
+    # It now runs against the configured PostgreSQL wherever there is one, and
+    # fails rather than skipping where there is not.
     database = event_admission_isolated_database
     session_factory = database.session_factory
     project_slug = f"event-admission-replay-veto-{uuid4().hex}"
