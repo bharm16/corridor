@@ -7,6 +7,8 @@ per-document reporting, the error tally, and `client.close()` in a
 nothing in `src/` calls.
 """
 
+import threading
+
 import pytest
 from sqlalchemy import select
 
@@ -201,16 +203,30 @@ def test_pooled_run_records_one_exact_batch_usage_receipt_per_member(
     second = add_note(session, project, "notes-b.pdf", "b" * 64)
 
     class MeteredClient(StubClient):
+        """A metered stub that accumulates usage the way the real client does.
+
+        `run_extraction` drives a `ThreadPoolExecutor`, so these four counters
+        are incremented from several worker threads at once. `OpenAIClient`
+        holds `_usage_lock` across exactly this accumulation (`llm.py`); a stub
+        that does not is a lost update away from reporting half the tokens it
+        was handed, which is a flake in the batch receipt rather than a fault
+        the test is meant to find. The lock is on the meter alone: `complete`
+        itself stays concurrent, because pooled execution is the property this
+        test exists to prove.
+        """
+
         def __init__(self):
             super().__init__()
             self.usage = Usage()
+            self._usage_lock = threading.Lock()
 
         def complete(self, **kwargs):
             result = super().complete(**kwargs)
-            self.usage.prompt_tokens += 100
-            self.usage.completion_tokens += 20
-            self.usage.reasoning_tokens += 3
-            self.usage.cached_tokens += 40
+            with self._usage_lock:
+                self.usage.prompt_tokens += 100
+                self.usage.completion_tokens += 20
+                self.usage.reasoning_tokens += 3
+                self.usage.cached_tokens += 40
             return result
 
     _run(session, project, MeteredClient())
