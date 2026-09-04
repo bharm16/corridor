@@ -213,9 +213,13 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # (#605) — the second of which is keyed by a sequence and the first by
     # its own digest, so the two tables add one sequence between them, and the
     # project-partition seal key (#531), whose single row is keyed by a checked
-    # constant rather than a sequence, so it adds a table and no sequence.
-    assert fingerprint.table_count == 182
-    assert fingerprint.sequence_count == 167
+    # constant rather than a sequence, so it adds a table and no sequence, and
+    # the per-project external-issue profile (#640, ADR-0091): the configured
+    # issue set and, held separately from it, the members whose participation
+    # ADR-0091 made configurable at all — two tables, each keyed by its own
+    # bigserial, so two sequences.
+    assert fingerprint.table_count == 184
+    assert fingerprint.sequence_count == 169
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

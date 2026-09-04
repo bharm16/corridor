@@ -220,6 +220,10 @@ ACCEPTED_AUTHORITY_COMMANDS = {
     # attributable registration (#610); it writes no accepted value and is
     # owned by the same role, so it holds the same seam.
     "attach_baseline_format_manifest": "baseline_adoption.py",
+    # Configuring what a project externally issues is an attributable human
+    # act owned by the same role (#640, ADR-0091); it writes no accepted value
+    # and holds the same seam for the same reason as the registration above.
+    "register_project_issue_profile": "issue_profile.py",
     "open_delta_resolution_revision": "delta_resolution.py",
     "resolve_proposed_delta_decision": "delta_resolution.py",
     # ADR-0084 keeps the deferral receipt with the delta lifecycle (#518);
@@ -1043,6 +1047,17 @@ REPORT_READING_PAYLOADS = {
     ("scheduled_report_publications", "snapshot_json"),
 }
 
+# Not carriers either, and not exempt: these two columns are the reference the
+# rule asks for (#640). They name the registered field-mapping revision that
+# *owns* the mapping — a foreign key into `project_baseline_formats`, not a
+# copy of any field map — and they match the pattern only because the
+# registration kind is spelled `field_mapping`. Named exactly, so the ratchet
+# still refuses any other new field-map-shaped column.
+MAPPING_REGISTRATION_REFERENCES = {
+    ("project_issue_profiles", "field_mapping_format_id"),
+    ("project_issue_profiles", "field_mapping_kind"),
+}
+
 _VALUE_COPYING_COLUMN = re.compile(r"quote|snapshot|field_map|^(before|after)_json$")
 
 
@@ -1063,7 +1078,10 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
     ``REPORT_READING_PAYLOADS`` is subtracted rather than listed: those two
     columns are a dated occurrence's own published evidence, not a copy of any
     other row's state (ADR-0092), so there is nothing there for this ratchet to
-    measure. Every other snapshot-shaped column still has to be a listed
+    measure. ``MAPPING_REGISTRATION_REFERENCES`` is subtracted for the opposite
+    reason: those two columns *are* the reference this rule asks for, a foreign
+    key naming the registration that owns the mapping. Every other
+    snapshot-shaped or field-map-shaped column still has to be a listed
     carrier.
     """
 
@@ -1074,7 +1092,7 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
         for table in Base.metadata.sorted_tables
         for column in table.columns
         if _VALUE_COPYING_COLUMN.search(column.name)
-    } - REPORT_READING_PAYLOADS
+    } - REPORT_READING_PAYLOADS - MAPPING_REGISTRATION_REFERENCES
     introduced = sorted(
         f"{table}.{column}"
         for table, column in present - VALUE_COPYING_CARRIERS

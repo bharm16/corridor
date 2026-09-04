@@ -22,6 +22,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     Date,
     DateTime,
     Enum,
@@ -2951,6 +2952,228 @@ class BaselineFormatManifest(Base):
     content_sha256: Mapped[str] = mapped_column(String(64))
     manifest_schema_version: Mapped[str] = mapped_column(String(64))
     declaration: Mapped[str] = mapped_column(Text)
+
+
+# ADR-0091's configured members. The mandatory updated UCM is deliberately not
+# among them: it is a column on ``IssueProfile``, so a profile can neither omit
+# it nor carry it twice.
+CONFIGURED_ARTIFACT_TYPES = (
+    "accepted_change_summary",
+    "chase_list",
+    "weekly_coordination_report",
+    "provenance_sidecar",
+)
+
+_CONFIGURED_ARTIFACT_TYPES_SQL = ", ".join(
+    f"'{name}'" for name in CONFIGURED_ARTIFACT_TYPES
+)
+
+
+class IssueProfile(Base):
+    """One version of what a project externally issues (#640, ADR-0091).
+
+    ADR-0091 made the issued set per-project configuration with only the
+    updated UCM mandatory, and recorded that the configuration was not
+    modelled. This row is it, and every version of it is kept: a profile change
+    never rewrites what an earlier reporting cutoff was configured to issue.
+
+    The chain is the timing rule. Each version names its predecessor through a
+    composite foreign key carrying that predecessor's project, identity,
+    version and effective instant, and ``ck_project_issue_profiles_succession``
+    requires the version to be exactly one higher and the effective instant to
+    be strictly later — so monotonic, non-backdatable, single-lineage,
+    append-only history is a database invariant rather than a Python
+    comparison. ``uq_project_issue_profiles_successor`` refuses a fork and the
+    partial unique index refuses a second lineage in one project.
+
+    The updated UCM is a column rather than an artifact row because its
+    participation is not configurable; ``IssueProfileArtifact`` holds exactly
+    what ADR-0091 made a per-project choice.
+    """
+
+    __tablename__ = "project_issue_profiles"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_project_issue_profiles_key"
+        ),
+        UniqueConstraint(
+            "project_id",
+            "profile_identity",
+            "profile_version",
+            name="uq_project_issue_profiles_version",
+        ),
+        UniqueConstraint("id", "project_id", name="uq_project_issue_profiles_row"),
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "profile_identity",
+            "profile_version",
+            "effective_from",
+            name="uq_project_issue_profiles_chain",
+        ),
+        UniqueConstraint(
+            "supersedes_id", name="uq_project_issue_profiles_successor"
+        ),
+        ForeignKeyConstraint(
+            [
+                "supersedes_id",
+                "project_id",
+                "profile_identity",
+                "supersedes_version",
+                "supersedes_effective_from",
+            ],
+            [
+                "project_issue_profiles.id",
+                "project_issue_profiles.project_id",
+                "project_issue_profiles.profile_identity",
+                "project_issue_profiles.profile_version",
+                "project_issue_profiles.effective_from",
+            ],
+            name="fk_project_issue_profiles_supersedes",
+        ),
+        ForeignKeyConstraint(
+            ["output_template_format_id", "project_id", "output_template_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_project_issue_profiles_template",
+        ),
+        ForeignKeyConstraint(
+            ["field_mapping_format_id", "project_id", "field_mapping_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_project_issue_profiles_mapping",
+        ),
+        CheckConstraint(
+            "length(btrim(profile_identity)) > 0",
+            name="ck_project_issue_profiles_identity",
+        ),
+        CheckConstraint(
+            "length(btrim(idempotency_key)) > 0",
+            name="ck_project_issue_profiles_key",
+        ),
+        CheckConstraint(
+            "length(btrim(registered_by_principal)) > 0",
+            name="ck_project_issue_profiles_principal",
+        ),
+        CheckConstraint(
+            "length(btrim(declaration_schema_version)) > 0",
+            name="ck_project_issue_profiles_schema",
+        ),
+        CheckConstraint(
+            "profile_version >= 1", name="ck_project_issue_profiles_version"
+        ),
+        CheckConstraint(
+            "length(btrim(ucm_renderer_identity)) > 0 "
+            "and length(btrim(ucm_renderer_version)) > 0",
+            name="ck_project_issue_profiles_ucm",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(declaration, 'utf8')), 'hex') "
+            "= content_sha256",
+            name="ck_project_issue_profiles_digest",
+        ),
+        CheckConstraint(
+            "(supersedes_id is null and profile_version = 1 "
+            "and supersedes_version is null "
+            "and supersedes_effective_from is null) "
+            "or (supersedes_id is not null and supersedes_version is not null "
+            "and supersedes_effective_from is not null "
+            "and profile_version = supersedes_version + 1 "
+            "and effective_from > supersedes_effective_from)",
+            name="ck_project_issue_profiles_succession",
+        ),
+        Index(
+            "uq_project_issue_profiles_root",
+            "project_id",
+            unique=True,
+            postgresql_where=text("supersedes_id is null"),
+        ),
+        Index(
+            "ix_project_issue_profiles_effective", "project_id", "effective_from"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    profile_identity: Mapped[str] = mapped_column(String(160))
+    # An integer, so a blank version is not a value this column can hold.
+    profile_version: Mapped[int] = mapped_column(Integer)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    # The exact canonical bytes the digest is taken over, not a re-encoding of
+    # them: `jsonb` would normalize key order, whitespace and numbers, and the
+    # digest could no longer be checked against what came back.
+    declaration: Mapped[str] = mapped_column(Text)
+    declaration_schema_version: Mapped[str] = mapped_column(String(64))
+    # The business instant the caller supplied, never a clock reading.
+    effective_from: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    ucm_renderer_identity: Mapped[str] = mapped_column(String(160))
+    ucm_renderer_version: Mapped[str] = mapped_column(String(64))
+    output_template_format_id: Mapped[int] = mapped_column(BigInteger)
+    # A stored constant, so the composite key above can require the named
+    # registration to be a template and not a mapping.
+    output_template_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'output_template'", persisted=True)
+    )
+    field_mapping_format_id: Mapped[int] = mapped_column(BigInteger)
+    field_mapping_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'field_mapping'", persisted=True)
+    )
+    supersedes_id: Mapped[int | None] = mapped_column(BigInteger)
+    supersedes_version: Mapped[int | None] = mapped_column(Integer)
+    supersedes_effective_from: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True)
+    )
+    registered_by_principal: Mapped[str] = mapped_column(String(128))
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    registered_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class IssueProfileArtifact(Base):
+    """One configured member of a project's issued set (#640, ADR-0091).
+
+    Only what ADR-0091 made a per-project choice lives here. ``updated_ucm`` is
+    not an admitted type: the mandatory member is ``IssueProfile``'s own
+    column, so it can be neither dropped from a profile nor entered twice.
+    """
+
+    __tablename__ = "project_issue_profile_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "profile_id",
+            "artifact_type",
+            name="uq_project_issue_profile_artifacts_type",
+        ),
+        ForeignKeyConstraint(
+            ["profile_id", "project_id"],
+            ["project_issue_profiles.id", "project_issue_profiles.project_id"],
+            name="fk_project_issue_profile_artifacts_profile",
+        ),
+        CheckConstraint(
+            f"artifact_type in ({_CONFIGURED_ARTIFACT_TYPES_SQL})",
+            name="ck_project_issue_profile_artifacts_type",
+        ),
+        CheckConstraint(
+            "length(btrim(renderer_identity)) > 0 "
+            "and length(btrim(renderer_version)) > 0",
+            name="ck_project_issue_profile_artifacts_renderer",
+        ),
+        Index("ix_project_issue_profile_artifacts_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    profile_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    artifact_type: Mapped[str] = mapped_column(String(48))
+    renderer_identity: Mapped[str] = mapped_column(String(160))
+    renderer_version: Mapped[str] = mapped_column(String(64))
 
 
 class FactDecision(Base):
