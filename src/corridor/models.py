@@ -3011,6 +3011,16 @@ class IssueProfile(Base):
             "effective_from",
             name="uq_project_issue_profiles_chain",
         ),
+        # The key a release candidate binds itself to (#529): the row, its
+        # project, its identity and its version, so a candidate cannot name
+        # one profile row while recording another profile's version.
+        UniqueConstraint(
+            "id",
+            "project_id",
+            "profile_identity",
+            "profile_version",
+            name="uq_project_issue_profiles_binding",
+        ),
         UniqueConstraint(
             "supersedes_id", name="uq_project_issue_profiles_successor"
         ),
@@ -3174,6 +3184,335 @@ class IssueProfileArtifact(Base):
     artifact_type: Mapped[str] = mapped_column(String(48))
     renderer_identity: Mapped[str] = mapped_column(String(160))
     renderer_version: Mapped[str] = mapped_column(String(64))
+
+
+# --- #529 One immutable release candidate, from one coherent reading --------
+
+# Every reason preparation may refuse for, as a closed vocabulary. A refusal a
+# person has to read a paragraph to classify is a refusal nobody counts.
+PREPARATION_REFUSAL_REASONS = (
+    "unsupported_issue_configuration",
+    "renderer_failed",
+    "artifact_missing",
+    "storage_failed",
+    "digest_mismatch",
+    "inputs_changed_while_rendering",
+    "mixed_reading",
+    "candidate_identity_conflict",
+)
+
+_PREPARATION_REFUSAL_REASONS_SQL = ", ".join(
+    f"'{reason}'" for reason in PREPARATION_REFUSAL_REASONS
+)
+
+# ADR-0086's three derived outcomes for a candidate that exists.
+READY = "ready"
+READY_WITH_EXCEPTIONS = "ready_with_exceptions"
+BLOCKED = "blocked"
+RELEASE_READINESS_STATES = (READY, READY_WITH_EXCEPTIONS, BLOCKED)
+
+_RELEASE_READINESS_SQL = ", ".join(
+    f"'{state}'" for state in RELEASE_READINESS_STATES
+)
+
+
+class ReleasePackage(Base):
+    """One externally authorized issue, as an identity #533 populates (#529).
+
+    Created empty and on purpose. A candidate's predecessor is a *typed
+    reference* to an authorized package (ADR-0086), so the relation has to
+    exist before anything can point at it, and nothing in #529 writes a row
+    here. Every column that makes a package a package is ``not null``, so a
+    later authorization cannot record a release that binds no accepted
+    revision — which is exactly what #635 found wrong with
+    ``external_report_releases``, and exactly why that table is never the
+    predecessor.
+    """
+
+    __tablename__ = "release_packages"
+    __table_args__ = (
+        UniqueConstraint("id", "project_id", name="uq_release_packages_row"),
+        UniqueConstraint(
+            "project_id", "package_identity", name="uq_release_packages_identity"
+        ),
+        ForeignKeyConstraint(
+            ["accepted_revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_release_packages_revision",
+        ),
+        CheckConstraint(
+            "length(btrim(package_identity)) > 0",
+            name="ck_release_packages_identity",
+        ),
+        CheckConstraint(
+            "length(btrim(authorized_by_principal)) > 0",
+            name="ck_release_packages_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    package_identity: Mapped[str] = mapped_column(String(160))
+    accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
+    authorized_by_principal: Mapped[str] = mapped_column(String(128))
+    authorized_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ReleaseCandidate(Base):
+    """One prepared, immutable issue for review (#529, ADR-0086, ADR-0091).
+
+    ``candidate_identity`` is the SHA-256 of ``input_declaration``, which holds
+    every bound input: the project, the accepted revision, the previous
+    authorized package or an explicit none, the source cutoff, the coverage
+    identity and digest, the issue-profile row, identity, version and digest,
+    the template and mapping registrations and digests, the configured artifact
+    types, the renderer identities and versions, the product and code revision,
+    and the enabled feature flags. ``content_sha256`` digests a declaration
+    that repeats all of that and adds the ordered artifact identities and their
+    own digests, so a candidate identity answers "were these the same inputs"
+    and a content digest answers "is this the same issue".
+
+    The updated UCM is a set of columns rather than an artifact row, carrying
+    #640's structural decision forward: a candidate with no UCM and a candidate
+    with two are both unrepresentable.
+    """
+
+    __tablename__ = "release_candidates"
+    __table_args__ = (
+        UniqueConstraint("id", "project_id", name="uq_release_candidates_row"),
+        UniqueConstraint(
+            "project_id",
+            "candidate_identity",
+            name="uq_release_candidates_identity",
+        ),
+        ForeignKeyConstraint(
+            ["accepted_revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_release_candidates_revision",
+        ),
+        ForeignKeyConstraint(
+            ["previous_package_id", "project_id"],
+            ["release_packages.id", "release_packages.project_id"],
+            name="fk_release_candidates_previous",
+        ),
+        ForeignKeyConstraint(
+            [
+                "issue_profile_id",
+                "project_id",
+                "issue_profile_identity",
+                "issue_profile_version",
+            ],
+            [
+                "project_issue_profiles.id",
+                "project_issue_profiles.project_id",
+                "project_issue_profiles.profile_identity",
+                "project_issue_profiles.profile_version",
+            ],
+            name="fk_release_candidates_profile",
+        ),
+        ForeignKeyConstraint(
+            ["output_template_format_id", "project_id", "output_template_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_release_candidates_template",
+        ),
+        ForeignKeyConstraint(
+            ["field_mapping_format_id", "project_id", "field_mapping_kind"],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_kind",
+            ],
+            name="fk_release_candidates_mapping",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(input_declaration, 'utf8')), 'hex') "
+            "= candidate_identity",
+            name="ck_release_candidates_identity_digest",
+        ),
+        CheckConstraint(
+            "encode(sha256(convert_to(content_declaration, 'utf8')), 'hex') "
+            "= content_sha256",
+            name="ck_release_candidates_content_digest",
+        ),
+        CheckConstraint(
+            "length(btrim(input_schema_version)) > 0",
+            name="ck_release_candidates_schema",
+        ),
+        CheckConstraint(
+            "length(btrim(coverage_identity)) > 0",
+            name="ck_release_candidates_coverage",
+        ),
+        CheckConstraint(
+            "length(btrim(ucm_renderer_identity)) > 0 "
+            "and length(btrim(ucm_renderer_version)) > 0 "
+            "and length(btrim(ucm_storage_key)) > 0 "
+            "and ucm_byte_count > 0",
+            name="ck_release_candidates_ucm",
+        ),
+        CheckConstraint(
+            f"readiness in ({_RELEASE_READINESS_SQL})",
+            name="ck_release_candidates_readiness",
+        ),
+        CheckConstraint(
+            "length(btrim(prepared_by_principal)) > 0",
+            name="ck_release_candidates_principal",
+        ),
+        CheckConstraint(
+            "issue_profile_version >= 1",
+            name="ck_release_candidates_profile_version",
+        ),
+        Index(
+            "ix_release_candidates_project_prepared", "project_id", "prepared_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    candidate_identity: Mapped[str] = mapped_column(String(64))
+    input_declaration: Mapped[str] = mapped_column(Text)
+    input_schema_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    content_declaration: Mapped[str] = mapped_column(Text)
+    accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
+    previous_package_id: Mapped[int | None] = mapped_column(BigInteger)
+    source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    coverage_identity: Mapped[str] = mapped_column(String(160))
+    coverage_sha256: Mapped[str] = mapped_column(String(64))
+    issue_profile_id: Mapped[int] = mapped_column(BigInteger)
+    issue_profile_identity: Mapped[str] = mapped_column(String(160))
+    issue_profile_version: Mapped[int] = mapped_column(Integer)
+    issue_profile_sha256: Mapped[str] = mapped_column(String(64))
+    output_template_format_id: Mapped[int] = mapped_column(BigInteger)
+    output_template_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'output_template'", persisted=True)
+    )
+    field_mapping_format_id: Mapped[int] = mapped_column(BigInteger)
+    field_mapping_kind: Mapped[str] = mapped_column(
+        String(32), Computed("'field_mapping'", persisted=True)
+    )
+    code_revision: Mapped[str] = mapped_column(String(160))
+    product_revision: Mapped[str] = mapped_column(String(64))
+    ucm_renderer_identity: Mapped[str] = mapped_column(String(160))
+    ucm_renderer_version: Mapped[str] = mapped_column(String(64))
+    ucm_content_sha256: Mapped[str] = mapped_column(String(64))
+    ucm_storage_key: Mapped[str] = mapped_column(String(160))
+    ucm_byte_count: Mapped[int] = mapped_column(BigInteger)
+    readiness: Mapped[str] = mapped_column(String(32))
+    prepared_by_principal: Mapped[str] = mapped_column(String(128))
+    prepared_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ReleaseCandidateArtifact(Base):
+    """One configured member of a prepared candidate's artifact set (#529).
+
+    Only what ADR-0091 made a per-project choice lives here. ``updated_ucm`` is
+    not an admitted type: the mandatory member is ``ReleaseCandidate``'s own
+    columns, so it can be neither dropped from a candidate nor entered twice.
+    The composite foreign key carries ``project_id``, so an artifact of one
+    project cannot be attached to another project's candidate.
+    """
+
+    __tablename__ = "release_candidate_artifacts"
+    __table_args__ = (
+        UniqueConstraint(
+            "candidate_id",
+            "artifact_type",
+            name="uq_release_candidate_artifacts_type",
+        ),
+        UniqueConstraint(
+            "candidate_id",
+            "position",
+            name="uq_release_candidate_artifacts_position",
+        ),
+        ForeignKeyConstraint(
+            ["candidate_id", "project_id"],
+            ["release_candidates.id", "release_candidates.project_id"],
+            name="fk_release_candidate_artifacts_candidate",
+        ),
+        CheckConstraint(
+            f"artifact_type in ({_CONFIGURED_ARTIFACT_TYPES_SQL})",
+            name="ck_release_candidate_artifacts_type",
+        ),
+        CheckConstraint(
+            "length(btrim(renderer_identity)) > 0 "
+            "and length(btrim(renderer_version)) > 0",
+            name="ck_release_candidate_artifacts_renderer",
+        ),
+        CheckConstraint(
+            "length(btrim(storage_key)) > 0 and byte_count > 0",
+            name="ck_release_candidate_artifacts_bytes",
+        ),
+        CheckConstraint(
+            "position >= 1", name="ck_release_candidate_artifacts_position"
+        ),
+        Index("ix_release_candidate_artifacts_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    candidate_id: Mapped[int] = mapped_column(BigInteger)
+    project_id: Mapped[int] = mapped_column(BigInteger)
+    artifact_type: Mapped[str] = mapped_column(String(48))
+    renderer_identity: Mapped[str] = mapped_column(String(160))
+    renderer_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    storage_key: Mapped[str] = mapped_column(String(160))
+    byte_count: Mapped[int] = mapped_column(BigInteger)
+    position: Mapped[int] = mapped_column(Integer)
+
+
+class ReleasePreparationRefusal(Base):
+    """The receipt a refused preparation leaves, and the only thing it leaves.
+
+    A failed preparation writes no candidate and no artifact row, so this is
+    where the reason lives. ``reason_code`` is one of a closed vocabulary and
+    ``reason`` is a sentence a person reads, never a captured traceback.
+    """
+
+    __tablename__ = "release_preparation_refusals"
+    __table_args__ = (
+        CheckConstraint(
+            f"reason_code in ({_PREPARATION_REFUSAL_REASONS_SQL})",
+            name="ck_release_preparation_refusals_code",
+        ),
+        CheckConstraint(
+            "length(btrim(reason)) > 0 and length(reason) <= 2000",
+            name="ck_release_preparation_refusals_reason",
+        ),
+        CheckConstraint(
+            "length(btrim(refused_by_principal)) > 0",
+            name="ck_release_preparation_refusals_principal",
+        ),
+        Index(
+            "ix_release_preparation_refusals_project", "project_id", "refused_at"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    candidate_identity: Mapped[str | None] = mapped_column(String(64))
+    reason_code: Mapped[str] = mapped_column(String(48))
+    reason: Mapped[str] = mapped_column(Text)
+    refused_by_principal: Mapped[str] = mapped_column(String(128))
+    refused_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
 
 
 class FactDecision(Base):

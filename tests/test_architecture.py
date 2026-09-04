@@ -1056,6 +1056,13 @@ REPORT_READING_PAYLOADS = {
 MAPPING_REGISTRATION_REFERENCES = {
     ("project_issue_profiles", "field_mapping_format_id"),
     ("project_issue_profiles", "field_mapping_kind"),
+    # The same two columns on a prepared release candidate, for the same
+    # reason (#529): the candidate names the registered mapping revision its
+    # artifacts render through and keeps no copy of the map. The digest stays
+    # on `project_baseline_formats`, and the candidate's own digested input
+    # declaration binds it by value without a column duplicating it.
+    ("release_candidates", "field_mapping_format_id"),
+    ("release_candidates", "field_mapping_kind"),
 }
 
 _VALUE_COPYING_COLUMN = re.compile(r"quote|snapshot|field_map|^(before|after)_json$")
