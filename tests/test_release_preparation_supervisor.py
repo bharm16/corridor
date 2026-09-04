@@ -1,16 +1,31 @@
 """A confirmed request reaches a candidate through a claimed occurrence (#690).
 
-Every other test of this path hands the worker its inputs. This one does not
-call ``run_preparation_request`` anywhere: it presses the coordinator's own
-HTTP action, lets the production Due Work registry publish and claim the
-occurrence, and lets the real ``InputResolver`` retrieve the authorities the
-maintainer's decision names. What the test supplies is a project, a clock and a
-declared instant; what it never supplies is a template, a reading, a template
-binding or a first-issue behaviour.
+Every other test of this path hands the worker its inputs. The closing proof
+below does not call ``run_preparation_request`` anywhere: it presses the
+coordinator's own HTTP action, lets the production Due Work registry publish
+and claim the occurrence, and lets the real ``InputResolver`` retrieve the
+authorities the maintainer's decision names. What the test supplies is a
+project, a clock and a declared instant; what it never supplies is a template,
+a reading, a template binding or a first-issue behaviour. One fixture at the
+very end calls the worker on purpose and says why: it is reconstructing a
+candidate prepared before #690, which is the one state in which an authorized
+package carries no bound reading.
+
+**And the comparison baseline, on a project's second package (#703).** #690
+built the floor chain -- previous authorized package, its candidate, that
+candidate's report-preparation receipt, the exact prior watermarks -- but every
+proof above authorizes at most one package, so the floor was always zero and
+ADR-0086's rule could not be wrong under any of them. The last section carries
+a second authorized package, a failed preparation and an unapproved candidate
+between the two, so the branch that reads watermarks off the previous
+authorized package actually executes against numbers a wrong rule would get
+wrong.
 
 Nothing here reads a clock. Every instant is declared, the routes take theirs
 from ``get_review_clock``, and the runtime takes its from the ``Ticker`` below,
-whose ``now`` returns a value this file set.
+whose ``now`` returns a value this file set. The floors below are watermarks
+and never timestamps: both packages are authorized at the same declared
+instant, so a rule that ordered them by time could not tell which came first.
 """
 
 from __future__ import annotations
@@ -28,6 +43,7 @@ from corridor.baseline_adoption import (
     effective_baseline_formats,
     register_baseline_format,
 )
+from corridor.delta_resolution import ChildDecisionRequest, resolve_delta
 from corridor.due_work import (
     HANDLER_RELEASE_PREPARATION,
     HANDLER_REPORT_PREPARATION,
@@ -39,12 +55,18 @@ from corridor.models import (
     DueWorkOccurrence,
     DueWorkReceipt,
     ReleaseCandidate,
+    ReleasePackage,
     ReleasePreparationAttempt,
     ReleasePreparationPublication,
     ReleasePreparationReading,
     ReleasePreparationRequest,
 )
 from corridor.principals import HumanPrincipal
+from corridor.proposed_deltas import (
+    ExistingSubjectTarget,
+    ProposedDeltaValues,
+    create_proposed_delta_group,
+)
 from corridor.release_preparation import (
     FAILED,
     PREPARED,
@@ -54,8 +76,11 @@ from corridor.release_preparation import (
 from corridor.release_preparation_supervisor import (
     PreparationSupervisionRefused,
     bind_report_preparation_reading,
+    previous_authorized_reading,
+    resolve_preparation_inputs,
     retained_output_template,
 )
+from corridor.release_preparation_worker import run_preparation_request
 
 import test_issue_path_end_to_end as issue_path
 
@@ -77,10 +102,14 @@ _form = issue_path._form
 # the coordinator's own confirmation. This file proves the supervisor those
 # proofs now run on, so it has to be turning the same handle.
 Ticker = issue_path.Ticker
+COORDINATOR = issue_path.COORDINATOR
+RELEASER = issue_path.RELEASER
+as_principal = issue_path.as_principal
 _enable = issue_path.enable_runtime
 _tick = issue_path.tick
 _take_weekly_reading = issue_path.take_weekly_reading
 _confirm_coverage = issue_path.confirm_coverage
+_run_supervisor = issue_path.run_supervisor
 WORKER_AT = issue_path.WORKER_AT
 
 
@@ -583,3 +612,453 @@ def test_an_unprovable_template_object_refuses_rather_than_substituting(
             retained_output_template(
                 reading, project_id=adopted.project_id, store=store
             )
+
+
+# --- the comparison baseline, where the rule can actually be wrong -----------
+
+# ADR-0086's rule -- only the last *authorized* package advances the external
+# comparison baseline -- lives entirely in ``previous_authorized_reading``, and
+# a project's first issue cannot exercise it: for the first package every floor
+# is zero whether the rule is right or wrong. Everything below exists to make
+# the branch that reads watermarks off the previous authorized package actually
+# run, on a fixture where a wrong rule would produce a visibly different floor.
+#
+# Nothing here orders anything by time. The instants are declared because the
+# runtime needs one, the two weekly closes are a week apart because the weekly
+# cadence is, and both packages are authorized at the *same* declared instant
+# on purpose: the chain is what says which is the predecessor.
+FIRST_DECISIONS_AT = datetime(2026, 3, 1, 9, 0, tzinfo=timezone.utc)
+SECOND_DECISIONS_AT = datetime(2026, 3, 8, 9, 0, tzinfo=timezone.utc)
+THIRD_DECISIONS_AT = datetime(2026, 3, 15, 9, 0, tzinfo=timezone.utc)
+SECOND_WORKER_AT = datetime(2026, 3, 9, 8, 5, tzinfo=timezone.utc)
+THIRD_READING_AT = datetime(2026, 3, 16, 8, 0, tzinfo=timezone.utc)
+THIRD_WORKER_AT = datetime(2026, 3, 16, 8, 5, tzinfo=timezone.utc)
+
+
+def _resolve_one_delta(session, *, project_id: int, subject: str, at: datetime):
+    """One Proposed Delta of this project, and the disposition that closes it.
+
+    The two watermarks a reading records are maxima over exactly these two
+    relations, so a project that has neither reads zero on both -- and a zero
+    floor is the one value that cannot tell a right rule from a wrong one.
+    Rejecting is the cheapest resolution that leaves nothing open: it writes
+    the disposition the second watermark counts, and no Source Fact has to be
+    invented to support a value nobody is accepting.
+    """
+
+    (delta,) = create_proposed_delta_group(
+        session,
+        project_id=project_id,
+        source_family="REV-B",
+        source_revision=f"rev-{subject}",
+        deltas=[
+            ProposedDeltaValues(
+                change_type="modify",
+                target=ExistingSubjectTarget(
+                    subject_identity=subject, field="station_from"
+                ),
+                accepted_value="1149+00",
+                proposed_value=f"{subject}+50",
+                accepted_baseline_revision=f"revision:{subject}",
+            )
+        ],
+    )
+    outcome = resolve_delta(
+        session,
+        ChildDecisionRequest(
+            project_id=project_id,
+            delta_id=int(delta.id),
+            action="reject",
+            principal=COORDINATOR,
+            idempotency_key=f"reject:{subject}",
+            decided_at=at,
+        ),
+    )
+    assert outcome.status == "resolved", outcome.refusal
+    return int(delta.id)
+
+
+def _move_the_watermarks(factory, adopted: Adopted, subjects, *, at: datetime):
+    """Raise both of this project's watermarks, by resolving real deltas."""
+
+    with factory() as writing:
+        for subject in subjects:
+            _resolve_one_delta(
+                writing, project_id=adopted.project_id, subject=subject, at=at
+            )
+        writing.commit()
+
+
+def _weekly_reading(factory, at: datetime) -> dict:
+    """One more retained #488 reading, taken through the deployed runtime."""
+
+    result = _tick(factory, Ticker(at))
+    assert result is not None, "no weekly occurrence was due"
+    assert result.handler_key == HANDLER_REPORT_PREPARATION, result.handler_key
+    assert result.execution_outcome == "completed", result.error_code
+    return dict(result.handler_result)
+
+
+def _reading_for(factory, request_id: int) -> ReleasePreparationReading:
+    with factory() as reading:
+        return reading.scalars(
+            select(ReleasePreparationReading).where(
+                ReleasePreparationReading.request_id == int(request_id)
+            )
+        ).one()
+
+
+def _floor(row: ReleasePreparationReading) -> tuple[int, int]:
+    return (int(row.prior_delta_floor), int(row.prior_disposition_floor))
+
+
+def _ceiling(row: ReleasePreparationReading) -> tuple[int, int]:
+    return (int(row.through_delta_id), int(row.through_disposition_id))
+
+
+def _prepare(factory, client, adopted: Adopted, *, at: datetime):
+    """One coordinator confirmation, worked by the deployed supervisor."""
+
+    _confirm_coverage(client, adopted)
+    return _run_supervisor(factory, at=at)
+
+
+def _authorize(client, adopted: Adopted) -> None:
+    """The designated releaser approves what the section is offering."""
+
+    approval = _form(week(client, adopted), "/issue/authorize")
+    assert approval is not None, (
+        "the section offered no approval, so nothing here authorized a package"
+    )
+    as_principal(RELEASER)
+    try:
+        sealed = client.post(
+            f"/work/{adopted.slug}/issue/authorize", data=approval
+        )
+    finally:
+        as_principal(COORDINATOR)
+    assert sealed.status_code == 201, sealed.text
+
+
+def _packages(factory, adopted: Adopted) -> list[ReleasePackage]:
+    with factory() as reading:
+        return list(
+            reading.scalars(
+                select(ReleasePackage)
+                .where(ReleasePackage.project_id == adopted.project_id)
+                .order_by(ReleasePackage.id)
+            ).all()
+        )
+
+
+def test_the_second_issue_measures_from_the_first_authorized_package(
+    factory, adopted, client, store
+):
+    """The floor of a project's second issue is the first package's watermark.
+
+    Two weekly closes on one project, both driven the way a deployment drives
+    them. Between them a delta is resolved, so the newest internal reading sits
+    strictly above the first package's watermark: a floor taken from "the
+    newest completed report-preparation receipt", from the newest candidate, or
+    from zero is a different number from the right one, and this test can tell
+    which it got.
+
+    Both packages are authorized at the same declared instant, because the
+    predecessor is the chain head and never the later timestamp.
+    """
+
+    # A project with no deltas reads zero on both watermarks whatever the rule
+    # is, so the first issue is given a floor worth measuring from.
+    _move_the_watermarks(factory, adopted, ("UC-1", "UC-2"), at=FIRST_DECISIONS_AT)
+    _enable(factory, adopted)
+    _take_weekly_reading(factory)
+
+    first = _prepare(factory, client, adopted, at=WORKER_AT)
+    assert first.handler_result["outcome"] == "prepared", first.handler_result
+    first_reading = _reading_for(factory, int(first.handler_result["request_id"]))
+    assert _floor(first_reading) == (0, 0), (
+        "a project's first issue measures from zero and from an explicit none"
+    )
+    assert first_reading.previous_package_id is None
+    first_watermark = _ceiling(first_reading)
+    assert first_watermark[0] > 0 and first_watermark[1] > 0, (
+        "the fixture is undiscriminating: a first package whose watermarks are "
+        "zero cannot distinguish the authorized-package floor from zero"
+    )
+
+    _authorize(client, adopted)
+    (package_one,) = _packages(factory, adopted)
+
+    # A week passes the way a week passes: one more decision, one more retained
+    # reading. This is what arms everything below -- the newest internal
+    # reading is now strictly above the floor the rule must produce.
+    _move_the_watermarks(factory, adopted, ("UC-3",), at=SECOND_DECISIONS_AT)
+    newest_internal = _weekly_reading(factory, LATER_READING_AT)
+    assert int(newest_internal["through_delta_id"]) > first_watermark[0]
+    assert int(newest_internal["through_disposition_id"]) > first_watermark[1]
+
+    second = _prepare(factory, client, adopted, at=SECOND_WORKER_AT)
+    assert second.handler_result["outcome"] == "prepared", second.handler_result
+    second_reading = _reading_for(
+        factory, int(second.handler_result["request_id"])
+    )
+
+    # The whole of ADR-0086's rule, on the one package that can disprove it.
+    assert second_reading.previous_package_id == int(package_one.id)
+    assert _floor(second_reading) == first_watermark, (
+        "the second issue's floor is the watermark bound to the first "
+        "authorized package, not zero and not the newest internal reading"
+    )
+    assert _floor(second_reading) != (0, 0)
+    assert _floor(second_reading) != (
+        int(newest_internal["through_delta_id"]),
+        int(newest_internal["through_disposition_id"]),
+    )
+    assert int(second_reading.receipt_id) != int(first_reading.receipt_id)
+    assert _ceiling(second_reading) == (
+        int(newest_internal["through_delta_id"]),
+        int(newest_internal["through_disposition_id"]),
+    )
+
+    # The candidate binds the same predecessor, so the chain the next issue
+    # follows is written on the candidate as well as on the reading.
+    with factory() as reading:
+        candidate = reading.get_one(
+            ReleaseCandidate, int(second.handler_result["candidate_id"])
+        )
+        assert int(candidate.previous_package_id) == int(package_one.id)
+
+    _authorize(client, adopted)
+    packages = _packages(factory, adopted)
+    assert len(packages) == 2
+    package_two = packages[1]
+    assert int(package_two.previous_package_id) == int(package_one.id)
+    assert package_two.authorized_at == package_one.authorized_at, (
+        "both issues were authorized at the same declared instant on purpose: "
+        "if anything here ordered packages by time this fixture could not say "
+        "which is the predecessor, and the chain says it"
+    )
+    with factory() as reading:
+        assert previous_authorized_reading(
+            reading, project_id=adopted.project_id
+        )[0] == int(package_two.id)
+
+
+def test_neither_a_failed_nor_an_unapproved_preparation_moves_the_floor(
+    factory, adopted, client, store, tmp_path
+):
+    """A prepared-but-unapproved set, and a failed one, leave the marker where it was.
+
+    Both negatives are armed the same way and the arming is the point: between
+    the first authorized package and every later reading a delta is resolved,
+    so the project's newest internal reading, its newest candidate and its most
+    recent failed preparation all carry watermarks strictly above the floor.
+    A fixture where they did not could not fail, whatever the rule said.
+    """
+
+    _move_the_watermarks(factory, adopted, ("UC-1", "UC-2"), at=FIRST_DECISIONS_AT)
+    _enable(factory, adopted)
+    _take_weekly_reading(factory)
+    first = _prepare(factory, client, adopted, at=WORKER_AT)
+    assert first.handler_result["outcome"] == "prepared", first.handler_result
+    first_reading = _reading_for(factory, int(first.handler_result["request_id"]))
+    _authorize(client, adopted)
+    (package_one,) = _packages(factory, adopted)
+    floor = _ceiling(first_reading)
+    assert floor > (0, 0)
+
+    # The floor before anything else happens, read from the chain itself.
+    with factory() as reading:
+        package_id, bound = previous_authorized_reading(
+            reading, project_id=adopted.project_id
+        )
+        assert package_id == int(package_one.id)
+        assert bound is not None and bound.id == first_reading.id
+
+    # A second week, and a reading that stands above the floor.
+    _move_the_watermarks(factory, adopted, ("UC-3",), at=SECOND_DECISIONS_AT)
+    newest_internal = _weekly_reading(factory, LATER_READING_AT)
+    assert int(newest_internal["through_delta_id"]) > floor[0]
+    assert int(newest_internal["through_disposition_id"]) > floor[1]
+
+    # 1. A preparation that fails. The registered template's bytes go missing
+    #    exactly as #536's third proof takes them, so the failure is reached
+    #    the way a deployment reaches it.
+    with factory() as reading:
+        registered = retained_output_template(
+            reading, project_id=adopted.project_id, store=store
+        )
+    (tmp_path / "files" / registered.storage_key).unlink()
+    failed = _prepare(factory, client, adopted, at=SECOND_WORKER_AT)
+    assert failed.handler_result["outcome"] == "failed", failed.handler_result
+    assert failed.handler_result["candidate_id"] is None
+    with factory() as reading:
+        standing = preparation_standing(reading, project_id=adopted.project_id)
+        assert standing.state == FAILED
+        package_id, bound = previous_authorized_reading(
+            reading, project_id=adopted.project_id
+        )
+        assert package_id == int(package_one.id), (
+            "a failed preparation is not an authorized package"
+        )
+        assert _ceiling(bound) == floor
+
+    # 2. A preparation that succeeds and is never approved. The store is put
+    #    right and the retry the section offers prepares a real candidate.
+    store.put(
+        registered.storage_key,
+        adopted.template_bytes,
+        sha256=registered.content_sha256,
+    )
+    unapproved = _prepare(factory, client, adopted, at=THIRD_WORKER_AT)
+    assert unapproved.handler_result["outcome"] == "prepared", (
+        unapproved.handler_result
+    )
+    unapproved_reading = _reading_for(
+        factory, int(unapproved.handler_result["request_id"])
+    )
+    # Armed: this candidate's own reading reaches above the floor, so a rule
+    # that advanced the baseline on preparation would be visible here.
+    assert _ceiling(unapproved_reading) > floor
+    assert _floor(unapproved_reading) == floor, (
+        "the failed preparation between the package and this one must not "
+        "have moved the floor"
+    )
+    assert len(_packages(factory, adopted)) == 1
+
+    with factory() as reading:
+        package_id, bound = previous_authorized_reading(
+            reading, project_id=adopted.project_id
+        )
+        assert package_id == int(package_one.id), (
+            "a prepared but unapproved candidate is not an authorized package"
+        )
+        assert _ceiling(bound) == floor
+
+    # 3. And the floor a *third* request is given is still the first package's.
+    #    The unapproved candidate is made stale the ordinary way -- the accepted
+    #    record moved -- so the section offers a fresh preparation and the floor
+    #    is written again rather than only inspected.
+    _move_the_watermarks(factory, adopted, ("UC-4",), at=THIRD_DECISIONS_AT)
+    third_internal = _weekly_reading(factory, THIRD_READING_AT)
+    assert int(third_internal["through_delta_id"]) > _ceiling(
+        unapproved_reading
+    )[0]
+    third = _prepare(factory, client, adopted, at=THIRD_WORKER_AT + timedelta(hours=1))
+    assert third.handler_result["outcome"] == "prepared", third.handler_result
+    third_reading = _reading_for(factory, int(third.handler_result["request_id"]))
+    assert _floor(third_reading) == floor, (
+        "two candidates and one failure later, the only thing that moves the "
+        "external comparison baseline is an authorized package"
+    )
+    assert third_reading.previous_package_id == int(package_one.id)
+
+
+def test_an_authorized_package_with_no_bound_reading_is_refused_by_name(
+    factory, adopted, client, store
+):
+    """An unprovable floor refuses by name; it is never quietly treated as zero.
+
+    The state is the one that actually produces it, and it is not exotic: a
+    candidate prepared by a path that binds no reading. Every candidate made
+    before #690 is one -- the worker took its inputs from a caller and recorded
+    no ``ReleasePreparationReading`` -- and one of them can be sitting under a
+    project's authorized package today. Here the production resolver supplies
+    the very same inputs and the binding is *not* committed, so the attempt,
+    the candidate and the package are all real and the reading is absent.
+
+    Falling back to zero there would restate a window the customer has already
+    seen. The supervisor names the package instead, and records a finished
+    failed attempt so the Issue section stops saying "Preparing this issue".
+    """
+
+    _move_the_watermarks(factory, adopted, ("UC-1", "UC-2"), at=FIRST_DECISIONS_AT)
+    # Nothing may claim the request while this file prepares it by hand.
+    _enable(factory, adopted, supervisor=False)
+    _take_weekly_reading(factory)
+    _confirm_coverage(client, adopted)
+
+    with factory() as resolving:
+        request = resolving.scalars(
+            select(ReleasePreparationRequest).where(
+                ReleasePreparationRequest.project_id == adopted.project_id
+            )
+        ).one()
+        request_id = int(request.id)
+        unbound = bind_report_preparation_reading(
+            resolving, request=request, bound_at=WORKER_AT
+        )
+        inputs = resolve_preparation_inputs(
+            resolving, request, store=store, reading=unbound
+        )
+        # The binding is thrown away. What is left is exactly a pre-#690
+        # candidate: real inputs, a real attempt, and no retained reading.
+        resolving.rollback()
+
+    attempt = run_preparation_request(
+        factory,
+        request_id=request_id,
+        inputs=inputs,
+        started_at=WORKER_AT,
+        finished_at=WORKER_AT,
+        store=store,
+        surface="tests:pre-690-candidate",
+    )
+    assert attempt.outcome == "prepared", attempt.refusal_code
+    with factory() as reading:
+        assert (
+            int(
+                reading.scalar(
+                    select(func.count())
+                    .select_from(ReleasePreparationReading)
+                    .where(
+                        ReleasePreparationReading.project_id
+                        == adopted.project_id
+                    )
+                )
+            )
+            == 0
+        ), "the fixture is not the state it means to be in"
+
+    _authorize(client, adopted)
+    (package_one,) = _packages(factory, adopted)
+    with factory() as reading:
+        package_id, bound = previous_authorized_reading(
+            reading, project_id=adopted.project_id
+        )
+        assert package_id == int(package_one.id)
+        assert bound is None
+
+    # A second week, and a second issue that cannot be measured.
+    _move_the_watermarks(factory, adopted, ("UC-3",), at=SECOND_DECISIONS_AT)
+    _weekly_reading(factory, LATER_READING_AT)
+    _enable(factory, adopted)
+    _confirm_coverage(client, adopted)
+
+    with factory() as binding:
+        second = binding.scalars(
+            select(ReleasePreparationRequest)
+            .where(ReleasePreparationRequest.project_id == adopted.project_id)
+            .order_by(ReleasePreparationRequest.id.desc())
+            .limit(1)
+        ).one()
+        assert int(second.id) != request_id
+        with pytest.raises(PreparationSupervisionRefused) as refusal:
+            bind_report_preparation_reading(
+                binding, request=second, bound_at=SECOND_WORKER_AT
+            )
+        binding.rollback()
+    assert f"authorized package {int(package_one.id)}" in str(refusal.value)
+    assert "no bound report-preparation reading" in str(refusal.value)
+    assert "provable floor" in str(refusal.value)
+
+    # And through the deployed path the refusal ends the wait, rather than
+    # preparing an issue against a floor nobody could prove.
+    result = _run_supervisor(factory, at=SECOND_WORKER_AT)
+    assert result.handler_result["outcome"] == "failed", result.handler_result
+    assert result.handler_result["candidate_id"] is None
+    with factory() as reading:
+        standing = preparation_standing(reading, project_id=adopted.project_id)
+        assert standing.state == FAILED
+        assert "no bound report-preparation reading" in (standing.reason or "")
+    assert len(_packages(factory, adopted)) == 1
