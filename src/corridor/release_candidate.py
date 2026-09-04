@@ -330,6 +330,14 @@ class BoundPreparation:
     blocked_decisions: tuple[BlockedDecision, ...]
     disclosed_exceptions: tuple[str, ...]
     template_bytes_sha256: str
+    # Which retained report-preparation reading this candidate measured (#690).
+    # `preparation` above is the reading's *content*; these two are its
+    # identity, so the next preparation can follow previous authorized package
+    # -> its candidate -> that candidate's report-preparation receipt -> the
+    # exact prior watermarks, instead of guessing at "the latest reading".
+    # `None` where no supervisor bound one, spelled rather than omitted.
+    report_receipt_id: int | None = None
+    report_result_sha256: str | None = None
 
     @property
     def artifact_types(self) -> tuple[str, ...]:
@@ -399,6 +407,18 @@ class BoundPreparation:
                 "version": self.field_mapping.version,
                 "content_sha256": self.field_mapping.content_sha256,
             },
+            # The exact retained reading, by identity and result digest. A
+            # candidate that named only the counts could not prove which
+            # receipt produced them, and the next issue's floor is read off
+            # this chain.
+            "report_preparation": (
+                None
+                if self.report_receipt_id is None
+                else {
+                    "receipt_id": self.report_receipt_id,
+                    "result_sha256": self.report_result_sha256,
+                }
+            ),
             "configured_artifact_types": list(self.artifact_types),
             "renderers": [
                 {
@@ -689,6 +709,8 @@ def bind_preparation(
     template_bytes: bytes,
     binding: AnalyticsBinding | None = None,
     follow_up_plans: Sequence[Any] = (),
+    report_receipt_id: int | None = None,
+    report_result_sha256: str | None = None,
 ) -> BoundPreparation:
     """Resolve and bind every input for one candidate, under the project lock.
 
@@ -850,6 +872,8 @@ def bind_preparation(
         blocked_decisions=blocked,
         disclosed_exceptions=exceptions,
         template_bytes_sha256=sha256(template_bytes).hexdigest(),
+        report_receipt_id=report_receipt_id,
+        report_result_sha256=report_result_sha256,
     )
 
 
@@ -1140,6 +1164,11 @@ def attach_candidate(
         template_bytes=template_bytes,
         binding=bound.binding,
         follow_up_plans=bound.reading.follow_up_plans,
+        # Re-bound from the candidate itself rather than re-resolved: this
+        # transaction repeats the binding, it does not take a second opinion
+        # about which retained reading the issue is being prepared from.
+        report_receipt_id=bound.report_receipt_id,
+        report_result_sha256=bound.report_result_sha256,
     )
     if rebound.state_sha256 != bound.state_sha256:
         raise PreparationRefused(
@@ -1310,6 +1339,8 @@ def prepare_release_candidate(
     template_bytes: bytes,
     binding: AnalyticsBinding | None = None,
     follow_up_plans: Sequence[Any] = (),
+    report_receipt_id: int | None = None,
+    report_result_sha256: str | None = None,
     surface: str = "release_preparation",
     store: ObjectStore | None = None,
     on_rendered: Callable[[BoundPreparation], None] | None = None,
@@ -1346,6 +1377,8 @@ def prepare_release_candidate(
                 template_bytes=template_bytes,
                 binding=binding,
                 follow_up_plans=follow_up_plans,
+                report_receipt_id=report_receipt_id,
+                report_result_sha256=report_result_sha256,
             )
             # Nothing was written; committing is how the project lock is let
             # go before the long work starts.

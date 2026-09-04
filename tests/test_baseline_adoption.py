@@ -1013,6 +1013,7 @@ def test_a_replacement_output_template_changes_no_accepted_value(
         ),
         principal=PRINCIPAL,
         idempotency_key="register-template-1",
+        template_bytes=b"template",
     )
 
     after = _spine_counts(session, project.id)

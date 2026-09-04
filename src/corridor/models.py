@@ -2971,6 +2971,91 @@ class BaselineFormatManifest(Base):
     declaration: Mapped[str] = mapped_column(Text)
 
 
+class BaselineFormatObject(Base):
+    """The exact retained bytes one output-template registration stands on (#690).
+
+    ``BaselineFormat`` stores a template's *digest*, which proves which bytes
+    were registered and not that anybody kept them. Initial adoption works only
+    by accident: the adopted workbook is staged and registered as a Document
+    before it becomes the as-adopted output template, so its bytes are in the
+    content store for a reason that has nothing to do with the registration. A
+    later ``register_baseline_format`` call could register a digest and supply
+    no bytes at all, and storage reconciliation -- which derives its expected
+    objects from Documents, Processing Artifacts, page renders and token layers
+    -- would neither miss them nor protect them.
+
+    So this is the registration's storage binding: an output template is not
+    registered until its exact bytes have first been retained through #487 and
+    verified against the registration digest. The composite foreign key carries
+    the registration's identity, version and digest, so a binding that names
+    different content is unrepresentable; the storage key is a check-constrained
+    function of the digest, so it is derived rather than chosen. A preparation
+    that cannot prove the object fails with a bounded reason and never falls
+    back to another template.
+    """
+
+    __tablename__ = "project_baseline_format_objects"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                "format_id",
+                "project_id",
+                "format_identity",
+                "format_version",
+                "content_sha256",
+            ],
+            [
+                "project_baseline_formats.id",
+                "project_baseline_formats.project_id",
+                "project_baseline_formats.format_identity",
+                "project_baseline_formats.format_version",
+                "project_baseline_formats.content_sha256",
+            ],
+            name="fk_project_baseline_format_objects_registration",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_project_baseline_format_objects_digest",
+        ),
+        CheckConstraint(
+            "storage_key = substr(content_sha256, 1, 2) || '/' "
+            "|| content_sha256 || file_suffix",
+            name="ck_project_baseline_format_objects_key",
+        ),
+        CheckConstraint(
+            "file_suffix = '' or file_suffix ~ '^[.][A-Za-z0-9.]{1,16}$'",
+            name="ck_project_baseline_format_objects_suffix",
+        ),
+        CheckConstraint(
+            "byte_count > 0",
+            name="ck_project_baseline_format_objects_bytes",
+        ),
+        CheckConstraint(
+            "length(btrim(retained_by_principal)) > 0",
+            name="ck_project_baseline_format_objects_principal",
+        ),
+        Index(
+            "ix_project_baseline_format_objects_project",
+            "project_id",
+            "format_id",
+        ),
+    )
+
+    format_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    format_identity: Mapped[str] = mapped_column(String(160))
+    format_version: Mapped[str] = mapped_column(String(64))
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    storage_key: Mapped[str] = mapped_column(String(160))
+    byte_count: Mapped[int] = mapped_column(BigInteger)
+    file_suffix: Mapped[str] = mapped_column(String(32))
+    retained_by_principal: Mapped[str] = mapped_column(String(128))
+    retained_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 # ADR-0091's configured members. The mandatory updated UCM is deliberately not
 # among them: it is a column on ``IssueProfile``, so a profile can neither omit
 # it nor carry it twice.
@@ -4066,6 +4151,154 @@ class ReleasePreparationAttempt(Base):
     reason: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     finished_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ReleasePreparationReading(Base):
+    """The one report-preparation reading one request is prepared under (#690).
+
+    Not "the latest completed receipt for this project", and the difference is
+    the whole point. The weekly pass keeps completing receipts, so a request
+    that resolved the newest one whenever a worker got round to it would
+    prepare a different window from the one the coordinator confirmed, and a
+    preparation that failed could advance the next reading's floor. The
+    binding is written once, is unique per request, and every retry of that
+    request reuses it.
+
+    The window is a watermark pair and never a pair of timestamps (#488). The
+    **ceilings** are frozen here at the moment of binding; the **floors** come
+    from the reading bound to the previous *authorized* package, or zero for a
+    first issue, because ADR-0086 is explicit that only an authorized package
+    advances the external comparison baseline. A candidate that was merely
+    prepared, blocked or refused moves nothing.
+
+    The result itself stays owned by ``DueWorkReceipt.handler_result_json``.
+    This row says *which* retained reading was used and what its bytes
+    digested to; copying the reading here would copy state another row already
+    owns, which is the defect #598's ratchet refuses.
+    """
+
+    __tablename__ = "release_preparation_readings"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "project_id", name="uq_release_preparation_readings_row"
+        ),
+        UniqueConstraint(
+            "request_id", name="uq_release_preparation_readings_request"
+        ),
+        ForeignKeyConstraint(
+            ["request_id", "project_id"],
+            [
+                "release_preparation_requests.id",
+                "release_preparation_requests.project_id",
+            ],
+            name="fk_release_preparation_readings_request",
+        ),
+        ForeignKeyConstraint(
+            ["accepted_revision_id", "project_id"],
+            [
+                "project_record_revisions.id",
+                "project_record_revisions.project_id",
+            ],
+            name="fk_release_preparation_readings_revision",
+        ),
+        ForeignKeyConstraint(
+            ["previous_package_id", "project_id"],
+            ["release_packages.id", "release_packages.project_id"],
+            name="fk_release_preparation_readings_previous",
+        ),
+        CheckConstraint(
+            "result_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_release_preparation_readings_digest",
+        ),
+        CheckConstraint(
+            "handler_key = 'report_preparation'",
+            name="ck_release_preparation_readings_handler",
+        ),
+        CheckConstraint(
+            "length(btrim(result_schema_version)) > 0",
+            name="ck_release_preparation_readings_schema",
+        ),
+        CheckConstraint(
+            "prior_delta_floor >= 0 and prior_disposition_floor >= 0",
+            name="ck_release_preparation_readings_floors",
+        ),
+        CheckConstraint(
+            "through_delta_id >= prior_delta_floor "
+            "and through_disposition_id >= prior_disposition_floor",
+            name="ck_release_preparation_readings_window",
+        ),
+        Index(
+            "ix_release_preparation_readings_project", "project_id", "id"
+        ),
+        Index("ix_release_preparation_readings_receipt", "receipt_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    request_id: Mapped[int] = mapped_column(BigInteger)
+    receipt_id: Mapped[int] = mapped_column(ForeignKey("due_work_receipts.id"))
+    handler_key: Mapped[str] = mapped_column(String(64))
+    result_schema_version: Mapped[str] = mapped_column(String(64))
+    result_sha256: Mapped[str] = mapped_column(String(64))
+    accepted_revision_id: Mapped[int] = mapped_column(BigInteger)
+    source_cutoff: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    previous_package_id: Mapped[int | None] = mapped_column(BigInteger)
+    prior_delta_floor: Mapped[int] = mapped_column(BigInteger)
+    prior_disposition_floor: Mapped[int] = mapped_column(BigInteger)
+    through_delta_id: Mapped[int] = mapped_column(BigInteger)
+    through_disposition_id: Mapped[int] = mapped_column(BigInteger)
+    bound_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class ReleasePreparationPublication(Base):
+    """One Due Work occurrence, one preparation request (#690).
+
+    Occurrences are otherwise coalesced from a cadence slot, and a slot cannot
+    say which request it is for. One opaque occurrence processing every pending
+    request would also give them one shared lease, one shared retry budget and
+    one shared receipt, so a single unlucky request would burn the lot. Unique
+    both ways: a reclaimed occurrence resumes the request it was published for
+    and no other.
+    """
+
+    __tablename__ = "release_preparation_publications"
+    __table_args__ = (
+        UniqueConstraint(
+            "id", "project_id", name="uq_release_preparation_publications_row"
+        ),
+        UniqueConstraint(
+            "request_id", name="uq_release_preparation_publications_request"
+        ),
+        UniqueConstraint(
+            "occurrence_id",
+            name="uq_release_preparation_publications_occurrence",
+        ),
+        ForeignKeyConstraint(
+            ["request_id", "project_id"],
+            [
+                "release_preparation_requests.id",
+                "release_preparation_requests.project_id",
+            ],
+            name="fk_release_preparation_publications_request",
+        ),
+        Index(
+            "ix_release_preparation_publications_project", "project_id", "id"
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    request_id: Mapped[int] = mapped_column(BigInteger)
+    occurrence_id: Mapped[int] = mapped_column(
+        ForeignKey("due_work_occurrences.id")
+    )
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
     recorded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

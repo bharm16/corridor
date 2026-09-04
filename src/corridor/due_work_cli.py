@@ -26,6 +26,7 @@ from corridor.due_work import (
     LocationDiscoveryDeclaration,
     ProcessingHealthDeclaration,
     ProjectProcessingDeclaration,
+    ReleasePreparationDeclaration,
     ReportPreparationDeclaration,
     ReportPublicationDeclaration,
     RetentionSweepDeclaration,
@@ -143,6 +144,12 @@ def _delta_generation_declaration(args, project_id: int):
 
 def _report_preparation_declaration(args, project_id: int):
     return ReportPreparationDeclaration(**_common_declaration_kwargs(args, project_id))
+
+
+def _release_preparation_declaration(args, project_id: int):
+    return ReleasePreparationDeclaration(
+        **_common_declaration_kwargs(args, project_id)
+    )
 
 
 def _retention_sweep_declaration(args, project_id: int):
@@ -272,6 +279,10 @@ def _parser() -> argparse.ArgumentParser:
     preparation = commands.add_parser("configure-report-preparation")
     _add_schedule_arguments(preparation)
     preparation.set_defaults(declaration_builder=_report_preparation_declaration)
+
+    supervisor = commands.add_parser("configure-release-preparation")
+    _add_schedule_arguments(supervisor)
+    supervisor.set_defaults(declaration_builder=_release_preparation_declaration)
 
     sweep = commands.add_parser("configure-retention-sweep")
     sweep.add_argument("--authorized-by", required=True)

@@ -80,6 +80,7 @@ from corridor.models import (
     BaselineAdoption,
     BaselineFormat,
     BaselineFormatManifest,
+    BaselineFormatObject,
     BaselineSource,
     BaselineSourceRow,
     Dependency,
@@ -87,6 +88,13 @@ from corridor.models import (
     FactDecision,
     Project,
     SourceSegment,
+)
+from corridor.object_storage import (
+    ObjectStore,
+    StorageError,
+    content_key,
+    content_store,
+    digest_bytes,
 )
 from corridor.operating_mode import adopt_project_baseline
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -513,6 +521,10 @@ def register_baseline_format(
     principal: HumanPrincipal,
     idempotency_key: str,
     manifest: FieldMappingManifest | None = None,
+    template_bytes: bytes | None = None,
+    template_suffix: str = ".xlsx",
+    retained_at: datetime | None = None,
+    store: ObjectStore | None = None,
 ) -> BaselineFormat:
     """Register a replacement output template or mapping revision, on its own act.
 
@@ -541,6 +553,17 @@ def register_baseline_format(
             manifest=manifest,
             actor=actor,
         )
+    retained: tuple[str, int] | None = None
+    if identity.kind == "output_template":
+        # Before the registration, never after it, and never on trust: this is
+        # what makes an output template's bytes something a later preparation
+        # can retrieve rather than a digest nothing kept (#690).
+        retained = _retain_output_template(
+            identity,
+            template_bytes,
+            suffix=template_suffix,
+            store=store,
+        )
     outcome = session.scalar(
         select(
             func.register_baseline_format(
@@ -556,6 +579,16 @@ def register_baseline_format(
     )
     session.expire_all()
     registered = session.get_one(BaselineFormat, int(outcome["format_id"]))
+    if retained is not None:
+        _bind_output_template_object(
+            session,
+            registration=registered,
+            storage_key=retained[0],
+            byte_count=retained[1],
+            suffix=template_suffix,
+            actor=actor,
+            retained_at=retained_at,
+        )
     if identity.kind == "field_mapping":
         # `manifest` is not None here: `_refuse_unapproved_mapping_revision`
         # refuses a field mapping registered without one.
@@ -566,6 +599,90 @@ def register_baseline_format(
             manifest=manifest,
         )
     return registered
+
+
+def _retain_output_template(
+    identity: FormatIdentity,
+    template_bytes: bytes | None,
+    *,
+    suffix: str,
+    store: ObjectStore | None,
+) -> tuple[str, int]:
+    """Retain the exact bytes an output template is registered over.
+
+    **An output template is not registered until its exact bytes have first
+    been retained and verified against the registration digest** (#690). The
+    gap this closes is narrow and was real: initial adoption happens to work
+    only because the adopted workbook is staged and registered as a Document
+    before it becomes the as-adopted template, so a replacement registered
+    here could name a digest whose bytes nobody kept. Preparation would then
+    have no template to render the one mandatory artifact through, and storage
+    reconciliation -- which derives its expected objects from Documents,
+    Processing Artifacts, page renders and token layers -- would not have
+    noticed either.
+
+    No local path, filename, "newest workbook", customer-system refetch or
+    arbitrary caller bytes may substitute, which is why the only thing
+    accepted here is bytes that hash to the digest being registered.
+    """
+
+    if template_bytes is None:
+        raise BaselineAdoptionRefused(
+            "an output template is registered over its exact bytes; supply "
+            "them so they can be retained and verified against the "
+            "registration digest"
+        )
+    digest = digest_bytes(template_bytes)
+    if digest != identity.content_sha256:
+        raise BaselineAdoptionRefused(
+            "the template bytes offered hash to "
+            f"{digest} and the registration names {identity.content_sha256}; "
+            "these are not the same content"
+        )
+    key = content_key(digest, suffix)
+    try:
+        (store or content_store()).put(key, template_bytes, sha256=digest)
+    except StorageError as exc:
+        raise BaselineAdoptionRefused(
+            f"the output template bytes could not be retained: {exc}"
+        ) from exc
+    return (key, len(template_bytes))
+
+
+def _bind_output_template_object(
+    session: Session,
+    *,
+    registration: BaselineFormat,
+    storage_key: str,
+    byte_count: int,
+    suffix: str,
+    actor: HumanPrincipal,
+    retained_at: datetime | None,
+) -> None:
+    """Record the storage binding the registration owns.
+
+    Keyed by the registration, and carrying its identity, version and digest
+    through a composite foreign key, so a binding that names different content
+    from what was registered is unrepresentable rather than merely unlikely.
+    """
+
+    if session.get(BaselineFormatObject, int(registration.id)) is not None:
+        return
+    session.add(
+        BaselineFormatObject(
+            format_id=int(registration.id),
+            project_id=int(registration.project_id),
+            format_identity=registration.format_identity,
+            format_version=registration.format_version,
+            content_sha256=registration.content_sha256,
+            storage_key=storage_key,
+            byte_count=int(byte_count),
+            file_suffix=suffix,
+            retained_by_principal=actor.subject,
+            retained_at=retained_at or registration.registered_at,
+        )
+    )
+    session.flush()
 
 
 def _store_declaration(
