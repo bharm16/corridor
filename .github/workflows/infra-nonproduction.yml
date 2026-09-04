@@ -36,7 +36,10 @@ on:
         required: true
         type: choice
         options:
-          - CorridorAccountFoundation
+          # CorridorAccountFoundation is deliberately absent. It creates the
+          # OIDC provider and the role this workflow assumes, so it is
+          # deployed locally, once, under the MFA-protected bootstrap
+          # identity. A workflow cannot bootstrap its own credential.
           - CorridorNetwork
           - CorridorData
           - CorridorApplication
@@ -183,8 +186,12 @@ jobs:
     env:
       STACK: ${{ inputs.stack }}
       IMAGE_TAG: ${{ inputs.image_tag || github.sha }}
-    # Deliberately not bound to the `nonproduction` environment: a read-only
-    # diff should not consume a deployment approval.
+    # Bound to the environment because the role's trust condition requires it.
+    # The subject is `repo:...:environment:nonproduction`, and a job with no
+    # environment presents a ref-scoped subject instead, so AWS would refuse
+    # the assumption outright. A separate unapproved read-only planning role
+    # can come later; it is not needed for the first synthetic environment.
+    environment: nonproduction
     permissions:
       contents: read
       id-token: write
@@ -216,9 +223,13 @@ jobs:
             --context "corridor:imageTag=$IMAGE_TAG"
 
   deploy:
-    if: github.event_name == 'workflow_dispatch' && inputs.action == 'deploy'
-    # main only. A deploy from an arbitrary branch would apply infrastructure
-    # that never passed review.
+    # main only, decided before the job starts rather than in its first shell
+    # step: failing after the environment gate has already been consumed wastes
+    # an approval and reads like a deployment that was attempted.
+    if: >-
+      github.event_name == 'workflow_dispatch'
+      && inputs.action == 'deploy'
+      && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     env:
       STACK: ${{ inputs.stack }}
@@ -228,11 +239,6 @@ jobs:
       contents: read
       id-token: write
     steps:
-      - name: Refuse to deploy from anything but main
-        if: github.ref != 'refs/heads/main'
-        run: |
-          echo "::error::deploy runs only from refs/heads/main; got ${{ github.ref }}"
-          exit 1
       - name: Validate the image tag before it reaches a shell
         run: |
           if ! printf '%s' "$IMAGE_TAG" | grep -Eq '^[0-9a-f]{7,40}$'; then

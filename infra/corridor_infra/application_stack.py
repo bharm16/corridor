@@ -51,7 +51,7 @@ from aws_cdk import (
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
-from .network_stack import CORRIDOR_APP_PORT
+from .network_stack import CORRIDOR_APP_PORT, CORRIDOR_ROLE_PATH
 
 
 class CorridorApplicationStack(Stack):
@@ -72,7 +72,6 @@ class CorridorApplicationStack(Stack):
         image_tag: str,
         web_desired_count: int,
         certificate_arn: str = "",
-        allow_insecure_http: bool = False,
         **kwargs,
     ) -> None:
         super().__init__(scope, construct_id, **kwargs)
@@ -276,18 +275,22 @@ class CorridorApplicationStack(Stack):
             ),
         )
 
-        # Fail closed. Absence of a certificate previously selected plaintext
-        # silently, which is the wrong default for an externally reachable
-        # environment: the quiet path should be the safe one, and choosing
-        # plaintext should cost a deliberate flag.
-        if not certificate_arn and not allow_insecure_http:
+        # There is no plaintext path at all. An earlier version fell back to an
+        # HTTP listener when no certificate was supplied, which is the wrong
+        # default for an externally reachable environment; the flag that was
+        # meant to gate it was also read with bool(), and CDK context arrives
+        # from the command line as a string, so bool("false") would have been
+        # True.
+        #
+        # Without a certificate the stack still synthesises, so the network and
+        # data stacks can be deployed and the service can exist at zero, but it
+        # gets no listener and therefore no way in.
+        if not certificate_arn and web_desired_count > 0:
             raise ValueError(
-                "corridor:certificateArn is required. Issue an ACM certificate "
-                "and pass it through the protected GitHub environment. To run "
-                "an internal, disposable HTTP-only stack instead, set "
-                "corridor:allowInsecureHttp=true explicitly -- it is disabled "
-                "by default and must not be used for the nonproduction "
-                "environment."
+                "corridor:certificateArn is required before the web service "
+                "can serve traffic. Issue an ACM certificate and pass it "
+                f"through the protected GitHub environment; got "
+                f"webDesiredCount={web_desired_count} with no certificate."
             )
 
         if certificate_arn:
@@ -307,21 +310,20 @@ class CorridorApplicationStack(Stack):
                 target_protocol=elbv2.ApplicationProtocol.HTTPS,
             )
         else:
-            # Reached only when allow_insecure_http was set explicitly; the
-            # guard above rejects the default path.
+            # No certificate: no listener. The load balancer exists so the
+            # stack is deployable and its DNS name is stable, but nothing can
+            # reach the service until a certificate is supplied.
             Annotations.of(self).add_warning(
-                "corridor:allowInsecureHttp is set. This load balancer serves "
-                "plaintext HTTP and must not be used for the nonproduction "
-                "environment or any externally reachable demo."
-            )
-            self.alb.add_listener(
-                "HttpListener",
-                port=80,
-                protocol=elbv2.ApplicationProtocol.HTTP,
-                default_target_groups=[target_group],
+                "No corridor:certificateArn was supplied, so the load balancer "
+                "has no listener and the web service is unreachable. Supply a "
+                "certificate before raising corridor:webDesiredCount above 0."
             )
 
-        self._alarms(target_group)
+        # The unhealthy-host metric only exists once the target group is
+        # attached to a listener, so there is nothing to alarm on until a
+        # certificate makes one.
+        if certificate_arn:
+            self._alarms(target_group)
         self._suppressions(
             [web_exec, batch_exec, migration_exec,
              web_role, batch_role, migration_role],
@@ -331,6 +333,32 @@ class CorridorApplicationStack(Stack):
 
         CfnOutput(self, "LoadBalancerDns", value=self.alb.load_balancer_dns_name)
         CfnOutput(self, "RepositoryUri", value=self.repository.repository_uri)
+        CfnOutput(self, "ClusterName", value=cluster.cluster_name)
+        CfnOutput(self, "ClusterArn", value=cluster.cluster_arn)
+        CfnOutput(self, "WebServiceName", value=self.web_service.service_name)
+        CfnOutput(
+            self,
+            "MigrationTaskDefinitionArn",
+            value=migration_task.task_definition_arn,
+        )
+        CfnOutput(self, "BatchTaskDefinitionArn", value=batch_task.task_definition_arn)
+        CfnOutput(
+            self,
+            "TaskSubnetIds",
+            value=",".join(
+                vpc.select_subnets(subnet_type=ec2.SubnetType.PUBLIC).subnet_ids
+            ),
+        )
+        CfnOutput(
+            self,
+            "BatchSecurityGroupId",
+            value=batch_security_group.security_group_id,
+        )
+        CfnOutput(
+            self,
+            "MigrationSecurityGroupId",
+            value=migration_security_group.security_group_id,
+        )
 
     # ------------------------------------------------------------------
     def _task(
@@ -348,6 +376,7 @@ class CorridorApplicationStack(Stack):
         execution_role = iam.Role(
             self,
             f"{name}ExecutionRole",
+            path=CORRIDOR_ROLE_PATH,
             assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
             description=(
                 f"ECS agent identity for the {name.lower()} task: image pull, "
@@ -362,6 +391,7 @@ class CorridorApplicationStack(Stack):
         role = iam.Role(
             self,
             f"{name}TaskRole",
+            path=CORRIDOR_ROLE_PATH,
             assumed_by=iam.ServicePrincipal("ecs-tasks.amazonaws.com"),
             description=f"Corridor {name.lower()} application identity.",
         )
@@ -423,10 +453,11 @@ class CorridorApplicationStack(Stack):
                         "id": "AwsSolutions-ECS2",
                         "reason": (
                             "The only direct environment variables are "
-                            "non-secret deployment facts: CORRIDOR_ENVIRONMENT, "
-                            "CORRIDOR_STORAGE_BACKEND, the artifact bucket name "
-                            "and its region. Every credential -- database "
-                            "logins and the application secret -- is injected "
+                            "non-secret deployment facts: the environment "
+                            "name, the storage backend, the artifact bucket and "
+                            "its region, the task role, and the database host, "
+                            "port and name. Every credential -- the schema "
+                            "owner's and the two runtime logins -- is injected "
                             "through ecs.Secret from Secrets Manager, never as "
                             "a plaintext variable."
                         ),

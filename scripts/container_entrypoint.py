@@ -32,6 +32,13 @@ from urllib.parse import quote
 # Shipped in the image; see the Dockerfile.
 RDS_CA_BUNDLE = "/opt/corridor/rds-global-bundle.pem"
 
+# The two modes that actually authenticate the server. `require` encrypts
+# without verifying, which does not stop an interception.
+VERIFIED_SSL_MODES = frozenset({"verify-full", "verify-ca"})
+
+# Everything else is a deployed environment and may not lower TLS.
+LOCAL_ENVIRONMENTS = frozenset({"development", "test"})
+
 # role -> (login source, password variable, URL variable)
 ROLES: dict[str, tuple[str | None, str, str]] = {
     # The schema owner. Its login is supplied by the RDS-managed secret rather
@@ -82,9 +89,21 @@ def compose_url(env: dict[str, str], role: str) -> str:
     # Defaults to verify-full and is only ever lowered by setting the variable
     # explicitly, which exists so a smoke test can run against a plain
     # PostgreSQL container that serves no certificate. The CDK never sets it,
-    # and a test asserts that, so a deployed task always verifies.
+    # and a test asserts that.
+    #
+    # Belt and braces: a deployed environment refuses the override outright, so
+    # the guarantee does not rest on the stack alone. CORRIDOR_ENVIRONMENT is
+    # set to "nonproduction" by the task definition and defaults to
+    # "development" in config.py.
     sslmode = env.get("CORRIDOR_DB_SSLMODE") or "verify-full"
-    if sslmode in {"verify-full", "verify-ca"}:
+    environment = env.get("CORRIDOR_ENVIRONMENT", "development")
+    if sslmode not in VERIFIED_SSL_MODES and environment not in LOCAL_ENVIRONMENTS:
+        raise EntrypointError(
+            f"CORRIDOR_DB_SSLMODE={sslmode!r} does not verify the server "
+            f"certificate, and CORRIDOR_ENVIRONMENT={environment!r} is a "
+            "deployed environment. Only development and test may lower it."
+        )
+    if sslmode in VERIFIED_SSL_MODES:
         return f"{url}?sslmode={sslmode}&sslrootcert={RDS_CA_BUNDLE}"
     return f"{url}?sslmode={sslmode}"
 
@@ -99,6 +118,14 @@ def prepare_environment(env: dict[str, str], role: str) -> dict[str, str]:
     """
 
     prepared = dict(env)
+
+    # Clear all three first. Setting one without removing the others would let
+    # an inherited or injected DATABASE_URL survive into a runtime container,
+    # and db.capability_url reads it whenever that capability's own URL is
+    # empty -- which would reconnect web or batch as the schema owner.
+    for _, _, name in ROLES.values():
+        prepared.pop(name, None)
+
     _, _, url_var = ROLES[role]
     prepared[url_var] = compose_url(env, role)
 

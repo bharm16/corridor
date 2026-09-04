@@ -5,6 +5,7 @@ silently changed. They assert on the synthesized CloudFormation, so they fail
 on the template that would actually be deployed rather than on the Python.
 """
 
+import json
 import pathlib
 import re
 
@@ -27,9 +28,23 @@ DUMMY_CERT = (
 )
 
 
+CDK_JSON = pathlib.Path(__file__).parents[1] / "cdk.json"
+
+
+def _app_context() -> dict:
+    """The same context cdk.json gives the real synthesis.
+
+    Building the test App bare meant the permissions-boundary context was
+    absent, so the boundary assertions passed against roles that had no
+    boundary in the fixture but did in the real template -- and would equally
+    have passed if the context were deleted outright.
+    """
+    return json.loads(CDK_JSON.read_text())["context"]
+
+
 def _build(**overrides):
     """Build the four stacks, so a test can vary one input and assert on it."""
-    app = cdk.App()
+    app = cdk.App(context=_app_context())
     foundation = CorridorAccountFoundationStack(
         app, "F", env=ENV,
         github_repo="bharm16/corridor", github_environment="nonproduction",
@@ -59,7 +74,7 @@ def _build(**overrides):
 
 @pytest.fixture(scope="module")
 def stacks():
-    app = cdk.App(context={"corridor:webDesiredCount": 0})
+    app = cdk.App(context={**_app_context(), "corridor:webDesiredCount": 0})
     foundation = CorridorAccountFoundationStack(
         app,
         "F",
@@ -204,10 +219,56 @@ def test_github_trust_is_pinned_to_the_environment(stacks):
         assert "*" not in subject
 
 
-def test_github_role_has_no_wildcard_resource(stacks):
-    for policy in stacks["foundation"].find_resources("AWS::IAM::Policy").values():
+# AWS defines these with no resource type, so `Resource: "*"` is the only
+# form they can take. Anything else on a wildcard resource must carry a
+# Condition that scopes it instead.
+UNSCOPABLE_ACTIONS = {
+    "ecr:GetAuthorizationToken",
+    "ecs:DescribeTaskDefinition",
+}
+
+
+def test_wildcard_resources_are_unscopable_actions_or_conditioned(stacks):
+    """A blunt "no Resource: *" rule is unenforceable -- a few AWS actions
+    genuinely admit no ARN. So the rule is narrower and actually checkable:
+    every wildcard statement is either entirely made of those actions, or is
+    constrained by a Condition."""
+    offenders = []
+    for name, template in stacks.items():
+        for logical_id, policy in template.find_resources("AWS::IAM::Policy").items():
+            if logical_id.startswith("LogRetention"):
+                # CDK's own LogRetention helper. It sets retention on a log
+                # group RDS names at runtime, so the name is not knowable at
+                # synthesis time. Excluded by construct, not by action, so the
+                # same wildcard appearing on a Corridor role still fails.
+                continue
+            for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
+                resource = statement.get("Resource")
+                if resource != "*":
+                    continue
+                if "Condition" in statement:
+                    continue
+                actions = statement.get("Action")
+                actions = [actions] if isinstance(actions, str) else actions
+                extra = set(actions) - UNSCOPABLE_ACTIONS
+                if extra:
+                    offenders.append((name, logical_id, sorted(extra)))
+    assert not offenders, (
+        "unconditioned wildcard resources on scopable actions: " + repr(offenders)
+    )
+
+
+def test_the_cdk_role_holds_no_wildcard_resource_at_all(stacks):
+    """The CDK entry role assumes bootstrap roles and reads one SSM parameter.
+    Unlike the release role it touches no account-level API, so it has no
+    excuse for a wildcard."""
+    for logical_id, policy in (
+        stacks["foundation"].find_resources("AWS::IAM::Policy").items()
+    ):
+        if "Release" in logical_id:
+            continue
         for statement in policy["Properties"]["PolicyDocument"]["Statement"]:
-            assert statement.get("Resource") != "*", statement
+            assert statement.get("Resource") != "*", (logical_id, statement)
 
 
 def test_no_wildcard_passrole_anywhere(stacks):
@@ -357,18 +418,35 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
 
 
 # --- fail-closed TLS ---------------------------------------------------
-def test_no_certificate_and_no_explicit_opt_in_is_refused():
-    """Absence of a certificate must not quietly select plaintext."""
+def test_serving_without_a_certificate_is_refused():
+    """The web service may not carry traffic over plaintext."""
     with pytest.raises(ValueError, match="certificateArn is required"):
-        _build(certificate_arn="")
+        _build(certificate_arn="", web_desired_count=1)
 
 
-def test_insecure_http_requires_an_explicit_flag():
-    _, _, _, application = _build(certificate_arn="", allow_insecure_http=True)
+def test_without_a_certificate_the_stack_synthesises_but_has_no_listener():
+    """The network and data stacks still need to be deployable before a
+    certificate exists. The service can exist at zero; it just has no way in."""
+    _, _, _, application = _build(certificate_arn="", web_desired_count=0)
     template = Template.from_stack(application)
-    template.has_resource_properties(
-        "AWS::ElasticLoadBalancingV2::Listener", {"Port": 80, "Protocol": "HTTP"}
-    )
+
+    template.resource_count_is("AWS::ElasticLoadBalancingV2::Listener", 0)
+    template.has_resource_properties("AWS::ECS::Service", {"DesiredCount": 0})
+
+
+def test_there_is_no_plaintext_listener_anywhere(stacks):
+    """An earlier version fell back to HTTP when no certificate was supplied,
+    gated by a flag read with bool() -- and CDK context arrives from the command
+    line as a string, so bool("false") is True. The path is gone entirely."""
+    for listener in stacks["application"].find_resources(
+        "AWS::ElasticLoadBalancingV2::Listener"
+    ).values():
+        props = listener["Properties"]
+        if props["Protocol"] == "HTTP":
+            actions = props.get("DefaultActions", [])
+            assert all(action.get("Type") == "redirect" for action in actions), (
+                "an HTTP listener forwards traffic instead of redirecting"
+            )
 
 
 def test_the_normal_path_is_https_with_a_redirect(stacks):
@@ -466,10 +544,24 @@ def test_the_cdk_entry_role_is_named_for_cdk(stacks):
 
 
 def test_postgres_is_not_the_deprecated_minor_version(stacks):
+    """16.4 is deprecated in RDS. 16.15 carries CVE fixes but the pinned
+    aws-cdk-lib's CloudFormation spec refuses it under --strict, so 16.14 is
+    the synthetic-environment version with an upgrade gate before #535."""
     stacks["data"].has_resource_properties(
         "AWS::RDS::DBInstance",
         {"Engine": "postgres", "EngineVersion": "16.14"},
     )
+
+
+def test_the_postgres_upgrade_gate_is_written_down():
+    """A temporary version needs a recorded reason to stop being temporary."""
+    source = (
+        pathlib.Path(__file__).parents[1] / "corridor_infra" / "data_stack.py"
+    ).read_text()
+
+    assert "UPGRADE GATE" in source
+    assert "#535" in source
+    assert "auto_minor_version_upgrade" in source
 
 
 def test_the_stack_never_lowers_database_tls(stacks):
@@ -526,3 +618,75 @@ def test_the_database_master_login_is_the_schema_owner_the_baseline_expects():
     assert len(secrets) == 1
     generated = secrets[0]["Properties"]["GenerateSecretString"]
     assert json.loads(generated["SecretStringTemplate"]) == {"username": "corridor"}
+
+
+# --- permissions boundary and role path --------------------------------
+def test_every_explicit_role_sits_under_corridors_path(stacks):
+    """The CloudFormation execution policy only writes roles on this path, so a
+    role created anywhere else would be denied at deploy time."""
+    for name in ("foundation", "network", "application"):
+        for logical_id, role in stacks[name].find_resources("AWS::IAM::Role").items():
+            if "CustomResourceProviderRole" in logical_id:
+                # Created by CDK's custom-resource framework; its path is not
+                # ours to set. It is still covered by the delegated boundary.
+                continue
+            assert role["Properties"].get("Path") == "/corridor/nonproduction/", (
+                f"{name}/{logical_id} has path {role['Properties'].get('Path')!r}"
+            )
+
+
+def test_every_role_carries_the_delegated_boundary(stacks):
+    """Applied app-wide through the @aws-cdk/core:permissionsBoundary context.
+    A role without it is refused by the execution policy's Deny."""
+    for name in ("foundation", "network", "application"):
+        roles = stacks[name].find_resources("AWS::IAM::Role")
+        assert roles, name
+        for logical_id, role in roles.items():
+            boundary = role["Properties"].get("PermissionsBoundary")
+            assert boundary is not None, f"{name}/{logical_id} has no boundary"
+            assert "CorridorDelegatedRoleBoundary" in json.dumps(boundary), (
+                f"{name}/{logical_id} carries {boundary!r}"
+            )
+
+
+def test_the_two_github_roles_are_separate_identities(stacks):
+    names = set()
+    for role in stacks["foundation"].find_resources("AWS::IAM::Role").values():
+        role_name = role["Properties"].get("RoleName")
+        if role_name:
+            names.add(role_name)
+    assert names == {"corridor-nonprod-cdk-deploy", "corridor-nonprod-app-release"}
+
+
+def test_the_release_role_cannot_deploy_a_stack(stacks):
+    """It moves existing ECS resources; it must not be able to create
+    infrastructure or assume the CDK bootstrap roles."""
+    for logical_id, policy in (
+        stacks["foundation"].find_resources("AWS::IAM::Policy").items()
+    ):
+        if "Release" not in logical_id:
+            continue
+        document = json.dumps(policy["Properties"]["PolicyDocument"])
+        for forbidden in ("cloudformation:", "cdk-hnb659fds", "rds:", "iam:CreateRole"):
+            assert forbidden not in document, (logical_id, forbidden)
+
+
+def test_the_cdk_role_cannot_touch_application_resources(stacks):
+    for logical_id, policy in (
+        stacks["foundation"].find_resources("AWS::IAM::Policy").items()
+    ):
+        if "Release" in logical_id:
+            continue
+        document = json.dumps(policy["Properties"]["PolicyDocument"])
+        for forbidden in ("ecr:PutImage", "ecs:UpdateService", "ecs:RunTask"):
+            assert forbidden not in document, (logical_id, forbidden)
+
+
+def test_the_permissions_boundary_context_is_actually_configured():
+    """The boundary reaches every role through cdk.json context rather than a
+    per-role argument, so deleting that key would silently unbind all of them.
+    Asserted directly so the fixture cannot be the only thing that notices."""
+    context = _app_context()
+    assert context["@aws-cdk/core:permissionsBoundary"] == {
+        "name": "CorridorDelegatedRoleBoundary"
+    }

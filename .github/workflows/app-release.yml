@@ -1,0 +1,147 @@
+# Application release: push a tested image, migrate, then serve.
+#
+# Separate from infra-nonproduction.yml because it is separate work with a
+# separate identity. This workflow never deploys a stack; it moves resources
+# CloudFormation already created. Its role, corridor-nonprod-app-release, holds
+# no cloudformation:*, no rds:*, and cannot assume the CDK bootstrap roles.
+#
+# The order is the point. The migration is the only schema writer, so it runs
+# to completion and its exit code is checked before the web service is allowed
+# to serve. A release that migrates and then fails leaves the service where it
+# was rather than serving against a half-migrated schema.
+name: app-release
+
+on:
+  workflow_dispatch:
+    inputs:
+      commit_sha:
+        description: Full 40-character commit SHA on main to release
+        required: true
+        type: string
+      start_web:
+        description: Scale the web service to 1 after a successful migration
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: corridor-nonproduction-release
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: us-east-2
+  CLUSTER: corridor-nonprod
+  COMMIT_SHA: ${{ inputs.commit_sha }}
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: nonproduction
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Require a full commit SHA
+        run: |
+          if ! printf '%s' "$COMMIT_SHA" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "::error::commit_sha must be a full 40-character SHA"
+            exit 1
+          fi
+
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ inputs.commit_sha }}
+          fetch-depth: 0
+
+      - name: Require that the commit is on main
+        run: |
+          if ! git merge-base --is-ancestor "$COMMIT_SHA" origin/main 2>/dev/null; then
+            git fetch --quiet origin main
+            git merge-base --is-ancestor "$COMMIT_SHA" origin/main \
+              || { echo "::error::$COMMIT_SHA is not an ancestor of origin/main"; exit 1; }
+          fi
+          echo "commit is on main"
+
+      - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
+        with:
+          role-to-assume: arn:aws:iam::810100779593:role/corridor/nonproduction/corridor-nonprod-app-release
+          aws-region: us-east-2
+
+      - name: Resolve the stack outputs this release needs
+        run: |
+          aws cloudformation describe-stacks --stack-name CorridorApplication \
+            --query 'Stacks[0].Outputs' --output json > outputs.json || {
+              echo "::error::CorridorApplication is not deployed yet"; exit 1; }
+          get() { python3 -c "
+          import json,sys
+          for o in json.load(open('outputs.json')):
+              if o['OutputKey']==sys.argv[1]: print(o['OutputValue']); break
+          " "$1"; }
+          {
+            echo "REPOSITORY_URI=$(get RepositoryUri)"
+            echo "MIGRATION_TASK_DEF=$(get MigrationTaskDefinitionArn)"
+            echo "WEB_SERVICE=$(get WebServiceName)"
+            echo "TASK_SUBNETS=$(get TaskSubnetIds)"
+            echo "MIGRATION_SG=$(get MigrationSecurityGroupId)"
+          } >> "$GITHUB_ENV"
+
+      - name: Build and push the image under its commit SHA
+        run: |
+          aws ecr get-login-password --region "$AWS_REGION" \
+            | docker login --username AWS --password-stdin "${REPOSITORY_URI%%/*}"
+          docker build -t "$REPOSITORY_URI:$COMMIT_SHA" .
+          docker push "$REPOSITORY_URI:$COMMIT_SHA"
+
+      - name: Record the pushed digest
+        run: |
+          DIGEST=$(aws ecr describe-images --repository-name corridor \
+            --image-ids "imageTag=$COMMIT_SHA" \
+            --query 'imageDetails[0].imageDigest' --output text)
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "digest: $DIGEST"
+
+      - name: Run the migration and require it to succeed
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$MIGRATION_TASK_DEF" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$MIGRATION_SG],assignPublicIp=ENABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
+          echo "waiting for $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT_CODE=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          REASON=$(aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
+            --query 'tasks[0].stoppedReason' --output text)
+          echo "exit=$EXIT_CODE reason=$REASON"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "::error::migration exited $EXIT_CODE ($REASON); web not started"
+            exit 1
+          fi
+
+      - name: Start the web service
+        if: inputs.start_web
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
+            --desired-count 1 >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
+          echo "web service stable"
+
+      - name: Record what was released
+        if: always()
+        run: |
+          {
+            echo "### Release"
+            echo
+            echo "- commit: \`$COMMIT_SHA\`"
+            echo "- image: \`$REPOSITORY_URI:$COMMIT_SHA\`"
+            echo "- digest: \`${IMAGE_DIGEST:-not pushed}\`"
+            echo "- migration task: \`${MIGRATION_TASK_ARN:-not run}\`"
+            echo "- web started: \`${{ inputs.start_web }}\`"
+          } >> "$GITHUB_STEP_SUMMARY"

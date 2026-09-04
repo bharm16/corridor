@@ -37,18 +37,23 @@ from aws_cdk import (
     Stack,
     aws_ec2 as ec2,
     aws_rds as rds,
+    aws_logs as logs,
     aws_s3 as s3,
     aws_secretsmanager as secretsmanager,
 )
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
-# 16.4 is deprecated in RDS. 16.14 is the newest 16.x in the CloudFormation
-# spec bundled with the pinned aws-cdk-lib, so it synthesises clean; a later
-# minor may well be available. Confirm against the account before the first
-# deploy -- this cannot be checked without credentials:
+# 16.4 is deprecated in RDS. 16.15 is available and carries CVE fixes, but the
+# CloudFormation spec bundled with the pinned aws-cdk-lib knows 16.x only up to
+# 16.14, so `cdk synth --strict` refuses it. 16.14 is what synthesises clean.
+#
+# UPGRADE GATE: this is acceptable for #489's synthetic environment, which
+# holds no customer data. Move to 16.15 or later before #535 activates live
+# data -- either when a newer aws-cdk-lib ships an updated spec, or by
+# upgrading the instance in place after deployment. auto_minor_version_upgrade
+# is on, so RDS will also move it during a maintenance window.
 #   aws rds describe-db-engine-versions --engine postgres --engine-version 16
-# auto_minor_version_upgrade carries it forward from there.
 POSTGRES_VERSION = rds.PostgresEngineVersion.of("16.14", "16")
 
 
@@ -131,6 +136,9 @@ class CorridorDataStack(Stack):
             auto_minor_version_upgrade=True,
             removal_policy=RemovalPolicy.SNAPSHOT,
             cloudwatch_logs_exports=["postgresql"],
+            # Without this the exported log group is created with no retention
+            # and keeps PostgreSQL logs forever, at $0.03/GB-month.
+            cloudwatch_logs_retention=logs.RetentionDays.TWO_WEEKS,
         )
 
         # Runtime logins. The migration creates the roles themselves; these
@@ -139,6 +147,37 @@ class CorridorDataStack(Stack):
         self.web_db_secret = self._login_secret("WebDbSecret", "corridor_web")
         self.worker_db_secret = self._login_secret("WorkerDbSecret", "corridor_worker")
 
+        NagSuppressions.add_resource_suppressions_by_path(
+            self,
+            f"/{self.stack_name}/LogRetentionaae0aa3c5b4d4f87b02d85b201efdd8a"
+            "/ServiceRole",
+            [
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "CDK's own LogRetention helper. It sets retention on "
+                        "the log group RDS names at run time, so the group is "
+                        "not knowable at synthesis and the construct emits "
+                        "logs:PutRetentionPolicy on *. Not a Corridor role: "
+                        "the wildcard test excludes this construct by name "
+                        "rather than allowing those actions generally."
+                    ),
+                    "appliesTo": ["Resource::*"],
+                },
+                {
+                    "id": "AwsSolutions-IAM4",
+                    "reason": (
+                        "AWSLambdaBasicExecutionRole on CDK's own LogRetention "
+                        "helper. The construct attaches it; replacing it would "
+                        "mean forking a CDK internal."
+                    ),
+                    "appliesTo": [
+                        "Policy::arn:<AWS::Partition>:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+                    ],
+                },
+            ],
+            apply_to_children=True,
+        )
         NagSuppressions.add_resource_suppressions(
             access_logs,
             [{"id": "AwsSolutions-S1",

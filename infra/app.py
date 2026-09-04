@@ -65,9 +65,6 @@ CorridorApplicationStack(
     image_tag=ctx("imageTag", ""),
     web_desired_count=int(app.node.try_get_context("corridor:webDesiredCount") or 0),
     certificate_arn=ctx("certificateArn", ""),
-    allow_insecure_http=bool(
-        app.node.try_get_context("corridor:allowInsecureHttp") or False
-    ),
 )
 
 for key, value in {

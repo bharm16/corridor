@@ -103,6 +103,27 @@ def test_lowering_tls_takes_an_explicit_variable():
     assert "sslrootcert" not in url
 
 
+def test_a_deployed_environment_refuses_to_lower_tls():
+    """The stack never sets CORRIDOR_DB_SSLMODE, but the guarantee should not
+    rest on the stack alone: the container refuses it too."""
+    deployed = dict(
+        BASE, CORRIDOR_DB_SSLMODE="disable", CORRIDOR_ENVIRONMENT="nonproduction"
+    )
+
+    with pytest.raises(entrypoint.EntrypointError, match="deployed environment"):
+        entrypoint.compose_url(deployed, "web")
+
+
+def test_require_is_not_accepted_as_verification():
+    """`require` encrypts without authenticating the server."""
+    deployed = dict(
+        BASE, CORRIDOR_DB_SSLMODE="require", CORRIDOR_ENVIRONMENT="nonproduction"
+    )
+
+    with pytest.raises(entrypoint.EntrypointError, match="does not verify"):
+        entrypoint.compose_url(deployed, "web")
+
+
 def test_an_empty_sslmode_still_verifies():
     """An empty string must not read as 'no TLS'."""
     url = entrypoint.compose_url(dict(BASE, CORRIDOR_DB_SSLMODE=""), "web")
@@ -150,3 +171,30 @@ def test_a_missing_password_is_refused_rather_than_defaulted():
     del env["CORRIDOR_WEB_DB_PASSWORD"]
     with pytest.raises(entrypoint.EntrypointError, match="CORRIDOR_WEB_DB_PASSWORD"):
         entrypoint.compose_url(env, "web")
+
+
+def test_a_preexisting_url_for_another_role_is_removed():
+    """An inherited or injected DATABASE_URL must not survive into a runtime
+    container: db.capability_url reads it whenever that capability's own URL is
+    empty, which would reconnect web or batch as the schema owner."""
+    contaminated = dict(
+        BASE,
+        DATABASE_URL="postgresql+psycopg://corridor:owner@evil/corridor",
+        WEB_DATABASE_URL="postgresql+psycopg://stale@old/corridor",
+        WORKER_DATABASE_URL="postgresql+psycopg://stale@old/corridor",
+    )
+
+    for role, expected in (
+        ("web", "WEB_DATABASE_URL"),
+        ("batch", "WORKER_DATABASE_URL"),
+        ("migration", "DATABASE_URL"),
+    ):
+        prepared = entrypoint.prepare_environment(contaminated, role)
+        present = {
+            name
+            for name in ("DATABASE_URL", "WEB_DATABASE_URL", "WORKER_DATABASE_URL")
+            if name in prepared
+        }
+        assert present == {expected}, f"{role} ended with {present}"
+        assert "evil" not in prepared[expected]
+        assert "stale" not in prepared[expected]

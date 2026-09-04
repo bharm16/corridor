@@ -30,6 +30,8 @@ from aws_cdk import (
 from cdk_nag import NagSuppressions
 from constructs import Construct
 
+from .network_stack import CORRIDOR_ROLE_PATH
+
 # The default CDK bootstrap qualifier. If the account is bootstrapped with a
 # custom qualifier, override it here and in the bootstrap command together.
 BOOTSTRAP_QUALIFIER = "hnb659fds"
@@ -107,6 +109,7 @@ class CorridorAccountFoundationStack(Stack):
             self,
             "GitHubDeployRole",
             role_name="corridor-nonprod-cdk-deploy",
+            path=CORRIDOR_ROLE_PATH,
             description=(
                 "GitHub Actions CDK entry identity. Assumes the CDK bootstrap "
                 "roles; holds no direct ECS, RDS, S3 or IAM authority of its "
@@ -149,6 +152,131 @@ class CorridorAccountFoundationStack(Stack):
             )
         )
 
+        # A second identity, because the two jobs are genuinely different work.
+        # The CDK role changes what infrastructure exists; this one pushes an
+        # image and moves already-existing ECS resources. Giving one role both
+        # would mean every routine release ran with authority to rewrite the
+        # database stack.
+        self.release_role = iam.Role(
+            self,
+            "GitHubReleaseRole",
+            role_name="corridor-nonprod-app-release",
+            path=CORRIDOR_ROLE_PATH,
+            description=(
+                "GitHub Actions application release identity: pushes an image "
+                "and runs migration and service updates against resources that "
+                "already exist. It cannot deploy a stack."
+            ),
+            assumed_by=iam.WebIdentityPrincipal(
+                oidc_provider.open_id_connect_provider_arn,
+                {
+                    "StringEquals": {
+                        f"{GITHUB_OIDC_HOST}:aud": "sts.amazonaws.com",
+                        f"{GITHUB_OIDC_HOST}:sub": subject,
+                    }
+                },
+            ),
+        )
+        cluster_arn = (
+            f"arn:aws:ecs:{Aws.REGION}:{Aws.ACCOUNT_ID}:cluster/corridor-nonprod"
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="EcrAuthIsAccountLevel",
+                actions=["ecr:GetAuthorizationToken"],
+                resources=["*"],
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="PushOnlyToCorridorsRepository",
+                actions=[
+                    "ecr:BatchCheckLayerAvailability",
+                    "ecr:BatchGetImage",
+                    "ecr:CompleteLayerUpload",
+                    "ecr:DescribeImages",
+                    "ecr:GetDownloadUrlForLayer",
+                    "ecr:InitiateLayerUpload",
+                    "ecr:PutImage",
+                    "ecr:UploadLayerPart",
+                ],
+                resources=[
+                    f"arn:aws:ecr:{Aws.REGION}:{Aws.ACCOUNT_ID}:repository/corridor"
+                ],
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="ReadEcsStateForTheCorridorClusterOnly",
+                actions=[
+                    "ecs:DescribeClusters",
+                    "ecs:DescribeServices",
+                    "ecs:DescribeTasks",
+                    "ecs:ListTasks",
+                ],
+                resources=["*"],
+                conditions={"ArnEquals": {"ecs:cluster": cluster_arn}},
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                # DescribeTaskDefinition is one of the ECS actions AWS defines
+                # with no resource type and no cluster condition key, so it
+                # cannot be scoped further than this.
+                sid="DescribeTaskDefinitionAdmitsNoResourceScope",
+                actions=["ecs:DescribeTaskDefinition"],
+                resources=["*"],
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="RunAndUpdateOnlyCorridorsOwnCluster",
+                actions=["ecs:RunTask", "ecs:UpdateService"],
+                resources=["*"],
+                conditions={"ArnEquals": {"ecs:cluster": cluster_arn}},
+            )
+        )
+        self.release_role.add_to_policy(
+            iam.PolicyStatement(
+                sid="PassOnlyCorridorsTaskRolesAndOnlyToEcs",
+                actions=["iam:PassRole"],
+                resources=[
+                    f"arn:aws:iam::{Aws.ACCOUNT_ID}:role"
+                    f"{CORRIDOR_ROLE_PATH}*"
+                ],
+                conditions={
+                    "StringEquals": {
+                        "iam:PassedToService": "ecs-tasks.amazonaws.com"
+                    }
+                },
+            )
+        )
+
+        NagSuppressions.add_resource_suppressions(
+            self.release_role,
+            [
+                {
+                    "id": "AwsSolutions-IAM5",
+                    "reason": (
+                        "Two actions admit no resource scope at all: "
+                        "ecr:GetAuthorizationToken and ecs:DescribeTaskDefinition "
+                        "are defined by AWS with no resource type. Every other "
+                        "Resource:* statement here carries an ArnEquals "
+                        "condition on the Corridor cluster, which is how ECS "
+                        "scopes those calls. PassRole is restricted to "
+                        "Corridor's own role path and to ecs-tasks.amazonaws.com; "
+                        "the wildcard is the role name within that path."
+                    ),
+                    "appliesTo": [
+                        "Resource::*",
+                        {
+                            "regex": "/^Resource::arn:aws:iam::.*:role\\/corridor\\/nonproduction\\/\\*$/g"
+                        },
+                    ],
+                }
+            ],
+            apply_to_children=True,
+        )
         NagSuppressions.add_resource_suppressions(
             access_logs,
             [
@@ -164,4 +292,5 @@ class CorridorAccountFoundationStack(Stack):
         )
 
         CfnOutput(self, "GitHubDeployRoleArn", value=self.github_role.role_arn)
+        CfnOutput(self, "GitHubReleaseRoleArn", value=self.release_role.role_arn)
         CfnOutput(self, "CloudTrailBucketName", value=trail_bucket.bucket_name)

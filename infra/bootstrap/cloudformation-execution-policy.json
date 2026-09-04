@@ -10,6 +10,7 @@
         "iam:DeleteRole",
         "iam:DeleteRolePolicy",
         "iam:DetachRolePolicy",
+        "iam:PutRolePermissionsBoundary",
         "iam:PutRolePolicy",
         "iam:TagRole",
         "iam:UntagRole",
@@ -19,13 +20,34 @@
       "Resource": "arn:aws:iam::810100779593:role/corridor/nonproduction/*"
     },
     {
+      "Sid": "CdkCustomResourceRolesWhichCannotTakeCorridorsPath",
+      "Effect": "Allow",
+      "Action": [
+        "iam:AttachRolePolicy",
+        "iam:CreateRole",
+        "iam:DeleteRole",
+        "iam:DeleteRolePolicy",
+        "iam:DetachRolePolicy",
+        "iam:PutRolePermissionsBoundary",
+        "iam:PutRolePolicy",
+        "iam:TagRole",
+        "iam:UntagRole",
+        "iam:UpdateAssumeRolePolicy",
+        "iam:UpdateRoleDescription"
+      ],
+      "Resource": "arn:aws:iam::810100779593:role/Corridor*"
+    },
+    {
       "Sid": "EveryCorridorRoleCarriesTheBoundary",
       "Effect": "Deny",
-      "Action": ["iam:CreateRole", "iam:PutRolePermissionsBoundary"],
+      "Action": [
+        "iam:CreateRole",
+        "iam:PutRolePermissionsBoundary"
+      ],
       "Resource": "*",
       "Condition": {
         "StringNotEquals": {
-          "iam:PermissionsBoundary": "arn:aws:iam::810100779593:policy/CorridorNonproductionBoundary"
+          "iam:PermissionsBoundary": "arn:aws:iam::810100779593:policy/CorridorDelegatedRoleBoundary"
         }
       }
     },

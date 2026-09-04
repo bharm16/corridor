@@ -36,6 +36,11 @@ from constructs import Construct
 # The port `make queue` serves on: uvicorn corridor.web.app:app --port 8412.
 CORRIDOR_APP_PORT = 8412
 
+# Every role Corridor creates lives here. The CloudFormation execution policy
+# only permits role writes on this path, so a stack cannot quietly create a
+# role somewhere the policy does not constrain.
+CORRIDOR_ROLE_PATH = "/corridor/nonproduction/"
+
 
 class CorridorNetworkStack(Stack):
     def __init__(self, scope: Construct, construct_id: str, **kwargs) -> None:
@@ -77,6 +82,7 @@ class CorridorNetworkStack(Stack):
         flow_log_role = iam.Role(
             self,
             "VpcFlowLogRole",
+            path=CORRIDOR_ROLE_PATH,
             assumed_by=iam.ServicePrincipal("vpc-flow-logs.amazonaws.com"),
             description="Delivers Corridor VPC flow logs to CloudWatch.",
         )
