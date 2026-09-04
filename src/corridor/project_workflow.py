@@ -561,10 +561,16 @@ def _issue_section(
         outstanding = len(readiness)
     else:
         summary = (
-            "Nothing stands in the way of this project's next issue. Preparing "
-            "and approving it are not built yet (#529, #533), so the issue "
-            "cannot be approved from here."
+            "Nothing stands in the way of this project's next issue. What has "
+            "been prepared for the customer, and whether it can be approved "
+            "for sharing, is below."
         )
+        # Deliberately still 1, and not "1 if there is something to approve".
+        # The count is what `landing` walks, and #537's portfolio derives the
+        # same landing from the same numbers with a test asserting the two
+        # cannot disagree; a project with an accepted record and nothing else
+        # waiting opens on its issue whether or not a candidate has been
+        # prepared yet, because preparing one is the work it is opening for.
         outstanding = 1
     return WorkflowSection(
         name=ISSUE,

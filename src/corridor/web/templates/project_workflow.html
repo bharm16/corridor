@@ -4,11 +4,19 @@
   changes sources proposed, chase the answers the project already recorded a
   plan for, then approve what goes back to the customer.
 
-  The page holds no decision control of its own. Every proposed change is
-  actionable in exactly one item on the review screen (ADR-0085), so this page
-  links to that screen and offers nothing that resolves, defers, or plans; a
-  Follow-up Plan is printed in the words it recorded, with no control, because
-  nothing acts on a spine Follow-up Plan yet (#425).
+  The page holds no *record-decision* control of its own. Every proposed change
+  is actionable in exactly one item on the review screen (ADR-0085), so this
+  page links to that screen and offers nothing that resolves, defers, or plans;
+  a Follow-up Plan is printed in the words it recorded, with no control,
+  because nothing acts on a spine Follow-up Plan yet (#425).
+
+  The one act this page carries is the Issue section's approval (#533), which
+  is not a decision about the project record and has no other home: #529 and
+  #533 both merged with no route at all. Whether it is offered comes from
+  `corridor.web.issue_section`, which reads #529's own `authorization_blockers`
+  and derives no second opinion; the external-release designation is proved
+  inside PostgreSQL when the approval is submitted, never by a check here that
+  could drift from the roster the command reads.
 
   The Follow-up section also renders #425's contact-ready follow-up bundles
   (#658). It consumes `read_follow_up_bundles` and restates none of its rules:
@@ -85,6 +93,28 @@
       {%- endfor %}
     </ol>
   </nav>
+
+  {#
+    The outcome of the one act this page carries. A refusal is announced
+    assertively and takes focus, because it means nothing was sent and the
+    coordinator has somewhere else to go; an approval is announced politely.
+    The refusal prints the database's own sentence — including the one
+    PostgreSQL raises when the principal holds no external-release designation
+    — rather than a paraphrase composed here.
+  #}
+  {%- if refusal %}
+  {% call ui.outcome("refused", "This issue was not approved, and nothing was sent", focus) %}
+    <p>{{ refusal.sentence }}</p>
+  {% endcall %}
+  {%- elif approved %}
+  {% call ui.outcome("saved", "Approved for sharing", focus) %}
+    <p>
+      This is issue {{ approved.issue_number }} for this project, made from
+      accepted Project Record revision {{ approved.accepted_revision_id }}.
+      {%- if not approved.created %} It was already approved; nothing was approved twice.{% endif %}
+    </p>
+  {% endcall %}
+  {%- endif %}
 
   {%- if not landing.waiting %}
   <p>Nothing in this project needs attention at this cutoff.</p>
@@ -265,10 +295,108 @@
         is offered as one.
       </p>
       {%- endif %}
-      <p class="quiet">
-        Preparing this project's issue and approving it for sharing are not
-        built yet, so neither can be done from here.
+
+      {#
+        The prepared issue (#529) and the one act that sends it (#533).
+
+        `corridor.web.issue_section` owns everything stated here. Whether the
+        approval is offered is `issue.may_authorize`, which is true only where
+        #529's `authorization_blockers` is empty — this template asks no second
+        question about readiness, staleness or coverage, and there is no
+        `{% if %}` here that could disagree with the module about a candidate.
+
+        The approval is shown to any member who may read this project, and the
+        designation rule is stated in words beside it. Hiding the control on a
+        Python designation check would be a second gate that can drift from the
+        roster PostgreSQL reads, and would tell a coordinator a rule the
+        database does not enforce. The database refuses, and the refusal is
+        rendered above.
+      #}
+      <h3>The prepared issue</h3>
+      <p>
+        {%- if issue.prepared %}{{ ui.state(issue.state_label) }} {% endif -%}
+        {{ issue.summary }}
       </p>
+
+      {%- if issue.prepared %}
+      {{ ui.fact_list(issue.facts) }}
+
+      {% call ui.record_table(
+           "Everything the customer receives in this issue, in the order it is sealed",
+           ["What it is", "Produced by", "Exact bytes (SHA-256)", "Size"]) %}
+        {%- for row in issue.artifact_rows %}
+        <tr>
+          <th scope="row">{{ row.words }}</th>
+          <td>{{ row.produced_by }}</td>
+          <td>{{ row.content_sha256 }}</td>
+          <td>{{ row.byte_count }} bytes</td>
+        </tr>
+        {%- endfor %}
+      {% endcall %}
+
+      <h4>What was and was not read for this issue</h4>
+      {{ ui.fact_list([
+           ("Declared coverage state", issue.declaration.coverage_identity),
+           ("Its digest", issue.declaration.coverage_sha256),
+           ("Sources delivered but unreadable", issue.declaration.unread_source_count),
+         ]) }}
+
+      {%- if issue.prepared_blockers %}
+      <h4>What was unmet when this candidate was prepared</h4>
+      <ul>
+        {%- for sentence in issue.prepared_blockers %}
+        <li>{{ ui.state(state_label("attention", sentence)) }}</li>
+        {%- endfor %}
+      </ul>
+      {%- endif %}
+
+      {%- if issue.exceptions %}
+      <h4>Disclosed with this issue rather than held back</h4>
+      <ul>
+        {%- for sentence in issue.exceptions %}
+        <li>{{ sentence }}</li>
+        {%- endfor %}
+      </ul>
+      <p class="quiet">
+        An honest adverse condition is stated to the customer; it does not stop
+        the issue going out.
+      </p>
+      {%- endif %}
+
+      {%- if issue.blockers %}
+      <h4>Why this cannot be approved as it stands</h4>
+      <ul>
+        {%- for sentence in issue.blockers %}
+        <li>{{ ui.state(state_label("attention", sentence)) }}</li>
+        {%- endfor %}
+      </ul>
+      <p>{{ issue.fresh_preparation }}</p>
+      <p class="quiet">
+        Preparing that candidate is not something this page does, and nothing
+        here approves this one.
+      </p>
+      {%- endif %}
+
+      {%- if issue.authorized %}
+      {{ ui.fact_list([
+           ("Issue number", issue.authorized.issue_number),
+           ("Approved by", issue.authorized.authorized_by_principal),
+           ("Approved at", issue.authorized.authorized_at.isoformat()),
+         ]) }}
+      {%- endif %}
+
+      {%- if issue.may_authorize %}
+      <form method="post" action="/work/{{ project.slug }}/issue/authorize">
+        <input type="hidden" name="candidate_id" value="{{ issue.candidate.id }}">
+        <p class="field-hint" id="approve-issue-rule">{{ issue.designation_rule }}</p>
+        {% call ui.sticky_actions("Approving this issue for sharing") %}
+        <button type="submit" aria-describedby="approve-issue-rule">
+          Approve this issue for sharing
+        </button>
+        {% endcall %}
+      </form>
+      {%- endif %}
+      {%- endif %}
     {%- endif %}
   {% endcall %}
   {%- endfor %}
