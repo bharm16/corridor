@@ -4,7 +4,7 @@ domain: reports
 scope: current product
 amends:
   - ADR-0086
-migration: the configured issue set is modelled and readable at a cutoff (#640), resolved into executable content (#641), and prepared into an immutable release candidate (#529); neither partner's actual issue obligations have been observed and nothing authorizes a package yet (#555, #533).
+migration: the configured issue set is modelled and readable at a cutoff (#640), resolved into executable content (#641), prepared into an immutable release candidate (#529) and authorized into one package receipt that enumerates the configured set it sealed (#533); neither partner's actual issue obligations have been observed yet (#555).
 ---
 
 # The externally issued set is configured per project, and only the updated UCM is mandatory

@@ -23,7 +23,7 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.access import COORDINATION, enroll_member
+from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.analytics import AnalyticsBinding, EventFamily, capture_events
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -68,6 +68,7 @@ from corridor.models import (
 )
 from corridor.object_storage import LocalFilesystemStore
 from corridor.principals import HumanPrincipal
+from corridor.release_authorization import authorize_release_package
 from corridor.release_candidate import (
     ARTIFACT_INVOKERS,
     ARTIFACT_MISSING,
@@ -102,6 +103,7 @@ from packet_review_support import (
 
 COORDINATOR = HumanPrincipal("local:coordinator")
 OPERATOR = HumanPrincipal("local:operator")
+RELEASER = HumanPrincipal("local:releaser")
 
 JANUARY = datetime(2026, 1, 5, tzinfo=timezone.utc)
 CUTOFF = datetime(2026, 3, 2, 6, 0, tzinfo=timezone.utc)
@@ -1057,19 +1059,32 @@ def test_rendering_refuses_template_bytes_the_binding_never_saw(
 # --- the predecessor --------------------------------------------------------
 
 
-def _authorize_package(session, adopted, *, identity="issue-2026-02", at=AUTHORIZED_AT):
-    """One authorized package, written directly: #533 owns the real act."""
+def _authorize_package(session, adopted, candidate, store, *, at=AUTHORIZED_AT):
+    """One authorized package, through #533's real act.
 
-    package = ReleasePackage(
+    Written directly until #533 landed, which the receipt's columns no longer
+    permit: a package binds the candidate it sealed, and there is no such thing
+    as a receipt with a name and nothing behind it.
+    """
+
+    enroll_member(
+        session,
         project_id=adopted.project.id,
-        package_identity=identity,
-        accepted_revision_id=adopted.revision_id,
-        authorized_by_principal="local:releaser",
-        authorized_at=at,
+        email="releaser@example.test",
+        principal=RELEASER,
+        display_name="Releaser",
+        designations=[EXTERNAL_RELEASE],
+        operator=OPERATOR,
     )
-    session.add(package)
-    session.flush()
-    return package
+    return authorize_release_package(
+        session,
+        project_id=adopted.project.id,
+        candidate_id=candidate.id,
+        releaser=RELEASER,
+        authorized_at=at,
+        store=store,
+        binding=BINDING,
+    )
 
 
 def test_the_predecessor_is_explicitly_absent_before_the_first_package(
@@ -1104,7 +1119,7 @@ def test_the_predecessor_is_the_authorized_package_once_one_exists(
 ):
     _configure(session, adopted)
     _, _, first = _prepare(session, adopted, store)
-    package = _authorize_package(session, adopted)
+    package = _authorize_package(session, adopted, first, store)
 
     bound = _bind(
         session,
@@ -1112,9 +1127,9 @@ def test_the_predecessor_is_the_authorized_package_once_one_exists(
         coverage=CoverageDeclaration(identity="second-week", lines=COVERAGE.lines),
     )
 
-    assert bound.previous_package_id == package.id
+    assert bound.previous_package_id == package.package_id
     assert bound.reading.previous_issue is not None
-    assert bound.reading.previous_issue.issue_identity == "issue-2026-02"
+    assert bound.reading.previous_issue.issue_identity == package.package_identity
     # And the candidate prepared before it was authorized is now stale.
     assert any(
         "package was authorized" in reason
@@ -1305,6 +1320,9 @@ def test_every_release_relation_is_partitioned_by_project(session):
         "p_release_candidates_project_partition",
         "p_release_candidate_artifacts_project_partition",
         "p_release_preparation_refusals_project_partition",
+        # The authorized package's own enumeration, added with #533 and
+        # partitioned for the same reason as everything above it.
+        "p_release_package_artifacts_project_partition",
     }
 
 
