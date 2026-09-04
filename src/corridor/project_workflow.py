@@ -39,17 +39,25 @@ them in front of a coordinator as record-decision items would ask a person to
 "decide" an operations failure; ADR-0086 keeps them where they belong, as what
 blocks or qualifies the issue.
 
-**What is deliberately not derived here: ADR-0085's three visible consequence
-levels.** "Must handle before this issue", "Affects this issue", and "Can wait"
-are a projection of the internal bands onto the *next issue's declared content
-inventory* — which artifacts that project issues and what each must state.
-ADR-0091 amends ADR-0086 so that inventory is per-project configuration, and
-its own migration note records that the configured issue set "is not modelled".
-``review_packet_reading`` refused to guess the levels for the same reason and
-says so in its docstring. A level printed without the inventory would be a
-guess wearing a heading, and ADR-0010 forbids inventing a severity to stand in
-for one, so every internal Attention Reason stays exactly where #527 and #528
-already print it and no level is asserted anywhere.
+**ADR-0085's three visible consequence levels are derived, and derived once
+(#641).** "Must handle before this issue", "Affects this issue", and "Can wait"
+are a projection of a proposed difference onto the *next issue's declared
+content* — which artifacts that project issues, what each states, and which
+customer policy waits on a decision first. #640 modelled that configuration and
+``issue_content`` resolves it, so this section no longer refuses the projection:
+it reads the level ``packet_review`` already derived per item and prints it.
+Nothing here derives one, which is exactly why this page and the review screen
+cannot disagree about a packet. Every internal Attention Reason still appears
+beside it, unchanged: the level is the heading, never a replacement for the
+reasons (ADR-0085, ADR-0010).
+
+**A profile Corridor cannot execute is Issue readiness, not a Review child.** An
+unregistered renderer revision, a coverage evaluator this release does not run,
+and a ``required_decision`` that is prose rather than a typed selector are all
+facts about whether the customer's issue can be produced honestly. None of them
+is a difference between a source and the accepted record, so none reaches a
+record decision, and none of them turns into a blanket "Must handle before this
+issue" either — an unconfigured level is absent and explained, never guessed.
 
 Terminology: nothing here coins a customer word. Follow-up Plan, Proposed
 Delta, Project Record, Attention Reason, and Defer are the adopted glossary's,
@@ -67,6 +75,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.baseline_adoption import effective_baseline_formats_by_project
+from corridor.issue_content import effective_issue_contents
+from corridor.issue_profile import effective_issue_inventories
 from corridor.models import (
     BaselineSourceRow,
     DeltaFollowUpPlan,
@@ -226,7 +236,7 @@ def read_project_workflow(
         for item in review.items
         if any(child.delta_id not in planned for child in item.children)
     )
-    readiness = issue_readiness(session, project_id=project_id)
+    readiness = issue_readiness(session, project_id=project_id, as_of=as_of)
     sections = (
         _review_section(review, undecided, planned),
         _follow_up_section(follow_up, today=as_of.date()),
@@ -379,26 +389,32 @@ def _subject_names(
 
 
 def issue_readiness(
-    session: Session, *, project_id: int
+    session: Session, *, project_id: int, as_of: datetime
 ) -> tuple[ReadinessProblem, ...]:
     """What stands between this project and an honest issue, in a fixed order.
 
-    Both conditions are operations facts rather than record differences, which
-    is exactly why they belong here: ADR-0086 blocks a package on integrity and
-    coverage, and ADR-0091 makes the customer's own updated workbook the one
-    mandatory member of every package, so a project with no registered output
-    template cannot produce the artifact the issue is defined by.
+    Every condition here is an operations or configuration fact rather than a
+    record difference, which is exactly why they belong together: ADR-0086
+    blocks a package on integrity, coverage and explicit customer policy, and
+    ADR-0091 makes the customer's own updated workbook the one mandatory member
+    of every package, so a project with no registered output template cannot
+    produce the artifact the issue is defined by.
+
+    ``as_of`` is the same reporting cutoff the rest of the week is read at. The
+    issue profile is per-cutoff configuration (#640), so asking what a project
+    issues without saying when would answer for a version that may not have
+    been in force.
     """
 
-    return issue_readiness_by_project(session, project_ids=(project_id,)).get(
-        project_id, ()
-    )
+    return issue_readiness_by_project(
+        session, project_ids=(project_id,), as_of=as_of
+    ).get(project_id, ())
 
 
 def issue_readiness_by_project(
-    session: Session, *, project_ids: Sequence[int]
+    session: Session, *, project_ids: Sequence[int], as_of: datetime
 ) -> dict[int, tuple[ReadinessProblem, ...]]:
-    """``issue_readiness`` for several projects, in two statements."""
+    """``issue_readiness`` for several projects, in a fixed number of statements."""
 
     ids = tuple(dict.fromkeys(int(value) for value in project_ids))
     problems: dict[int, list[ReadinessProblem]] = {
@@ -415,6 +431,21 @@ def issue_readiness_by_project(
                     "No output template is registered, so the customer's own "
                     "workbook cannot be produced for this issue.",
                 )
+            )
+    # What the project is configured to issue at this cutoff, and whether this
+    # release can execute that configuration at all (#641). A problem here is
+    # never rendered as a proposed change: nobody can decide their way out of a
+    # renderer version Corridor does not know.
+    contents = effective_issue_contents(
+        session, effective_issue_inventories(session, ids, as_of)
+    )
+    for project_id in ids:
+        content = contents.get(project_id)
+        if content is None:
+            continue
+        for problem in content.problems:
+            problems[project_id].append(
+                ReadinessProblem(problem.code, problem.sentence)
             )
     unread = session.scalars(
         select(Document)

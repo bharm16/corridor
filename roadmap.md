@@ -135,8 +135,9 @@ authorization (settled, and #531 has now *implemented* the pilot half), #557
 model-provider processing posture (the approved posture is recorded), and
 #560 the release artifact contract (recorded as ADR-0091, and #640 models it).
 
-**The release chain, in order:** #640 issue profile → #641 consequence levels
-and #529 candidate → #533 authorization → #636 portfolio readiness → finish
+**The release chain, in order:** #640 issue profile → #641 the shared
+issue-content seam and ADR-0085's consequence levels (both landed; #529 consumes
+`effective_issue_content` unchanged) → #529 candidate → #533 authorization → #636 portfolio readiness → finish
 #536 → finish #537 → #532 measurement. That sequence completes the paid
 vertical slice; the one-unreleased-edge window means its migration-bearing
 steps run one at a time.

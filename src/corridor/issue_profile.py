@@ -63,7 +63,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
 import json
-from typing import Any, Mapping
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -201,8 +201,14 @@ class IssueInventory:
     This is the reading #529, #533, #536 and #537 share. It carries the profile
     row and version a candidate binds itself to, the digest that proves what
     that version declared, and every configured input a package needs.
+
+    ``project_id`` is on the reading because a consumer that resolves the
+    configuration further — ``issue_content`` reads the registered field
+    mapping the updated UCM's contract defers to — would otherwise have to be
+    handed the project separately and could be handed the wrong one (#641).
     """
 
+    project_id: int
     profile_id: int
     profile_identity: str
     profile_version: int
@@ -307,29 +313,68 @@ def effective_issue_inventory(
     because a version may only take effect strictly after its predecessor.
     """
 
+    return effective_issue_inventories(session, (project_id,), cutoff).get(project_id)
+
+
+def effective_issue_inventories(
+    session: Session, project_ids: Sequence[int], cutoff: datetime
+) -> dict[int, IssueInventory | None]:
+    """``effective_issue_inventory`` for several projects, in two statements.
+
+    A cross-project reading (#537) may not ask this once per project, and it
+    may not answer it by a second rule either, so the single-project reader
+    above is this function over one project. ``DISTINCT ON`` picks each
+    project's own newest version at or before the cutoff, which is the same
+    ordering the single-project form declared.
+    """
+
     if not isinstance(cutoff, datetime) or cutoff.tzinfo is None:
         raise IssueProfileRefused(
             "an effective inventory is read as at a declared, time-zone-aware "
             "cutoff; this reading never supplies one from a clock"
         )
-    profile = session.scalar(
+    ids = tuple(dict.fromkeys(int(value) for value in project_ids))
+    found: dict[int, IssueInventory | None] = {project_id: None for project_id in ids}
+    if not ids:
+        return found
+    profiles = session.scalars(
         select(IssueProfile)
+        .distinct(IssueProfile.project_id)
         .where(
-            IssueProfile.project_id == project_id,
+            IssueProfile.project_id.in_(ids),
             IssueProfile.effective_from <= cutoff,
         )
         .order_by(
-            IssueProfile.effective_from.desc(), IssueProfile.profile_version.desc()
+            IssueProfile.project_id,
+            IssueProfile.effective_from.desc(),
+            IssueProfile.profile_version.desc(),
         )
-        .limit(1)
-    )
-    if profile is None:
-        return None
-    configured = session.scalars(
-        select(IssueProfileArtifact)
-        .where(IssueProfileArtifact.profile_id == profile.id)
-        .order_by(IssueProfileArtifact.artifact_type)
     ).all()
+    if not profiles:
+        return found
+    configured_by_profile: dict[int, list[IssueProfileArtifact]] = {}
+    for row in session.scalars(
+        select(IssueProfileArtifact)
+        .where(
+            IssueProfileArtifact.profile_id.in_(
+                tuple(int(profile.id) for profile in profiles)
+            )
+        )
+        .order_by(IssueProfileArtifact.artifact_type)
+    ).all():
+        configured_by_profile.setdefault(int(row.profile_id), []).append(row)
+    for profile in profiles:
+        found[int(profile.project_id)] = _inventory(
+            profile, configured_by_profile.get(int(profile.id), [])
+        )
+    return found
+
+
+def _inventory(
+    profile: IssueProfile, configured: Sequence[IssueProfileArtifact]
+) -> IssueInventory:
+    """One stored profile version, read back as the inventory it declares."""
+
     declared = json.loads(profile.declaration)
     artifacts = (
         ArtifactEntry(
@@ -350,6 +395,7 @@ def effective_issue_inventory(
         ),
     )
     return IssueInventory(
+        project_id=int(profile.project_id),
         profile_id=int(profile.id),
         profile_identity=profile.profile_identity,
         profile_version=int(profile.profile_version),

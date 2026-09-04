@@ -55,8 +55,13 @@ is ADR-0035's own rule for an item with several reasons.  ADR-0035's second
 group — relocation work with no assigned person — is standing record state
 rather than a proposed difference, so no delta joins it; it is not silently
 folded into another band.  The three **visible** levels of ADR-0085 are
-deliberately not derived here: they need the next issue's declared content
-inventory (ADR-0086), and they are the heading a screen prints.
+still not derived here: they are a projection of a difference onto the next
+issue's declared content (ADR-0086, ADR-0091), which is per-project
+configuration this module has no business reading.  ``consequence_levels``
+performs that projection over ``issue_content``'s resolution of it, and
+``packet_review`` attaches the result to the child it belongs to (#641).  The
+bands below are unchanged by that: a level is the heading the reasons are
+grouped under, never a replacement for one.
 
 **What was tried before, and rejected.**  Keying every packet by source
 revision destroys the cross-source case, because the documents that disagree

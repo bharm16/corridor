@@ -97,13 +97,18 @@
 
     {%- if section.name == "review" %}
       {%- if workflow.undecided %}
+      {#- The consequence column reads `packet_review`'s own derivation, the
+          same object the review screen prints, so the two surfaces cannot
+          disagree about one packet (#641, ADR-0085). #}
       {% call ui.record_table(
            "Every question waiting, each offering its own proposed changes",
-           ["What is in question", "Proposed changes", "Why it needs attention"]) %}
+           ["What is in question", "Proposed changes", "Consequence for the next issue",
+            "Why it needs attention"]) %}
         {%- for item in workflow.undecided %}
         <tr>
           <th scope="row">{{ item.headline }}</th>
           <td>{{ item.child_count }}</td>
+          <td>{{ item.consequence_heading if item.consequence_heading else "not derived — see what must be put right first" }}</td>
           <td>{{ item.attention_sentences|join("; ") }}</td>
         </tr>
         {%- endfor %}

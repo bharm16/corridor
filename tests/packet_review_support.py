@@ -19,6 +19,12 @@ from uuid import uuid4
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
+from corridor.field_mapping_manifest import (
+    ONE_VALUE_PER_COLUMN,
+    FieldMappingManifest,
+    MaterialMapping,
+)
 from corridor.models import (
     ActiveExtractionRun,
     BaselineFormat,
@@ -32,6 +38,22 @@ from corridor.models import (
     Project,
     ProposedDelta,
     SourceSegment,
+)
+from corridor.issue_content import (
+    CHANGE_SUMMARY_IDENTITY,
+    CHANGE_SUMMARY_VERSION,
+    CHASE_LIST_IDENTITY,
+    CHASE_LIST_VERSION,
+    UCM_RENDERER_IDENTITY,
+    UCM_RENDERER_VERSION,
+    WEEKLY_REPORT_IDENTITY,
+    WEEKLY_REPORT_VERSION,
+)
+from corridor.issue_profile import (
+    ArtifactEntry,
+    IssueProfileDeclaration,
+    RendererRevision,
+    register_issue_profile,
 )
 from corridor.principals import HumanPrincipal
 from corridor.proposed_deltas import (
@@ -300,6 +322,154 @@ def register_output_template(
     )
     session.execute(text("reset role"))
     return session.get(BaselineFormat, int(format_id))
+
+
+def field_mapping(
+    *fields: str, identity: str = "district-ucm-mapping", version: str = "v3"
+) -> FieldMappingManifest:
+    """One mapping revision targeting exactly the canonical fields named.
+
+    The updated UCM's registered content contract is "the fields this mapping
+    targets" (#641), so a test that wants a change to reach the workbook — or
+    deliberately not to — says which fields the customer's form carries here.
+    """
+
+    return FieldMappingManifest(
+        identity=identity,
+        version=version,
+        mappings=tuple(
+            MaterialMapping(
+                source_columns=(field.replace("_", " ").title(),),
+                target_fields=(field,),
+                composition=ONE_VALUE_PER_COLUMN,
+            )
+            for field in fields
+        ),
+    )
+
+
+def register_field_mapping(
+    session: Session,
+    project: Project,
+    manifest: FieldMappingManifest,
+    *,
+    store_declaration: bool = True,
+) -> BaselineFormat:
+    """Register the approved field mapping revision, declaration and all (#610).
+
+    Adopt Baseline writes both rows in one act; this fixture writes the same
+    two, because the registration alone proves *which* revision was approved
+    and only the stored declaration says what that revision targets.
+    """
+
+    values = {
+        "project_id": project.id,
+        "format_kind": "field_mapping",
+        "format_identity": manifest.identity,
+        "format_version": manifest.version,
+        "content_sha256": manifest.content_sha256,
+        "registered_by_principal": ADOPTER.subject,
+        "idempotency_key": f"mapping:{uuid4().hex[:10]}",
+    }
+    session.flush()
+    session.execute(text("set local role corridor_fact_decision_writer"))
+    format_id = session.scalar(
+        text(
+            "insert into project_baseline_formats ("
+            "project_id, format_kind, format_identity, format_version,"
+            " content_sha256, registered_by_principal, idempotency_key"
+            ") values (:project_id, :format_kind, :format_identity,"
+            " :format_version, :content_sha256, :registered_by_principal,"
+            " :idempotency_key) returning id"
+        ),
+        values,
+    )
+    if not store_declaration:
+        # A registration written before #610 stored declarations: it proves
+        # which revision was approved and not what that revision declared.
+        session.execute(text("reset role"))
+        return session.get(BaselineFormat, int(format_id))
+    session.execute(
+        text(
+            "insert into project_baseline_format_manifests ("
+            "format_id, project_id, format_identity, format_version,"
+            " content_sha256, manifest_schema_version, declaration"
+            ") values (:format_id, :project_id, :format_identity,"
+            " :format_version, :content_sha256, :schema, :declaration)"
+        ),
+        {
+            "format_id": int(format_id),
+            "project_id": project.id,
+            "format_identity": manifest.identity,
+            "format_version": manifest.version,
+            "content_sha256": manifest.content_sha256,
+            "schema": manifest.schema_version,
+            "declaration": manifest.declaration_json,
+        },
+    )
+    session.execute(text("reset role"))
+    return session.get(BaselineFormat, int(format_id))
+
+
+# The registered renderer revisions a project may be configured with, under
+# the names ``issue_content`` registers them. A fixture that wants a supported
+# configuration names one of these; a fixture that wants an unsupported one
+# invents a version, which is exactly the case #641 must surface rather than
+# resolve.
+UCM_RENDERER = RendererRevision(UCM_RENDERER_IDENTITY, UCM_RENDERER_VERSION)
+SUMMARY_RENDERER = RendererRevision(CHANGE_SUMMARY_IDENTITY, CHANGE_SUMMARY_VERSION)
+REPORT_RENDERER = RendererRevision(WEEKLY_REPORT_IDENTITY, WEEKLY_REPORT_VERSION)
+CHASE_RENDERER = RendererRevision(CHASE_LIST_IDENTITY, CHASE_LIST_VERSION)
+
+
+def configure_issue(
+    session: Session,
+    project: Project,
+    *,
+    principal: HumanPrincipal,
+    effective_from: datetime,
+    ucm: RendererRevision = UCM_RENDERER,
+    artifacts: tuple[ArtifactEntry, ...] = (),
+    coverage: tuple = (),
+    policies: tuple = (),
+    mapping: FormatIdentity | None = None,
+    key: str | None = None,
+):
+    """Register what this project externally issues, from what it registered.
+
+    The declaration names the output template and field mapping revisions
+    actually in force for the project, because a profile naming a mapping the
+    project does not render through describes an issue nobody would receive.
+    """
+
+    registered = effective_baseline_formats(session, project.id)
+    return register_issue_profile(
+        session,
+        project_id=project.id,
+        profile_identity="customer-issue",
+        declaration=IssueProfileDeclaration(
+            updated_ucm=ucm,
+            output_template=FormatIdentity(
+                kind="output_template",
+                identity=registered["output_template"].format_identity,
+                version=registered["output_template"].format_version,
+                content_sha256=registered["output_template"].content_sha256,
+            ),
+            field_mapping=mapping
+            or FormatIdentity(
+                kind="field_mapping",
+                identity=registered["field_mapping"].format_identity,
+                version=registered["field_mapping"].format_version,
+                content_sha256=registered["field_mapping"].content_sha256,
+            ),
+            configured_artifacts=tuple(artifacts),
+            coverage_requirements=tuple(coverage),
+            decision_blocking_policies=tuple(policies),
+        ),
+        effective_from=effective_from,
+        principal=principal,
+        idempotency_key=key or f"profile:{uuid4().hex[:10]}",
+    )
 
 
 def support(
