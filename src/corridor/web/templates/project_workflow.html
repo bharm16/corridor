@@ -10,6 +10,14 @@
   Follow-up Plan is printed in the words it recorded, with no control, because
   nothing acts on a spine Follow-up Plan yet (#425).
 
+  The Follow-up section also renders #425's contact-ready follow-up bundles
+  (#658). It consumes `read_follow_up_bundles` and restates none of its rules:
+  which bundles exist, which band each is in, and the order they come in are
+  the reading's, and `corridor.web.follow_up_view` refuses to render any other
+  sequence. Nothing here sends, drafts, or tracks a message; the brief is text
+  to copy, and a "no response" state can come only from the reading's own
+  retained-request band, never from a bundle having merely been quiet.
+
   ADR-0085's three visible consequence levels are deliberately absent. They are
   a projection onto the next issue's declared content inventory, and ADR-0091
   records that the per-project configured issue set is not modelled, so a level
@@ -45,6 +53,12 @@
   .region dl.facts dt { color:var(--muted); }
   .region dl.facts dd { margin:0; font-variant-numeric:tabular-nums; }
   .quiet { color:var(--muted); font-size:.9rem; }
+  .bundle { border:1px solid var(--line); border-radius:6px;
+            padding:.7rem .9rem; margin:.9rem 0; }
+  .bundle > h4 { font-size:.98rem; margin:0 0 .35rem; }
+  textarea.brief { width:100%; font:13px/1.45 ui-monospace,monospace;
+                   border:1px solid var(--line); border-radius:5px;
+                   padding:.5rem; }
   ol.steps { list-style:none; margin:0 0 1rem; padding:0; }
   ol.steps li { display:inline; }
   ol.steps li + li::before { content:" \2192 "; color:var(--muted); }
@@ -129,6 +143,107 @@
         was answered Needs coordination. Contacting anyone from here is not
         built yet, so nothing on this page sends, closes, or reassigns one.
       </p>
+      {%- endif %}
+
+      {#
+        The chase list (#425, rendered by #658). Every bundle, band and order
+        here comes from `read_follow_up_bundles`; this section walks that
+        reading once and `corridor.web.follow_up_view` refuses to render
+        anything but its sequence, so the screen cannot disagree with it.
+
+        The brief is a read-only textarea rather than prose in a `<pre>`: it is
+        reachable with Tab, selected with the platform's select-all and copied
+        with the platform's copy, so a keyboard-only coordinator gets the same
+        affordance a mouse gives. It carries no `name`, sits inside no form,
+        and there is no send control anywhere — #425 puts generating an email,
+        sending, delivery tracking and escalation outside the pilot, and this
+        page still has no script.
+
+        `data-bundle-key` is the interaction's own identity from the reading.
+        It is rendered so the ordering promise is checkable on the HTML itself.
+      #}
+      {%- if chase.bundles %}
+      <h3>Contact-ready follow-up</h3>
+      <p>{{ chase.summary }}</p>
+      {%- for view in chase.bundles %}
+      <section class="bundle" id="{{ view.anchor }}" tabindex="-1"
+               aria-labelledby="{{ view.anchor }}-heading"
+               data-bundle-key="{{ view.bundle.bundle_key }}">
+        <h4 id="{{ view.anchor }}-heading">{{ view.bundle.ordinal }}. {{ view.bundle.ask_name }} &mdash; {{ view.bundle.recipient.organization }}</h4>
+        <p>
+          {{ ui.state(view.contact) }}
+          {%- if view.overdue %} {{ ui.state(view.overdue) }}{% endif %}
+          {%- if view.no_response %} {{ ui.state(view.no_response) }}{% endif %}
+        </p>
+        {{ ui.fact_list([
+             ("Who to ask", view.bundle.recipient.sentence()),
+             ("Responsible role", view.bundle.recipient.responsible_role),
+             ("Copy-ready subject", view.bundle.subject_line),
+             ("The exact ask", view.bundle.ask_sentence),
+             ("Utility Conflicts affected", view.bundle.affected_conflicts|join(", ")),
+             ("Due or return date", view.bundle.due_date),
+             ("Why it sits here", view.consequence_sentence),
+             ("The one quantity this band declares", view.quantity_sentence),
+           ]) }}
+
+        {%- if view.bundle.accepted_position %}
+        {% call ui.record_table(
+             "The current accepted position, as the record holds it",
+             ["What is in question", "Field", "Accepted value", "Accepted at revision"]) %}
+          {%- for line in view.bundle.accepted_position %}
+          <tr>
+            <th scope="row">{{ line.business_identity }}</th>
+            <td>{{ line.field_name }}</td>
+            <td>{{ line.accepted_text if line.accepted_text else not_recorded }}</td>
+            <td>{{ line.revision_id }}</td>
+          </tr>
+          {%- endfor %}
+        {% endcall %}
+        {%- endif %}
+
+        {%- if view.bundle.quoted_wording %}
+        {% call ui.record_table(
+             "Quoted from a source: what the source says, not what the record holds",
+             ["Quoted wording", "Who said it, and where"]) %}
+          {%- for quote in view.bundle.quoted_wording %}
+          <tr>
+            <th scope="row">{{ quote.text }}</th>
+            <td>{{ quote.attribution }} ({{ quote.reference.kind }} {{ quote.reference.identity }}, {{ quote.reference.detail }})</td>
+          </tr>
+          {%- endfor %}
+        {% endcall %}
+        {%- endif %}
+
+        {%- if view.bundle.open_questions %}
+        <p>The question this bundle carries:</p>
+        <ul>
+          {%- for question in view.bundle.open_questions %}
+          <li>{{ question }}</li>
+          {%- endfor %}
+        </ul>
+        {%- endif %}
+
+        {%- if view.bundle.references %}
+        <p>What this is based on:</p>
+        <ul>
+          {%- for reference in view.bundle.references %}
+          <li>{{ reference.kind }} {{ reference.identity }} &mdash; {{ reference.detail }}</li>
+          {%- endfor %}
+        </ul>
+        {%- endif %}
+
+        <div class="field">
+          <label for="{{ view.anchor }}-brief">Copy-ready brief</label>
+          <p class="field-hint" id="{{ view.anchor }}-brief-hint">
+            Read-only text. Select all and copy it into whatever you send from.
+            Corridor generates no email, sends nothing, and tracks no reply.
+          </p>
+          <textarea id="{{ view.anchor }}-brief" class="brief" rows="12" readonly
+                    aria-describedby="{{ view.anchor }}-brief-hint"
+                    aria-readonly="true" spellcheck="false">{{ view.brief }}</textarea>
+        </div>
+      </section>
+      {%- endfor %}
       {%- endif %}
 
     {%- else %}

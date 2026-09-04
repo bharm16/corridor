@@ -75,7 +75,11 @@ who knows the address is not helped by Corridor hiding the ask.
 **No clock.**  ``as_of`` is the cutoff the caller declares, exactly as every
 reading under it requires, so a screen and its test agree about what "overdue"
 means.  This module writes nothing, needs no table, and adds no fact type: every
-bundle is derived from records that already exist.
+bundle is derived from records that already exist.  ``emit_follow_up_reading``
+is the one thing that leaves it, and it leaves as a #558 measurement event
+rather than a row: being shown a chase list is not an act, so there is no
+receipt for having looked, and the event carries the reading's own digest so
+what a coordinator saw can be rebuilt from the records.
 
 Terminology: nothing here coins a customer word.  Promised For, Required By,
 Utility Conflict, Follow-up Plan, External Organization, Source Discrepancy and
@@ -95,6 +99,13 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.analytics import (
+    AnalyticsBinding,
+    AnalyticsEvent,
+    EventFamily,
+    default_binding,
+    emit_event,
+)
 from corridor.models import (
     BaselineSourceRow,
     DeltaFollowUpPlan,
@@ -1335,4 +1346,54 @@ def _with_identity(reading: FollowUpReading) -> FollowUpReading:
             if name != "reading_identity"
         },
         reading_identity=payload["content_sha256"],
+    )
+
+
+# --- the measurement event this reading owes the contract (#558) ------------
+#
+# One presentation event per reading, emitted where the portfolio's is (#537):
+# beside the reading it describes, so a second surface cannot invent a second
+# shape for the same fact. It carries the reading's own ``reading_identity``
+# digest, the cutoff it was bound to, and a count per band, which is enough to
+# rebuild exactly what a coordinator was shown from the records themselves.
+#
+# Two things are deliberately absent. There is no derivable database receipt,
+# because the chase list stores nothing and being shown it is not an act. And
+# the retained-outgoing-request count travels in the payload, so a reading that
+# claims a no-response band while retaining no request is visible in the
+# measurement record and not only in the screen's own guard.
+
+
+def emit_follow_up_reading(
+    reading: FollowUpReading,
+    *,
+    principal_subject: str,
+    surface: str,
+    binding: AnalyticsBinding | None = None,
+) -> None:
+    """Record that this chase list was presented, at its own declared cutoff."""
+
+    counted: dict[str, int] = {band.name: 0 for band in reading.bands}
+    for bundle in reading.bundles:
+        counted[bundle.band] += 1
+    emit_event(
+        AnalyticsEvent(
+            family=EventFamily.FOLLOW_UP_READING,
+            binding=binding or default_binding(),
+            occurred_at=reading.cutoff,
+            payload={
+                "principal_subject": principal_subject,
+                "project_id": reading.project_id,
+                "cutoff": reading.cutoff.isoformat(),
+                "rule_set": reading.rule_set,
+                "accepted_revision_id": reading.accepted_revision_id,
+                "reading_identity": reading.reading_identity,
+                "bundle_count": len(reading.bundles),
+                "retained_outgoing_requests": reading.retained_outgoing_requests,
+                "bundles_by_band": counted,
+            },
+            # Bounded shape only: the project and the person stay in the
+            # payload, never in an infrastructure label (#491, #522).
+            metric_labels={"surface": surface, "status": "presented"},
+        )
     )
