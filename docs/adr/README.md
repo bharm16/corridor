@@ -104,3 +104,5 @@ supersedes, and what remains unresolved. Name the superseded or amended ADRs
 prominently at the top of the body as well as in the frontmatter. Operational
 counters, thresholds, and runbooks go in `docs/operations/`, not here; a
 temporary validation gate goes in `docs/`, not here.
+
+<!-- release-gate proof (#697) -->
