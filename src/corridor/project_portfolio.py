@@ -46,21 +46,40 @@ declared content inventory, and ADR-0091's own migration note says that
 configured issue set is not modelled. A level printed beside a project would be
 a guess wearing a heading.
 
-**What is deliberately not finished here.** The ticket asks that a release
-authorization change the project row using the resulting release record. No
-completion action exists and none is possible — that half is met — but the row
-cannot yet *learn* that an issue went out, because preparing and authorizing a
-release candidate for an adopted project are #529 and #533 and are not built.
-The only release receipt in the repository, ``ExternalReportRelease``, belongs
-to the legacy External Report path and binds no accepted Project Record
-revision, so reading it here would be a guess about which issue it covered.
+**The row now reads what a project prepared, not what it happens to hold**
+(#636). #537 shipped with #529 and #533 unbuilt, so "the issue to approve for
+sharing" was approximated by "an accepted revision exists". Nearly every
+meaningful adopted project has an accepted revision, so that rung was
+permanently occupied and ``FOLLOW_UP_DUE`` — the rung below it — could not be
+reached from any database state at all. Both modules exist now, so
+``candidate_awaits_authorization`` asks the real question through their own
+readers: a current candidate that is not blocked, not stale, still rendered
+through the registered template and mapping, and describing an issue this
+project has not already sent. Nothing about the precedence changed; the
+predicate above accepted follow-up did.
+
+**A due follow-up and a waiting one are different states.** ``FOLLOW_UP_DUE``
+counts the plans #425's band rule would put in an actionable band, not every
+Follow-up Plan somebody is waiting on: a plan inside the return window it named
+is not late, and a coordinator told to chase it would be chasing a person who
+still has time. ``follow_up_waiting`` keeps counting all of them beside the
+row, because the count is what a coordinator reads and the state is what they
+act on.
+
+**What is deliberately not derived here.** The commitment and retained-request
+triggers of #425 — an accepted date that has passed, a retained outgoing
+request past its declared boundary — are not part of this row's follow-up
+count. Reaching them needs the whole accepted projection of every project
+shown, which no bounded cross-project read can afford, and approximating them
+would be exactly the second authority this module refuses to hold. A
+coordinator sees them on the project's own chase list.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Mapping, Sequence
+from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -73,13 +92,31 @@ from corridor.analytics import (
     default_binding,
     emit_event,
 )
-from corridor.models import BaselineAdoption, Project
+from corridor.baseline_adoption import effective_baseline_formats_by_project
+from corridor.follow_up_bundles import actionable_plan_count
+from corridor.issue_profile import IssueInventory, effective_issue_inventories
+from corridor.models import (
+    BLOCKED,
+    BaselineAdoption,
+    Project,
+    ReleaseCandidate,
+    ReleasePackage,
+)
 from corridor.project_workflow import (
     FOLLOW_UP,
     ISSUE,
     REVIEW,
     issue_readiness_by_project,
     outstanding_follow_up_by_project,
+)
+from corridor.release_authorization import (
+    candidate_format_differences,
+    issue_state_differences,
+)
+from corridor.release_candidate import (
+    candidate_staleness_reasons,
+    current_candidates_by_project,
+    latest_authorized_packages_by_project,
 )
 from corridor.review_packet_reading import (
     PARTITION_RULE_VERSION,
@@ -155,8 +192,10 @@ class ProjectStanding:
     changes_to_review: int
     follow_up_waiting: int
     follow_up_overdue: int
+    follow_up_due: int
     readiness_problems: int
     accepted_revision_id: int | None
+    candidate_ready: bool
 
     @property
     def sentence(self) -> str:
@@ -294,6 +333,13 @@ def derive_standings(
     readiness = issue_readiness_by_project(
         session, project_ids=project_ids, as_of=as_of
     )
+    # What a project has actually prepared, and what it has actually issued.
+    # Five more statements, none of them per project, and every one of them a
+    # batched sibling of the reader #529 or #533 already owns.
+    candidates = current_candidates_by_project(session, project_ids)
+    packages = latest_authorized_packages_by_project(session, project_ids)
+    inventories = effective_issue_inventories(session, project_ids, as_of)
+    formats = effective_baseline_formats_by_project(session, project_ids)
 
     today = as_of.date()
     return tuple(
@@ -303,29 +349,113 @@ def derive_standings(
             needs=follow_up.get(project.id, ()),
             problems=len(readiness.get(project.id, ())),
             accepted_revision_id=accepted.get(project.id),
+            candidate_ready=candidate_awaits_authorization(
+                candidates.get(project.id),
+                package=packages.get(project.id),
+                inventory=inventories.get(project.id),
+                newest_revision_id=accepted.get(project.id) or 0,
+                formats=formats.get(project.id, {}),
+            ),
             today=today,
         )
         for project in projects
     )
 
 
+def candidate_awaits_authorization(
+    candidate: ReleaseCandidate | None,
+    *,
+    package: ReleasePackage | None,
+    inventory: IssueInventory | None,
+    newest_revision_id: int,
+    formats: Mapping[str, Any],
+) -> bool:
+    """Whether this project is actually holding an issue somebody may authorize.
+
+    This is the predicate #537 did not have and guessed at. It read "an
+    accepted revision exists" and called that an issue ready to approve, and
+    since nearly every meaningful adopted project has an accepted revision, the
+    row above accepted follow-up was permanently occupied and ``FOLLOW_UP_DUE``
+    could not be reached from any database state at all. The precedence was
+    never wrong; this predicate was missing.
+
+    Four questions, each answered by the module that owns it and none of them
+    re-derived here:
+
+    * A candidate exists. Before #529 prepares one there is nothing to
+      authorize, however complete the record is.
+    * #529 would still stand behind it — ``candidate_staleness_reasons`` for
+      the profile, the accepted revision and the comparison baseline, plus the
+      candidate's own ``blocked`` readiness, which is the other half of
+      ``authorization_blockers``.
+    * #533 would still accept it — ``candidate_format_differences`` for the
+      output template and field mapping, which is the one thing revalidation
+      checks that staleness does not.
+    * The current issue state has not already been issued —
+      ``issue_state_differences`` (#533). A candidate can be perfectly fresh
+      and still describe an issue the customer already has, and offering that
+      as work to do would ask somebody to send the same package twice.
+
+    A row that says "ready to authorize" when #533 would refuse the
+    authorization is worse than no row, which is why every term here is the
+    authorizing module's own and not a portfolio opinion about it.
+    """
+
+    if candidate is None:
+        return False
+    if candidate.readiness == BLOCKED:
+        return False
+    if candidate_staleness_reasons(
+        candidate,
+        inventory=inventory,
+        newest_revision_id=newest_revision_id,
+        current_package_id=None if package is None else int(package.id),
+    ):
+        return False
+    if candidate_format_differences(candidate, formats):
+        return False
+    return bool(
+        issue_state_differences(
+            package,
+            newest_revision_id=newest_revision_id,
+            inventory=inventory,
+            formats=formats,
+        )
+    )
+
+
 def primary_state(
     *,
     changes_to_review: int,
-    follow_up_waiting: int,
+    follow_up_due: int,
     readiness_problems: int,
     accepted_revision_id: int | None,
+    candidate_ready: bool,
 ) -> str:
     """The one state a project row shows, in the declared precedence order.
 
     A coverage or technical problem blocks the current issue; a review affects
-    the current issue; the customer issue is ready for authorization; accepted
-    follow-up is due; otherwise no action is required. Exactly one of these is
-    shown, and the counts printed beside it never change which.
+    the current issue; a prepared candidate is ready for authorization;
+    accepted follow-up is due; otherwise no action is required. Exactly one of
+    these is shown, and the counts printed beside it never change which.
 
-    Both issue states require an accepted revision, because #536's own issue
-    section counts nothing for a project whose record holds nothing yet — there
-    is no issue for a coverage problem to block, and none to authorize.
+    **The order is the maintainer's and it is unchanged (#636).** A due
+    follow-up does not outrank a candidate waiting for authorization, and the
+    reason is not that follow-up matters less. Authorizing a prepared candidate
+    is a bounded act Corridor can record and *clear*; the pilot follow-up
+    bundle sends no email, records no delivery and establishes nothing about
+    whether the external interaction happened, so promoting it would leave a
+    project permanently headed by a condition Corridor has no way to clear. A
+    due follow-up stays a prominent count beside the ready issue instead.
+
+    ``ISSUE_BLOCKED`` still requires an accepted revision, because #536's own
+    issue section counts nothing for a project whose record holds nothing yet:
+    there is no issue for a coverage problem to block. ``ISSUE_READY`` needs no
+    such test — ``candidate_ready`` is false without a candidate, and a
+    candidate cannot exist without the accepted revision it is keyed to. Nor
+    does it need its own readiness guard: a project with a hard readiness
+    problem and an accepted revision is caught one rung above, and a candidate
+    implies that revision.
     """
 
     issue_exists = accepted_revision_id is not None
@@ -333,9 +463,9 @@ def primary_state(
         return ISSUE_BLOCKED
     if changes_to_review > 0:
         return REVIEW_WAITING
-    if issue_exists:
+    if candidate_ready:
         return ISSUE_READY
-    if follow_up_waiting > 0:
+    if follow_up_due > 0:
         return FOLLOW_UP_DUE
     return NO_ACTION
 
@@ -353,6 +483,14 @@ def landing_section(
     its own week start". ``ProjectWorkflow.landing`` is the first of the three
     ordered sections still holding work, so this is that rule applied to the
     same numbers rather than a second opinion about them.
+
+    It keeps the accepted-revision test that ``primary_state`` gave up (#636),
+    and that is not an oversight. ``ProjectWorkflow``'s own Issue section still
+    counts an accepted revision with no readiness problem as one outstanding
+    thing (``project_workflow._issue_section``), so a portfolio link that
+    landed anywhere else would drop the coordinator somewhere that project's
+    own week does not think it starts. When that section learns about prepared
+    candidates, this rule follows it — from there, not from here.
     """
 
     if changes_to_review > 0:
@@ -371,6 +509,7 @@ def _standing(
     needs: Sequence,
     problems: int,
     accepted_revision_id: int | None,
+    candidate_ready: bool,
     today,
 ) -> ProjectStanding:
     planned = {need.delta_id for need in needs}
@@ -379,12 +518,18 @@ def _standing(
     # on the coordinator's own judgement exactly when one of these is.
     to_review = sum(1 for delta_id in actionable if delta_id not in planned)
     overdue = sum(1 for need in needs if need.overdue(today=today))
+    # "Waiting on somebody" and "due for coordinator action" are different
+    # states and this row must not conflate them (#636). #425's own band rule
+    # decides which is which; a plan inside the return window it named is
+    # counted beside the row and never becomes the row.
+    due = actionable_plan_count(needs, today=today)
 
     state = primary_state(
         changes_to_review=to_review,
-        follow_up_waiting=len(needs),
+        follow_up_due=due,
         readiness_problems=problems,
         accepted_revision_id=accepted_revision_id,
+        candidate_ready=candidate_ready,
     )
     landing = landing_section(
         changes_to_review=to_review,
@@ -401,8 +546,10 @@ def _standing(
         changes_to_review=to_review,
         follow_up_waiting=len(needs),
         follow_up_overdue=overdue,
+        follow_up_due=due,
         readiness_problems=problems,
         accepted_revision_id=accepted_revision_id,
+        candidate_ready=candidate_ready,
     )
 
 
