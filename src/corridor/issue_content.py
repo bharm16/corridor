@@ -54,6 +54,24 @@ label a screen prints: ``promised_for`` is ``presentation.label``'s wording for
 ``field:committed_date`` is the executable form. Accepting the label as an alias
 would be prose parsing with a lookup table in front of it.
 
+**The label appears in the diagnostic and nowhere else (#670).** A coordinator
+who hand-authored ``field:promised_for`` is told which canonical field to
+configure and which label it is shown under, because "not a decision selector"
+alone leaves them guessing at a vocabulary they cannot see. That naming is
+*display text*. ``parse_selector`` never consults it, no alternate selector is
+written back into the declaration or its digest, nothing retries with the
+suggestion, and no callable here returns the canonical field a label names —
+``_selector_guidance`` returns a finished sentence, so the only thing that can
+escape this module is prose. An alias table that is merely one step further
+from the evaluator is still an alias table, and it would drift from field
+identity exactly as a direct alias would.
+
+Composing a selector is therefore the caller's one supported path:
+``decision_selector`` proves the parts against the same ``parse_selector`` the
+evaluator uses, so a configuration screen stores its ``token`` and displays
+``presentation.field_label`` beside it. The label is what a person reads; the
+token is what is stored, digested and matched, and the two never swap places.
+
 **No clock.** Everything here is derived from an ``IssueInventory`` the caller
 already read as at a declared cutoff (#640). This module never reads the wall
 clock and never opens a second reading of the profile.
@@ -76,6 +94,7 @@ from corridor.baseline_adoption import effective_baseline_formats_by_project
 from corridor.delta_generation import COMPARABLE_FACT_TYPES
 from corridor.field_mapping_manifest import manifest_from_declaration
 from corridor.models import BaselineFormatManifest
+from corridor.presentation import field_label
 from corridor.issue_profile import (
     IssueInventory,
     RendererRevision,
@@ -121,6 +140,13 @@ SELECTOR_KINDS = (
 CANONICAL_FIELDS = frozenset(COMPARABLE_FACT_TYPES)
 DIFFERENCE_KINDS = frozenset({"add", "modify", "apparent_removal"})
 ATTENTION_REASONS = frozenset(band.name for band in CONSEQUENCE_BANDS)
+
+# What a screen already prints for each canonical field, read back from the one
+# module that owns product wording rather than respelled here. It is consulted
+# only to write a diagnostic sentence (#670); the evaluator never sees it.
+_PRESENTATION_LABELS: Mapping[str, str] = {
+    field: field_label(field) for field in sorted(CANONICAL_FIELDS)
+}
 
 
 # --- what one renderer publishes -------------------------------------------
@@ -401,6 +427,102 @@ def parse_selector(required_decision: str) -> DecisionSelector | None:
     if permitted is None or value not in permitted:
         return None
     return DecisionSelector(kind, value)
+
+
+class UnsupportedSelector(ValueError):
+    """A caller composed a selector this release cannot execute."""
+
+
+def decision_selector(kind: str, value: str | None = None) -> DecisionSelector:
+    """The selector a configuration caller means, proved before it is stored.
+
+    A caller composing a ``DecisionBlockingPolicy`` writes
+    ``decision_selector(SELECT_FIELD, "committed_date").token`` into
+    ``required_decision`` rather than spelling the token by hand, so a profile
+    cannot be registered against a string that was never in the vocabulary and
+    then fail closed a week later at the moment it was supposed to block.
+
+    It is deliberately ``parse_selector`` run over the composed token rather
+    than a second vocabulary check. The helper and the evaluator therefore
+    cannot disagree about what is executable: anything this returns is
+    something ``parse_selector`` already accepts, and widening one would widen
+    both rather than leaving a token a configuration screen offers and the
+    evaluator refuses.
+    """
+
+    composed = kind if value is None else f"{kind}:{value}"
+    selector = parse_selector(composed)
+    if selector is None:
+        raise UnsupportedSelector(
+            f"{composed!r} is not a decision selector this release can match "
+            "against a proposed change. "
+            f"{_selector_guidance(composed)}"
+            "A selector is field:<canonical field>, difference:<kind>, "
+            "reason:<attention reason>, or all_issue_affecting."
+        )
+    return selector
+
+
+def _selector_guidance(required_decision: str) -> str:
+    """Display-only help for a ``field:`` selector naming no canonical field.
+
+    Returns a finished sentence, or ``""`` where there is nothing exact to say.
+    It returns *text*: never a selector, never a field, and nothing it produces
+    is parsed, stored or retried. That is the whole reason it is shaped this
+    way — a function handing a caller back the canonical field a label names
+    would be the alias table this module refuses, one step removed.
+
+    The match is exact equality on a normalized spelling of both sides, not a
+    resemblance. There is no edit distance, no prefix or substring test and no
+    token overlap, so a near miss such as ``field:promissed_for`` is told only
+    that it names no canonical field.
+    """
+
+    kind, separator, value = (required_decision or "").strip().partition(":")
+    if kind != SELECT_FIELD or not separator or not value:
+        return ""
+    candidates = _fields_shown_as(value, _PRESENTATION_LABELS)
+    if len(candidates) == 1:
+        field = candidates[0]
+        return (
+            f"There is no canonical field {value!r}; use "
+            f"{SELECT_FIELD}:{field}, shown as {_PRESENTATION_LABELS[field]}. "
+        )
+    if candidates:
+        listed = ", ".join(f"{SELECT_FIELD}:{field}" for field in candidates)
+        return (
+            f"There is no canonical field {value!r}, and more than one canonical "
+            f"field is shown by that name, so none is named here; the supported "
+            f"selectors are {listed}. "
+        )
+    return ""
+
+
+def _fields_shown_as(text: str, labels: Mapping[str, str]) -> tuple[str, ...]:
+    """Every canonical field in ``labels`` a coordinator would read as ``text``.
+
+    Sorted, and returned whole. An ambiguous label yields more than one member
+    and the caller must not pick between them: a diagnostic that guessed would
+    send a coordinator to configure a field they did not mean, which is worse
+    than the vocabulary list they already had.
+    """
+
+    wanted = _shown_key(text)
+    return tuple(
+        sorted(
+            field for field, shown in labels.items() if _shown_key(shown) == wanted
+        )
+    )
+
+
+def _shown_key(text: str) -> str:
+    """One spelling for comparing a written value against a printed label.
+
+    Case, underscores and runs of whitespace are the three ways the same label
+    is written down; nothing else is folded away.
+    """
+
+    return " ".join(text.replace("_", " ").split()).casefold()
 
 
 # --- what the reading returns ----------------------------------------------
@@ -695,6 +817,7 @@ def _resolve(
                     f"The policy {policy.policy!r} waits on "
                     f"{policy.required_decision!r}, which is not a decision "
                     "selector this release can match against a proposed change. "
+                    f"{_selector_guidance(policy.required_decision)}"
                     "A selector is field:<canonical field>, difference:<kind>, "
                     "reason:<attention reason>, or all_issue_affecting; a "
                     "sentence explains a policy to a person and is never "
