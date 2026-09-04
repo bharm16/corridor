@@ -218,6 +218,15 @@ def exception_name(rule: str) -> str:
 # docs/research/missing-evidence-alert-label-2026-09-03.md; it deliberately
 # avoids the Source Passage Check state labels (#600) so the two can never be
 # read as the same finding.
+#
+# The research found no industry counterpart to adopt, so terminology
+# procedure step 6 required the maintainer's own agreement.  They gave it on
+# 2026-09-03 (#613): the label "describes only the absence of effective
+# Supporting Documentation for the accepted value.  It does not imply that the
+# value, the underlying work, or the source itself failed, and it is distinct
+# from Source Passage Check outcomes."  The string below is that approved
+# wording, and the Project Record glossary entry for Supporting Documentation
+# in Use now carries it; changing it is a terminology decision, not an edit.
 _ACCEPTED_RECORD_LABELS = {
     "MISSING_EVIDENCE": "No supporting document in use for this value",
 }
