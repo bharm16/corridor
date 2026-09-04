@@ -20,11 +20,26 @@ current default (ADR-0044).
 
 Since #602 a run also names the accepted Project Record revision it was taken
 against, and that reference — not the snapshot — is what the run is bound to.
-The snapshot stays as a **rebuildable compatibility cache**: this module's diff
-still reads it, and it is retained until #603 proves that rebuilding a reading
-from its revision produces the same answer. Nothing here may treat the copy as
-authority; the two must never be allowed to disagree, and only the reference
-can settle which one is right.
+Since #603 the baseline this module diffs against is built from that reference:
+``report_diff_reference.baseline_for_run`` rebuilds the record fields the spine
+carries as of the run's revision, resolves each record's Ledger identity rather
+than reading the copied one, and reports any field where the retained copy and
+the revision disagree.
+
+The snapshot is **not** expired by that, and the reason is a property of what
+it holds rather than an unfinished step.  ``ready`` and ``exceptions`` are not
+record state at all but a reading of the record under one ruleset, one
+threshold configuration and one date, so no revision carries them.  The
+``committed_date`` stored here is the date projected from the external party's
+current statement, not the record's own ``committed_date`` Fact, so the
+same-named value on the spine is a different quantity and substituting it
+would change the diff because its inputs changed shape.  The retained copy
+stays the only witness of those three, and of which records were on the Ledger
+that week.  Where the copy and the
+reference disagree about a field both can answer, the copy stands and the
+disagreement is reported on the ``Diff`` — for a project in ``legacy``
+operating mode the legacy relations are still the accepted record, and two
+released legacy commands move an accepted value without writing any Fact.
 """
 
 from __future__ import annotations
@@ -46,6 +61,7 @@ from corridor.models import (
     ReportRun,
     is_critical,
 )
+from corridor.report_diff_reference import BaselineDrift, baseline_for_run
 
 
 @dataclass
@@ -74,6 +90,12 @@ class Diff:
     configuration_unknown: bool = False
     previous_thresholds: dict | None = None
     changes: list[Change] = field(default_factory=list)
+    # Where the compared baseline came from, and every field on which the
+    # revision reference and the retained copy disagreed (#603). A drift is
+    # reported rather than resolved: the reader has to be able to see that the
+    # copy and the record it names have parted company.
+    baseline_source: str = "no_baseline"
+    baseline_drift: tuple[BaselineDrift, ...] = ()
 
     @property
     def is_first_report(self) -> bool:
@@ -233,7 +255,8 @@ def diff_since_last(
         # looked before".
         return Diff(previous_run_id=None, previous_ts=None)
 
-    before = (previous.snapshot_json or {}).get("dependencies", {})
+    baseline = baseline_for_run(session, previous)
+    before = baseline.dependencies
     after = current["dependencies"]
     previous_ruleset = previous.ruleset_version
     # A snapshot written before thresholds were recorded has no such key. That
@@ -253,6 +276,8 @@ def diff_since_last(
             and previous_thresholds != current_thresholds
         ),
         previous_thresholds=previous_thresholds,
+        baseline_source=baseline.source,
+        baseline_drift=baseline.drift,
     )
 
     for ref, now in after.items():
