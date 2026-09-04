@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 import pytest
 from sqlalchemy import select, text
@@ -31,6 +31,11 @@ from corridor.models import (
     ReportRun,
 )
 from corridor.principals import HumanPrincipal
+from corridor.proposed_deltas import (
+    ExistingSubjectTarget,
+    ProposedDeltaValues,
+    create_proposed_delta_group,
+)
 
 
 TEST_PRINCIPAL = HumanPrincipal("local:changes-reviewer")
@@ -185,15 +190,21 @@ def _snapshot(session, project):
     )
 
 
-def _diff(session, project):
+def _diff(session, project, *, today=None):
+    """``today`` pins the evaluation's clock; without it the module default."""
     return diff_since_last(
-        session, project.id, evaluation=evaluate_project(session, project.id)
+        session,
+        project.id,
+        evaluation=evaluate_project(session, project.id, today=today),
     )
 
 
-def _record(session, project, **kwargs):
+def _record(session, project, *, today=None, **kwargs):
     return record_run(
-        session, project.id, evaluation=evaluate_project(session, project.id), **kwargs
+        session,
+        project.id,
+        evaluation=evaluate_project(session, project.id, today=today),
+        **kwargs,
     )
 
 
@@ -523,6 +534,56 @@ def test_the_diff_reads_the_most_recent_run(session, project, document):
     assert "2026-07-01" in change.detail
 
 
+def test_the_predecessor_is_the_id_watermark_not_the_wall_clock(
+    session, project, document
+):
+    """Two runs whose recorded times disagree with the order they were written.
+
+    A clock adjustment, a replayed or backfilled run, or two writers on
+    different hosts can leave the newer row carrying the older ``ts``. Ordering
+    by ``ts`` then diffs this week's reading against a run that is not the one
+    before it, and the result is a well-formed diff about the wrong pair, which
+    nothing downstream can detect. The id is append-only, so it is what names
+    the predecessor (#634).
+
+    Every timestamp here is set explicitly: a test about clock independence
+    that read the clock would prove nothing.
+    """
+
+    dep = make_dep(session, project, "DEP-1", committed_date=date(2026, 6, 3))
+    add_evidence(session, dep, document)
+    first = _record(session, project)
+    first.ts = datetime(2026, 7, 20, tzinfo=timezone.utc)
+
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 6, 15),
+        committed_date=date(2026, 7, 1),
+    )
+    second = _record(session, project)
+    second.ts = datetime(2026, 6, 10, tzinfo=timezone.utc)
+    session.flush()
+
+    # The second run is the later row and carries the earlier recorded time.
+    assert second.id > first.id
+    assert second.ts < first.ts
+
+    _record_exact_cited_statement(
+        session,
+        dep,
+        document,
+        event_date=date(2026, 7, 15),
+        committed_date=date(2026, 8, 1),
+    )
+
+    diff = _diff(session, project)
+    assert diff.previous_run_id == second.id
+    [change] = diff.of_kind("committed_date_change")
+    assert "2026-07-01" in change.detail and "2026-08-01" in change.detail
+
+
 # ------------------------------------------- the configuration guard (#339)
 
 
@@ -826,3 +887,183 @@ def test_a_recorded_binding_is_not_rewritten(session, project, document):
         )
 
     assert "is not rewritten" in str(refusal.value)
+
+
+# ------------------------------------------------- Required By changes (#637)
+
+# Every Required By under test is far from this date, so no DUE_SOON appears or
+# disappears between two readings and the exception comparison stays quiet. The
+# clock is pinned rather than read: this section is entirely about dates.
+REQUIRED_BY_TODAY = date(2026, 1, 5)
+
+
+@pytest.mark.parametrize(
+    ("accepted_before", "accepted_after", "detail"),
+    (
+        (
+            date(2026, 10, 1),
+            date(2026, 9, 15),
+            "Required By moved 2026-10-01 → 2026-09-15",
+        ),
+        (
+            date(2026, 9, 15),
+            date(2026, 10, 1),
+            "Required By moved 2026-09-15 → 2026-10-01",
+        ),
+        (None, date(2026, 9, 15), "Required By recorded: 2026-09-15"),
+        (date(2026, 9, 15), None, "Required By is no longer recorded"),
+    ),
+)
+def test_every_accepted_required_by_transition_is_reported_factually(
+    session, project, document, accepted_before, accepted_after, detail
+):
+    """All four transitions, in the words the reader gets.
+
+    Both directions are stated as the change they are. An earlier Required By
+    is not a "slip" and a later one is not an improvement — whether either is
+    good news depends on facts this module does not hold — so the wording is
+    the movement and nothing else.
+    """
+
+    dep = make_dep(session, project, "DEP-1", need_date=accepted_before)
+    add_evidence(session, dep, document)
+    _record(session, project, today=REQUIRED_BY_TODAY)
+
+    dep.need_date = accepted_after
+    session.flush()
+
+    diff = _diff(session, project, today=REQUIRED_BY_TODAY)
+    [change] = diff.of_kind("required_by_change")
+    assert change.detail == detail
+    assert change.dependency_id == dep.id
+
+
+def test_a_required_by_change_is_not_a_promised_for_change_or_an_escalation(
+    session, project, document
+):
+    """Required By and Promised For are different quantities, held by
+    different parties, and a reader who cannot tell the two apart cannot tell
+    a deadline moving from a promise moving. Nor is a deadline moving a
+    resolution strategy becoming critical.
+    """
+
+    dep = make_dep(
+        session,
+        project,
+        "DEP-1",
+        need_date=date(2026, 10, 1),
+        committed_date=date(2026, 6, 3),
+    )
+    add_evidence(session, dep, document)
+    _record(session, project, today=REQUIRED_BY_TODAY)
+
+    dep.need_date = date(2026, 9, 15)
+    session.flush()
+
+    diff = _diff(session, project, today=REQUIRED_BY_TODAY)
+    assert [c.kind for c in diff.changes] == ["required_by_change"]
+
+
+def test_an_unchanged_required_by_is_not_reported(session, project, document):
+    dep = make_dep(session, project, "DEP-1", need_date=date(2026, 10, 1))
+    add_evidence(session, dep, document)
+    _record(session, project, today=REQUIRED_BY_TODAY)
+
+    assert _diff(session, project, today=REQUIRED_BY_TODAY).of_kind(
+        "required_by_change"
+    ) == []
+
+
+def test_a_snapshot_that_never_recorded_a_required_by_does_not_report_one(
+    session, project, document
+):
+    """Absence of the key is not a record of "no Required By".
+
+    A snapshot written before the field was retained answers nothing about it.
+    Reading that silence as "none was recorded" would announce a schema change
+    as a change in the world, for every record in the project at once, on the
+    first report after the migration.
+    """
+
+    dep = make_dep(session, project, "DEP-1", need_date=date(2026, 10, 1))
+    add_evidence(session, dep, document)
+    run = _record(session, project, today=REQUIRED_BY_TODAY)
+
+    retained = dict(run.snapshot_json)
+    retained["dependencies"] = {
+        ref: {k: v for k, v in entry.items() if k != "need_date"}
+        for ref, entry in retained["dependencies"].items()
+    }
+    run.snapshot_json = retained
+    session.flush()
+
+    assert _diff(session, project, today=REQUIRED_BY_TODAY).of_kind(
+        "required_by_change"
+    ) == []
+
+
+def test_an_open_schedule_proposed_delta_is_not_an_accepted_required_by_change(
+    session, project, document
+):
+    """The accepted weekly change summary reports accepted changes only.
+
+    An unresolved schedule Proposed Delta is a source saying the Required By
+    should be a different date. Nobody has accepted it, so the accepted record
+    still carries the old one, and reporting the proposal here would tell an
+    external reader that the deadline had already moved. It stays in Review as
+    open work until a human resolves it.
+    """
+
+    dep = make_dep(session, project, "DEP-1", need_date=date(2026, 10, 1))
+    add_evidence(session, dep, document)
+    _record(session, project, today=REQUIRED_BY_TODAY)
+
+    create_proposed_delta_group(
+        session,
+        project_id=project.id,
+        source_family="ucm-workbook",
+        source_revision="rev-2",
+        deltas=[
+            ProposedDeltaValues(
+                change_type="modify",
+                target=ExistingSubjectTarget(
+                    subject_identity=dep.ref_code, field="need_date"
+                ),
+                accepted_value="2026-10-01",
+                proposed_value="2026-09-15",
+            )
+        ],
+    )
+
+    assert _diff(session, project, today=REQUIRED_BY_TODAY).of_kind(
+        "required_by_change"
+    ) == []
+
+    # And the same movement, once accepted into the record, is reported — so
+    # the silence above is the boundary and not a dead assertion.
+    dep.need_date = date(2026, 9, 15)
+    session.flush()
+
+    [change] = _diff(session, project, today=REQUIRED_BY_TODAY).of_kind(
+        "required_by_change"
+    )
+    assert change.detail == "Required By moved 2026-10-01 → 2026-09-15"
+
+
+def test_a_required_by_change_reaches_the_customer_under_its_glossary_term():
+    """The Change column never shows a reader the internal kind (#637).
+
+    `_customer_change_name` falls through to the retained event identity for a
+    kind it does not know, which is right for a historical kind and wrong for a
+    new one: without an entry a customer's report prints the literal
+    `required_by_change`.  The name composes the glossary's own term with a
+    plain verb, and stays distinct from the Promised For wording.
+    """
+
+    from corridor.report import _customer_change_name
+
+    assert _customer_change_name("required_by_change") == "Change to Required By"
+    assert _customer_change_name("required_by_change") != _customer_change_name(
+        "committed_date_change"
+    )
+    assert "required_by_change" not in _customer_change_name("required_by_change")

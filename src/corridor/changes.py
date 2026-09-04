@@ -69,7 +69,16 @@ from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal
 @dataclass
 class Change:
     ref_code: str
-    kind: str  # new | closed | dismissed | committed_date_change | escalated | became_ready
+    # new | closed | dismissed | committed_date_change | required_by_change
+    # | escalated | became_ready
+    #
+    # `committed_date_change` and `required_by_change` are deliberately two
+    # kinds. Promised For is when the external party says it will act;
+    # Required By is when the specified construction condition must be met.
+    # They are different quantities, held by different parties, and a reader
+    # who cannot tell them apart cannot tell a promise moving from a deadline
+    # moving (#637).
+    kind: str
     detail: str
     # The Dependency this change is about, so a report cell describing it
     # drills through to the record rather than citing nothing (ADR-0003).
@@ -278,9 +287,21 @@ def diff_since_last(
         ReportRun.document_only.is_(document_only),
     )
     if retirement_boundary is not None:
+        # An eligibility filter, not the ordering: the archive receipt records
+        # only a time, so which runs survive the retirement is still asked of
+        # the clock. Which of the survivors is the predecessor is not.
         previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
+    # The predecessor is the previous *row*, not the newest wall-clock reading.
+    # `ts` stays — it is the reading's own recorded time — but it was never a
+    # safe ordering: two runs written out of clock order, from a clock
+    # adjustment, a replayed or backfilled run, or two writers on different
+    # hosts, made the newest `ts` name a run that is not the one before this,
+    # and the resulting diff is well-formed against the wrong pair, so nothing
+    # downstream can detect it. `report_runs.id` is append-only and is the same
+    # watermark `report_preparation` and `issue_rendering` already select on
+    # (#488, #634).
     previous = session.scalars(
-        previous_query.order_by(ReportRun.ts.desc(), ReportRun.id.desc()).limit(1)
+        previous_query.order_by(ReportRun.id.desc()).limit(1)
     ).first()
 
     current = snapshot(
@@ -369,6 +390,42 @@ def diff_since_last(
                     f"first committed date: {now['published_promised_for']}",
                     now.get("id"),
                 )
+            )
+
+        # Required By — the date by which the specified construction condition
+        # must be met — is not the Promised For date above and is not an
+        # escalation. It is its own quantity and gets its own kind, so a
+        # reader can see a deadline move without it being mixed into a
+        # promise moving or into a strategy becoming critical (#637).
+        #
+        # Both directions are stated as the change they are. An earlier
+        # Required By is not a "slip" and a later one is not an improvement:
+        # whether either is good news depends on facts this module does not
+        # hold, so it says what moved and stops.
+        #
+        # Only the accepted record reaches here. `now` is this reading's
+        # snapshot of the accepted value and `was` is the previous run's,
+        # cross-checked against the accepted revision that run names. An
+        # unresolved schedule Proposed Delta is neither: it stays in Review as
+        # open work, and reporting it here would tell an external reader the
+        # accepted deadline had already moved when no one has accepted it.
+        #
+        # A snapshot written before this field was retained has no `need_date`
+        # key at all, and that is not the same as one recording no Required By
+        # — the same distinction `resolution_strategy` draws below. Reading
+        # absence as "none was recorded" would announce a schema change as a
+        # change in the world, for every record at once.
+        if "need_date" in was and was["need_date"] != now["need_date"]:
+            if was["need_date"] and now["need_date"]:
+                detail = (
+                    f"Required By moved {was['need_date']} → {now['need_date']}"
+                )
+            elif now["need_date"]:
+                detail = f"Required By recorded: {now['need_date']}"
+            else:
+                detail = "Required By is no longer recorded"
+            diff.changes.append(
+                Change(ref, "required_by_change", detail, now.get("id"))
             )
 
         # A snapshot written before #96 has no `resolution_strategy` key at
