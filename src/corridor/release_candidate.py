@@ -609,9 +609,9 @@ def current_candidates_by_project(
     superseded one. An older candidate is not deleted and stays authorizable by
     identifier; it is simply not the one a portfolio row is about.
 
-    There is no single-project sibling because no caller wants one: #533 is
-    given the candidate identifier it is authorizing, and #529 prepares rather
-    than looks one up.
+    ``current_release_candidate`` is the single-project sibling and delegates
+    here, so the Issue section (#536) and the portfolio row (#636) cannot name
+    different candidates for one project.
     """
 
     ids = tuple(dict.fromkeys(int(value) for value in project_ids))
@@ -1484,10 +1484,13 @@ def current_release_candidate(
 ) -> ReleaseCandidate | None:
     """The candidate this project's coordinator is being asked about, or none.
 
-    The most recently *prepared* candidate, ordered by the declared preparation
-    instant the row carries and by its own id where two share one. Nothing here
-    reads a clock: ``prepared_at`` is the instant the preparation's caller
-    declared, so the current candidate is the same candidate tomorrow.
+    The single-project sibling of ``current_candidates_by_project``, which it
+    delegates to so the Issue section and the portfolio row cannot name
+    different candidates for one project. That is not a stylistic preference:
+    the two were written in parallel and ordered differently — this one by the
+    declared ``prepared_at``, that one by the append-only identifier — and a
+    caller-declared instant can attach a superseded candidate last (#634).
+    The append-only order is the one that survives that, so it is the only one.
 
     It is deliberately not "the newest candidate that could be authorized".
     Skipping a blocked or stale candidate to reach an older authorizable one
@@ -1496,12 +1499,7 @@ def current_release_candidate(
     newly prepared candidate rather than an older one quietly standing in.
     """
 
-    return session.scalars(
-        select(ReleaseCandidate)
-        .where(ReleaseCandidate.project_id == project_id)
-        .order_by(ReleaseCandidate.prepared_at.desc(), ReleaseCandidate.id.desc())
-        .limit(1)
-    ).first()
+    return current_candidates_by_project(session, (project_id,))[project_id]
 
 
 def candidate_artifacts(
