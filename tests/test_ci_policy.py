@@ -549,3 +549,7 @@ def test_the_summary_fails_closed(reason, results, expected_error):
         f"{reason}: {completed.stdout}{completed.stderr}"
     )
     assert "release gate failed closed" in completed.stdout
+
+
+def test_release_gate_proof_deliberate_failure():
+    assert False, "deliberate release-gate proof failure (#697)"
