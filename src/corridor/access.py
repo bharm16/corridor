@@ -758,11 +758,29 @@ def open_project_partition(
     produce a scope that verifies as empty.  Under row-level security a reader
     that forgets ``project_id ==`` then reads nothing instead of another
     project's rows (#531, ADR-0083).
+
+    A refusal is *recoverable* (#654).  The database proves membership by
+    raising, which aborts the transaction the caller is in, so the command runs
+    inside a savepoint and only that savepoint is given up before
+    ``PartitionRefused`` leaves here.  Catching it therefore returns control
+    with the surrounding session still usable — a caller that means to offer a
+    narrower reading, fall back to a project list, or render a partial page can
+    do so on the same transaction instead of meeting
+    ``InFailedSqlTransaction`` on its next statement.  A full
+    ``session.rollback()`` would buy the same recovery by discarding whatever
+    legitimate work the caller had already done, which is why it is not used.
+
+    Because the declaration is transaction-local (``set_config(..., true)``),
+    rolling the savepoint back also takes back any scope the attempt had
+    installed and restores whatever scope was declared before it.  So a failed
+    attempt installs no unauthorized partition and does not cost the caller a
+    valid one it already held.
     """
     try:
-        scoped = session.scalar(
-            select(func.open_project_partition(principal_subject, project_id))
-        )
+        with session.begin_nested():
+            scoped = session.scalar(
+                select(func.open_project_partition(principal_subject, project_id))
+            )
     except DBAPIError as error:
         raise PartitionRefused(
             f"no active membership of project {project_id}"
