@@ -1249,3 +1249,105 @@ def test_every_recorded_reason_says_something_specific():
     )
 
     assert vague == []
+
+
+# The live-pilot web capability boundary (#680)
+#
+# #657 left the classification an inventory: 130 relations were recorded as
+# unpartitioned and stayed directly selectable by `corridor_web`. #680 turned
+# that record into a deployment boundary — the migration revokes every one of
+# them from the human web role — and a boundary with two halves can drift. The
+# tests below are the seam that stops it: the application may enable a route
+# only if every relation that route reaches survives the revoke, and the set
+# the migration takes away is derived from the classification rather than
+# listed a second time.
+
+
+def test_every_enabled_pilot_route_is_a_route_the_application_serves():
+    """A boundary that names a route the router does not have protects nothing.
+
+    A renamed or removed route would otherwise leave a permanently-allowed
+    entry behind, and the next route to take that path would inherit it.
+    """
+
+    from starlette.routing import Route
+
+    from corridor import web_boundary
+    from corridor.web.app import app
+
+    served = {
+        (method, route.path)
+        for route in app.routes
+        if isinstance(route, Route)
+        for method in (route.methods or ())
+    }
+    missing = sorted(key for key in web_boundary.PILOT_ROUTES if key not in served)
+
+    assert missing == [], (
+        "these routes are enabled for the live pilot and the application does "
+        "not serve them; remove them from corridor.web_boundary or restore "
+        "the route"
+    )
+
+
+def test_no_enabled_pilot_route_reads_a_relation_the_boundary_revokes():
+    """The two halves of the boundary, compared to each other.
+
+    This is the drift guard. The migration revokes every relation the
+    classification still calls unpartitioned; if an enabled route is recorded
+    as reading one of them, the deployment would serve a page whose data
+    PostgreSQL refuses to hand it. Either partition the relation and record it,
+    or take the route out of the pilot — those are the two answers, and
+    "leave it readable" is not one of them.
+    """
+
+    from corridor import web_boundary
+
+    assert web_boundary.unprotected_route_relations() == ()
+
+
+def test_the_denied_set_is_exactly_the_unpartitioned_classification():
+    """One list of holes, not two that can disagree.
+
+    The boundary is "the web capability holds nothing the classification calls
+    unpartitioned". Deriving the denied set rather than repeating it means a
+    relation that gains a policy leaves the denied set in the same edit that
+    lowers the ceiling.
+    """
+
+    from corridor import access, web_boundary
+
+    assert web_boundary.DENIED_RELATIONS == frozenset(
+        access.NOT_YET_PARTITIONED_RELATIONS
+    )
+    assert web_boundary.DENIED_RELATIONS & web_boundary.PROTECTED_RELATIONS == frozenset()
+
+
+def test_the_migration_revokes_exactly_the_relations_the_boundary_denies():
+    """The block that ships is the block the boundary describes.
+
+    `corridor.web_boundary` is what the application and the architecture tests
+    read; the migration carries its own frozen copy, because a revision may not
+    change meaning when a module above it is edited. That is the right shape
+    and it is also how the two fall out of step, so they are compared here.
+    """
+
+    import importlib.util
+
+    from corridor import web_boundary
+
+    path = (
+        Path(__file__).resolve().parents[1]
+        / "src/corridor/migrations/baseline_versions"
+        / "b2d5f8a1c4e7_source_append_commands.py"
+    )
+    spec = importlib.util.spec_from_file_location("_b2d5f8a1c4e7_680", path)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+
+    assert frozenset(module.WEB_DENIED_RELATIONS) == web_boundary.DENIED_RELATIONS
+    assert len(module.WEB_DENIED_RELATIONS) == len(set(module.WEB_DENIED_RELATIONS))
+    assert set(module.WEB_PARTITIONED_TABLES) <= set(
+        web_boundary.PROTECTED_RELATIONS
+    )

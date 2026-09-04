@@ -32,7 +32,7 @@ append-only watermark, and every moment a test needs is passed in.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 import os
 from urllib.parse import parse_qs, urlsplit
@@ -45,7 +45,7 @@ from sqlalchemy.exc import DBAPIError, ProgrammingError
 from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool, QueuePool
 
-from corridor import access, audit, identity_audit
+from corridor import access, audit, identity_audit, web_boundary
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.models import (
@@ -1545,6 +1545,291 @@ def test_the_relations_named_as_uncovered_really_are_uncovered(runtime_database)
     )
 
 
+# --- The live-pilot web capability boundary (#680) -------------------------
+#
+# #657 proved the partition on 51 relations and recorded 130 more as
+# unpartitioned and still directly selectable. #680 revoked every one of those
+# from `corridor_web` and partitioned the four an enabled pilot route actually
+# reads. Both halves are proved here the way the rest of this file proves
+# things: as the deployed login, against committed rows, with the query a
+# careless reader would write.
+
+
+PILOT_PARTITIONED_RELATIONS = (
+    "documents",
+    "external_report_artifacts",
+    "external_report_releases",
+    "source_deliveries",
+)
+
+# Every table privilege PostgreSQL can grant. A capability denied SELECT and
+# left holding INSERT is not denied the relation, which is why the assertion
+# below is about all of them rather than about reading.
+_TABLE_PRIVILEGES = (
+    "SELECT",
+    "INSERT",
+    "UPDATE",
+    "DELETE",
+    "TRUNCATE",
+    "REFERENCES",
+    "TRIGGER",
+)
+
+_MOMENT = datetime(2026, 6, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _seed_pilot_partitioned_rows(owner, project_id: int, slug: str) -> dict[str, int]:
+    """One committed row per newly partitioned relation, named after its project."""
+
+    ids: dict[str, int] = {}
+    # `delivery_identity` and `idempotency_key` are derived, and a trigger
+    # refuses a delivery that supplies anything else, so the insert derives
+    # them the same way rather than restating two digests by hand.
+    ids["source_deliveries"] = owner.execute(
+        text(
+            "with bound as ("
+            "  select encode(sha256(convert_to(concat_ws(':', "
+            "    cast(:slug as text), p.slug, 'mailbox', cast(:slug as text), "
+            "    '1'), 'UTF8')), 'hex') as identity"
+            "    from projects p where p.id = :project_id"
+            ") "
+            "insert into source_deliveries ("
+            "customer, project_id, channel, external_identity, external_version, "
+            "content_sha256, bytes_reference, delivery_identity, idempotency_key, "
+            "received_at, transport, configuration_identity, service_identity, "
+            "run_identity, disposition"
+            ") select cast(:slug as text), :project_id, 'mailbox', "
+            "cast(:slug as text), '1', cast(:digest as varchar(64)), "
+            "cast(:slug as text), bound.identity, "
+            "encode(sha256(convert_to(concat_ws(':', bound.identity, "
+            "cast(:digest as text)), 'UTF8')), 'hex'), "
+            ":moment, 'pull', cast(:slug as text), cast(:slug as text), "
+            "cast(:slug as text), 'stored' from bound returning id"
+        ),
+        {
+            "slug": slug,
+            "project_id": project_id,
+            "digest": sha256(slug.encode("utf-8")).hexdigest(),
+            "moment": _MOMENT,
+        },
+    ).scalar_one()
+    ids["external_report_artifacts"] = owner.execute(
+        text(
+            "insert into external_report_artifacts ("
+            "project_id, artifact_name, format, pdf_bytes, pdf_sha256, "
+            "evaluated_on, ruleset_version, evaluation_context_json, "
+            "provenance_mode, record_context_json, rendered_at"
+            ") values ("
+            ":project_id, :slug, 'pdf', :body, :digest, :evaluated_on, 'v1', "
+            "'{}'::jsonb, 'document-only', '{}'::jsonb, :moment"
+            ") returning id"
+        ),
+        {
+            "project_id": project_id,
+            "slug": slug,
+            "body": f"%PDF-1.7 {slug}".encode("utf-8"),
+            "digest": sha256(slug.encode("utf-8")).hexdigest(),
+            "evaluated_on": date(2026, 6, 1),
+            "moment": _MOMENT,
+        },
+    ).scalar_one()
+    ids["external_report_releases"] = owner.execute(
+        text(
+            "insert into external_report_releases ("
+            "project_id, artifact_id, artifact_name, format, pdf_sha256, "
+            "evaluated_on, ruleset_version, provenance_mode, released_by, "
+            "released_by_display, released_at, content_storage"
+            ") values ("
+            ":project_id, :artifact_id, :slug, 'pdf', :digest, :evaluated_on, "
+            "'v1', 'document-only', 'local:operations', 'Operations', "
+            ":moment, 'artifact'"
+            ") returning id"
+        ),
+        {
+            "project_id": project_id,
+            "artifact_id": ids["external_report_artifacts"],
+            "slug": slug,
+            "digest": sha256(slug.encode("utf-8")).hexdigest(),
+            "evaluated_on": date(2026, 6, 1),
+            "moment": _MOMENT,
+        },
+    ).scalar_one()
+    ids["documents"] = owner.execute(
+        text("select id from documents where project_id = :project_id"),
+        {"project_id": project_id},
+    ).scalar_one()
+    return ids
+
+
+@pytest.fixture
+def their_pilot_rows(runtime_database, two_projects):
+    """A committed row of the other project in each newly partitioned relation."""
+
+    ours, theirs = two_projects
+    with runtime_database.session_factory.begin() as owner:
+        _seed_pilot_partitioned_rows(owner, ours, "ours")
+        return _seed_pilot_partitioned_rows(owner, theirs, "theirs")
+
+
+def test_the_live_pilot_login_holds_no_privilege_on_a_denied_relation(
+    runtime_database,
+):
+    """Not "cannot read": holds nothing at all.
+
+    A revoke aimed only at SELECT would leave the web capability able to
+    insert into, update and delete from relations it may not look at, which is
+    a worse boundary than none because it reads as closed.
+    """
+
+    with runtime_database.session_factory() as owner:
+        held = owner.execute(
+            text(
+                "select c.relname, p from pg_class c "
+                "join pg_namespace n on n.oid = c.relnamespace, "
+                "unnest(cast(:privileges as text[])) p "
+                "where n.nspname = 'public' and c.relkind = 'r' "
+                "and c.relname = any(cast(:denied as text[])) "
+                "and has_table_privilege('corridor_web', c.oid, p) "
+                "order by c.relname, p"
+            ),
+            {
+                "privileges": list(_TABLE_PRIVILEGES),
+                "denied": sorted(web_boundary.DENIED_RELATIONS),
+            },
+        ).all()
+
+    assert held == [], (
+        "the live-pilot web capability still holds privileges on relations the "
+        "boundary denies it; #680 revokes them in the migration"
+    )
+
+
+def test_a_naked_select_on_every_denied_relation_is_refused(
+    two_projects, web_connection
+):
+    """The catalog claim, made the way this file makes claims: by asking.
+
+    `has_table_privilege` returning false and `select * from work_decisions`
+    raising are two different statements, and only the second is what a reader
+    meets. A grant to PUBLIC is exactly the case where the two come apart —
+    `subject_resolution_decisions` carried one, so the first draft of the
+    revoke left it readable while every list said otherwise.
+    """
+
+    served: list[str] = []
+    for relation in sorted(web_boundary.DENIED_RELATIONS):
+        savepoint = web_connection.begin_nested()
+        try:
+            web_connection.execute(text(f"select * from {relation} limit 1"))
+        except ProgrammingError:
+            savepoint.rollback()
+        else:
+            savepoint.rollback()
+            served.append(relation)
+
+    assert served == [], (
+        "the live-pilot web capability can still select from these relations"
+    )
+
+
+def test_a_naked_select_on_the_newly_partitioned_relations_reads_one_project(
+    their_pilot_rows, two_projects, web_connection
+):
+    """The four relations an enabled pilot route reads, with no predicate at all."""
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        seen = {
+            relation: web.execute(
+                text(f"select project_id from {relation}")
+            ).scalars().all()
+            for relation in PILOT_PARTITIONED_RELATIONS
+        }
+
+    assert seen == {relation: [ours] for relation in PILOT_PARTITIONED_RELATIONS}
+
+
+def test_a_direct_id_lookup_on_the_newly_partitioned_relations_is_empty(
+    their_pilot_rows, two_projects, web_connection
+):
+    """A direct id is how a partition gets bypassed when only lists were tried.
+
+    The ids here are the *other* project's committed rows, so a partition that
+    only filters list queries answers every one of them.
+    """
+
+    ours, _theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+        reached = {
+            relation: web.execute(
+                text(f"select id from {relation} where id = :id"),
+                {"id": their_pilot_rows[relation]},
+            ).scalars().all()
+            for relation in PILOT_PARTITIONED_RELATIONS
+        }
+
+    assert reached == {relation: [] for relation in PILOT_PARTITIONED_RELATIONS}
+
+
+def test_the_newly_partitioned_relations_read_nothing_without_a_partition(
+    their_pilot_rows, web_connection
+):
+    """Fail closed, exactly as the spine relations do."""
+
+    with OrmSession(bind=web_connection) as web:
+        assert access.current_project_partition(web) is None
+        for relation in PILOT_PARTITIONED_RELATIONS:
+            assert web.execute(text(f"select id from {relation}")).scalars().all() == []
+
+
+def test_the_boundary_leaves_the_machine_capability_whole(runtime_database):
+    """The worker is the capability machine work runs on, and it lost nothing.
+
+    Denying the human web role is only safe because the transport-authenticated
+    ingress moved onto this one. If the revoke had reached it too, the pilot
+    would have a partition and no way to receive a source.
+    """
+
+    with runtime_database.session_factory() as owner:
+        unreadable = owner.execute(
+            text(
+                "select c.relname from pg_class c "
+                "join pg_namespace n on n.oid = c.relnamespace "
+                "where n.nspname = 'public' and c.relkind = 'r' "
+                "and c.relname = any(cast(:denied as text[])) "
+                "and not has_table_privilege('corridor_worker', c.oid, 'SELECT') "
+                "order by c.relname"
+            ),
+            {"denied": sorted(web_boundary.DENIED_RELATIONS)},
+        ).scalars().all()
+
+    assert unreadable == []
+
+
+def test_the_classification_and_the_grants_agree_about_every_relation(
+    runtime_database,
+):
+    """The boundary restated as one sentence PostgreSQL can answer.
+
+    Everything `corridor_web` can read is a relation the classification
+    answers with something other than "not yet partitioned", and everything it
+    answers that way is a relation `corridor_web` cannot read. Either
+    direction failing is drift.
+    """
+
+    with runtime_database.session_factory() as owner:
+        readable = set(_web_readable_relations(owner.connection()))
+
+    assert sorted(readable & web_boundary.DENIED_RELATIONS) == []
+    assert sorted(web_boundary.PROTECTED_RELATIONS - readable) == []
+
+
 # --- Offboarding over the real sign-in path --------------------------------
 
 
@@ -1815,6 +2100,142 @@ def test_a_lapsed_or_spent_link_is_not_counted_as_an_invalidated_one(session):
     assert spent["1" * 64] is None
     assert spent["2" * 64] == moment - timedelta(minutes=4)
     assert spent["3" * 64] == moment
+
+
+
+# --- The enabled pilot routes, served by the real web login (#680) ---------
+#
+# Every other web test in this repository overrides the session with the
+# schema owner's, which bypasses row-level security *and* holds every
+# privilege — so none of them can tell whether a route still works once the
+# boundary takes the relations away. These run the routes on `corridor_web`
+# itself, over a real magic-link cookie, against committed rows.
+
+
+@pytest.fixture
+def pilot_member(runtime_database, two_projects):
+    """A signed-in-able coordinator on the first project, committed."""
+
+    ours, _theirs = two_projects
+    with runtime_database.session_factory.begin() as owner:
+        access.enroll_member(
+            owner,
+            project_id=ours,
+            email="pilot@example.com",
+            principal=LEAVER,
+            display_name="Pilot",
+            designations=[access.COORDINATION],
+            operator=OPERATOR,
+        )
+    return "pilot@example.com"
+
+
+@pytest.fixture
+def live_pilot_client(runtime_database, pilot_member):
+    """The application, wired to the deployed web capability and nothing else."""
+
+    web_engine = create_engine(
+        _web_url(runtime_database.name), poolclass=NullPool, future=True
+    )
+
+    def _web_session():
+        with OrmSession(bind=web_engine) as opened:
+            yield opened
+
+    sender = auth.RecordingEmailSender()
+    app.dependency_overrides[get_session] = _web_session
+    app.dependency_overrides[auth.get_email_sender] = lambda: sender
+    with TestClient(
+        app, base_url="https://testserver", raise_server_exceptions=False
+    ) as opened:
+        _sign_in(opened, sender, "pilot@example.com")
+        yield opened
+    app.dependency_overrides.clear()
+    web_engine.dispose()
+
+
+@pytest.fixture
+def boundary_enabled(monkeypatch):
+    monkeypatch.setattr(settings, "live_pilot_web_boundary", True)
+
+
+def test_every_enabled_pilot_reading_serves_as_the_real_web_login(
+    two_projects, their_pilot_rows, live_pilot_client, boundary_enabled
+):
+    """The other half of the revoke: the routes that stay on still work.
+
+    A boundary is only worth having if the product survives it, and the only
+    way to know is to ask the login that lost the privileges. Each of these
+    would answer 500 with `permission denied for table ...` if the revoke had
+    reached a relation the route needs.
+    """
+
+    served = {
+        path: live_pilot_client.get(path, follow_redirects=False).status_code
+        for path in ("/", "/portfolio", "/record/ours", "/review/ours")
+    }
+
+    assert served == {
+        "/": 200,
+        "/portfolio": 200,
+        "/record/ours": 200,
+        "/review/ours": 200,
+    }
+
+
+def test_a_route_outside_the_boundary_is_refused_rather_than_half_served(
+    two_projects, live_pilot_client, boundary_enabled
+):
+    """"Disable the route" is the criterion, and this is the difference it makes.
+
+    With the boundary declared, a surface the pilot does not enable answers
+    exactly as a missing project does. Without it — the deployment shape a
+    legacy development clone keeps — the same request reaches the handler and
+    dies on the privilege it no longer has. Both are refusals; only one of
+    them is a refusal a person can read.
+    """
+
+    refused = live_pilot_client.get("/ledger/ours", follow_redirects=False)
+
+    assert refused.status_code == 404
+
+
+def test_the_same_route_without_the_boundary_dies_on_the_revoked_privilege(
+    two_projects, live_pilot_client
+):
+    """Proof the two halves are one boundary, not one boundary and one opinion.
+
+    If the revoke were cosmetic this request would render a page. It is the
+    control for the test above: the route gate is what turns a permission
+    error into a refusal, and this asserts it has something real to turn —
+    PostgreSQL's own ``InsufficientPrivilege``, not a 500 that could come from
+    anywhere. Which relation stops it first is not the claim, so the assertion
+    is about the refusal rather than the table that happens to be read first.
+    """
+
+    strict = TestClient(app, base_url="https://testserver")
+    strict.cookies = live_pilot_client.cookies
+
+    with pytest.raises(ProgrammingError) as refused:
+        strict.get("/ledger/ours", follow_redirects=False)
+
+    assert "permission denied for table" in str(refused.value)
+
+
+def test_the_enabled_work_route_refuses_a_project_the_pilot_cannot_serve(
+    two_projects, live_pilot_client, boundary_enabled
+):
+    """`/work/{slug}` is enabled, and its legacy branch is not.
+
+    An unadopted project falls to ADR-0035's item-per-record Work List, which
+    reads `dependencies`, `work_decisions` and `evidence_links` — all revoked.
+    Leaving them readable to reach this branch is the trade #680 refuses, so
+    the route refuses the project instead.
+    """
+
+    refused = live_pilot_client.get("/work/ours", follow_redirects=False)
+
+    assert refused.status_code == 404
 
 
 # --- The identity and authorization export ---------------------------------

@@ -25,7 +25,12 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
-from corridor.web.app import app, get_human_principal, get_session
+from corridor.web.app import (
+    app,
+    get_human_principal,
+    get_machine_session,
+    get_session,
+)
 from access_support import seed_membership
 
 
@@ -495,6 +500,9 @@ def test_server_webhook_is_fail_closed_and_never_accepts_client_project_input(
     monkeypatch.setattr(settings, "inbound_service_address", "intake@corridor.test")
     monkeypatch.setattr(settings, "inbound_webhook_secret", "server-secret")
     app.dependency_overrides[get_session] = lambda: session
+    # #680: the transport-authenticated receipt carries no person and so no
+    # partition, and now takes the operations capability's session.
+    app.dependency_overrides[get_machine_session] = lambda: session
     try:
         with TestClient(app) as client:
             refused = client.post(

@@ -126,6 +126,12 @@ adr-index:
 	uv run python scripts/adr_index.py
 
 # Coordination review UI at http://localhost:8412
+# The coordination UI. It connects as `corridor_web`, which #680 restricted to
+# the live-pilot route surface: the frozen legacy screens (/ledger, /queue,
+# /statements, /operations, /reports) can no longer read their tables through
+# it. `make boot` creates the opt-in legacy development login, so a clone that
+# needs those screens runs them as that capability instead:
+#   WEB_DATABASE_URL=postgresql+psycopg://corridor_legacy_dev:corridor_legacy_dev@localhost:5433/corridor make queue
 queue:
 	uv run uvicorn corridor.web.app:app --port 8412 --reload
 

@@ -22,10 +22,14 @@ with explicit expiry and revocation checked on every request, so a revoked
 session or membership takes effect immediately.  The HTTP adapter owns cookies
 and request-forgery tokens; this module owns the records and the rules.
 
-Two further boundaries live here (#531, ratifying #503), and #657 completes
-both: one transaction holds one project-authorization scope, and every relation
-the web capability can read carries a recorded answer to how the partition
-covers it (``PARTITIONED_RELATIONS`` and the three lists beside it).
+Two further boundaries live here (#531, ratifying #503), completed by #657 and
+enforced by #680: one transaction holds one project-authorization scope, and
+every relation the web capability can read carries a recorded answer to how
+the partition covers it (``PARTITIONED_RELATIONS`` and the three lists beside
+it).  #680 made the fourth list — the relations with no answer yet — a
+deployment boundary rather than an inventory: ``corridor_web`` now holds no
+privilege on any of them, and ``corridor.web_boundary`` says which routes the
+live pilot serves on what remains.
 
 - **Partition** — membership is also a *data* boundary, not only a rule the
   readers agree to keep.  ``open_project_partition`` asks PostgreSQL to prove
@@ -780,6 +784,35 @@ def deprovision_principal(
 # ``NOT_YET_PARTITIONED_CEILING`` is a ratchet in the shape the migration
 # policy already uses: it may fall and must never rise.  A new project-scoped
 # relation therefore has to be partitioned, or has to displace one that is.
+#
+# **What "not yet partitioned" means after #680.**  It no longer means
+# "readable across every project".  #657 left 130 such relations directly
+# selectable by ``corridor_web``, which is what made the classification an
+# inventory rather than a boundary.  #680 turned it into one: the live-pilot
+# web capability now holds *no privilege at all* on any relation in this
+# list, so the honest list of holes is also the list of things the human web
+# role cannot open.  The rule is enforced against the database itself in
+# ``tests/test_project_partition_and_offboarding.py`` — every name here is
+# asserted unreadable by the real login — so the two halves cannot drift.
+#
+# Six relations moved out of this list.  Four because an enabled pilot route
+# genuinely reads them: ``documents`` and ``source_deliveries`` (every project
+# surface, and the source register the week shows) and
+# ``external_report_artifacts`` and ``external_report_releases`` (the record
+# history's issue trail).  #657 recorded that partitioning the first two would
+# refuse a working ingress; #680 removed that objection rather than overruling
+# it, by moving the transport-authenticated ingress onto the worker
+# capability, which holds the unpartitioned policy.
+#
+# The other two — ``push_intake_credentials`` and
+# ``connector_checkpoint_advances`` — are read by no route at all.  They are
+# partitioned rather than revoked because #511 gives the *human* capability a
+# designed authority over them: revoking a credential is a person's act, and
+# taking that authority away would be this ticket deciding something #511
+# decided.  Both carry a ``project_id``, so the partition is available and the
+# grants stay.  ``connector_checkpoint_advance_deliveries`` does not carry
+# one, no human surface has ever written it, and the connector poller writes
+# it as ``corridor_worker``, so that one is revoked.
 
 PARTITION_CLASSIFICATIONS = (
     "partitioned",
@@ -792,6 +825,7 @@ PARTITION_CLASSIFICATIONS = (
 PARTITIONED_RELATIONS: frozenset[str] = frozenset(
     {
         "candidates",
+        "connector_checkpoint_advances",
         "delta_decision_supports",
         "delta_deferrals",
         "delta_dispositions",
@@ -805,9 +839,12 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "delta_review_packet_supports",
         "delta_supersessions",
         "dependency_events",
+        "documents",
         "evidence_link_sources",
         "extracted_proposal_facts",
         "extracted_proposals",
+        "external_report_artifacts",
+        "external_report_releases",
         "fact_applies_to",
         "fact_closure_results",
         "fact_closure_sources",
@@ -826,6 +863,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "project_issue_profiles",
         "project_record_revisions",
         "proposed_deltas",
+        "push_intake_credentials",
         "record_inclusion_requests",
         "recorded_verbal_origin_backfill_receipts",
         "recorded_verbal_origin_fact_digests",
@@ -838,6 +876,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "release_preparation_attempts",
         "release_preparation_refusals",
         "release_preparation_requests",
+        "source_deliveries",
         "source_fact_append_receipts",
         "source_segments",
         "support_assessment_sources",
@@ -904,715 +943,799 @@ CUSTOMER_WIDE_RELATIONS: dict[str, str] = {
 NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
     "active_extraction_runs": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, `extraction_runs`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, "
+        "`extraction_runs`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "active_run_declarations": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, `extraction_runs`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, "
+        "`extraction_runs`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "assertions": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependencies`, "
-        "`evidence_links`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`evidence_links`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "assignment_notification_attempts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "assignment_notification_dispatches": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "assignment_notification_feedback": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "assignment_notifications": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "automatic_carry_forward_outcomes": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "automatic_carry_forward_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "candidate_dispositions": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `candidates`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `candidates`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "cohort_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "commitment_lineages": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "condition_resolutions": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependency_events`, "
-        "`evidence_links`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`evidence_links`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "connector_checkpoint_advance_deliveries": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
-    ),
-    "connector_checkpoint_advances": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "coordination_summary_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "coordination_summary_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "dependencies": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "dependency_admission_outcomes": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `candidates`, `dependencies`, "
-        "`policy_runs`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "test. Its project is reached through `candidates`, "
+        "`dependencies`, `policy_runs`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "dependency_dismissals": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependencies`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependencies`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "dependency_event_evidence": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependency_events`, "
-        "`evidence_links`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`evidence_links`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "dependency_event_migration_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependency_events`, and a "
-        "direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependency_events`, and "
+        "#680 revoked every `corridor_web` privilege on it, so the live- "
+        "pilot web capability cannot reach it by any id at all"
     ),
     "dependency_event_scope_decisions": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependency_events`, and a "
-        "direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependency_events`, and "
+        "#680 revoked every `corridor_web` privilege on it, so the live- "
+        "pilot web capability cannot reach it by any id at all"
     ),
     "dependency_event_scopes": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependencies`, "
-        "`dependency_event_scope_decisions`, `dependency_events`, and a "
-        "direct-id select as `corridor_web` is not refused"
+        "`dependency_event_scope_decisions`, `dependency_events`, and "
+        "#680 revoked every `corridor_web` privilege on it, so the live- "
+        "pilot web capability cannot reach it by any id at all"
     ),
     "dependency_event_timings": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependency_events`, and a "
-        "direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependency_events`, and "
+        "#680 revoked every `corridor_web` privilege on it, so the live- "
+        "pilot web capability cannot reach it by any id at all"
     ),
     "dependency_evidence_sufficiencies": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependencies`, "
-        "`dependency_event_scopes`, `evidence_links`, and a direct-id select "
-        "as `corridor_web` is not refused"
+        "`dependency_event_scopes`, `evidence_links`, and #680 revoked "
+        "every `corridor_web` privilege on it, so the live-pilot web "
+        "capability cannot reach it by any id at all"
     ),
     "discovered_references": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "dispute_history_resolutions": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `assertions`, `dependencies`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `assertions`, "
+        "`dependencies`, and #680 revoked every `corridor_web` privilege "
+        "on it, so the live-pilot web capability cannot reach it by any "
+        "id at all"
     ),
     "dispute_settlements": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependencies`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependencies`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "doc_pages": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "document_notification_attempts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "document_notification_dispatches": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "document_notifications": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "document_quarantines": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "document_rendition_derivations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "documentation_field_confirmations": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependencies`, "
-        "`evidence_links`, and a direct-id select as `corridor_web` is not "
-        "refused"
-    ),
-    "documents": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "`evidence_links`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "due_action_notification_attempts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "due_action_notification_dispatches": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "due_action_notifications": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "due_work_occurrences": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `due_work_schedules`, and a "
-        "direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `due_work_schedules`, and "
+        "#680 revoked every `corridor_web` privilege on it, so the live- "
+        "pilot web capability cannot reach it by any id at all"
     ),
     "due_work_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "due_work_schedules": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "event_admission_acceptance_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "event_admission_activations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "event_admission_outcomes": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
-        "`candidate_dispositions`, `candidates`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`candidate_dispositions`, `candidates`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "event_cohort_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_candidate_review_starts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_capture_contracts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_capture_results": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_evaluation_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through no foreign key, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through no foreign key, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "evidence_investigation_packet_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `evidence_investigation_runs`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through "
+        "`evidence_investigation_runs`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "evidence_investigation_review_observations": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through "
-        "`evidence_investigation_shadow_cases`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`evidence_investigation_shadow_cases`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "evidence_investigation_runs": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_shadow_cases": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "evidence_investigation_shadow_executions": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `evidence_investigation_runs`, "
-        "`evidence_investigation_shadow_cases`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "test. Its project is reached through "
+        "`evidence_investigation_runs`, "
+        "`evidence_investigation_shadow_cases`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "evidence_investigation_shadow_outcomes": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through "
-        "`evidence_investigation_shadow_cases`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`evidence_investigation_shadow_cases`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "evidence_investigation_step_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `evidence_investigation_runs`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through "
+        "`evidence_investigation_runs`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "evidence_links": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependencies`, `documents`, "
-        "and a direct-id select as `corridor_web` is not refused"
-    ),
-    "external_report_artifacts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
-    ),
-    "external_report_releases": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "test. Its project is reached through `dependencies`, "
+        "`documents`, and #680 revoked every `corridor_web` privilege on "
+        "it, so the live-pilot web capability cannot reach it by any id "
+        "at all"
     ),
     "extraction_failure_diagnosis_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "extraction_failure_diagnosis_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "extraction_measurement_case_states": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "extraction_run_candidates": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `candidates`, "
-        "`extraction_runs`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`extraction_runs`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "extraction_runs": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `documents`, "
-        "`extractor_configurations`, and a direct-id select as `corridor_web` "
-        "is not refused"
+        "`extractor_configurations`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "follow_up_plan_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `audit_log`, `dependencies`, "
-        "`project_roster_entries`, and a direct-id select as `corridor_web` "
-        "is not refused"
+        "test. Its project is reached through `audit_log`, "
+        "`dependencies`, `project_roster_entries`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "follow_up_plan_reversals": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
-        "`follow_up_plan_receipts`, `work_decisions`, and a direct-id select "
-        "as `corridor_web` is not refused"
+        "`follow_up_plan_receipts`, `work_decisions`, and #680 revoked "
+        "every `corridor_web` privilege on it, so the live-pilot web "
+        "capability cannot reach it by any id at all"
     ),
     "inbound_messages": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "inbound_route_triage": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "inbound_thread_readings": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `candidates`, "
-        "`inbound_messages`, `inbound_threads`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`inbound_messages`, `inbound_threads`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "inbound_threads": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "intake_project_identifiers": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "key_date_draft_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "key_date_draft_row_receipts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `key_date_draft_receipts`, and "
-        "a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `key_date_draft_receipts`, "
+        "and #680 revoked every `corridor_web` privilege on it, so the "
+        "live-pilot web capability cannot reach it by any id at all"
     ),
     "legacy_ledger_archives": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "milestone_registrations": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `milestones`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `milestones`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "milestones": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "operative_support": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `dependencies`, "
-        "`dependency_event_scopes`, `evidence_links`, and a direct-id select "
-        "as `corridor_web` is not refused"
+        "`dependency_event_scopes`, `evidence_links`, and #680 revoked "
+        "every `corridor_web` privilege on it, so the live-pilot web "
+        "capability cannot reach it by any id at all"
     ),
     "organization_identity_activations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "organization_identity_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "page_processing_failures": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "page_render_derivatives": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "policy_approvals": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "policy_runs": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "processing_artifacts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "production_run_explanation_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "production_run_explanation_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "project_check_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
-    ),
-    "push_intake_credentials": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "reconfirmation_receipts": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, `candidates`, "
-        "`dependencies`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`dependencies`, and #680 revoked every `corridor_web` privilege "
+        "on it, so the live-pilot web capability cannot reach it by any "
+        "id at all"
     ),
     "report_runs": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "retention_holds": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "retention_manifest_items": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "retention_manifests": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through no foreign key, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through no foreign key, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "retention_references": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "retired_automatic_carry_forward_policy_activations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "retired_dependency_statuses": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependencies`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `dependencies`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "revision_change_explanation_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "revision_change_explanation_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "revision_comparison_findings": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `revision_comparison_runs`, and "
-        "a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `revision_comparison_runs`, "
+        "and #680 revoked every `corridor_web` privilege on it, so the "
+        "live-pilot web capability cannot reach it by any id at all"
     ),
     "revision_comparison_runs": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "revision_reconciliation_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "schedule_governing_derivations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "schedule_link_activations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "schedule_link_receipts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "scheduled_report_publications": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
-    ),
-    "source_deliveries": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "source_fetch_attempts": (
-        "read or written by the transport-authenticated ingress paths, which "
-        "carry no person's membership and so declare no partition. "
-        "`email_intake` selects Dependency and Document with no project "
-        "predicate on the frozen global-address route (ADR-0059); "
-        "partitioning these would refuse a working ingress that this ticket "
-        "may not rewrite"
+        "read or written by the transport-authenticated ingress paths, "
+        "which carry no person's membership and so declare no partition. "
+        "#680 moved that ingress onto the worker capability and revoked "
+        "every `corridor_web` privilege here, so the human web role no "
+        "longer reaches it and the frozen global-address route (ADR-0059) "
+        "keeps working as the machine capability it always was"
     ),
     "source_intake_draft_configurations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "source_intake_draft_requests": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "stated_by_people": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "statement_coordination_receipts": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
-        "`candidate_dispositions`, `candidates`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`candidate_dispositions`, `candidates`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "statement_coordination_reversal_effects": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through "
-        "`statement_coordination_reversals`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`statement_coordination_reversals`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "statement_coordination_reversals": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
-        "`candidate_dispositions`, `candidates`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`candidate_dispositions`, `candidates`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "statement_suggestion_eligibility_declarations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "statement_suggestion_protection_ends": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through "
-        "`statement_suggestion_protections`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "`statement_suggestion_protections`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "statement_suggestion_protections": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "subject_candidate_suggestions": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `subject_resolution_attempts`, "
-        "`subject_resolution_candidates`, and a direct-id select as "
-        "`corridor_web` is not refused"
+        "test. Its project is reached through "
+        "`subject_resolution_attempts`, `subject_resolution_candidates`, "
+        "and #680 revoked every `corridor_web` privilege on it, so the "
+        "live-pilot web capability cannot reach it by any id at all"
     ),
     "subject_resolution_attempts": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "subject_resolution_candidates": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `dependencies`, `documents`, "
-        "`external_orgs`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "test. Its project is reached through `dependencies`, "
+        "`documents`, `external_orgs`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "subject_resolution_decisions": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "token_layers": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `documents`, and a direct-id "
-        "select as `corridor_web` is not refused"
+        "test. Its project is reached through `documents`, and #680 "
+        "revoked every `corridor_web` privilege on it, so the live-pilot "
+        "web capability cannot reach it by any id at all"
     ),
     "unreadable_cell_admission_activations": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "unreadable_cell_reading_profiles": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "unreadable_cell_reading_runs": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "unreadable_cell_reading_steps": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `unreadable_cell_reading_runs`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through "
+        "`unreadable_cell_reading_runs`, and #680 revoked every "
+        "`corridor_web` privilege on it, so the live-pilot web capability "
+        "cannot reach it by any id at all"
     ),
     "unreadable_cell_resolutions": (
-        "project-scoped and directly selectable; the policy is mechanical but "
-        "proving it refuses no working reader is not, and #657 partitioned "
-        "the record and decision families first"
+        "project-scoped, and no enabled live-pilot route reads it. #680 "
+        "revoked every `corridor_web` privilege on it rather than writing "
+        "a policy for a reader that does not exist; a route that needs it "
+        "again has to partition it first"
     ),
     "work_decision_milestone_impacts": (
         "carries no project column, so a partition policy has nothing to "
-        "test. Its project is reached through `milestones`, `work_decisions`, "
-        "and a direct-id select as `corridor_web` is not refused"
+        "test. Its project is reached through `milestones`, "
+        "`work_decisions`, and #680 revoked every `corridor_web` "
+        "privilege on it, so the live-pilot web capability cannot reach "
+        "it by any id at all"
     ),
     "work_decisions": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `commitment_lineages`, "
-        "`dependencies`, and a direct-id select as `corridor_web` is not "
-        "refused"
+        "`dependencies`, and #680 revoked every `corridor_web` privilege "
+        "on it, so the live-pilot web capability cannot reach it by any "
+        "id at all"
     ),
 }
 
-NOT_YET_PARTITIONED_CEILING = 130
+NOT_YET_PARTITIONED_CEILING = 124
 
 
 def classify_relation(name: str) -> tuple[str, str]:

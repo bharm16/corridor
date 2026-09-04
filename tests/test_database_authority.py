@@ -154,8 +154,16 @@ PUSH_INTAKE_TABLES = (
     "push_intake_credentials",
     "source_deliveries",
     "connector_checkpoint_advances",
-    "connector_checkpoint_advance_deliveries",
 )
+# #680 amends this by one relation. Which deliveries a checkpoint advance
+# covered carries no project column, so the partition has nothing to test on
+# it, and no human surface has ever written it — the connector poller does.
+# Leaving it readable to the human web capability was the schema owner's
+# default privilege, not a decision, so the live-pilot boundary revokes it and
+# the connector capability keeps it. Every other #511 authority is unchanged:
+# the three above are partitioned instead, so the human capability keeps the
+# credential revoke it was given and reaches one project's rows with it.
+CONNECTOR_ONLY_INTAKE_TABLES = ("connector_checkpoint_advance_deliveries",)
 SOURCE_APPEND_COMMANDS = (
     "append_source_segments",
     "append_fact",
@@ -891,6 +899,29 @@ def test_a_runtime_capability_appends_source_segments_only_through_the_command(
             assert "permission denied for table source_segments" in str(refused.value)
     finally:
         engine.dispose()
+
+
+@pytest.mark.parametrize("table", CONNECTOR_ONLY_INTAKE_TABLES)
+def test_only_the_connector_capability_appends_a_checkpoint_coverage_row(
+    runtime, table
+):
+    """The human capability holds nothing here; the connector holds the append."""
+
+    role, connection = runtime
+    expected = role == "corridor_worker"
+
+    for privilege in ("select", "insert"):
+        granted = connection.execute(
+            text("select has_table_privilege(:role, :table, :privilege)"),
+            {"role": role, "table": table, "privilege": privilege},
+        ).scalar_one()
+        assert granted is expected, f"{role} and {privilege} on {table}"
+    for privilege in ("update", "delete"):
+        granted = connection.execute(
+            text("select has_table_privilege(:role, :table, :privilege)"),
+            {"role": role, "table": table, "privilege": privilege},
+        ).scalar_one()
+        assert granted is False, f"{role} can {privilege} {table}"
 
 
 @pytest.mark.parametrize("table", PUSH_INTAKE_TABLES)
