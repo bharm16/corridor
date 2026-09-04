@@ -250,6 +250,129 @@ def test_declaring_a_partition_for_a_project_you_are_not_on_is_refused(
     web_connection.rollback()
 
 
+# --- A refusal a caller can actually recover from (#654) -------------------
+
+
+def test_catching_a_refusal_leaves_the_surrounding_session_usable(
+    two_projects, web_connection
+):
+    """The refusal is recoverable, not a poisoned transaction (#654).
+
+    The database proves membership by *raising*, which aborts the transaction
+    the caller is sitting in. Before #654 the next statement on that session —
+    any statement — came back ``InFailedSqlTransaction``, so a caller that
+    meant to recover (offer a narrower reading, fall back to a project list,
+    render a partial page) found the session unusable for a reason the
+    exception name does not suggest. Running the command in a savepoint and
+    giving up only that savepoint is the whole fix.
+    """
+
+    _ours, theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert web.scalar(text("select 1")) == 1
+    web_connection.rollback()
+
+
+def test_a_refused_first_attempt_installs_no_partition_and_shows_no_rows(
+    two_projects, web_connection
+):
+    """Recovering from a refusal must not be recovering *into* someone's project.
+
+    Read as the deployed ``corridor_web`` login against committed rows, the
+    way every other partition proof here is read: the refused attempt leaves no
+    declared partition at all, and the careless predicate-free query still
+    returns nothing.
+    """
+
+    _ours, theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) is None
+        assert web.scalars(select(SourceSegment)).all() == []
+    web_connection.rollback()
+
+
+def test_a_refused_switch_keeps_the_partition_the_caller_already_held(
+    two_projects, web_connection
+):
+    """Rolling back the savepoint restores the scope, it does not merely clear it.
+
+    Scope is transaction-local (``set_config(..., true)``), and PostgreSQL
+    restores such a setting when a subtransaction aborts. So a caller that
+    holds a valid partition and is refused a different one is left holding the
+    valid one — not the empty partition, and certainly not the refused one.
+    """
+
+    ours, theirs = two_projects
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        with pytest.raises(access.PartitionRefused):
+            access.open_project_partition(
+                web, principal_subject=LEAVER.subject, project_id=theirs
+            )
+
+        assert access.current_project_partition(web) == (ours,)
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["ours-UC-1"]
+    web_connection.rollback()
+
+
+def test_changing_partitions_is_gated_by_the_membership_proof_not_by_a_commit(
+    runtime_database, two_projects, web_connection
+):
+    """What one transaction may declare, measured rather than assumed (#654).
+
+    #654 assumed a caller could not move from one valid partition to another
+    without an explicit transaction boundary. It can: every successful
+    declaration re-seals the setting, so a person on both projects switches
+    inside a single transaction and the row-level policy follows at once. The
+    boundary that actually holds is the proof — the command re-checks the
+    active roster entry as its own owner on every call — and the savepoint,
+    which is what returns a *refused* caller to the scope it had. The switch
+    replaces the partition rather than widening it, which is the property that
+    matters: the caller never holds both projects at once.
+    """
+
+    ours, theirs = two_projects
+    with runtime_database.session_factory.begin() as owner:
+        owner.add(
+            ProjectRosterEntry(
+                project_id=theirs,
+                principal_subject=LEAVER.subject,
+                display_name="Leaver",
+                active=True,
+            )
+        )
+
+    with OrmSession(bind=web_connection) as web:
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=ours
+        )
+
+        access.open_project_partition(
+            web, principal_subject=LEAVER.subject, project_id=theirs
+        )
+
+        assert access.current_project_partition(web) == (theirs,)
+        assert [
+            row.exact_text for row in web.scalars(select(SourceSegment)).all()
+        ] == ["theirs-UC-1"]
+    web_connection.rollback()
+
+
 def test_a_cross_project_reading_is_partitioned_by_active_membership(
     two_projects, web_connection
 ):
