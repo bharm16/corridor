@@ -1,0 +1,41 @@
+name: full-suite
+
+# The complete manual and weekly gate. It is deliberately *not* part of the
+# required pull-request gate: `release-gate.yml` owns that, and this workflow
+# has no `pull_request` trigger at all, so nothing here can leave a required
+# check pending (#697).
+#
+# It was `migration-test.yml`, which carried both this schedule and the
+# per-pull-request migration gate. The migration gate now lives in
+# `release-gate.yml` as the `migration` job, selected by
+# `scripts/classify_ci_change.py` from the same path set the trigger used to
+# carry.
+
+on:
+  schedule:
+    - cron: "0 6 * * 0"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  full-suite:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
+      CORRIDOR_LEGACY_DEV_LOGIN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # The same setup the gate jobs run, for the same measured reason:
+      # PostgreSQL comes from the runner image instead of a pulled service
+      # container, and the OCR engine installs concurrently with the uv
+      # syncs (#595).
+      - run: scripts/ci_environment.sh
+      - run: make test-full

@@ -1,0 +1,217 @@
+name: release-gate
+
+# The whole required gate, in one workflow, because the ruleset on `main` can
+# only require a status that always reports.
+#
+# A workflow skipped by a path filter on its *trigger* leaves its checks
+# pending forever, and a required check that never reports blocks the pull
+# request forever. That is why `check` was the only requirable context while
+# the behavior gates lived in a `paths-ignore` workflow and the migration gate
+# in a `paths` one (#697). This workflow is triggered on every pull request
+# and the expensive jobs are conditional *inside* it: a job skipped by an `if`
+# produces a `skipped` result, which the `release-gate` summary reads through
+# `needs.<job>.result` and checks against what the classifier asked for.
+#
+# `release-gate` is the context the ruleset requires. `check` keeps its job
+# name so the context the ruleset requires today keeps reporting while the
+# transition is made (ADR-0093).
+#
+# Job count is deliberately unchanged. `classify` and `release-gate` are the
+# only additions, they run alone at each end, and neither installs a package:
+# the measured ceiling on this account is concurrent package downloads, not
+# runners, and eleven downloading jobs is what the previous three workflows
+# already ran (#548, #595).
+
+on:
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  classify:
+    # Which gates this change needs. Standard library only and no `uv sync`,
+    # so the one job in front of everything else costs a checkout and a
+    # subprocess.
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      behavior_required: ${{ steps.classify.outputs.behavior_required }}
+      migration_required: ${{ steps.classify.outputs.migration_required }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The classifier diffs base...head, so the merge base has to be in
+          # the clone.
+          fetch-depth: 0
+      - id: classify
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/classify_ci_change.py --base "$BASE_SHA" --head "$HEAD_SHA"
+
+  check:
+    # Runs on every pull request, unconditionally and without waiting for the
+    # classifier: `make check` owns the ADR lifecycle, amendment-graph and
+    # INDEX.md freshness tests, which a documentation-only change breaks.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      - run: uv sync --locked
+      - run: make check
+
+  pytest:
+    # Sharded across runners: the job is CPU-bound on one four-core runner,
+    # so the only remaining lever is more actual CPU (#548). Every test file
+    # lands in exactly one shard, which scripts/test_shard.py proves.
+    # Five, not six. Six put twelve jobs on this account at once, saturated
+    # its package downloads, and two jobs stalled for minutes inside pytest.
+    # Runner count is bounded by what the account will serve concurrently,
+    # not by what the partition can divide, so it is raised one step at a
+    # time and measured.
+    needs: classify
+    if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4, 5]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
+      # The legacy accepted tables are written only by this login, and only
+      # outside a customer environment (#492).
+      CORRIDOR_LEGACY_DEV_LOGIN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # One step, and no `services:` container, because this gate's wall
+      # clock is the slowest of its nine test jobs and so samples the worst
+      # setup draw taken in the run rather than the average one. The script
+      # starts the runner's own PostgreSQL 16 and installs the OCR engine
+      # concurrently with the two uv syncs; it carries the measurements and
+      # the reason each piece is still there (#595).
+      - run: scripts/ci_environment.sh
+      - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
+
+  slow:
+    # Sharded for the same reason as pytest (#548).
+    needs: classify
+    if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [1, 2, 3, 4]
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
+      # The legacy accepted tables are written only by this login, and only
+      # outside a customer environment (#492).
+      CORRIDOR_LEGACY_DEV_LOGIN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # See the pytest job: the same setup, for the same measured reason.
+      - run: scripts/ci_environment.sh
+      - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}
+
+  migration:
+    # The migration-adjacent path set the retired `migration-test.yml`
+    # trigger carried, now asked of the classifier instead.
+    needs: classify
+    if: ${{ needs.classify.outputs.migration_required == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_HUMAN_PRINCIPAL: local:ci
+      CORRIDOR_LEGACY_DEV_LOGIN: "1"
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+      # The same setup the behavior gates run, for the same measured reason
+      # (#595).
+      - run: scripts/ci_environment.sh
+      - run: make test-migrations
+
+  release-gate:
+    # The required context. It fails closed: every job result is matched
+    # against exactly what the classifier asked for, never against
+    # `success or skipped`, because that would let a behavior job skipped by
+    # a broken `if` condition report green -- a red gate that looks green is
+    # worse than no required check at all.
+    if: ${{ always() }}
+    needs: [classify, check, pytest, slow, migration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Match every job result against the classifier
+        env:
+          BEHAVIOR_REQUIRED: ${{ needs.classify.outputs.behavior_required }}
+          MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}
+          CLASSIFY_RESULT: ${{ needs.classify.result }}
+          CHECK_RESULT: ${{ needs.check.result }}
+          PYTEST_RESULT: ${{ needs.pytest.result }}
+          SLOW_RESULT: ${{ needs.slow.result }}
+          MIGRATION_RESULT: ${{ needs.migration.result }}
+        # No `${{ }}` in this body on purpose: every value arrives through
+        # `env` above, which keeps the script exactly what
+        # tests/test_ci_policy.py executes.
+        run: |
+          set -uo pipefail
+
+          failed=0
+
+          require() {
+            if [ "$2" = "$3" ]; then
+              printf '%s = %s\n' "$1" "$2"
+            else
+              printf '::error::%s is %s; the release gate requires %s\n' "$1" "${2:-<absent>}" "$3"
+              failed=1
+            fi
+          }
+
+          # Sets `expected`. An answer that is neither `true` nor `false`
+          # is a classifier the summary cannot trust, so it fails the gate
+          # rather than picking a default.
+          expected_for() {
+            case "$2" in
+              true) expected=success ;;
+              false) expected=skipped ;;
+              *)
+                printf '::error::%s is %s; the classifier must answer true or false\n' "$1" "${2:-<absent>}"
+                expected=unclassified
+                failed=1
+                ;;
+            esac
+          }
+
+          require classify "$CLASSIFY_RESULT" success
+          require check "$CHECK_RESULT" success
+
+          expected_for behavior_required "$BEHAVIOR_REQUIRED"
+          require pytest "$PYTEST_RESULT" "$expected"
+          require slow "$SLOW_RESULT" "$expected"
+
+          expected_for migration_required "$MIGRATION_REQUIRED"
+          require migration "$MIGRATION_RESULT" "$expected"
+
+          if [ "$failed" -ne 0 ]; then
+            printf '::error::release gate failed closed\n'
+            exit 1
+          fi
+          printf 'release gate satisfied\n'

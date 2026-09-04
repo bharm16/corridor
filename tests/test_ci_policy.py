@@ -1,18 +1,40 @@
-"""Repository test gates run in the smallest CI scope that proves the change."""
+"""Repository test gates run in the smallest CI scope that proves the change.
 
+The gate is one workflow, `.github/workflows/release-gate.yml`, because a
+required status check has to report on every pull request or it blocks that
+pull request forever. A workflow skipped by a path filter on its *trigger*
+never reports; a job skipped by an `if` reports `skipped`, which the
+`release-gate` summary job reads through `needs.<job>.result` and matches
+against what `scripts/classify_ci_change.py` asked for (ADR-0093, #697).
+"""
+
+import os
 from pathlib import Path
+import subprocess
+import sys
 
+import pytest
 from sqlalchemy import create_engine, text
 import yaml
 
 
 ROOT = Path(__file__).resolve().parents[1]
+GATE = "release-gate.yml"
+# Every gate job that installs packages. The account's measured ceiling is
+# concurrent package downloads, not runners (#548, #595).
+DOWNLOADING_JOB_COUNT = 11
 
 
 def _workflow(name: str) -> dict:
     return yaml.load(
         (ROOT / ".github" / "workflows" / name).read_text(),
         Loader=yaml.BaseLoader,
+    )
+
+
+def _workflow_names() -> tuple[str, ...]:
+    return tuple(
+        sorted(path.name for path in (ROOT / ".github" / "workflows").glob("*.yml"))
     )
 
 
@@ -25,60 +47,160 @@ def _run_commands(workflow: dict) -> tuple[str, ...]:
     )
 
 
-def test_normal_pr_ci_runs_non_overlapping_behavior_gates_once():
-    workflow = _workflow("test.yml")
+def _job(name: str, workflow: str = GATE) -> dict:
+    return _workflow(workflow)["jobs"][name]
+
+
+def _shard_count(job: str = "pytest") -> int:
+    return len(_job(job)["strategy"]["matrix"]["shard"])
+
+
+def test_the_repository_carries_exactly_the_gate_and_the_scheduled_suite():
+    """A third pull-request workflow is how the pending-check problem returns.
+
+    Any workflow whose `pull_request` trigger is path-filtered leaves a check
+    pending on the pull requests it skips, so it can never be required and
+    the gate it holds can never be proven.
+    """
+
+    assert _workflow_names() == ("full-suite.yml", GATE)
+
+
+def test_the_required_gate_is_triggered_on_every_pull_request():
+    workflow = _workflow(GATE)
 
     assert set(workflow["on"]) == {"pull_request"}
-    assert set(workflow["jobs"]) == {"pytest", "slow"}
-    commands = _run_commands(workflow)
-    # Each behavior gate runs exactly once across the workflow, and the
-    # standalone check workflow owns `make check`, so neither job repeats it.
-    assert "make check" not in commands
-    # The non-slow suite is sharded across runners, so it appears once as a
-    # matrix step rather than as one whole-suite command (#548).
+    assert not workflow["on"]["pull_request"], (
+        "the required workflow carries trigger-level path scoping; a run it "
+        "skips leaves `release-gate` pending and blocks the pull request"
+    )
+
+
+def test_no_workflow_filters_a_pull_request_trigger_by_path():
+    for name in _workflow_names():
+        trigger = _workflow(name)["on"].get("pull_request")
+        if trigger is None:
+            continue
+        assert not trigger, f"{name} scopes its pull_request trigger: {trigger}"
+
+
+def test_the_scheduled_suite_never_reports_on_a_pull_request():
+    workflow = _workflow("full-suite.yml")
+
+    assert set(workflow["on"]) == {"schedule", "workflow_dispatch"}
+    assert "make test-full" in _run_commands(workflow)
+
+
+def test_the_gate_holds_every_job_the_summary_needs():
+    assert set(_workflow(GATE)["jobs"]) == {
+        "classify",
+        "check",
+        "pytest",
+        "slow",
+        "migration",
+        "release-gate",
+    }
+
+
+def test_each_behavior_gate_runs_exactly_once_across_the_gate():
+    commands = _run_commands(_workflow(GATE))
+
+    # `check` owns `make check`; no behavior job repeats it.
+    assert commands.count("make check") == 1
+    # The suites are sharded across runners, so each appears once as a matrix
+    # step rather than as one whole-suite command (#548).
     assert commands.count("make test") == 0
     assert sum("make test-shard" in command for command in commands) == 1
     assert commands.count("make test-slow") == 0
     assert sum("make test-slow-shard" in command for command in commands) == 1
+    assert commands.count("make test-migrations") == 1
+    # The complete suite is the scheduled gate, never the pull-request one.
     assert "make test-full" not in commands
-    assert "make test-migrations" not in commands
 
 
-def test_behavior_gates_skip_documentation_only_revisions():
-    ignored = set(_workflow("test.yml")["on"]["pull_request"]["paths-ignore"])
+def test_check_runs_unconditionally_and_without_waiting_for_the_classifier():
+    """`make check` owns the only tests that read documentation.
 
-    assert {"**.md", "docs/**"} <= ignored
-
-
-def test_behavior_gates_are_not_narrowed_to_a_subset_of_code_paths():
-    """The full suites stay required on every code change (ADR-0088).
-
-    ADR-0087 decided a selected, path-based gate; ADR-0088 amended that away
-    after sharding met the budget without deselecting a single test. A `paths`
-    allowlist would reintroduce the one failure this gate must not have: a
-    green run that silently skipped an affected test. Skipping revisions where
-    every changed file is documentation is the only narrowing permitted, and
-    `make check` still runs on those.
+    It also keeps the job name `check`, which is the context the ruleset
+    requires today; renaming it would leave that required context pending on
+    every pull request during the transition (ADR-0093).
     """
 
-    trigger = _workflow("test.yml")["on"]["pull_request"]
+    check = _job("check")
 
-    assert "paths" not in trigger, (
-        "test.yml selects behavior tests by path; ADR-0088 requires the full "
-        "suites on every change that is not documentation-only"
+    assert "if" not in check, "the check job became conditional"
+    assert "needs" not in check, "check waits for the classifier for no reason"
+    assert "make check" in tuple(
+        step["run"] for step in check["steps"] if "run" in step
     )
-    assert set(trigger) == {"paths-ignore"}
 
 
-def test_check_runs_on_every_revision_including_documentation_only():
-    workflow = _workflow("check.yml")
+def test_the_expensive_jobs_are_skipped_by_a_condition_not_by_a_path_filter():
+    """The difference the whole design rests on.
 
-    # Not path-scoped: `make check` owns the ADR lifecycle, amendment-graph,
-    # and INDEX.md freshness tests, which a documentation-only change breaks.
-    assert set(workflow["on"]) == {"pull_request"}
-    assert not workflow["on"]["pull_request"], "no paths / paths-ignore scoping"
-    assert set(workflow["jobs"]) == {"check"}
-    assert _run_commands(workflow).count("make check") == 1
+    An `if` that is false yields `skipped`, a result the summary inspects. A
+    path filter on the trigger yields no check run at all.
+    """
+
+    for job in ("pytest", "slow"):
+        assert (
+            _job(job)["if"]
+            == "${{ needs.classify.outputs.behavior_required == 'true' }}"
+        ), job
+        assert _job(job)["needs"] == "classify"
+
+    assert (
+        _job("migration")["if"]
+        == "${{ needs.classify.outputs.migration_required == 'true' }}"
+    )
+    assert _job("migration")["needs"] == "classify"
+
+
+def test_the_classifier_is_the_in_repository_script_reading_full_history():
+    classify = _job("classify")
+    checkout = next(
+        step for step in classify["steps"] if step.get("uses", "").startswith(
+            "actions/checkout"
+        )
+    )
+
+    # base...head needs the merge base in the clone.
+    assert checkout["with"]["fetch-depth"] == "0"
+    step = next(step for step in classify["steps"] if "run" in step)
+    assert "scripts/classify_ci_change.py" in step["run"]
+    # The SHAs arrive through env, never interpolated into the shell body.
+    assert "${{" not in step["run"]
+    assert set(step["env"]) == {"BASE_SHA", "HEAD_SHA"}
+    assert set(classify["outputs"]) == {"behavior_required", "migration_required"}
+
+
+def test_the_added_jobs_download_no_packages():
+    """Job count is the account's measured ceiling, so it may not creep.
+
+    `classify` and `release-gate` are new, but they run alone at either end
+    of the gate and install nothing, so the number of jobs competing for
+    package downloads is the eleven the three predecessor workflows already
+    ran (#548, #595).
+    """
+
+    jobs = _workflow(GATE)["jobs"]
+    downloading = 0
+    for name, definition in jobs.items():
+        steps = definition["steps"]
+        installs = any(
+            "setup-uv" in step.get("uses", "")
+            or "ci_environment" in step.get("run", "")
+            or step.get("run", "").startswith("uv ")
+            for step in steps
+        )
+        if name in {"classify", "release-gate"}:
+            assert not installs, f"{name} adds a concurrent package download"
+            continue
+        if installs:
+            matrix = definition.get("strategy", {}).get("matrix", {})
+            downloading += len(matrix.get("shard", ["1"]))
+
+    assert downloading == DOWNLOADING_JOB_COUNT
 
 
 def test_every_gate_job_runs_the_one_concurrent_setup_step():
@@ -93,9 +215,14 @@ def test_every_gate_job_runs_the_one_concurrent_setup_step():
     the independent ones concurrently so only the largest counts (#595).
     """
 
-    for name in ("test.yml", "migration-test.yml"):
+    database_jobs = {
+        GATE: ("pytest", "slow", "migration"),
+        "full-suite.yml": ("full-suite",),
+    }
+    for name, jobs in database_jobs.items():
         workflow = _workflow(name)
-        for job, definition in workflow["jobs"].items():
+        for job in jobs:
+            definition = workflow["jobs"][job]
             commands = tuple(
                 step["run"] for step in definition["steps"] if "run" in step
             )
@@ -164,9 +291,6 @@ def test_every_test_file_lands_in_exactly_one_shard():
     shard: the gate stays green while nothing runs it.
     """
 
-    import subprocess
-    import sys
-
     expected = {
         str(path.relative_to(ROOT)) for path in (ROOT / "tests").glob("test_*.py")
     }
@@ -209,23 +333,16 @@ def test_each_gate_asks_for_the_shard_count_its_matrix_runs():
     from each job rather than assumed equal (#548).
     """
 
-    jobs = _workflow("test.yml")["jobs"]
-
     for job, target in (("pytest", "test-shard"), ("slow", "test-slow-shard")):
         shards = _shard_count(job)
         command = next(
             step["run"]
-            for step in jobs[job]["steps"]
+            for step in _job(job)["steps"]
             if "run" in step and f"make {target} " in step["run"]
         )
         assert f"SHARDS={shards}" in command, (
             f"{job}: matrix runs {shards} shards but the command says {command!r}"
         )
-
-
-def _shard_count(job: str = "pytest") -> int:
-    workflow = _workflow("test.yml")
-    return len(workflow["jobs"][job]["strategy"]["matrix"]["shard"])
 
 
 def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():
@@ -251,29 +368,184 @@ def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():
     )
 
 
-def test_migration_ci_is_path_scoped_and_full_history_is_scheduled():
-    workflow = _workflow("migration-test.yml")
-
-    assert set(workflow["on"]) == {
-        "pull_request",
-        "schedule",
-        "workflow_dispatch",
-    }
-    migration_paths = set(workflow["on"]["pull_request"]["paths"])
-    assert {
-        "src/corridor/migrations/**",
-        "src/corridor/models.py",
-        "tests/test_*migration*.py",
-        "src/corridor/m8_acceptance_database.py",
-        "tests/conftest.py",
-    } <= migration_paths
-    commands = _run_commands(workflow)
-    assert "make test-migrations" in commands
-    assert "make test-full" in commands
-
-
 def test_pr_workflows_cancel_obsolete_revisions():
-    for name in ("check.yml", "test.yml", "migration-test.yml"):
-        concurrency = _workflow(name)["concurrency"]
-        assert concurrency["cancel-in-progress"] == "true"
-        assert "github.event.pull_request.number" in concurrency["group"]
+    concurrency = _workflow(GATE)["concurrency"]
+
+    assert concurrency["cancel-in-progress"] == "true"
+    assert "github.event.pull_request.number" in concurrency["group"]
+
+
+# --- the summary job, executed ------------------------------------------------
+#
+# The summary is the required context, so its decision is proven by running
+# the exact bytes the workflow ships rather than by reading them.
+
+
+def _summary_step() -> dict:
+    return next(
+        step for step in _job("release-gate")["steps"] if "run" in step
+    )
+
+
+def test_the_summary_always_runs_and_needs_every_gate_job():
+    definition = _job("release-gate")
+
+    assert definition["if"] == "${{ always() }}"
+    assert set(definition["needs"]) == {
+        "classify",
+        "check",
+        "pytest",
+        "slow",
+        "migration",
+    }
+
+
+def test_the_summary_reads_every_result_through_needs():
+    """`needs.<job>.result` is unambiguous; polling the API is not."""
+
+    assert _summary_step()["env"] == {
+        "BEHAVIOR_REQUIRED": "${{ needs.classify.outputs.behavior_required }}",
+        "MIGRATION_REQUIRED": "${{ needs.classify.outputs.migration_required }}",
+        "CLASSIFY_RESULT": "${{ needs.classify.result }}",
+        "CHECK_RESULT": "${{ needs.check.result }}",
+        "PYTEST_RESULT": "${{ needs.pytest.result }}",
+        "SLOW_RESULT": "${{ needs.slow.result }}",
+        "MIGRATION_RESULT": "${{ needs.migration.result }}",
+    }
+
+
+def _summary_script() -> str:
+    body = _summary_step()["run"]
+    assert "${{" not in body, (
+        "the summary body interpolates a workflow expression, so what runs "
+        "in CI is not what this test executes"
+    )
+    return body
+
+
+def _summarize(**overrides: str) -> subprocess.CompletedProcess:
+    environment = {"PATH": os.environ["PATH"]}
+    environment.update(overrides)
+    return subprocess.run(
+        ["bash", "-c", _summary_script()],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+
+
+BEHAVIOR_PULL_REQUEST = {
+    "BEHAVIOR_REQUIRED": "true",
+    "MIGRATION_REQUIRED": "false",
+    "CLASSIFY_RESULT": "success",
+    "CHECK_RESULT": "success",
+    "PYTEST_RESULT": "success",
+    "SLOW_RESULT": "success",
+    "MIGRATION_RESULT": "skipped",
+}
+DOCUMENTATION_PULL_REQUEST = {
+    **BEHAVIOR_PULL_REQUEST,
+    "BEHAVIOR_REQUIRED": "false",
+    "PYTEST_RESULT": "skipped",
+    "SLOW_RESULT": "skipped",
+}
+MIGRATION_PULL_REQUEST = {
+    **BEHAVIOR_PULL_REQUEST,
+    "MIGRATION_REQUIRED": "true",
+    "MIGRATION_RESULT": "success",
+}
+
+
+@pytest.mark.parametrize(
+    "shape, results",
+    [
+        ("behavior", BEHAVIOR_PULL_REQUEST),
+        ("documentation", DOCUMENTATION_PULL_REQUEST),
+        ("migration", MIGRATION_PULL_REQUEST),
+    ],
+)
+def test_the_summary_passes_when_every_job_matches_the_classifier(shape, results):
+    completed = _summarize(**results)
+
+    assert completed.returncode == 0, f"{shape}: {completed.stdout}{completed.stderr}"
+    assert "release gate satisfied" in completed.stdout
+
+
+@pytest.mark.parametrize(
+    "reason, results, expected_error",
+    [
+        # The failure this ticket exists to prevent: a behavior job that a
+        # broken `if` condition skipped must never read as green.
+        (
+            "pytest skipped when the classifier required it",
+            {**BEHAVIOR_PULL_REQUEST, "PYTEST_RESULT": "skipped"},
+            "pytest is skipped",
+        ),
+        (
+            "slow skipped when the classifier required it",
+            {**BEHAVIOR_PULL_REQUEST, "SLOW_RESULT": "skipped"},
+            "slow is skipped",
+        ),
+        (
+            "pytest failed",
+            {**BEHAVIOR_PULL_REQUEST, "PYTEST_RESULT": "failure"},
+            "pytest is failure",
+        ),
+        (
+            "slow cancelled",
+            {**BEHAVIOR_PULL_REQUEST, "SLOW_RESULT": "cancelled"},
+            "slow is cancelled",
+        ),
+        (
+            "check failed",
+            {**BEHAVIOR_PULL_REQUEST, "CHECK_RESULT": "failure"},
+            "check is failure",
+        ),
+        # A dead classifier leaves both outputs empty and every dependent
+        # job skipped. Answering docs-only there would skip the whole suite.
+        (
+            "the classifier itself failed",
+            {
+                "BEHAVIOR_REQUIRED": "",
+                "MIGRATION_REQUIRED": "",
+                "CLASSIFY_RESULT": "failure",
+                "CHECK_RESULT": "success",
+                "PYTEST_RESULT": "skipped",
+                "SLOW_RESULT": "skipped",
+                "MIGRATION_RESULT": "skipped",
+            },
+            "classify is failure",
+        ),
+        (
+            "the classifier answered something that is not a boolean",
+            {**BEHAVIOR_PULL_REQUEST, "BEHAVIOR_REQUIRED": "maybe"},
+            "behavior_required is maybe",
+        ),
+        # The inconsistent pair: the behavior jobs ran although the
+        # classifier said the change was documentation-only, so one of the
+        # two is wrong and neither may be trusted.
+        (
+            "behavior ran on a documentation-only classification",
+            {**DOCUMENTATION_PULL_REQUEST, "PYTEST_RESULT": "success"},
+            "pytest is success",
+        ),
+        (
+            "migration skipped when the classifier required it",
+            {**MIGRATION_PULL_REQUEST, "MIGRATION_RESULT": "skipped"},
+            "migration is skipped",
+        ),
+        (
+            "migration ran when the classifier did not require it",
+            {**BEHAVIOR_PULL_REQUEST, "MIGRATION_RESULT": "success"},
+            "migration is success",
+        ),
+    ],
+)
+def test_the_summary_fails_closed(reason, results, expected_error):
+    completed = _summarize(**results)
+
+    assert completed.returncode != 0, f"{reason}: the gate reported green"
+    assert expected_error in completed.stdout, (
+        f"{reason}: {completed.stdout}{completed.stderr}"
+    )
+    assert "release gate failed closed" in completed.stdout

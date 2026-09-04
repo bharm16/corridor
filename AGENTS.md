@@ -19,21 +19,43 @@ and need `OPENAI_API_KEY` in `.env`.
 
 Use non-overlapping gates appropriate to the exact revision
 ([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md),
-as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md)
-and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md)):
+as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md),
+[ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md)
+and [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-with-a-fail-closed-summary.md)):
 
 - During implementation, run `make check` and `make test-focused ARGS="..."`
   for the changed seam. Do not run the broad suite after every edit.
 - Use `make test` after a broad change or before pushing when local broad
   feedback is useful.
-- Normal PR CI runs `make check` on every pull request, and the same tests
-  `make test` and the non-migration `make test-slow` select, partitioned by
-  `make test-shard` across five runners and `make test-slow-shard` across
-  four, unless every changed file is documentation (`**.md`, `docs/**`). No
-  test is deselected by path: the full suites stay required and parallelism
-  keeps the wall clock inside the feedback budget (ADR-0088).
+- **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
+  every pull request.** It runs `make check` unconditionally, and the same
+  tests `make test` and the non-migration `make test-slow` select, partitioned
+  by `make test-shard` across five runners and `make test-slow-shard` across
+  four, unless every changed file is documentation. No test is deselected by
+  path: the full suites stay required and parallelism keeps the wall clock
+  inside the feedback budget (ADR-0088).
+- **The `release-gate` job is the required status, and it fails closed.** It
+  runs under `always()`, and matches every job result against what
+  `scripts/classify_ci_change.py` asked for: `success` where the classifier
+  said the gate was required, `skipped` where it said it was not. A
+  `failure`, a `cancelled`, an unexpected `skipped`, or an inconsistent
+  classifier/job pair fails it. **Never rewrite it as `success or skipped ->
+  pass`** — that is how a behavior job skipped by a broken condition reports
+  green (ADR-0093).
+- **Path scoping lives on the jobs, never on a trigger.** A workflow skipped
+  by a trigger-level path filter leaves its checks *pending*, and a required
+  check that never reports blocks the pull request forever. A job skipped by
+  an `if` reports `skipped`, which the summary can inspect. Do not add
+  `paths` or `paths-ignore` to any `pull_request` trigger;
+  `tests/test_ci_policy.py` fails if you do.
+- **Documentation is a narrow allowlist**, not `**.md`: `docs/**`,
+  `README.md`, `AGENTS.md`, `CLAUDE.md`, `CONTEXT.md`, `CONTEXT-MAP.md`,
+  `roadmap.md`. Everything else runs the behavior suites — `prompts/**` above
+  all, because `src/corridor/extract_agreement.py` and the minutes extractors
+  load those Markdown files as executable prompts at runtime, so a
+  prompt-only change is a behavior change.
 - **Raise the runner count one step at a time, and measure it.** Ten test jobs
-  (six non-slow plus four slow, twelve counting `check` and `migration-test`)
+  (six non-slow plus four slow, twelve counting `check` and `migration`)
   saturated this account's package downloads: `uv sync --locked` went from 2s
   to as much as 588s and two jobs stalled for *minutes inside pytest*, taking
   the gate to 11m55s. Nine jobs measured healthy twice, every `uv sync` at
@@ -66,10 +88,13 @@ and [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-
 - A merge to `main` does not repeat that suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate
   post-merge test workflow.
-- A change to migrations, schema models, or the database test harness also runs
-  `make test-migrations`. Ordinary application changes do not.
-- `make test-full` is the complete manual and weekly scheduled gate. It is not
-  part of ordinary PR or post-merge CI.
+- A change to migrations, schema models, the database test harness, or
+  anything else in `MIGRATION_PATHS` in `scripts/classify_ci_change.py` also
+  runs `make test-migrations`, as the gate's `migration` job. Ordinary
+  application changes do not.
+- `make test-full` is the complete manual and weekly scheduled gate,
+  `.github/workflows/full-suite.yml`. It has no `pull_request` trigger and is
+  not part of ordinary PR or post-merge CI.
 - Any source or test change invalidates an earlier result. Rerun the smallest
   affected seam, then the scoped gate for the revised change.
 
@@ -137,15 +162,20 @@ git rev-parse --abbrev-ref HEAD
 Recovering a commit already made on `main` is `git branch <name> && git reset
 --hard origin/main && git checkout <name>`, before anything is pushed.
 
-Server-side required status checks are unavailable on this private free-plan
-repository (#506). Until that changes, every PR merges only after every job is
-green, verified with:
+**`release-gate` is a required status check on `main`.** The "main release
+gate" ruleset blocks a merge until it reports success, so the gate is enforced
+by the server rather than by remembering to look. Watch it anyway, because a
+watched run tells you *which* job failed while the ruleset only tells you the
+merge is blocked:
 
 ```bash
 gh pr checks <pr-number> --watch --fail-fast
 ```
 
-A merge with a red or still-running job is a regression to file (#516).
+`release-gate` reports on every pull request, including documentation-only
+ones, and it fails closed: a behavior job that was skipped when the classifier
+said it was required fails the gate rather than passing it (ADR-0093).
+Merging with a red or still-running job is a regression to file (#516).
 
 Merge as soon as a reviewed PR is green; do not leave finished work open.
 Every merge squashes and deletes its branch in the same act:
