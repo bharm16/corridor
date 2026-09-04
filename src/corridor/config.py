@@ -67,6 +67,19 @@ class Settings(BaseSettings):
         default="", validation_alias="CORRIDOR_HUMAN_PRINCIPAL"
     )
 
+    # Whether this deployment serves only the live-pilot route surface (#680).
+    # The database half of that boundary is unconditional: the migration
+    # revokes every unpartitioned relation from `corridor_web`. This is the
+    # application half, and it is declared rather than assumed because a
+    # legacy development deployment still runs the frozen surfaces (ADR-0081)
+    # by pointing `web_database_url` at the opt-in `corridor_legacy_dev`
+    # login, which keeps the blanket read. Left off, the routes are all
+    # reachable and the ones outside `corridor.web_boundary` simply have no
+    # data to read as `corridor_web`.
+    live_pilot_web_boundary: bool = Field(
+        default=False, validation_alias="CORRIDOR_LIVE_PILOT_WEB_BOUNDARY"
+    )
+
     # The deployment this process runs in. It labels every structured log line
     # (docs/operations/observability-runbook.md) and names nothing else, so a
     # local clone that configures nothing still produces attributable output.

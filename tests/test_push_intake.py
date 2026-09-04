@@ -688,7 +688,7 @@ def test_the_inbound_webhook_binds_on_the_envelope_recipient_not_the_headers(
 
     from fastapi.testclient import TestClient
 
-    from corridor.web.app import app, get_session
+    from corridor.web.app import app, get_machine_session, get_session
 
     monkeypatch.setattr(settings, "inbound_webhook_secret", "server-secret")
     monkeypatch.setattr(settings, "inbound_service_address", "")
@@ -697,6 +697,8 @@ def test_the_inbound_webhook_binds_on_the_envelope_recipient_not_the_headers(
     bind_alias(session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS)
     bind_alias(session, customer="borealis-gas", project=bravo, alias=BRAVO_ALIAS)
     app.dependency_overrides[get_session] = lambda: session
+    # #680: `/intake/inbound` runs on the operations capability now.
+    app.dependency_overrides[get_machine_session] = lambda: session
     try:
         with TestClient(app) as client:
             refused = client.post(
@@ -799,7 +801,7 @@ def test_the_inbound_webhook_keeps_the_refusal_it_recorded(session, monkeypatch)
     from fastapi.testclient import TestClient
 
     from corridor import intake_hardening
-    from corridor.web.app import app, get_session
+    from corridor.web.app import app, get_machine_session, get_session
 
     monkeypatch.setattr(settings, "inbound_webhook_secret", "server-secret")
     monkeypatch.setattr(settings, "inbound_service_address", "")
@@ -812,6 +814,8 @@ def test_the_inbound_webhook_keeps_the_refusal_it_recorded(session, monkeypatch)
     bind_alias(session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS)
     hostile = raw(message_id="<hostile@example.test>", body="EICAR-MARKER inside")
     app.dependency_overrides[get_session] = lambda: session
+    # #680: `/intake/inbound` runs on the operations capability now.
+    app.dependency_overrides[get_machine_session] = lambda: session
     try:
         with TestClient(app) as client:
             response = client.post(

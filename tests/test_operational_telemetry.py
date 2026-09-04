@@ -66,7 +66,12 @@ from corridor.operational_health import (
     due_work_signals,
     runtime_report,
 )
-from corridor.web.app import app, get_content_store, get_session
+from corridor.web.app import (
+    app,
+    get_content_store,
+    get_machine_session,
+    get_session,
+)
 
 
 class ControlledClock:
@@ -522,6 +527,9 @@ def _health_client(session, store) -> TestClient:
         yield session
 
     app.dependency_overrides[get_session] = override_session
+    # `/health` is a platform probe, not human web traffic, so #680 moved it
+    # onto the operations capability; the substitute stands in for both.
+    app.dependency_overrides[get_machine_session] = override_session
     app.dependency_overrides[get_content_store] = lambda: store
     return TestClient(app)
 

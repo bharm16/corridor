@@ -67,6 +67,7 @@ from corridor.candidate_statement_facts import (
     prepare_candidate_statement_facts,
 )
 from corridor.db import WebSession as SessionFactory
+from corridor.db import WorkerSession as MachineSessionFactory
 from corridor.object_storage import ObjectStore, content_store
 from corridor.operational_health import runtime_report
 from corridor.telemetry import (
@@ -75,6 +76,7 @@ from corridor.telemetry import (
     configure_logging,
 )
 from corridor import access
+from corridor import web_boundary
 from corridor.web import auth
 from corridor.web import ui_primitives
 from corridor.check_configuration import (
@@ -554,6 +556,68 @@ def get_session():
         yield session
 
 
+# --- #680 The live-pilot web capability boundary ---------------------------
+#
+# `corridor.web_boundary` says which routes the live pilot serves and which
+# relations each of them reaches; the migration revokes every remaining
+# unpartitioned relation from `corridor_web`. Three things here keep the two
+# halves honest, and they are together so a reader meets them at once.
+#
+# `get_machine_session` is the operations capability. Two routes carry no
+# person and therefore no partition — the transport-authenticated mail
+# receipt and the platform probe — and reading customer rows as the *human*
+# web role with no membership behind them is exactly what the boundary is
+# against. They take the worker login instead, which holds the unpartitioned
+# policy, and that is what made it safe to partition `documents` and
+# `source_deliveries` at all. It opens no new credential: this process
+# already builds the worker engine at import.
+#
+# `refuse_routes_outside_the_pilot_boundary` is the route half. It matches
+# the request against the router's own templates rather than a second copy of
+# the paths, so a renamed route cannot drift away from the list quietly, and
+# it answers an unlisted route with the same 404 a missing project gets — a
+# disabled surface should not advertise that it exists.
+#
+# `_refuse_legacy_project_under_the_boundary` is the one place a route this
+# boundary *enables* still has to refuse: `/work/{slug}` renders ADR-0035's
+# item-per-record Work List for an unadopted project, and every relation that
+# list reads is revoked.
+
+
+def get_machine_session():
+    """A session held by the operations capability, not the human web role."""
+
+    with MachineSessionFactory() as session:
+        yield session
+
+
+@app.middleware("http")
+async def refuse_routes_outside_the_pilot_boundary(request: Request, call_next):
+    if settings.live_pilot_web_boundary:
+        method = request.method.upper()
+        for route in app.routes:
+            template = getattr(route, "path", None)
+            if template is None or not route.path_regex.match(request.url.path):
+                continue
+            if method not in (route.methods or ()):
+                continue
+            if not web_boundary.route_is_enabled(method, template):
+                return JSONResponse(
+                    {"detail": "not found"}, status_code=404
+                )
+            break
+    return await call_next(request)
+
+
+def _refuse_legacy_project_under_the_boundary(project: Project) -> None:
+    """A pilot deployment serves adopted projects; the legacy list has no data."""
+
+    if settings.live_pilot_web_boundary:
+        raise HTTPException(
+            404, f"no project {project.slug!r}"
+        )
+
+
 def get_content_store() -> ObjectStore:
     """The deployment's object store, as a seam a health probe can substitute."""
 
@@ -562,7 +626,7 @@ def get_content_store() -> ObjectStore:
 
 @app.get("/health")
 def health(
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_machine_session),
     store: ObjectStore = Depends(get_content_store),
 ) -> Response:
     """Report application, database, object-storage, and worker-heartbeat state.
@@ -4985,6 +5049,7 @@ def coordinator_home(
         return _project_workflow_response(
             request, project, principal, session, now=now
         )
+    _refuse_legacy_project_under_the_boundary(project)
     work_list = build_work_list(
         session,
         project.id,
@@ -7984,7 +8049,7 @@ async def receive_inbound_mail(
     inbound_token: str | None = Header(default=None, alias="X-Corridor-Inbound-Token"),
     delivered_to: str | None = Header(default=None, alias="X-Corridor-Delivered-To"),
     delivery_id: str | None = Header(default=None, alias="X-Corridor-Delivery-Id"),
-    session: Session = Depends(get_session),
+    session: Session = Depends(get_machine_session),
 ):
     """Server-to-server receipt boundary for one authenticated mail transport.
 
