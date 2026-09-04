@@ -41,6 +41,10 @@ from corridor.issue_content import (
     CHASE_LIST_IDENTITY,
     CHASE_LIST_VERSION,
     NO_ISSUE_PROFILE,
+    SELECT_ALL_ISSUE_AFFECTING,
+    SELECT_DIFFERENCE,
+    SELECT_FIELD,
+    SELECT_REASON,
     UCM_RENDERER_IDENTITY,
     UCM_RENDERER_VERSION,
     UNREGISTERED_RENDERER,
@@ -50,7 +54,13 @@ from corridor.issue_content import (
     UNSUPPORTED_DECISION_SELECTOR,
     WEEKLY_REPORT_IDENTITY,
     WEEKLY_REPORT_VERSION,
+    CANONICAL_FIELDS,
     ChangeFacts,
+    UnsupportedSelector,
+    _PRESENTATION_LABELS,
+    _fields_shown_as,
+    _selector_guidance,
+    decision_selector,
     effective_issue_content,
     parse_selector,
     registered_contract,
@@ -62,7 +72,9 @@ from corridor.issue_profile import (
     RendererRevision,
     UPDATED_UCM,
     effective_issue_inventory,
+    issue_profile_history,
 )
+from corridor.presentation import field_label
 from corridor.models import Project
 from corridor.operating_mode import adopt_project_baseline
 from corridor.packet_review import emit_packet_surfacing, read_review_items
@@ -140,6 +152,15 @@ PROSE_POLICY = DecisionBlockingPolicy(
     policy="owner_sign_off",
     required_decision="Utility owner sign-off recorded",
     statement="This client will not accept an issue before sign-off.",
+)
+
+# The same rule a coordinator hand-authored against the label their screen
+# prints. It selects nothing and is reported as a configuration problem; #670
+# only decides what that problem is allowed to *say*.
+LABEL_POLICY = DecisionBlockingPolicy(
+    policy="resolve_before_issue:v1",
+    required_decision=f"{SELECT_FIELD}:promised_for",
+    statement="Promised For changes must be decided before this issue.",
 )
 
 
@@ -428,6 +449,172 @@ def test_a_selector_naming_a_field_that_does_not_exist_is_refused():
     assert parse_selector("field:promissed_for") is None
     assert parse_selector("difference:removal") is None
     assert parse_selector("reason:very_urgent") is None
+
+
+# --- naming the canonical field is display, never behaviour (#670) ---------
+
+
+def test_a_typed_helper_composes_the_selector_a_caller_would_otherwise_spell():
+    """Configuration gets the canonical token from the vocabulary, not a guess.
+
+    The helper is the evaluator run over the composed parts, so what a
+    configuration screen may store and what a policy may match are one
+    decision. A screen shows ``field_label`` beside the token it stores; the
+    label never becomes the token.
+    """
+
+    assert (
+        decision_selector(SELECT_FIELD, PROMISED_FOR_FIELD).token
+        == f"field:{PROMISED_FOR_FIELD}"
+    )
+    assert decision_selector(SELECT_DIFFERENCE, "modify").token == "difference:modify"
+    assert (
+        decision_selector(SELECT_REASON, "promised_timing_change").token
+        == "reason:promised_timing_change"
+    )
+    assert (
+        decision_selector(SELECT_ALL_ISSUE_AFFECTING).token == SELECT_ALL_ISSUE_AFFECTING
+    )
+    for composed in (
+        decision_selector(SELECT_FIELD, PROMISED_FOR_FIELD),
+        decision_selector(SELECT_ALL_ISSUE_AFFECTING),
+    ):
+        assert parse_selector(composed.token) == composed
+    assert field_label(PROMISED_FOR_FIELD) == "Promised for"
+
+
+def test_the_typed_helper_refuses_the_label_the_evaluator_refuses():
+    """The one composition path may not be the alias door (#670).
+
+    A helper that accepted the label would put the alias table back with an
+    extra step in front of it: the token would be stored, digested, and matched
+    forever after, and no diagnostic would ever be printed.
+    """
+
+    for kind, value in (
+        (SELECT_FIELD, "promised_for"),
+        (SELECT_FIELD, "Promised for"),
+        (SELECT_FIELD, "promissed_for"),
+        (SELECT_DIFFERENCE, "removal"),
+        (SELECT_REASON, "very_urgent"),
+        ("selector", "anything"),
+    ):
+        with pytest.raises(UnsupportedSelector):
+            decision_selector(kind, value)
+    with pytest.raises(UnsupportedSelector):
+        decision_selector("Utility owner sign-off recorded")
+
+
+def test_the_guidance_names_one_canonical_field_only_for_an_exact_label():
+    """Exact equality on a normalized spelling, and nothing that resembles.
+
+    Underscores, case and whitespace are the three ways one label is written
+    down. There is deliberately no edit distance behind this: ``promissed_for``
+    is a typo for a canonical field and gets the vocabulary, not a repair.
+    """
+
+    for written in ("promised_for", "Promised For", "promised for"):
+        exact = _selector_guidance(f"{SELECT_FIELD}:{written}")
+        # The offending value is echoed as written, and the field named once.
+        assert repr(written) in exact
+        assert f"use {SELECT_FIELD}:{PROMISED_FOR_FIELD}" in exact
+        assert f"shown as {field_label(PROMISED_FOR_FIELD)}" in exact
+    for silent in (
+        f"{SELECT_FIELD}:promissed_for",
+        f"{SELECT_FIELD}:{PROMISED_FOR_FIELD}",
+        f"{SELECT_FIELD}:",
+        "Utility owner sign-off recorded",
+        "difference:removal",
+        "",
+    ):
+        assert _selector_guidance(silent) == ""
+
+
+def test_a_label_shown_for_two_canonical_fields_names_neither():
+    """Ambiguity lists the supported selectors; it never picks a candidate.
+
+    Nothing in this release prints one label for two comparable fields, so the
+    rule is proved over a supplied label table rather than by waiting for a
+    presentation change to introduce the collision silently.
+    """
+
+    assert _fields_shown_as("promised for", {"committed_date": "Promised for"}) == (
+        "committed_date",
+    )
+    ambiguous = {"committed_date": "Promised for", "need_date": "promised_for"}
+    assert _fields_shown_as("promised for", ambiguous) == (
+        "committed_date",
+        "need_date",
+    )
+    # The live table is unambiguous, which is what lets the sentence name one.
+    collisions = [
+        label
+        for label in {field_label(field) for field in sorted(CANONICAL_FIELDS)}
+        if len(_fields_shown_as(label, _PRESENTATION_LABELS)) > 1
+    ]
+    assert collisions == []
+
+
+def test_a_label_selector_is_a_configuration_problem_that_names_the_field(
+    session: Session, project: Project
+):
+    """#670: the coordinator is told what to configure, and nothing is executed.
+
+    The label appears in a sentence. It does not become a policy, it does not
+    select the field it looks like, and the profile keeps waiting on exactly
+    the string it was registered with.
+    """
+
+    Issued(session, project).maps(PROMISED_FOR_FIELD).issues(policies=(LABEL_POLICY,))
+
+    content = _content(session, project)
+
+    assert [problem.code for problem in content.problems] == [
+        UNSUPPORTED_DECISION_SELECTOR
+    ]
+    sentence = content.problems[0].sentence
+    assert f"{SELECT_FIELD}:promised_for" in sentence
+    assert f"use {SELECT_FIELD}:{PROMISED_FOR_FIELD}" in sentence
+    assert f"shown as {field_label(PROMISED_FOR_FIELD)}" in sentence
+    assert not content.supported
+
+
+def test_the_named_field_never_reaches_the_evaluator_or_the_stored_digest(
+    session: Session, project: Project
+):
+    """The suggestion is text, and text is all that leaves this seam (#670).
+
+    Naming ``committed_date`` in a sentence must not normalize the declaration,
+    re-digest it, or give ``parse_selector`` a second answer. If any of those
+    happened the alias table would be back, one step further from the reader
+    who would have to find it.
+    """
+
+    Issued(session, project).maps(PROMISED_FOR_FIELD).issues(policies=(LABEL_POLICY,))
+
+    content = _content(session, project)
+
+    inventory = effective_issue_inventory(session, project.id, CUTOFF)
+    assert inventory is not None
+    stored = inventory.decision_blocking_policies[0].required_decision
+    # Nothing executes: naming the field does not resurrect the policy.
+    assert content.blocking_policies == ()
+    assert (
+        content.blocking_policies_for(
+            ChangeFacts(field=PROMISED_FOR_FIELD, change_type="modify")
+        )
+        == ()
+    )
+    # Nothing is rewritten: the declaration and its digest are as registered.
+    assert stored == LABEL_POLICY.required_decision
+    assert content.content_sha256 == inventory.content_sha256
+    declaration = issue_profile_history(session, project.id)[-1].declaration
+    assert f"{SELECT_FIELD}:promised_for" in declaration
+    assert f"{SELECT_FIELD}:{PROMISED_FOR_FIELD}" not in declaration
+    # The two public doors into the vocabulary, asked the same question.
+    assert parse_selector(stored) is None
+    with pytest.raises(UnsupportedSelector):
+        decision_selector(SELECT_FIELD, "promised_for")
 
 
 # --- resolving one project's configuration ---------------------------------
