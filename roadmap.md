@@ -121,7 +121,12 @@ agent can settle. Everything else on the board is buildable work.
   the ticket closes on the signed licence, not on the choice. Until it is
   held, no live customer PDF processing is enabled, and a first pilot may be
   scoped to XLSX and other non-PDF sources; #606's later-UCM path is exactly
-  that shape. It gates #489 and #535.
+  that shape. It gates #489 and #535. Procurement is now tracked as **#725**
+  (written terms requested and retained), and **#724** records the posture
+  decision once #723's evidence and #725's terms are both in hand — #724 selects
+  a posture, it does not sign. The commercial route remains the default; the
+  #720-#723 bakeoff exists so that default rests on evidence rather than on an
+  untested assumption, and it does not block this decision.
 - **#601 — the nonproduction AWS account and GitHub deployment identity.**
   Account creation, root MFA, a billing budget, and an OIDC role are acts only
   the account owner can perform. #489 waits on it.
@@ -370,6 +375,12 @@ cohort surface.
 - **Operations tooling**, runbooks, and support ergonomics.
 - **Template succession** — new customer UCM templates and mapping versions.
 - **Accessibility** work on any surface.
+- **PDF-engine procurement evidence** — #720 contract and frozen environment,
+  #721 incumbent harness, #722 challenger adapters, #723 evidence run. An
+  isolated bakeoff of PyMuPDF against PDFOxide and PDFium, built on #439's gold
+  corpus and `pdf_evaluation.py`. It touches no production engine, dependency,
+  or record path, and it does not gate the deterministic XLSX/UCM pilot. Its
+  outcome informs #461 and #724; it does not decide either.
 - **Deployment and observability** beyond #491A's pilot minimum.
 - **Backup, restore, and recovery** hardening.
 - **Migration** — all of Phase 4. #512, #457 and #598 (with its children
