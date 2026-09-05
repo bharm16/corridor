@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval pdf-engine-bakeoff-test page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval pdf-engine-bakeoff-test pdf-engine-bakeoff-docker page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -384,6 +384,23 @@ pdf-engine-bakeoff:
 # Run the isolated bake-off's tests outside the required root-suite collection.
 pdf-engine-bakeoff-test:
 	uv run pytest experiments/pdf-engine-bakeoff/tests -q
+
+# Run the bake-off inside the Linux x86-64 image, with the gitignored corpus
+# store available. #720 pins manylinux x86-64 wheels by direct URL, so the three
+# engines cannot install on macOS or arm64 Linux; this is the only way to run
+# them together on a developer machine.
+#
+# On Apple Silicon this runs under emulation. Correctness, geometry, rendering
+# fidelity, capability and determinism results are valid. Latency, peak RSS and
+# any throughput comparison are NOT, and must come from the deployable image.
+#   make pdf-engine-bakeoff-docker ARGS="--output out/bakeoff"
+pdf-engine-bakeoff-docker:
+	docker build --platform linux/amd64 -t corridor-pdf-bakeoff \
+	  -f experiments/pdf-engine-bakeoff/Dockerfile experiments/pdf-engine-bakeoff
+	docker run --rm --platform linux/amd64 -v "$(PWD)":/repo -w /repo \
+	  corridor-pdf-bakeoff bash -lc "uv sync --project experiments/pdf-engine-bakeoff --frozen \
+	  && uv run --project experiments/pdf-engine-bakeoff --frozen --no-sync \
+	     python experiments/pdf-engine-bakeoff/harness.py $(ARGS)"
 
 # Record Stage 1 page-routing confusion and OCR error rates against the frozen
 # gold membership, alongside the retired character-count comparator:
