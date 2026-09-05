@@ -26,6 +26,7 @@ provides a dependency-free strict validator. Run the generated-fixture
 self-comparison without resolving or downloading dependencies:
 
 ```bash
+make pdf-engine-bakeoff-test
 make pdf-engine-bakeoff
 ```
 

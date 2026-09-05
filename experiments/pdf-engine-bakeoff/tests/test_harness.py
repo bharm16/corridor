@@ -9,8 +9,7 @@ from pathlib import Path
 
 import pytest
 
-ROOT = Path(__file__).parents[1]
-EXPERIMENT = ROOT / "experiments/pdf-engine-bakeoff"
+EXPERIMENT = Path(__file__).parents[1]
 sys.path.insert(0, str(EXPERIMENT))
 
 from contract import ContractError, repeatability_digest, validate_result  # noqa: E402
@@ -89,6 +88,26 @@ def test_native_abort_is_retained_without_terminating_parent(tmp_path):
     assert result["error_class"] == "native_crash"
     assert result["returncode"] != 0
     assert tmp_path.exists()  # the pytest process survived the abort
+
+
+def test_missing_isolated_interpreter_is_not_an_engine_crash(monkeypatch, tmp_path):
+    missing = tmp_path / "missing-python"
+    monkeypatch.setattr("harness.ISOLATED_PYTHON", missing)
+    with pytest.raises(RuntimeError) as raised:
+        run_subprocess({})
+    assert str(missing) in str(raised.value)
+    assert "uv sync --project experiments/pdf-engine-bakeoff --frozen --no-dev" in str(raised.value)
+    assert "native_crash" not in str(raised.value)
+
+
+def test_crash_envelopes_compare_by_containment_and_error_class():
+    left = {"containment_status": "crash", "error_class": "native_crash"}
+    right = {"containment_status": "crash", "error_class": "native_crash"}
+    comparison = compare(left, right)
+    assert comparison == {
+        "equal": True,
+        "layers": {"containment_status": True, "error_class": True},
+    }
 
 
 def test_malformed_and_encrypted_error_classes_are_deterministic(tmp_path):

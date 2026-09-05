@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval pdf-engine-bakeoff-test page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -380,6 +380,10 @@ pdf-eval:
 # Dependencies must already match the frozen experiment lock; this never syncs.
 pdf-engine-bakeoff:
 	uv run --project experiments/pdf-engine-bakeoff --frozen --no-sync python experiments/pdf-engine-bakeoff/harness.py $(ARGS)
+
+# Run the isolated bake-off's tests outside the required root-suite collection.
+pdf-engine-bakeoff-test:
+	uv run pytest experiments/pdf-engine-bakeoff/tests -q
 
 # Record Stage 1 page-routing confusion and OCR error rates against the frozen
 # gold membership, alongside the retired character-count comparator:

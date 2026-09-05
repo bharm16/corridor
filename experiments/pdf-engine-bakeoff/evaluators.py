@@ -8,6 +8,21 @@ from typing import Any
 
 def compare(left: dict[str, Any], right: dict[str, Any]) -> dict[str, Any]:
     """Compare deterministic layers; performance observations are excluded."""
+    if "deterministic_output" not in left or "deterministic_output" not in right:
+        layers = {
+            "containment_status": left.get("containment_status") == right.get("containment_status"),
+            "error_class": left.get("error_class") == right.get("error_class"),
+        }
+        return {
+            "equal": (
+                all(layers.values())
+                and left.get("containment_status") is not None
+                and left.get("error_class") is not None
+                and "deterministic_output" not in left
+                and "deterministic_output" not in right
+            ),
+            "layers": layers,
+        }
     ld, rd = left["deterministic_output"], right["deterministic_output"]
     layers = {
         "source_digest": ld.get("source_sha256") == rd.get("source_sha256"),

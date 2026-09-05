@@ -28,6 +28,11 @@ def run_subprocess(request: dict[str, Any], *, timeout: float = 60,
                    worker: Path = HERE / "worker.py", repetition: int = 1,
                    run_order: int = 1) -> dict[str, Any]:
     """Return a receipt or a contained crash/timeout/protocol failure."""
+    if not ISOLATED_PYTHON.is_file() or not os.access(ISOLATED_PYTHON, os.X_OK):
+        raise RuntimeError(
+            f"isolated Python interpreter is missing or not executable: {ISOLATED_PYTHON}; "
+            "create it with `uv sync --project experiments/pdf-engine-bakeoff --frozen --no-dev`"
+        )
     started_at = datetime.now(timezone.utc).isoformat()
     started = time.perf_counter()
     try:
