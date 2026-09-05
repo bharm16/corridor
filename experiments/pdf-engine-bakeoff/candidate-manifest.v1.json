@@ -1,0 +1,23 @@
+{
+  "schema_version": "corridor.pdf-engine-candidates.v1",
+  "frozen_at": "2026-09-05",
+  "environment": {"python": "3.12.13", "os": "Linux", "architecture": "x86_64", "wheel_policy": "prebuilt-only; exact direct wheel URLs; no sdist, build, runtime download, or system-engine fallback"},
+  "candidates": [
+    {
+      "engine": "pymupdf", "package": "PyMuPDF", "version": "1.28.0", "bundled_engine": "MuPDF 1.29.0",
+      "declared_license": "Dual Licensed - GNU AFFERO GPL 3.0 or Artifex Commercial License",
+      "wheel": {"filename": "pymupdf-1.28.0-cp310-abi3-manylinux_2_28_x86_64.whl", "platform_tag": "manylinux_2_28_x86_64", "sha256": "44f0973f5e5edbaec95bc34b64e71d1959d4ee90b1328de1b4f4f5b4fa78673f"}
+    },
+    {
+      "engine": "pdf_oxide", "package": "pdf-oxide", "version": "0.3.77", "bundled_engine": "pdf_oxide native Rust engine 0.3.77",
+      "declared_license": "MIT OR Apache-2.0",
+      "wheel": {"filename": "pdf_oxide-0.3.77-cp38-abi3-manylinux_2_28_x86_64.whl", "platform_tag": "manylinux_2_28_x86_64", "sha256": "a531e6a0281b8037a47465fdaa912dc955ff22172d3e9171c76e89f15f828a1d"}
+    },
+    {
+      "engine": "pypdfium2", "package": "pypdfium2", "version": "5.13.0", "bundled_engine": "PDFium 153.0.7999.0",
+      "declared_license": "BSD-3-Clause, Apache-2.0, dependency licenses",
+      "wheel": {"filename": "pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", "platform_tag": "manylinux_2_17_x86_64.manylinux2014_x86_64", "sha256": "81df25c1ab4c13ff773102d3cbea1967511d079123b067fc077bd0c4d57d91d8"}
+    }
+  ],
+  "capabilities": ["document_open_validation", "page_count_metadata", "page_boxes_rotation_user_unit_transforms", "characters", "words", "lines_block_line_order", "positioned_text", "vector_paths", "table_structure", "page_rendering", "clipped_region_rendering", "malformed_encrypted_unsupported_behavior", "released_pdf_text_verification"]
+}

@@ -1,0 +1,48 @@
+version = 1
+revision = 2
+requires-python = "==3.12.*"
+
+[[package]]
+name = "corridor-pdf-engine-bakeoff"
+version = "0.1.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "pdf-oxide" },
+    { name = "pymupdf" },
+    { name = "pypdfium2" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "pdf-oxide", url = "https://files.pythonhosted.org/packages/85/80/8d2c75b088da2856781c921ee9f8008fd6f419faf8f70e61848a5f8db823/pdf_oxide-0.3.77-cp38-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "pymupdf", url = "https://files.pythonhosted.org/packages/58/69/5d12c9f1f2d76f28383d6110a069c79fbfced5a4f97bb1ee6e8354f52bb7/pymupdf-1.28.0-cp310-abi3-manylinux_2_28_x86_64.whl" },
+    { name = "pypdfium2", url = "https://files.pythonhosted.org/packages/d3/7c/74a2fb48e5b0d2402d9ca64b39074c722d67e9a8a2c58449a843a8c2329a/pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" },
+]
+
+[[package]]
+name = "pdf-oxide"
+version = "0.3.77"
+source = { url = "https://files.pythonhosted.org/packages/85/80/8d2c75b088da2856781c921ee9f8008fd6f419faf8f70e61848a5f8db823/pdf_oxide-0.3.77-cp38-abi3-manylinux_2_28_x86_64.whl" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/85/80/8d2c75b088da2856781c921ee9f8008fd6f419faf8f70e61848a5f8db823/pdf_oxide-0.3.77-cp38-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:a531e6a0281b8037a47465fdaa912dc955ff22172d3e9171c76e89f15f828a1d" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "onnxruntime", marker = "extra == 'ocr'", specifier = ">=1.20.1" }]
+provides-extras = ["ocr"]
+
+[[package]]
+name = "pymupdf"
+version = "1.28.0"
+source = { url = "https://files.pythonhosted.org/packages/58/69/5d12c9f1f2d76f28383d6110a069c79fbfced5a4f97bb1ee6e8354f52bb7/pymupdf-1.28.0-cp310-abi3-manylinux_2_28_x86_64.whl" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/58/69/5d12c9f1f2d76f28383d6110a069c79fbfced5a4f97bb1ee6e8354f52bb7/pymupdf-1.28.0-cp310-abi3-manylinux_2_28_x86_64.whl", hash = "sha256:44f0973f5e5edbaec95bc34b64e71d1959d4ee90b1328de1b4f4f5b4fa78673f" },
+]
+
+[[package]]
+name = "pypdfium2"
+version = "5.13.0"
+source = { url = "https://files.pythonhosted.org/packages/d3/7c/74a2fb48e5b0d2402d9ca64b39074c722d67e9a8a2c58449a843a8c2329a/pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/d3/7c/74a2fb48e5b0d2402d9ca64b39074c722d67e9a8a2c58449a843a8c2329a/pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl", hash = "sha256:81df25c1ab4c13ff773102d3cbea1967511d079123b067fc077bd0c4d57d91d8" },
+]

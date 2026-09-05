@@ -1,0 +1,44 @@
+{
+  "documents": [
+    {
+      "document_family": "txdot-nhhip-ucm-2026",
+      "document_sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+      "split": "development"
+    },
+    {
+      "document_family": "txdot-sh99-ucm-2025",
+      "document_sha256": "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30",
+      "split": "regression"
+    },
+    {
+      "document_family": "fdot-sr789-roundabout-ucm",
+      "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "split": "holdout"
+    },
+    {
+      "document_family": "wsdot-9424-appendix-u2",
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "split": "development"
+    },
+    {
+      "document_family": "coh-municipal-maintenance-agreement-1969",
+      "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+      "split": "development"
+    },
+    {
+      "document_family": "coh-parking-agreement-amendment-2012",
+      "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+      "split": "development"
+    }
+  ],
+  "evaluator_cli": "src/corridor/pdf_evaluation_cli.py",
+  "evaluator_report": "src/corridor/pdf_evaluation_report.py",
+  "gold_dataset": {
+    "dataset_version": "2026-08-31.2",
+    "path": "gold/pdf/v1/dataset.json",
+    "sha256": "73f3e0c019c22e2e5a38d873019f9b3510f632b3883a9033f7c284e8c79b2951"
+  },
+  "holdout_policy": "No holdout access or result is authorized by issue #720.",
+  "schema_version": "corridor.pdf-engine-corpus-manifest.v1",
+  "stage0_contract": "src/corridor/pdf_evaluation.py"
+}

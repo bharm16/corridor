@@ -1,0 +1,10 @@
+[project]
+name = "corridor-pdf-engine-bakeoff"
+version = "0.1.0"
+description = "Isolated, non-production PDF engine evidence environment"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "pdf-oxide @ https://files.pythonhosted.org/packages/85/80/8d2c75b088da2856781c921ee9f8008fd6f419faf8f70e61848a5f8db823/pdf_oxide-0.3.77-cp38-abi3-manylinux_2_28_x86_64.whl",
+  "pymupdf @ https://files.pythonhosted.org/packages/58/69/5d12c9f1f2d76f28383d6110a069c79fbfced5a4f97bb1ee6e8354f52bb7/pymupdf-1.28.0-cp310-abi3-manylinux_2_28_x86_64.whl",
+  "pypdfium2 @ https://files.pythonhosted.org/packages/d3/7c/74a2fb48e5b0d2402d9ca64b39074c722d67e9a8a2c58449a843a8c2329a/pypdfium2-5.13.0-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+]
