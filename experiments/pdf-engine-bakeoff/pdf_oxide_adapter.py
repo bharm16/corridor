@@ -157,7 +157,7 @@ class PDFOxideAdapter:
                 if "x" in operation and "y" in operation:
                     points.append({"x": round(float(operation["x"]), 6),
                                    "y": round(page_height - float(operation["y"]), 6)})
-            result.append({"path_id": f"p{pi}", "operation": "path", "points": points,
+            result.append({"path_id": f"p{pi}", "operation": "other", "points": points,
                            "closed": any(op.get("op") == "close_path" for op in path.get("operations", []))})
         return result
 

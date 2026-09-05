@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from evaluators import (compare, evaluate_expected, geometry_contract,
                         image_difference, polygon_disagreement,
                         validate_capability_claims)  # noqa: E402
 from fixtures import generate  # noqa: E402
-from harness import run_subprocess  # noqa: E402
+from harness import run, run_subprocess  # noqa: E402
 from registry import REAL_ENGINES  # noqa: E402
 
 
@@ -37,6 +38,36 @@ def test_registry_contains_all_three_isolated_engines():
     assert REAL_ENGINES == ("pymupdf", "pdf_oxide", "pdfium")
     assert "pdf_oxide" not in sys.modules
     assert "pypdfium2" not in sys.modules
+
+
+def test_smoke_run_resolves_generated_sources_and_produces_pages(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    output = Path("relative-output")
+    assert run(output) == 0
+    receipts = [
+        json.loads(path.read_text())
+        for path in (output / "receipts").glob("*.json")
+    ]
+    assert receipts
+    assert all(receipt["deterministic_output"]["pages"] for receipt in receipts)
+    assert all(receipt["deterministic_output"]["status"] == "success" for receipt in receipts)
+
+
+def test_all_failed_run_exits_nonzero_and_refuses_repeatability(tmp_path, monkeypatch):
+    def failed(*args, **kwargs):
+        return {"deterministic_output": {"status": "failed", "pages": [], "errors": [
+            {"classification": "adapter_failure", "message": "broken"}
+        ]}}
+
+    monkeypatch.setattr("harness.run_subprocess", failed)
+    output = tmp_path / "failed"
+    assert run(output) == 1
+    report = (output / "report.md").read_text()
+    assert "Receipts: **0 succeeded, 24 failed**" in report
+    assert "Failure: one or more receipts failed." in report
+    assert "Failure: every receipt failed." in report
+    assert "REFUSED — no successful pages" in report
+    assert "| yes |" not in report
 
 
 @pytest.mark.parametrize("engine", REAL_ENGINES)

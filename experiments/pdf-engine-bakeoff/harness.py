@@ -33,6 +33,9 @@ def run_subprocess(request: dict[str, Any], *, timeout: float = 60,
             f"isolated Python interpreter is missing or not executable: {ISOLATED_PYTHON}; "
             "create it with `uv sync --project experiments/pdf-engine-bakeoff --frozen --no-dev`"
         )
+    request = dict(request)
+    if source := request.get("source"):
+        request["source"] = str(Path(source).resolve())
     started_at = datetime.now(timezone.utc).isoformat()
     started = time.perf_counter()
     try:
@@ -96,11 +99,13 @@ def _cgroup() -> dict[str, Any]:
 
 
 def run(output: Path) -> int:
+    output = output.resolve()
     fixtures_dir = output / "fixtures"; definitions = generate(fixtures_dir)
     receipts_dir = output / "receipts"; receipts_dir.mkdir(parents=True, exist_ok=True)
     comparisons, observations = [], []
     for order, (engine, name) in enumerate(
-            ((engine, name) for name in sorted(definitions) for engine in REAL_ENGINES), 1):
+            ((engine, name) for name in sorted(definitions)
+             for engine in REAL_ENGINES), 1):
         options = definitions[name]; source = fixtures_dir / name
         digest = hashlib.sha256(source.read_bytes()).hexdigest()
         request = {"engine": engine, "source": str(source), "source_sha256": digest,
@@ -109,18 +114,77 @@ def run(output: Path) -> int:
         for index, receipt in enumerate(pair, 1):
             (receipts_dir / f"{engine}-{source.stem}-{index}.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
             if "operation_observation" in receipt: observations.append({"engine": engine, "fixture": name, "repetition": index, **receipt["operation_observation"], "run": receipt["run_observation"]})
-        if all(item.get("schema_version") for item in pair):
-            comparisons.append({"engine": engine, "fixture": name, **compare(pair[0], pair[1]), "capability_errors": validate_capability_claims(pair[0]) + validate_capability_claims(pair[1])})
+        successful = [
+            item for item in pair
+            if item.get("deterministic_output", {}).get("status") == "success"
+            and item["deterministic_output"].get("pages")
+        ]
+        # A malformed fixture is required to fail closed, so its consistent
+        # failure is the gate passing, not a broken run.  Excluding it from the
+        # smoke instead would delete the fail-closed gate entirely.
+        if options["kind"] == "malformed":
+            classes = [_failure_class(item) for item in pair]
+            comparisons.append({"engine": engine, "fixture": name, "expected_failure": True,
+                                "equal": classes[0] == classes[1] and not successful,
+                                "error_classes": classes,
+                                "unexpected_success": bool(successful),
+                                "capability_errors": []})
+        elif len(successful) == 2:
+            comparisons.append({"engine": engine, "fixture": name, "expected_failure": False,
+                                **compare(pair[0], pair[1]), "capability_errors": validate_capability_claims(pair[0]) + validate_capability_claims(pair[1])})
         else:
-            comparisons.append({"engine": engine, "fixture": name, "equal": False, "contained_failures": pair})
-    summary = {"schema_version": "corridor.pdf-engine-bakeoff.v1", "real_engines": list(REAL_ENGINES), "comparisons": comparisons, "observations": observations}
+            comparisons.append({"engine": engine, "fixture": name, "expected_failure": False,
+                                "equal": None,
+                                "repeatability_refused": "receipts contain no successful pages",
+                                "failed_receipts": [item for item in pair if item not in successful]})
+    succeeded = sum(
+        item.get("deterministic_output", {}).get("status") == "success"
+        and bool(item["deterministic_output"].get("pages"))
+        for item in comparisons for item in item.get("failed_receipts", [])
+    ) + sum(2 for item in comparisons
+            if item["equal"] is not None and not item.get("expected_failure"))
+    expected_failed = sum(2 for item in comparisons if item.get("expected_failure"))
+    receipt_count = len(comparisons) * 2
+    failed = receipt_count - succeeded - expected_failed
+    has_failed_receipt = failed > 0
+    graded = receipt_count - expected_failed
+    all_receipts_failed = graded > 0 and failed == graded
+    summary = {"schema_version": "corridor.pdf-engine-bakeoff.v1", "real_engines": list(REAL_ENGINES),
+               "receipts": {"succeeded": succeeded, "failed": failed,
+                            "expected_failed": expected_failed,
+                            "any_failed": has_failed_receipt,
+                            "all_failed": all_receipts_failed},
+               "comparisons": comparisons, "observations": observations}
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
-    passed = all(item["equal"] and not item.get("capability_errors") for item in comparisons)
-    lines = ["# PDF engine bake-off — three-engine smoke", "", f"Result: **{'PASS' if passed else 'FAIL'}**", "", "This is protocol smoke evidence, not a measured bake-off or recommendation.", "Performance is observational and excluded from deterministic digests.", "", "| Engine | Fixture | Repeatable |", "|---|---|---:|"]
-    lines.extend(f"| `{item['engine']}` | `{item['fixture']}` | {'yes' if item['equal'] else 'no'} |" for item in comparisons)
+    passed = not has_failed_receipt and not all_receipts_failed and bool(receipt_count) and all(
+        item["equal"] and not item.get("capability_errors") for item in comparisons
+    )
+    lines = ["# PDF engine bake-off — three-engine smoke", "", f"Result: **{'PASS' if passed else 'FAIL'}**",
+             "", f"Receipts: **{succeeded} succeeded, {failed} failed, {expected_failed} expected-failure (fail-closed)**", "",
+             "This is protocol smoke evidence, not a measured bake-off or recommendation.",
+             "Performance is observational and excluded from deterministic digests.", "",
+             "| Engine | Fixture | Repeatability |", "|---|---|---:|"]
+    if has_failed_receipt:
+        lines[6:6] = ["Failure: one or more receipts failed.", ""]
+    if all_receipts_failed:
+        lines[8:8] = ["Failure: every receipt failed.", ""]
+    lines.extend(f"| `{item['engine']}` | `{item['fixture']}` | "
+                 + ("fail-closed, consistent" if item.get("expected_failure") and item["equal"]
+                    else "FAIL-CLOSED BREACH" if item.get("expected_failure")
+                    else "yes" if item["equal"] is True
+                    else "REFUSED — no successful pages") + " |"
+                 for item in comparisons)
     (output / "report.md").write_text("\n".join(lines) + "\n")
     print(output / "summary.json"); print(output / "report.md")
     return 0 if passed else 1
+
+
+def _failure_class(receipt: dict[str, Any]) -> str | None:
+    """Error classification of a contained failure, from either envelope shape."""
+    if "deterministic_output" in receipt:
+        errors = receipt["deterministic_output"].get("errors") or []
+        return errors[0].get("classification") if errors else receipt["deterministic_output"].get("status")
+    return receipt.get("error_class")
 
 
 def main(argv: list[str] | None = None) -> int:
