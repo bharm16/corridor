@@ -376,6 +376,11 @@ evidence-shadow-eval:
 pdf-eval:
 	uv run python -m corridor.pdf_evaluation_cli $(ARGS)
 
+# Run the isolated incumbent PDF adapter twice over generated synthetic fixtures.
+# Dependencies must already match the frozen experiment lock; this never syncs.
+pdf-engine-bakeoff:
+	uv run --project experiments/pdf-engine-bakeoff --frozen --no-sync python experiments/pdf-engine-bakeoff/harness.py $(ARGS)
+
 # Record Stage 1 page-routing confusion and OCR error rates against the frozen
 # gold membership, alongside the retired character-count comparator:
 #   make page-inventory-eval ARGS="--gold=<stage1-gold.json> --run=<routing-run.json> --output=<receipt.json>"
