@@ -72,13 +72,13 @@ def run_subprocess(request: dict[str, Any], *, timeout: float = 60,
 
 
 def _host() -> dict[str, Any]:
-    import pymupdf
     memory_limit = _read_int("/sys/fs/cgroup/memory.max") or 2**63 - 1
     return {"hostname": platform.node() or "unknown", "os": platform.platform(),
             "architecture": platform.machine(), "cpu": platform.processor() or "unknown",
             "cpu_quota": _read("/sys/fs/cgroup/cpu.max") or "unknown",
             "memory_limit_bytes": memory_limit, "python_version": platform.python_version(),
-            "package_versions": {"PyMuPDF": pymupdf.version[0], "MuPDF": pymupdf.version[1]}}
+            "package_versions": {"PyMuPDF": "1.28.0", "pdf-oxide": "0.3.77",
+                                 "pypdfium2": "5.13.0"}}
 
 
 def _read(path: str) -> str | None:
@@ -99,23 +99,25 @@ def run(output: Path) -> int:
     fixtures_dir = output / "fixtures"; definitions = generate(fixtures_dir)
     receipts_dir = output / "receipts"; receipts_dir.mkdir(parents=True, exist_ok=True)
     comparisons, observations = [], []
-    for order, (name, options) in enumerate(sorted(definitions.items()), 1):
-        source = fixtures_dir / name; digest = hashlib.sha256(source.read_bytes()).hexdigest()
-        request = {"engine": "pymupdf", "source": str(source), "source_sha256": digest,
+    for order, (engine, name) in enumerate(
+            ((engine, name) for name in sorted(definitions) for engine in REAL_ENGINES), 1):
+        options = definitions[name]; source = fixtures_dir / name
+        digest = hashlib.sha256(source.read_bytes()).hexdigest()
+        request = {"engine": engine, "source": str(source), "source_sha256": digest,
                    "password": options.get("password"), "clip": options.get("clip")}
         pair = [run_subprocess(request, repetition=i, run_order=order * 2 + i) for i in (1, 2)]
         for index, receipt in enumerate(pair, 1):
-            (receipts_dir / f"{source.stem}-{index}.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-            if "operation_observation" in receipt: observations.append({"fixture": name, "repetition": index, **receipt["operation_observation"], "run": receipt["run_observation"]})
+            (receipts_dir / f"{engine}-{source.stem}-{index}.json").write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+            if "operation_observation" in receipt: observations.append({"engine": engine, "fixture": name, "repetition": index, **receipt["operation_observation"], "run": receipt["run_observation"]})
         if all(item.get("schema_version") for item in pair):
-            comparisons.append({"fixture": name, **compare(pair[0], pair[1]), "capability_errors": validate_capability_claims(pair[0]) + validate_capability_claims(pair[1])})
+            comparisons.append({"engine": engine, "fixture": name, **compare(pair[0], pair[1]), "capability_errors": validate_capability_claims(pair[0]) + validate_capability_claims(pair[1])})
         else:
-            comparisons.append({"fixture": name, "equal": False, "contained_failures": pair})
+            comparisons.append({"engine": engine, "fixture": name, "equal": False, "contained_failures": pair})
     summary = {"schema_version": "corridor.pdf-engine-bakeoff.v1", "real_engines": list(REAL_ENGINES), "comparisons": comparisons, "observations": observations}
     (output / "summary.json").write_text(json.dumps(summary, indent=2, sort_keys=True) + "\n")
     passed = all(item["equal"] and not item.get("capability_errors") for item in comparisons)
-    lines = ["# PDF engine bake-off — PyMuPDF self-comparison", "", f"Result: **{'PASS' if passed else 'FAIL'}**", "", "Performance is observational and excluded from deterministic digests.", "", "| Fixture | Equal |", "|---|---:|"]
-    lines.extend(f"| `{item['fixture']}` | {'yes' if item['equal'] else 'no'} |" for item in comparisons)
+    lines = ["# PDF engine bake-off — three-engine smoke", "", f"Result: **{'PASS' if passed else 'FAIL'}**", "", "This is protocol smoke evidence, not a measured bake-off or recommendation.", "Performance is observational and excluded from deterministic digests.", "", "| Engine | Fixture | Repeatable |", "|---|---|---:|"]
+    lines.extend(f"| `{item['engine']}` | `{item['fixture']}` | {'yes' if item['equal'] else 'no'} |" for item in comparisons)
     (output / "report.md").write_text("\n".join(lines) + "\n")
     print(output / "summary.json"); print(output / "report.md")
     return 0 if passed else 1

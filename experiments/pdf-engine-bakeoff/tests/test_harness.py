@@ -13,7 +13,9 @@ EXPERIMENT = Path(__file__).parents[1]
 sys.path.insert(0, str(EXPERIMENT))
 
 from contract import ContractError, repeatability_digest, validate_result  # noqa: E402
-from evaluators import compare, evaluate_expected, validate_capability_claims  # noqa: E402
+from evaluators import (compare, evaluate_expected, geometry_contract,
+                        image_difference, polygon_disagreement,
+                        validate_capability_claims)  # noqa: E402
 from fixtures import generate  # noqa: E402
 from harness import run_subprocess  # noqa: E402
 from registry import REAL_ENGINES  # noqa: E402
@@ -31,10 +33,21 @@ def pair(tmp_path_factory):
     return run_subprocess(request, repetition=1), run_subprocess(request, repetition=2)
 
 
-def test_registry_contains_exactly_one_real_incumbent():
-    assert REAL_ENGINES == ("pymupdf",)
+def test_registry_contains_all_three_isolated_engines():
+    assert REAL_ENGINES == ("pymupdf", "pdf_oxide", "pdfium")
     assert "pdf_oxide" not in sys.modules
     assert "pypdfium2" not in sys.modules
+
+
+@pytest.mark.parametrize("engine", REAL_ENGINES)
+def test_each_engine_runs_generated_fixture_and_is_repeatable(tmp_path, engine):
+    generate(tmp_path); source = tmp_path / "borderless.pdf"
+    request = {"engine": engine, "source": str(source),
+               "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest()}
+    left, right = run_subprocess(request), run_subprocess(request)
+    assert left["deterministic_output"]["status"] == "success"
+    assert compare(left, right)["equal"]
+    assert validate_capability_claims(left) == []
 
 
 def test_independent_runs_are_reflexive_and_observations_are_separate(pair):
@@ -67,6 +80,38 @@ def test_mutation_unsupported_cannot_be_reported_as_success(pair):
     receipt = copy.deepcopy(pair[0])
     receipt["deterministic_output"]["unsupported_capabilities"] = ["tables"]
     assert validate_capability_claims(receipt) == ["tables: reported both supported and unsupported"] * len(receipt["deterministic_output"]["pages"])
+
+
+@pytest.mark.parametrize("engine", REAL_ENGINES)
+def test_unsupported_as_successful_mutation_is_detected_for_every_engine(tmp_path, engine):
+    generate(tmp_path); source = tmp_path / "borderless.pdf"
+    receipt = run_subprocess({"engine": engine, "source": str(source),
+                              "source_sha256": hashlib.sha256(source.read_bytes()).hexdigest()})
+    capability = "tables" if engine == "pdfium" else "characters"
+    output = receipt["deterministic_output"]
+    output["unsupported_capabilities"] = sorted(set(output["unsupported_capabilities"] + [capability]))
+    output["pages"][0][capability] = {"status": "supported", "value": []}
+    assert f"{capability}: reported both supported and unsupported" in validate_capability_claims(receipt)
+
+
+def test_cross_engine_geometry_and_pixel_evaluators():
+    box = lambda x0, y0, x1, y1: [(x0,y0),(x1,y0),(x1,y1),(x0,y1)]
+    result = polygon_disagreement(box(0, 0, 10, 10), box(1, 0, 11, 10))
+    assert result["iou"] == pytest.approx(9 / 11)
+    assert result["max_coordinate_disagreement_points"] == 1
+    assert image_difference(bytes([0, 10, 20]), bytes([0, 10, 20])) == {
+        "mean_absolute_pixel_difference": 0, "ssim": 1,
+        "different_sample_fraction": 0,
+    }
+
+
+def test_geometry_contract_refuses_incommensurable_pages(pair):
+    left = pair[0]["deterministic_output"]["pages"][0]
+    right = copy.deepcopy(left)
+    assert geometry_contract(left, right)["comparable"]
+    right["rotation_degrees"]["value"] = 90
+    refusal = geometry_contract(left, right)
+    assert not refusal["comparable"] and "rotation differs" in refusal["reasons"]
 
 
 def test_single_engine_exact_text_dimensions_renders_and_error_class(pair):
