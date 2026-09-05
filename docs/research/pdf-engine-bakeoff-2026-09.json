@@ -1,0 +1,75 @@
+{
+  "schema_version": "corridor.pdf-engine-bakeoff-evidence.v1",
+  "issue": 723,
+  "observed_at": "2026-09-05",
+  "source_commit": "b7fc4ca703edcb70a8ec1e821e4033d8d8229153",
+  "recommendation": "evidence_is_insufficient",
+  "holdout_accessed": false,
+  "shortlisted_configurations": [],
+  "environment": {
+    "os_kernel": "Linux 6.18.35 x86_64; glibc 2.39",
+    "cpu_model": "Intel(R) Xeon(R) Platinum 8370C CPU @ 2.80GHz",
+    "logical_cpu_count": 3,
+    "cgroup_cpu_max": "200000 100000",
+    "available_memory_bytes_observed": 17862217728,
+    "cgroup_memory_max_bytes": 17179869184,
+    "python": "3.12.13",
+    "benchmark_runner": "corridor-pdf-engine-bakeoff 0.1.0",
+    "network_isolation": "Every engine command was launched by unshare --user --map-root-user --net."
+  },
+  "versions": {
+    "pymupdf": "1.28.0",
+    "mupdf": "1.29.0",
+    "pdf_oxide": "0.3.77",
+    "pypdfium2": "5.13.0",
+    "pdfium": "153.0.7999.0"
+  },
+  "digests": {
+    "candidate_lock_sha256": "a5de808283d5bcad252de570c5b728525e667db5b3fbc7900e3c1dd21dfb5b93",
+    "candidate_manifest_sha256": "8dbc367216e35e932ac8b4995b7df6051f35063b22118d42d8c5ae3d7128c9e1",
+    "corpus_manifest_sha256": "3507bbf0fa4049a4a590ed61591ed40feb59b164d80eb037f6a3661e4ef72579",
+    "gold_dataset_version": "2026-08-31.2",
+    "gold_dataset_sha256": "73f3e0c019c22e2e5a38d873019f9b3510f632b3883a9033f7c284e8c79b2951",
+    "result_schema_sha256": "79589d134d9b7f3eeb0a60815a62bf6b092df0fd07706713685e104c40aa5d58"
+  },
+  "frozen_gates": {
+    "source_citation_and_exact_text": "not_run",
+    "table_row_column_cell_geometry": "not_run",
+    "page_geometry_and_coordinate_round_trip": "not_run",
+    "fail_closed_malformed_encrypted_unsupported": "not_run",
+    "deterministic_repeatability": "not_run",
+    "representative_end_to_end_performance": "not_run",
+    "overall": "fail_insufficient_evidence"
+  },
+  "family_results": {
+    "txdot-nhhip-ucm-2026": "blocked_by_result_schema_rejection",
+    "txdot-sh99-ucm-2025": "source_bytes_unavailable",
+    "wsdot-9424-appendix-u2": "source_bytes_unavailable",
+    "fdot-sr789-roundabout-ucm": "holdout_not_accessed",
+    "coh-municipal-maintenance-agreement-1969": "source_bytes_unavailable",
+    "coh-parking-agreement-amendment-2012": "source_bytes_unavailable",
+    "wsdot-9540": "not_present_in_frozen_corpus_manifest"
+  },
+  "observations": [
+    {
+      "command": "make pdf-engine-bakeoff-test",
+      "result": "pass: 21 tests"
+    },
+    {
+      "command": "unshare --user --map-root-user --net make pdf-engine-bakeoff",
+      "result": "process exited zero, but every synthetic receipt was a repeatable adapter_failure caused by unresolved relative fixture paths; this is not a valid engine comparison"
+    },
+    {
+      "command": "unshare --user --map-root-user --net experiments/pdf-engine-bakeoff/.venv/bin/python /tmp/run723.py",
+      "result": "failed before measurement: real 28-page development document produced PyMuPDF vector-path operation values rejected by result-schema.v1.json"
+    }
+  ],
+  "unsupported_evidence": [
+    "The runner implements process-cold observations only; no process-warm protocol exists.",
+    "The runner does not emit Stage 0 EngineRun predictions, so the frozen semantic evaluator cannot score any engine receipt.",
+    "The checked-out corpus contains only one of the six manifest-bound PDF byte sequences.",
+    "The corpus manifest does not include WSDOT 9540.",
+    "No declarative hybrid configuration is registered; no hybrid was run.",
+    "No valid latency, peak-memory, render-fidelity, geometry-disagreement, downstream-OCR, malformed/encrypted, or per-page-class comparison was produced."
+  ]
+}
