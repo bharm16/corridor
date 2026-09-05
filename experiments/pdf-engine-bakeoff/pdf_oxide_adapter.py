@@ -164,7 +164,12 @@ class PDFOxideAdapter:
     @staticmethod
     def _render(document: Any, index: int, dpi: int) -> dict[str, Any]:
         pixmap = document.render_pixmap(index, dpi=dpi)
-        payload = bytes(pixmap.data); scale = dpi / 72
+        rgba = bytes(pixmap.data)
+        if len(rgba) != pixmap.width * pixmap.height * 4:
+            raise ValueError("PDFOxide render did not return one RGBA sample per pixel")
+        payload = bytes(channel for offset in range(0, len(rgba), 4)
+                        for channel in rgba[offset:offset + 3])
+        scale = dpi / 72
         return {"sha256": hashlib.sha256(payload).hexdigest(), "width_pixels": pixmap.width,
                 "height_pixels": pixmap.height, "colorspace": "RGB", "alpha": False,
                 "pdf_to_pixel_transform": [scale, 0, 0, scale, 0, 0], "clip_box": None}
