@@ -19,6 +19,7 @@ import ast
 import hashlib
 import inspect
 import json
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -56,6 +57,10 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "corridor_pdf_reader"
 FIXTURES = PACKAGE_ROOT / "textract" / "tests" / "fixtures"
 POSTURE_DOCUMENT = REPO_ROOT / PROVIDER_POSTURE.document
+# The posture the maintainer has not yet accepted refuses every customer
+# record; the tests of the other fields run against an accepted copy so each
+# assertion names exactly the field it is about.
+ACCEPTED_POSTURE = replace(PROVIDER_POSTURE, status="accepted")
 DATASET = "pdf-reader-comparison true-pairs/exact ten development pairs"
 
 
@@ -160,6 +165,7 @@ def raster_of(tmp_path: Path, name: str = "page.pdf", **pdf: Any):
 def opened(tmp_path: Path, service: Any, record: Any = None, boundary: RequestBoundary | None = None, **options: Any) -> AuthorizedTextract:
     options.setdefault("configuration", CONFIGURATION)
     options.setdefault("extraction_run", "run-1")
+    options.setdefault("posture", ACCEPTED_POSTURE)
     return open_boundary(
         record if record is not None else authorization(),
         boundary or request(),
@@ -210,7 +216,7 @@ def test_an_absent_or_mismatched_authorization_is_refused_with_zero_outbound_req
     service = FailingService()
 
     with pytest.raises(TextractProcessingFailure) as caught:
-        open_boundary(record, boundary, extraction_run="run-1", cache_root=tmp_path / "cache", service=service)
+        open_boundary(record, boundary, extraction_run="run-1", cache_root=tmp_path / "cache", service=service, posture=ACCEPTED_POSTURE)
 
     failure = caught.value
     assert {entry.split(":")[0] for entry in failure.mismatches} == expected
@@ -226,11 +232,29 @@ def test_an_absent_or_mismatched_authorization_is_refused_with_zero_outbound_req
 
 
 def test_mismatches_name_every_failing_field_not_the_first():
-    found = mismatches(authorization(), request(project="project-9", source_class="email", stage="authoritative"))
+    found = mismatches(authorization(), request(project="project-9", source_class="email", stage="authoritative"), ACCEPTED_POSTURE)
 
     assert [entry.split(":")[0] for entry in found] == ["source-class", "project", "stage"]
     assert "project-9" in found[1] and "project-1" in found[1]
-    assert mismatches(authorization(), request()) == ()
+    assert mismatches(authorization(), request(), ACCEPTED_POSTURE) == ()
+    assert mismatches(experiment(), experiment_request()) == ()
+
+
+def test_a_customer_record_is_refused_while_the_posture_is_only_proposed(tmp_path):
+    """The posture document says no customer page may be transmitted before the
+    maintainer accepts it; the boundary enforces that sentence rather than
+    relying on nobody signing a record against a proposed posture. An
+    experiment scope is not gated on it: replay of retained responses and any
+    live measurement call are governed by their own recorded scope."""
+    assert PROVIDER_POSTURE.status == "proposed"
+    service = FailingService()
+
+    with pytest.raises(TextractProcessingFailure) as caught:
+        open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service)
+
+    assert [entry.split(":")[0] for entry in caught.value.mismatches] == ["posture-status"]
+    assert caught.value.outbound_requests == 0
+    assert service.calls == 0
     assert mismatches(experiment(), experiment_request()) == ()
 
 
@@ -385,7 +409,7 @@ def test_a_re_signed_record_over_the_same_boundary_reuses_the_retained_response(
 def test_retries_are_counted_apart_from_calls_and_hits(tmp_path):
     service = RecordedService(fixture("synthetic-grid-merged")["response"], failures=["ThrottlingException", "ProvisionedThroughputExceededException"])
     naps: list[float] = []
-    adapter = open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service, configuration=CONFIGURATION, sleep=naps.append)
+    adapter = open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service, configuration=CONFIGURATION, sleep=naps.append, posture=ACCEPTED_POSTURE)
     raster = raster_of(tmp_path)
 
     reading = adapter.analyze_page(raster, rendition_sha256="r", page_number=1)

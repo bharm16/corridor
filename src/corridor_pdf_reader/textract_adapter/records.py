@@ -220,6 +220,11 @@ def mismatches(
             f"posture-digest: record {record.record_id!r} accepts digest {record.posture_digest[:12]!r}, "
             f"the posture document's digest is {posture.digest[:12]!r}"
         )
+    if isinstance(record, CustomerAuthorization) and posture.status != "accepted":
+        found.append(
+            f"posture-status: the posture is {posture.status!r}; no customer page may be "
+            "transmitted until the maintainer accepts it"
+        )
     if record.region != request.region:
         found.append(f"region: request names {request.region!r}, record {record.record_id!r} covers {record.region!r}")
     if request.source_class not in record.source_classes:
