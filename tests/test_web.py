@@ -2378,6 +2378,61 @@ def test_a_sheet_candidate_is_labelled_as_read_from_cells(client, session, proje
     assert "· <span" in body and "read from cells" in body
 
 
+def test_quote_highlights_are_the_glyph_boxes_on_the_displayed_page():
+    """A highlight is the quote's box as a fraction of the page as displayed.
+
+    The fixture declares where each word's glyphs sit; the reader must find
+    the quote there, on a landscape page, on a page displayed rotated (the
+    boxes turn with it), and on a cropped page (the crop box is the frame).
+    A missing quote falls back to its first distinctive token, and a missing
+    page or a quote too short to fall back on marks nothing.
+    """
+    from types import SimpleNamespace
+
+    from pdf_fixture_support import PdfFixture
+
+    from corridor.object_storage import content_key, content_store, digest_bytes
+    from corridor.web.queue import locate_quote
+
+    fixture = PdfFixture()
+    landscape = fixture.add_page(842, 595)
+    landscape.text((100, 300), "Filler line on the page", fontsize=12)
+    needle, phrase, *_ = landscape.text((300, 200), "Needle phrase sits here", fontsize=12)
+    rotated = fixture.add_page(595, 842, rotation=90)
+    _, turned = rotated.text((100, 200), "Rotated needle", fontsize=12)
+    cropped = fixture.add_page(600, 800, cropbox=(50, 40, 550, 700))
+    _, clipped = cropped.text((10, 30), "Crop needle", fontsize=10)
+    data = fixture.tobytes()
+    sha = digest_bytes(data)
+    content_store().put(content_key(sha, ".pdf"), data, sha256=sha)
+    document = SimpleNamespace(sha256=sha)
+    close = pytest.approx
+
+    [hit] = locate_quote(document, 1, "needle phrase")
+    assert hit.left == close(needle.x0 / 842, abs=0.01)
+    assert hit.top == close(needle.y0 / 595, abs=0.01)
+    assert hit.left + hit.width == close(phrase.x1 / 842, abs=0.01)
+    assert hit.top + hit.height == close(needle.y1 / 595, abs=0.01)
+
+    # Displayed at 90 degrees the 595x842 page is 842 wide, and a box at
+    # (x0, y0, x1, y1) on the unrotated page shows at (842 - y1, x0, 842 - y0, x1).
+    [hit] = locate_quote(document, 2, "needle")
+    assert hit.left == close((842 - turned.y1) / 842, abs=0.01)
+    assert hit.top == close(turned.x0 / 595, abs=0.01)
+    assert hit.left + hit.width == close((842 - turned.y0) / 842, abs=0.01)
+    assert hit.top + hit.height == close(turned.x1 / 595, abs=0.01)
+
+    [hit] = locate_quote(document, 3, "needle")
+    assert hit.left == close(clipped.x0 / 500, abs=0.01)
+    assert hit.top == close(clipped.y0 / 660, abs=0.01)
+
+    [fallback] = locate_quote(document, 1, "Needle nowhere on this page")
+    assert fallback.left == close(needle.x0 / 842, abs=0.01)
+    assert fallback.width == close((needle.x1 - needle.x0) / 842, abs=0.01)
+    assert locate_quote(document, 1, "zzz absent") == []
+    assert locate_quote(document, 4, "needle") == []
+
+
 # ----------------- exception pills read as facts (#117, ADR-0010)
 
 

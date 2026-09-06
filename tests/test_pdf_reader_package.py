@@ -107,12 +107,28 @@ def _imported_names(path: Path) -> set[str]:
     return names
 
 
+# The production modules that enter PDFium through the package's execution
+# contract, each with the reason it needs glyph geometry no pure-Python reader
+# supplies (#740). None of them produces a PDF fact for the record, and none of
+# them runs the reader's own algorithm: selection for the record stays with
+# #447. A module leaves this table the day it stops importing the package.
+PRODUCTION_IMPORTERS = {
+    "src/corridor/web/queue.py": (
+        "quote highlights on the review page are PDFium text-search boxes under "
+        "pdfium_entry; best effort, degrading to an unmarked page"
+    ),
+}
+
+
 def test_no_production_module_imports_the_reader_package():
     """No production selection happens here (#729, #447).
 
     A static rule rather than a runtime one: the package holds PDFium, which
     must not be entered by any threaded extraction worker, and the parent
     ticket keeps "we imported it" apart from "it is approved for production".
+    The modules in ``PRODUCTION_IMPORTERS`` are the exact exceptions, each
+    recorded with its reason; the rule fails on any other importer and on a
+    listed module that no longer imports the package.
     """
 
     offenders = []
@@ -125,7 +141,7 @@ def test_no_production_module_imports_the_reader_package():
             if "import_module(" in source and "corridor_pdf_reader" in source:
                 offenders.append(f"{path.relative_to(REPO_ROOT)} (dynamic import)")
 
-    assert offenders == []
+    assert offenders == sorted(PRODUCTION_IMPORTERS)
 
 
 def test_the_package_never_imports_pymupdf_or_tesseract():
