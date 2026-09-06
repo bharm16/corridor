@@ -118,9 +118,10 @@ The adapter's path needs `textract:AnalyzeDocument` on the calling principal and
 nothing else: bytes submission needs no S3 read, and no asynchronous operation
 is used. **The calling role's actual policy is unverified, to be confirmed by
 the maintainer**; the nonproduction account and its task role (#601, #685) were
-provisioned without a Textract statement, and the experiment used a personal
-profile and the connector's sandbox, neither of which is a Corridor runtime
-identity.
+provisioned without a Textract statement (nothing under `infra/` names the
+service), and the experiment's calls ran through the Claude AWS connector's
+sandbox after the personal `corridor` profile's session had expired
+(`TEXTRACT-RESULTS.md`); neither is a Corridor runtime identity.
 
 ## Where the customer authorization takes over
 

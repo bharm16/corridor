@@ -60,7 +60,7 @@ class ProviderPosture:
 PROVIDER_POSTURE = ProviderPosture(
     identity="aws-textract-analyze-document-tables-posture-1",
     document="docs/operations/textract-provider-posture.md",
-    digest="d63e43e5dcf6968022857b93cf8d7cee12ff16aaf1eb83d289b103d926f60fd3",
+    digest="1a222e3c92be1777921f1201bc2c993389cc237c924e9f8e9b557a1537322b3f",
     provider=PROVIDER,
     operation=OPERATION,
     feature_types=FEATURE_TYPES,
