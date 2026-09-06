@@ -633,7 +633,6 @@ ENGINE_SCAN_ROOTS = ("src/corridor", "workers/render", "tests", "scripts")
 PYMUPDF_PACKAGES = frozenset({"fitz", "pymupdf"})
 TESSERACT_PACKAGES = frozenset({"pytesseract"})
 ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
-    ("src/corridor/current_record.py", ("pymupdf",)),
     ("src/corridor/extract_matrix.py", ("pymupdf",)),
     ("src/corridor/geometry.py", ("pymupdf",)),
     ("src/corridor/gold.py", ("pymupdf",)),

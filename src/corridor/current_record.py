@@ -19,11 +19,12 @@ from __future__ import annotations
 from copy import copy
 from dataclasses import dataclass, replace
 from datetime import date
+from io import BytesIO
 from pathlib import Path
 import re
 
-import pymupdf
 from openpyxl import load_workbook
+from pypdf import PdfReader
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
@@ -232,8 +233,7 @@ def _workbook_cells(path: Path) -> tuple:
 
 
 def _pdf_text(pdf_bytes: bytes) -> tuple[str, ...]:
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as document:
-        return tuple(
-            re.sub(r"Generated .*? UTC", "Generated <normalized> UTC", page.get_text())
-            for page in document
-        )
+    return tuple(
+        re.sub(r"Generated .*? UTC", "Generated <normalized> UTC", page.extract_text())
+        for page in PdfReader(BytesIO(pdf_bytes)).pages
+    )
