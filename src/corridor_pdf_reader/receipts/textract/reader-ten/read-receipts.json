@@ -1,0 +1,56 @@
+{
+ "engine": "tagged",
+ "seconds": 4.9,
+ "receipts": [
+  {
+   "key": "02753bf7e6549f5a",
+   "pages": 13,
+   "seconds": 3.01
+  },
+  {
+   "key": "075ad4da3647d7dc",
+   "pages": 6,
+   "seconds": 1.51
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pages": 5,
+   "seconds": 1.39
+  },
+  {
+   "key": "50b23088b99df7c2",
+   "pages": 4,
+   "seconds": 0.54
+  },
+  {
+   "key": "5d36b973fa9393a8",
+   "pages": 1,
+   "seconds": 0.36
+  },
+  {
+   "key": "5e979146e9322953",
+   "pages": 9,
+   "seconds": 2.49
+  },
+  {
+   "key": "99e3871a86ca9971",
+   "pages": 2,
+   "seconds": 0.23
+  },
+  {
+   "key": "9d701a8ad492a6d7",
+   "pages": 2,
+   "seconds": 0.24
+  },
+  {
+   "key": "b62895f03208009f",
+   "pages": 10,
+   "seconds": 2.48
+  },
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pages": 1,
+   "seconds": 0.8
+  }
+ ]
+}

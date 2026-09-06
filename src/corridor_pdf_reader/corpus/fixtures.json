@@ -1,0 +1,185 @@
+[
+  {
+    "id": "fixture-rotation-0",
+    "path": "corpus/fixtures/fixture-rotation-0.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 0,
+      "width": 300,
+      "height": 200,
+      "first_x": 40
+    },
+    "title": "fixture-rotation-0",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "b4ee3a7c849a778fdd43553721b2e09665ca3f3154ccb6d077771a16cc80d979"
+  },
+  {
+    "id": "fixture-rotation-0-crop",
+    "path": "corpus/fixtures/fixture-rotation-0-crop.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 0,
+      "width": 260,
+      "height": 160,
+      "first_x": 20
+    },
+    "title": "fixture-rotation-0-crop",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "30678437e88789b494b8f70cedd08229ca8f58ebab5db6a14a5995c348ffe745"
+  },
+  {
+    "id": "fixture-rotation-90",
+    "path": "corpus/fixtures/fixture-rotation-90.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 90,
+      "width": 300,
+      "height": 200,
+      "first_x": 40
+    },
+    "title": "fixture-rotation-90",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "3f579aaa414a47f2eaee18a030f71b4e09fba2c226b4168a0bd7cd0a1380720d"
+  },
+  {
+    "id": "fixture-rotation-90-crop",
+    "path": "corpus/fixtures/fixture-rotation-90-crop.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 90,
+      "width": 260,
+      "height": 160,
+      "first_x": 20
+    },
+    "title": "fixture-rotation-90-crop",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "eb4bdf71f7b055aabae0224dc4be43c8763713c6ce5061d2c5ca025f418b1ed9"
+  },
+  {
+    "id": "fixture-rotation-180",
+    "path": "corpus/fixtures/fixture-rotation-180.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 180,
+      "width": 300,
+      "height": 200,
+      "first_x": 40
+    },
+    "title": "fixture-rotation-180",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "90c6897cdde1da86c3ccfad68c499f49a586162c0039ebc17b1c55748341b06c"
+  },
+  {
+    "id": "fixture-rotation-180-crop",
+    "path": "corpus/fixtures/fixture-rotation-180-crop.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 180,
+      "width": 260,
+      "height": 160,
+      "first_x": 20
+    },
+    "title": "fixture-rotation-180-crop",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "b3cd2edbc73f343d7e587a8a4a79453d65eb4f5b06d8a75f35f897de8cab13f4"
+  },
+  {
+    "id": "fixture-rotation-270",
+    "path": "corpus/fixtures/fixture-rotation-270.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 270,
+      "width": 300,
+      "height": 200,
+      "first_x": 40
+    },
+    "title": "fixture-rotation-270",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "a33ae4f9a169a37dc80603140a8b1c11bcff9fed400b24ce3fa791c7fb9aa16f"
+  },
+  {
+    "id": "fixture-rotation-270-crop",
+    "path": "corpus/fixtures/fixture-rotation-270-crop.pdf",
+    "expected": {
+      "kind": "text",
+      "text": "UTILITY 1149+00",
+      "rotation": 270,
+      "width": 260,
+      "height": 160,
+      "first_x": 20
+    },
+    "title": "fixture-rotation-270-crop",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "5c230a8dbf253e514a510f61c843865dcf947762c791d935fea0cd393aeeae8b"
+  },
+  {
+    "id": "fixture-raster",
+    "path": "corpus/fixtures/fixture-raster.pdf",
+    "expected": {
+      "kind": "raster"
+    },
+    "title": "fixture-raster",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "d8a4b89c13d2be04967c2f994471183790c3fb98663b95e7f21b1ad9d26e1f1b"
+  },
+  {
+    "id": "fixture-malformed",
+    "path": "corpus/fixtures/fixture-malformed.pdf",
+    "expected": {
+      "kind": "reject"
+    },
+    "title": "fixture-malformed",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "6bcd0060cf54dea2978d7c9ab5a25aa15b4212018ab8cbea20d228d88b6659be"
+  },
+  {
+    "id": "fixture-encrypted",
+    "path": "corpus/fixtures/fixture-encrypted.pdf",
+    "expected": {
+      "kind": "reject"
+    },
+    "title": "fixture-encrypted",
+    "split": "synthetic",
+    "pages": [
+      1
+    ],
+    "sha256": "a18ca00cab1e4310580ddd91ad3b0e04011576a341f16dee13fa3caf2017d67d"
+  }
+]

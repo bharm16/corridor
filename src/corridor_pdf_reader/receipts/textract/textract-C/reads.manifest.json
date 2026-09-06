@@ -1,0 +1,58 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results/textract-C",
+ "not_committed": "reads/: the slim per-pair reads; their digests are recorded here",
+ "files": 10,
+ "bytes": 7589773,
+ "entries": [
+  {
+   "path": "reads/02753bf7e6549f5a.json",
+   "sha256": "ce8cbabd4fa26dca09d0d22c60a7bb70aae9f12922f3e965c14af71f657e4dd2",
+   "bytes": 2481649
+  },
+  {
+   "path": "reads/075ad4da3647d7dc.json",
+   "sha256": "3fe519b88062f49faf97e6a704b4c905b55b1afa1ef73fd18fbc7d6753870e6e",
+   "bytes": 1133364
+  },
+  {
+   "path": "reads/1ee4a00b8eb6173b.json",
+   "sha256": "466c5bb20412be06542d26ac21f598e8172f09e30f6879140571b56f56f2f568",
+   "bytes": 1005616
+  },
+  {
+   "path": "reads/50b23088b99df7c2.json",
+   "sha256": "b576ce2d2f002406c8f15cc49a8f0068ecc7228bf9f6255869f4ba53b4cdd91d",
+   "bytes": 251872
+  },
+  {
+   "path": "reads/5d36b973fa9393a8.json",
+   "sha256": "94b0bed761ff620b63325eee234b1838d77c9dbc0b282a02aae2ddddea30aff8",
+   "bytes": 246991
+  },
+  {
+   "path": "reads/5e979146e9322953.json",
+   "sha256": "7f3c34d82d04029a7e7a65ae8c8a807c2c6a2436f9681c0c0d5b6d0eb2c1789e",
+   "bytes": 1720831
+  },
+  {
+   "path": "reads/99e3871a86ca9971.json",
+   "sha256": "905678d73df03f51fe8820f8e25365e1ec6cdb035c6cf919ea2ecabb3e592211",
+   "bytes": 41882
+  },
+  {
+   "path": "reads/9d701a8ad492a6d7.json",
+   "sha256": "b15efbeeab7d0a950af74cba6939cb7f5ee3432a95c7442ab5bb1c7d94967cab",
+   "bytes": 43496
+  },
+  {
+   "path": "reads/b62895f03208009f.json",
+   "sha256": "22b17e8bb23e197227ea9d4e91871cedafb1e61f5aaf52d2a3a764763c79fdd0",
+   "bytes": 603076
+  },
+  {
+   "path": "reads/fcbe0ceb23e61b0f.json",
+   "sha256": "20f12c13c40a311cb7a3b8112666d3399e6d97d08d709160ae078307ad0deb81",
+   "bytes": 60996
+  }
+ ]
+}

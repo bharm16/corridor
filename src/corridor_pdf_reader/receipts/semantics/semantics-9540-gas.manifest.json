@@ -1,0 +1,18 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-gas",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 2,
+ "bytes": 266929,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "069c09d9f3e62a1b333ed36de4e94b3177f660e885a88601c5252f0ac6f698a9",
+   "bytes": 24491
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "9c7cc25e930c5b24c827d5c4984f898e5554a31d4ee71ad862403e2f7e4c1dfe",
+   "bytes": 242438
+  }
+ ]
+}

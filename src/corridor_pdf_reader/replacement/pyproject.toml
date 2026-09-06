@@ -1,0 +1,11 @@
+[project]
+name = "permissive-pdf-reader"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "pypdfium2==5.13.0",
+    "pdf-oxide==0.3.77",
+    "pillow==12.3.0",
+    "pypdf==6.17.0",
+    "httpx>=0.28.1",
+]

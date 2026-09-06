@@ -1,0 +1,106 @@
+{
+ "engine": "textract-A",
+ "lane": "A",
+ "dpi": 300,
+ "source_root": "/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+ "cache": "/Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results/textract-cache",
+ "seconds": 55.5,
+ "pages_sent": 0,
+ "pages_cached": 53,
+ "pages_pending": 0,
+ "dollars": 0.0,
+ "remap_margin": 2.0,
+ "remap_rescue_runs": false,
+ "receipts": [
+  {
+   "key": "02753bf7e6549f5a",
+   "pages": 13,
+   "seconds": 15.47,
+   "sent": 0,
+   "cached": 13,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "075ad4da3647d7dc",
+   "pages": 6,
+   "seconds": 7.83,
+   "sent": 0,
+   "cached": 6,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pages": 5,
+   "seconds": 6.97,
+   "sent": 0,
+   "cached": 5,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "50b23088b99df7c2",
+   "pages": 4,
+   "seconds": 1.56,
+   "sent": 0,
+   "cached": 4,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "5d36b973fa9393a8",
+   "pages": 1,
+   "seconds": 1.78,
+   "sent": 0,
+   "cached": 1,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "5e979146e9322953",
+   "pages": 9,
+   "seconds": 13.14,
+   "sent": 0,
+   "cached": 9,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "99e3871a86ca9971",
+   "pages": 2,
+   "seconds": 0.26,
+   "sent": 0,
+   "cached": 2,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "9d701a8ad492a6d7",
+   "pages": 2,
+   "seconds": 0.28,
+   "sent": 0,
+   "cached": 2,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "b62895f03208009f",
+   "pages": 10,
+   "seconds": 7.16,
+   "sent": 0,
+   "cached": 10,
+   "pending": 0,
+   "page_errors": []
+  },
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pages": 1,
+   "seconds": 0.99,
+   "sent": 0,
+   "cached": 1,
+   "pending": 0,
+   "page_errors": []
+  }
+ ]
+}

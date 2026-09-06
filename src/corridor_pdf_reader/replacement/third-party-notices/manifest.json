@@ -1,0 +1,123 @@
+[
+  {
+    "package": "pypdfium2",
+    "version": "5.13.0",
+    "license": "BSD-3-Clause, Apache-2.0, dependency licenses",
+    "files": [
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/Apache-2.0.txt",
+        "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/BSD-3-Clause.txt",
+        "sha256": "a6d11f0694c0137e9b02924b9d33a159f6c72f220fa4655bb2e1ea3654377d39"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/CC-BY-4.0.txt",
+        "sha256": "419896aea50c15d6e40c5b4baf4bd346f78223b9a354c7357ad00262afdc08ec"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/abseil.txt",
+        "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/agg23.txt",
+        "sha256": "c110d3ea2ad77467ce0dcff7d3337e6c8be8049a5103f4b9bd5fd911a77972e5"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/fast_float.txt",
+        "sha256": "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/freetype.txt",
+        "sha256": "f4b133e25df1f86ad3ffea453aa0e613f0474f34778dbbb3e437e7b2724937d8"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/icu.txt",
+        "sha256": "e55522d81edc687a341a4411e0776e54ca654e90147f354a90458aaced4116af"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/lcms.txt",
+        "sha256": "7312b68c5b25e9bf2b828706fb4e29588f22705112f411fd42e1f7d84c3d139a"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+        "sha256": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+        "sha256": "96f5b328adbb78eeaaec6980d73fd558cb1e4d62560ed615646bc3cf5e532430"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libopenjpeg.txt",
+        "sha256": "c5ab0890a737c2dfa7ba675036554f6d17741d98629b0c2a145354d00617e6b2"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libpng.txt",
+        "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libtiff.txt",
+        "sha256": "92b72ba97e6c2749c2a94bc0ef646b47080217f1e772a482b33cf5a5f98a6506"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/llvm-libc.txt",
+        "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+        "sha256": "ba26c1263131696b86c10496b5066b918a20b7161822a80c274d0080105f6c93"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium.txt",
+        "sha256": "1fe9dea718fbd75cf149adaf4d8a22a4335604d964ddb76d1b45383dec8668c9"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/simdutf.txt",
+        "sha256": "fc8dbc04e03ad4efc08a647ffe7f995b811a95bc04c0e85a56d5277c6593fa5f"
+      },
+      {
+        "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/zlib.txt",
+        "sha256": "33fd641c9f3b0e0be64bc78fea9e94807674cdd70c48477599226cb8956565fe"
+      }
+    ]
+  },
+  {
+    "package": "pdf-oxide",
+    "version": "0.3.77",
+    "license": "MIT OR Apache-2.0",
+    "files": [
+      {
+        "path": "replacement/third-party-notices/pdf-oxide/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "replacement/third-party-notices/pdf-oxide/LICENSE-MIT",
+        "sha256": "33409f3fd68d9e95a48c751757782f468bb5c183f241d26bd1028678faa0baa3"
+      },
+      {
+        "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-APACHE",
+        "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a"
+      },
+      {
+        "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-MIT",
+        "sha256": "33409f3fd68d9e95a48c751757782f468bb5c183f241d26bd1028678faa0baa3"
+      },
+      {
+        "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/NOTICE",
+        "sha256": "a914e104fc9e195ab15594a89546192b66114d6dc8e9052771a26f9a91dd537c"
+      }
+    ]
+  },
+  {
+    "package": "pillow",
+    "version": "12.3.0",
+    "license": "MIT-CMU",
+    "files": [
+      {
+        "path": "replacement/third-party-notices/pillow/pillow-12.3.0.dist-info/licenses/LICENSE",
+        "sha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce"
+      }
+    ]
+  }
+]

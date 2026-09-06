@@ -1,0 +1,63 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results/offline-B",
+ "not_committed": "document.json and page renders of the WSDOT 9424 semantics check through Textract pages (TEXTRACT-RESULTS.md); digests only",
+ "files": 11,
+ "bytes": 23726,
+ "entries": [
+  {
+   "path": "read-receipts.json",
+   "sha256": "920ffed36c68ab5a1d8bb52900047ae2050d9405a36dea3cd86b21ce3a404e83",
+   "bytes": 1807
+  },
+  {
+   "path": "reads/02753bf7e6549f5a.json",
+   "sha256": "5adfb0fbc6b1f7e0bbf1d00c9a72abb5c753d230c1b3c1e08073513a9ccc1884",
+   "bytes": 4639
+  },
+  {
+   "path": "reads/075ad4da3647d7dc.json",
+   "sha256": "c70d538320d0bbca411eb3ef2f8f1f62ceb81e4d46f5d4ad69acd4b81e18b9dd",
+   "bytes": 2382
+  },
+  {
+   "path": "reads/1ee4a00b8eb6173b.json",
+   "sha256": "767f853e5d0d5ef3f0d9607a80bc6e91348f51ef6bfa73bd6bd3bf8ab2430893",
+   "bytes": 2212
+  },
+  {
+   "path": "reads/50b23088b99df7c2.json",
+   "sha256": "5e2cbf0ac8f1057fde3c5f3a7195bb99099f8d5a2efd37267890240c30e60937",
+   "bytes": 1823
+  },
+  {
+   "path": "reads/5d36b973fa9393a8.json",
+   "sha256": "01bd5800f7c1287d283c203973cf2ea9a8f68b2d163fb6138fbda38eb0602671",
+   "bytes": 809
+  },
+  {
+   "path": "reads/5e979146e9322953.json",
+   "sha256": "8b14a65ffd27f5e693a6f036b0063ac4a5b82e7e6e797efc0133825921e3b5e7",
+   "bytes": 3357
+  },
+  {
+   "path": "reads/99e3871a86ca9971.json",
+   "sha256": "c3cbfb73e888d63b023c57d365bac4c36095241a301130cd6c13ec8dde2a6247",
+   "bytes": 1083
+  },
+  {
+   "path": "reads/9d701a8ad492a6d7.json",
+   "sha256": "9bcc854424f0a477998c334e4620ad63289713710379c4a6899cd405cc2b9973",
+   "bytes": 1083
+  },
+  {
+   "path": "reads/b62895f03208009f.json",
+   "sha256": "724c9b969548eaf850db33ce8b3a1e8eb191094a44889594011f9ac3dd559720",
+   "bytes": 3675
+  },
+  {
+   "path": "reads/fcbe0ceb23e61b0f.json",
+   "sha256": "79df9c18d2a00b574ae427f1171b615510f34e28bff730156169ddac7d80a142",
+   "bytes": 856
+  }
+ ]
+}

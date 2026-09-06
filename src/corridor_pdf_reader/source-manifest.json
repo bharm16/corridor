@@ -1,0 +1,703 @@
+{
+ "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+ "repository": "pdf-reader-comparison (local, no remote)",
+ "branch": "codex/standalone-comparison",
+ "archived_with": "git -C <source-worktree> archive c39363e <paths> | tar -x -C src/corridor_pdf_reader",
+ "blob_ids_from": "git -C <source-worktree> ls-tree -r -l c39363e <paths>",
+ "rewrite": "corridor_pdf_reader.provenance.rewrite_imports on every .py file; restore_imports is its inverse",
+ "files": [
+  {
+   "path": "receipts/notes/HANDOFF.md",
+   "source_path": "HANDOFF.md",
+   "blob_sha1": "1015c314cd42a596c2aed2274c8a35ccb8ea1143",
+   "sha256": "60162d20de55fb0767a1e5a5bc609394607bc4d18aff08324e051e96ff7089e4",
+   "size": 22906,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "receipts/notes/SEMANTICS-RESULTS.md",
+   "source_path": "SEMANTICS-RESULTS.md",
+   "blob_sha1": "1326819165965678284584fa46ee06a9bb48c316",
+   "sha256": "b5857075cbd8dea1262ee95f6825bfe82d798b9abd7996973a83f133c977b81b",
+   "size": 2455,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "receipts/notes/TEXTRACT-RESULTS.md",
+   "source_path": "TEXTRACT-RESULTS.md",
+   "blob_sha1": "a7fed026087108aefa61cea31302821ab8b7d8c9",
+   "sha256": "b57181225e6d1b222b2d93ad9fe615cc20a71a3a78856ef4612e62c2e963c0d8",
+   "size": 12776,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/LOOP-LOG.md",
+   "source_path": "bootstrap/LOOP-LOG.md",
+   "blob_sha1": "87f21ad0730e1a1e712dd04150682938f9eec67b",
+   "sha256": "1426e5ecff575deead796eb7f797777baba8d6c78e9d8c313411133b8de14f71",
+   "size": 7835,
+   "rewritten_imports": false,
+   "appended": true
+  },
+  {
+   "path": "bootstrap/README.md",
+   "source_path": "bootstrap/README.md",
+   "blob_sha1": "7c7076b6f60780a61215dfc63a1202953dc56888",
+   "sha256": "4b2da80aac9ac2e3ff72f0641b27f2229a1d48bb29577d4c7397338fff5eeac9",
+   "size": 7078,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/__init__.py",
+   "source_path": "bootstrap/__init__.py",
+   "blob_sha1": "2ffdefde92458d1c427af0dbd93886df723e5ec0",
+   "sha256": "d70a1eaf37abb80e47a7c3b6305369594ca37e00ab1bfcc4f0bd8d71825c2e01",
+   "size": 85,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/corpus.py",
+   "source_path": "bootstrap/corpus.py",
+   "blob_sha1": "e198ff80a45a1a7f9323cfc7bfe87582c8661446",
+   "sha256": "5779cfad9b8fa80dde3b29a6f499aea2407c1bff464a35c5c9fc88928a3a8aec",
+   "size": 3198,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/exactness.py",
+   "source_path": "bootstrap/exactness.py",
+   "blob_sha1": "73838fdfbd972ba78af3143ba1884c92a556223a",
+   "sha256": "35bec926148743220529d485db5613d7546bdf9b0f5cfdbe22a78dc076693d49",
+   "size": 7258,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/fmt.mjs",
+   "source_path": "bootstrap/fmt.mjs",
+   "blob_sha1": "dec759c216992b0dc6b0a04b575bf57f770bc31a",
+   "sha256": "e63a93b4e5cd721ac911e4e2f32535d866cffced15c95d18418f140dad945c76",
+   "size": 3029,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/inspect.py",
+   "source_path": "bootstrap/inspect.py",
+   "blob_sha1": "6963e045abb10dbbfcad08b1507cc2c3ea4ab0c2",
+   "sha256": "02a3099d9114131d0c146b040955dcdebdbe627cb45c27b287cb683115458b66",
+   "size": 3118,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/nest_exact.py",
+   "source_path": "bootstrap/nest_exact.py",
+   "blob_sha1": "d073ba3d8ec85e49d94c841b8b13ef5b5956c603",
+   "sha256": "26cad9068cb1c2c109fd645e4c53cd0ca17cf0916f7ca0c6f04308a6dda100c5",
+   "size": 6495,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/pairs-synthetic.json",
+   "source_path": "bootstrap/pairs-synthetic.json",
+   "blob_sha1": "8821b2d5547cf6b188d2a43f3dd6bcfb8c09e03b",
+   "sha256": "55bc53f7dfefef2c1dfa299e478e2388859e307dfcaebf3dc0711db8b24f47c4",
+   "size": 137903,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/pairs.json",
+   "source_path": "bootstrap/pairs.json",
+   "blob_sha1": "516ff81381167ea1458e23bbbebde3cb2239af13",
+   "sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+   "size": 200743,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/read.py",
+   "source_path": "bootstrap/read.py",
+   "blob_sha1": "77f0f44fdf40e3525c3f5b17817e43abff19b814",
+   "sha256": "b66aeeb3410eb6b0279825238af74d606d8f50b3f31dbecfe4f1fac0b041dc81",
+   "size": 3178,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/reference.py",
+   "source_path": "bootstrap/reference.py",
+   "blob_sha1": "7051e482590b17cc56a291cab38c49611a94cd72",
+   "sha256": "c01a512d207674dfa18191184dbcde835b063ac5246be8797fc1b0ab1c324954",
+   "size": 16863,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/score.py",
+   "source_path": "bootstrap/score.py",
+   "blob_sha1": "bd4f8366835bbb03d18861d6c7d1c5808dbb1056",
+   "sha256": "3ceb118a71f5c7af14f118677df6a18a257f548a53e3e40d10970e0b50ea530d",
+   "size": 55353,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/semantics_eval.py",
+   "source_path": "bootstrap/semantics_eval.py",
+   "blob_sha1": "72d36fee94c783baa3e9f6b30c9adcb30b11099e",
+   "sha256": "1a490c1e72ad1af31c8728deca3297bea8fd1666d590ecee229b604feb9142d1",
+   "size": 2837,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/split.py",
+   "source_path": "bootstrap/split.py",
+   "blob_sha1": "17d0b2f718aceb6822bb9a254b07ca9338d4cd36",
+   "sha256": "3e43665d6e5b27740b6fd612de3bfb9400b45a7443449d9deabf8d97a73950f1",
+   "size": 3213,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/tally.py",
+   "source_path": "bootstrap/tally.py",
+   "blob_sha1": "56ad5e11c50682b2be3dbee5e7f136732db8cdf9",
+   "sha256": "241576fe93e63ba9f21ca71e342b4c5da5d87c2b4adfd3471e2c6d115214958d",
+   "size": 3870,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/tests/__init__.py",
+   "source_path": "bootstrap/tests/__init__.py",
+   "blob_sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "size": 0,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/tests/test_score.py",
+   "source_path": "bootstrap/tests/test_score.py",
+   "blob_sha1": "ad8120d963d921ac21a8c65c526f3c6a8be9d77c",
+   "sha256": "9ff3eb8f6d7e98b5dce55d7de70b86a8050860c201ecb7808488435c832d03d7",
+   "size": 13343,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "bootstrap/tests/test_semantics.py",
+   "source_path": "bootstrap/tests/test_semantics.py",
+   "blob_sha1": "5e034a0a1ef458731c516d11a8f7cfa180384112",
+   "sha256": "de803080ef36d0f5a0a22f70fe953ad0babea62958082cf306acc2846b0543d5",
+   "size": 10896,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures.json",
+   "source_path": "corpus/fixtures.json",
+   "blob_sha1": "6846ae7504df1bc2f5be3ae89f3d539560121f15",
+   "sha256": "d5a8b9947ab790744ccee3ced2386cb71e96059074b232ed138cf6883a5ff1bd",
+   "size": 4462,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-encrypted.pdf",
+   "source_path": "corpus/fixtures/fixture-encrypted.pdf",
+   "blob_sha1": "1c2a7e6d37449083064cbfebc891de2a7a75a81d",
+   "sha256": "a18ca00cab1e4310580ddd91ad3b0e04011576a341f16dee13fa3caf2017d67d",
+   "size": 1873,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-malformed.pdf",
+   "source_path": "corpus/fixtures/fixture-malformed.pdf",
+   "blob_sha1": "0f3714cfdd49f06038a1a227c12251a8ec0aecab",
+   "sha256": "6bcd0060cf54dea2978d7c9ab5a25aa15b4212018ab8cbea20d228d88b6659be",
+   "size": 41,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-raster.pdf",
+   "source_path": "corpus/fixtures/fixture-raster.pdf",
+   "blob_sha1": "05d595beb5807c7dd78b5bf07feb5e47f261a5b6",
+   "sha256": "d8a4b89c13d2be04967c2f994471183790c3fb98663b95e7f21b1ad9d26e1f1b",
+   "size": 5641,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-0-crop.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-0-crop.pdf",
+   "blob_sha1": "41472e4682e847f27f102490e914d96be6953794",
+   "sha256": "30678437e88789b494b8f70cedd08229ca8f58ebab5db6a14a5995c348ffe745",
+   "size": 794,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-0.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-0.pdf",
+   "blob_sha1": "0f88826bc678ab6566ce134fc705b5bec00fa972",
+   "sha256": "b4ee3a7c849a778fdd43553721b2e09665ca3f3154ccb6d077771a16cc80d979",
+   "size": 769,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-180-crop.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-180-crop.pdf",
+   "blob_sha1": "268bc778b35c6492a9746b6afeb225466b09bca9",
+   "sha256": "b3cd2edbc73f343d7e587a8a4a79453d65eb4f5b06d8a75f35f897de8cab13f4",
+   "size": 796,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-180.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-180.pdf",
+   "blob_sha1": "a0f6e260183b269a322024e3a357f6e7ab67d495",
+   "sha256": "90c6897cdde1da86c3ccfad68c499f49a586162c0039ebc17b1c55748341b06c",
+   "size": 771,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-270-crop.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-270-crop.pdf",
+   "blob_sha1": "06cdc070714bdd270115a3e5aa2e71472f98e1ff",
+   "sha256": "5c230a8dbf253e514a510f61c843865dcf947762c791d935fea0cd393aeeae8b",
+   "size": 796,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-270.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-270.pdf",
+   "blob_sha1": "75180ced5204eccee53024ff08fbe5de96d7b5cb",
+   "sha256": "a33ae4f9a169a37dc80603140a8b1c11bcff9fed400b24ce3fa791c7fb9aa16f",
+   "size": 771,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-90-crop.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-90-crop.pdf",
+   "blob_sha1": "c3f5a64021d4edbe7f699853cb00d658186ab23f",
+   "sha256": "eb4bdf71f7b055aabae0224dc4be43c8763713c6ce5061d2c5ca025f418b1ed9",
+   "size": 795,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "corpus/fixtures/fixture-rotation-90.pdf",
+   "source_path": "corpus/fixtures/fixture-rotation-90.pdf",
+   "blob_sha1": "b5aabd55519f48101a829c672164cb0078c029f6",
+   "sha256": "3f579aaa414a47f2eaee18a030f71b4e09fba2c226b4168a0bd7cd0a1380720d",
+   "size": 770,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "paired_trial/number_format.mjs",
+   "source_path": "paired_trial/number_format.mjs",
+   "blob_sha1": "42f0ddf97bf15d17c603df0af2ac7bf5a744eb1c",
+   "sha256": "e2ceeabe75bc590ea02063d22e972a9e99ccd9993a84bc2d5d677171a783b13e",
+   "size": 1001,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "paired_trial/package.json",
+   "source_path": "paired_trial/package.json",
+   "blob_sha1": "6f4d9bc8203c7009a2cc596f5496dc5a0ac1689b",
+   "sha256": "97bc93ffb8e6c137612111f6809ff6b975ac58cafaf453216f492a7a6b741bd3",
+   "size": 44,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "paired_trial/pnpm-lock.yaml",
+   "source_path": "paired_trial/pnpm-lock.yaml",
+   "blob_sha1": "5a8e207bbe62159b11c65adafc56bc353f12d220",
+   "sha256": "bf2eff1d49001ebd490d44ec76afd96eef03c14ee94d132a876d530a6dad2932",
+   "size": 620,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/README.md",
+   "source_path": "replacement/README.md",
+   "blob_sha1": "be024d4d0044c4fe3fbc0dd65fc6972e52fddb00",
+   "sha256": "ddb3c1e2cef0a66a7d8601868274f7ce089a113b1f22a936c70b35bce0cbe1ba",
+   "size": 6850,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/__init__.py",
+   "source_path": "replacement/__init__.py",
+   "blob_sha1": "7a7057aa22c47a9ed97391a884e00ee67d0ad374",
+   "sha256": "a25b2254e393b532d09a133f78252cee65c6db233c39233fe53a7086e290a371",
+   "size": 60,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/layout.py",
+   "source_path": "replacement/layout.py",
+   "blob_sha1": "46bdbc4876485cacd267106e7adb70c1606a9b15",
+   "sha256": "0b47fdd14aefe3cd5b145d8d9681abbe8a659d68e2453e7b499db631eb8098d5",
+   "size": 10204,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/llm.py",
+   "source_path": "replacement/llm.py",
+   "blob_sha1": "3a8cef0518082a1bdad871f0d9e840c12d6cea1a",
+   "sha256": "4a21ec4f2bcab2af07348dc9c15c6df6ee54326ba653d4dd5168f07f645fadf8",
+   "size": 6423,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/pages.py",
+   "source_path": "replacement/pages.py",
+   "blob_sha1": "8025f3936a4b2dc47c1796153b5a5c3b5c8285b8",
+   "sha256": "d5ecbba64e58e7508c8bb35d514b544d6c011d99887e5925df9070b868e5e1b9",
+   "size": 2991,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/prompts/matrix_structure_ids_v1.md",
+   "source_path": "replacement/prompts/matrix_structure_ids_v1.md",
+   "blob_sha1": "2bec060723b7c7d974f166e455a6691c7698a873",
+   "sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+   "size": 9922,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/pyproject.toml",
+   "source_path": "replacement/pyproject.toml",
+   "blob_sha1": "d75ba6d8a6c277f983157d97f51f4b1bfb315fce",
+   "sha256": "d3026c83b3f2b6bc041ef9fcad2a610b34cf91a47412a879746c2d8efe635f3e",
+   "size": 225,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/reader.py",
+   "source_path": "replacement/reader.py",
+   "blob_sha1": "0e88fd60e00a99fcf347e213f068c2dbc9149077",
+   "sha256": "0c48fa4b36e23f3fb2031970b9ba1e4bec237efab76c6a6575c205c8c82e99ee",
+   "size": 27009,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/semantics.py",
+   "source_path": "replacement/semantics.py",
+   "blob_sha1": "a2a5c98e18ede64f6ab093ff0c8caf5ee53c8b49",
+   "sha256": "eb1613ca2d1bcf3de15fd88f3cc0303cb35088633999cd65cc08a7bc28ff3dea",
+   "size": 20355,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/table_structure.py",
+   "source_path": "replacement/table_structure.py",
+   "blob_sha1": "ae75cabd5d4e9f001766ad8bb6099b610bc0ed46",
+   "sha256": "2528fea67485ff5abfb5fe8c4fabdee2f8d80966c9fd237765c056cb7f161965",
+   "size": 5702,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/tags.py",
+   "source_path": "replacement/tags.py",
+   "blob_sha1": "e45f0dc5c8edacc9d448bc440b7e24b189ac145c",
+   "sha256": "faa321ebbbb1a9c45205821d097f90725847b0b022071e2db99052164c42585c",
+   "size": 39049,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/text_layout.py",
+   "source_path": "replacement/text_layout.py",
+   "blob_sha1": "6a715e7532e2e790cab1250d39204177ed9f37e0",
+   "sha256": "4cd41dbc1ee1a42b45d096f741dbbaa5edaaa07634ca68e630865eb99196afc3",
+   "size": 19544,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/manifest.json",
+   "source_path": "replacement/third-party-notices/manifest.json",
+   "blob_sha1": "98cd5ac18657bfd5b381b758a177e0da96b12af5",
+   "sha256": "272ed50709c56aa4da42dfe729723ed85530a4eb8ec7185f90a3c1997f2ecbe6",
+   "size": 6145,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pdf-oxide/LICENSE-APACHE",
+   "source_path": "replacement/third-party-notices/pdf-oxide/LICENSE-APACHE",
+   "blob_sha1": "1b5ec8b78e237b5c3b3d812a7c0a6589d0f7161d",
+   "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+   "size": 9723,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pdf-oxide/LICENSE-MIT",
+   "source_path": "replacement/third-party-notices/pdf-oxide/LICENSE-MIT",
+   "blob_sha1": "e81f2089635eed0f6203c1b73e026e0fede76bbf",
+   "sha256": "33409f3fd68d9e95a48c751757782f468bb5c183f241d26bd1028678faa0baa3",
+   "size": 1065,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-APACHE",
+   "source_path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-APACHE",
+   "blob_sha1": "1b5ec8b78e237b5c3b3d812a7c0a6589d0f7161d",
+   "sha256": "62c7a1e35f56406896d7aa7ca52d0cc0d272ac022b5d2796e7d6905db8a3636a",
+   "size": 9723,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-MIT",
+   "source_path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/LICENSE-MIT",
+   "blob_sha1": "e81f2089635eed0f6203c1b73e026e0fede76bbf",
+   "sha256": "33409f3fd68d9e95a48c751757782f468bb5c183f241d26bd1028678faa0baa3",
+   "size": 1065,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/NOTICE",
+   "source_path": "replacement/third-party-notices/pdf-oxide/pdf_oxide-0.3.77.dist-info/licenses/NOTICE",
+   "blob_sha1": "ed16bd8b4d390948edbaf0401e73a56d17e70857",
+   "sha256": "a914e104fc9e195ab15594a89546192b66114d6dc8e9052771a26f9a91dd537c",
+   "size": 1084,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pillow/pillow-12.3.0.dist-info/licenses/LICENSE",
+   "source_path": "replacement/third-party-notices/pillow/pillow-12.3.0.dist-info/licenses/LICENSE",
+   "blob_sha1": "740172639feadf761b726e5211973acb3fe4f0d8",
+   "sha256": "dda12a98c1979cf3d94df1cff45d27a4cb3f04a60c76f76902ac54cac03ec0ce",
+   "size": 70307,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/Apache-2.0.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/Apache-2.0.txt",
+   "blob_sha1": "d645695673349e3947e8e5ae42332d0ac3164cd7",
+   "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30",
+   "size": 11358,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/BSD-3-Clause.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/BSD-3-Clause.txt",
+   "blob_sha1": "7baa27a311ec3d9924a4e2e50451b64d97947656",
+   "sha256": "a6d11f0694c0137e9b02924b9d33a159f6c72f220fa4655bb2e1ea3654377d39",
+   "size": 1459,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/CC-BY-4.0.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/LICENSES/CC-BY-4.0.txt",
+   "blob_sha1": "49ce653bfc366fab544037dd1db759c9bb4c502b",
+   "sha256": "419896aea50c15d6e40c5b4baf4bd346f78223b9a354c7357ad00262afdc08ec",
+   "size": 14527,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/abseil.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/abseil.txt",
+   "blob_sha1": "ccd61dcfe3dbcdf77a72794d7794b1e112a39e0b",
+   "sha256": "c79a7fea0e3cac04cd43f20e7b648e5a0ff8fa5344e644b0ee09ca1162b62747",
+   "size": 11361,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/agg23.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/agg23.txt",
+   "blob_sha1": "3040a2b5347e2a37545ed281bed18d5a289dec42",
+   "sha256": "c110d3ea2ad77467ce0dcff7d3337e6c8be8049a5103f4b9bd5fd911a77972e5",
+   "size": 725,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/fast_float.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/fast_float.txt",
+   "blob_sha1": "2fb2a37ad7fda521092c8b7b16911176c3f8a81b",
+   "sha256": "e562f3f974ced7e69dd1db77b820b36bcf8f30377f1aa105723fba449c53c4e6",
+   "size": 1079,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/freetype.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/freetype.txt",
+   "blob_sha1": "bbaba33f47d92ee4ed527582d96aeebf54cdcbb0",
+   "sha256": "f4b133e25df1f86ad3ffea453aa0e613f0474f34778dbbb3e437e7b2724937d8",
+   "size": 6741,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/icu.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/icu.txt",
+   "blob_sha1": "5a2eda629500c36c75377c1d693d8b584fcf40e6",
+   "sha256": "e55522d81edc687a341a4411e0776e54ca654e90147f354a90458aaced4116af",
+   "size": 27718,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/lcms.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/lcms.txt",
+   "blob_sha1": "a657cd949386d63fa79b04803b0f0c2ca566393f",
+   "sha256": "7312b68c5b25e9bf2b828706fb4e29588f22705112f411fd42e1f7d84c3d139a",
+   "size": 1353,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+   "blob_sha1": "dbf8070cac812bcfd7eb4d407062919f69c777c8",
+   "sha256": "75815e3bf6484201a3c3d17a1bbf10f2e8e3237f84df10a2357ea896db2a81d6",
+   "size": 12799,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+   "blob_sha1": "a785258bcdaeb20de639c6a060a7e3d5df17ae8f",
+   "sha256": "96f5b328adbb78eeaaec6980d73fd558cb1e4d62560ed615646bc3cf5e532430",
+   "size": 5620,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libopenjpeg.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libopenjpeg.txt",
+   "blob_sha1": "89df544ff5597e1a5e560f33ca0653d54884b2dc",
+   "sha256": "c5ab0890a737c2dfa7ba675036554f6d17741d98629b0c2a145354d00617e6b2",
+   "size": 1794,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libpng.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libpng.txt",
+   "blob_sha1": "1b765ae9f96abea77d3d9a88c543e3b5f4725813",
+   "sha256": "bdb0a645ea18c60507d0368379b1ac5474b92255fcc2d115e07486a7672ba526",
+   "size": 5345,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libtiff.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/libtiff.txt",
+   "blob_sha1": "dc255dec69163021fec18c9d44a9946aa257d8b4",
+   "sha256": "92b72ba97e6c2749c2a94bc0ef646b47080217f1e772a482b33cf5a5f98a6506",
+   "size": 1139,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/llvm-libc.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/llvm-libc.txt",
+   "blob_sha1": "24806ab4c9eb291db4d28e159901f7a0901b9fd1",
+   "sha256": "ebcd9bbf783a73d05c53ba4d586b8d5813dcdf3bbec50265860ccc885e606f47",
+   "size": 15140,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+   "blob_sha1": "6ae1fc2d904ddd766b73c7b132372d23aea1db9c",
+   "sha256": "ba26c1263131696b86c10496b5066b918a20b7161822a80c274d0080105f6c93",
+   "size": 1177,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/pdfium.txt",
+   "blob_sha1": "161ca160d6fa51df6e3e594aeb2b1097b55e3866",
+   "sha256": "1fe9dea718fbd75cf149adaf4d8a22a4335604d964ddb76d1b45383dec8668c9",
+   "size": 12896,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/simdutf.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/simdutf.txt",
+   "blob_sha1": "74c8302ba92830e170dfae35957468edd2e25271",
+   "sha256": "fc8dbc04e03ad4efc08a647ffe7f995b811a95bc04c0e85a56d5277c6593fa5f",
+   "size": 1059,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/zlib.txt",
+   "source_path": "replacement/third-party-notices/pypdfium2/pypdfium2-5.13.0.dist-info/licenses/data/darwin_arm64/BUILD_LICENSES/zlib.txt",
+   "blob_sha1": "f664e828acc9a8bd94bdfb88c7203be2bd66b47d",
+   "sha256": "33fd641c9f3b0e0be64bc78fea9e94807674cdd70c48477599226cb8956565fe",
+   "size": 1332,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/uv.lock",
+   "source_path": "replacement/uv.lock",
+   "blob_sha1": "edf3c677f3d92c93d9894ce9cc9048002275f6e5",
+   "sha256": "b8f25f2a15ebc0c8508f56b38a8e2772ed8037e77568d05ca836f253769d1958",
+   "size": 19682,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "replacement/vocabulary.py",
+   "source_path": "replacement/vocabulary.py",
+   "blob_sha1": "bbc030184012d0c83258e449e6403b22a1706bcf",
+   "sha256": "96b6f6af9b8072151cdc2abeddfe46fae8d252a41813c7b4760d88c75bf42b70",
+   "size": 4027,
+   "rewritten_imports": false,
+   "appended": false
+  }
+ ]
+}

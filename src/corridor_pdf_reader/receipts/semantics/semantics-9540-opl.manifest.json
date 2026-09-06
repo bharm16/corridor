@@ -1,0 +1,18 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-opl",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 2,
+ "bytes": 81211,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "4e7f86db6adc987c2ad4be707b5dd363135d9515b2c0e0882141538081b8fa5e",
+   "bytes": 5948
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "f99b88d0e4ac8c96185c475abc8dd34622f374b7be74534246595c230ad03c18",
+   "bytes": 75263
+  }
+ ]
+}

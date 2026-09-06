@@ -1,0 +1,51 @@
+{
+ "run": "textract-A-margin1",
+ "what": "Lane A, margin experiment 1 (TEXTRACT-RESULTS.md).",
+ "source_commit": "c39363e26c2726b61c4e707f589093c67173e538",
+ "reader": {
+  "engine": "textract-A",
+  "dpi": 36,
+  "retain_images": false,
+  "driver": "bootstrap.read"
+ },
+ "engines": {
+  "pypdfium2": "5.13.0",
+  "pypdf": "6.17.0",
+  "pdf-oxide": "0.3.77",
+  "pillow": "12.3.0"
+ },
+ "corpus": {
+  "root": "TRUE_PAIRS_ROOT=/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+  "keys": "results/ten-keys.txt (ten development pairs)"
+ },
+ "split": {
+  "file": "bootstrap/pairs.json",
+  "seed": 720
+ },
+ "reference": {
+  "name": "loop-reference-v6",
+  "manifest": "../../textract-loop-reference-v6.manifest.json"
+ },
+ "read_seconds": 57.0,
+ "documents_read": 10,
+ "holdout_included": false,
+ "results": {
+  "pairs": "0 / 10",
+  "pages": "27 / 53",
+  "cells_exact": "14343 / 14641"
+ },
+ "reads_not_committed": {
+  "files": 10,
+  "bytes": 6025557,
+  "manifest": "reads.manifest.json"
+ },
+ "textract": {
+  "api": "AnalyzeDocument",
+  "feature_types": [
+   "TABLES"
+  ],
+  "region": "us-east-2",
+  "cache": "results/textract-cache (not committed)",
+  "source": "textract/ at c39363e, #732's"
+ }
+}

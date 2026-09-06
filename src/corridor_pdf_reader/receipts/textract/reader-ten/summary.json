@@ -1,0 +1,469 @@
+{
+ "pairs": 10,
+ "pairs_pass": 9,
+ "pages": 53,
+ "pages_pass": 53,
+ "reference_cells": 14641,
+ "exact_cells": 14615,
+ "read_errors": {},
+ "by_class": {
+  "value_mismatch": 23,
+  "prose_row": 15,
+  "uncovered": 6,
+  "unverifiable": 1
+ },
+ "by_subclass": {
+  "prose_row/outside_workbook": 15,
+  "value_mismatch/overflow_hashes": 12,
+  "value_mismatch/clipped_evidence": 9,
+  "uncovered/absent": 6,
+  "value_mismatch/clipped_suffix": 1,
+  "value_mismatch/clipped_middle": 1,
+  "unverifiable/print_area_overflow": 1
+ },
+ "pages_with_class": {
+  "value_mismatch": 8,
+  "unverifiable": 1,
+  "prose_row": 1
+ },
+ "pairs_with_class": {
+  "value_mismatch": 3,
+  "unverifiable": 1,
+  "uncovered": 1,
+  "prose_row": 1
+ },
+ "by_family": {
+  "AdobePDFLibrary": {
+   "pairs": 1,
+   "pairs_pass": 1,
+   "pages": 1,
+   "pages_pass": 1,
+   "reference_cells": 571,
+   "exact_cells": 571
+  },
+  "Distiller": {
+   "pairs": 1,
+   "pairs_pass": 1,
+   "pages": 2,
+   "pages_pass": 2,
+   "reference_cells": 105,
+   "exact_cells": 105
+  },
+  "Excel": {
+   "pairs": 4,
+   "pairs_pass": 4,
+   "pages": 33,
+   "pages_pass": 33,
+   "reference_cells": 12303,
+   "exact_cells": 12288
+  },
+  "Ghostscript": {
+   "pairs": 2,
+   "pairs_pass": 1,
+   "pages": 11,
+   "pages_pass": 11,
+   "reference_cells": 1345,
+   "exact_cells": 1334
+  },
+  "PrintToPDF": {
+   "pairs": 2,
+   "pairs_pass": 2,
+   "pages": 6,
+   "pages_pass": 6,
+   "reference_cells": 317,
+   "exact_cells": 317
+  }
+ },
+ "worst_pairs": [
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+   "family": "Ghostscript",
+   "pages": 1,
+   "errors": 15,
+   "uncovered": 6,
+   "counts": {
+    "prose_row": 15
+   }
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pdf": "REVISED-McClean-December-SOV.pdf",
+   "family": "Excel",
+   "pages": 5,
+   "errors": 16,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 16
+   }
+  },
+  {
+   "key": "b62895f03208009f",
+   "pdf": "85531_1010_Index.pdf",
+   "family": "Ghostscript",
+   "pages": 10,
+   "errors": 5,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 5
+   }
+  },
+  {
+   "key": "02753bf7e6549f5a",
+   "pdf": "19132-71-VE-June-2023.pdf",
+   "family": "Excel",
+   "pages": 13,
+   "errors": 2,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 2
+   }
+  },
+  {
+   "key": "99e3871a86ca9971",
+   "pdf": "status-mobility-fy2019.pdf",
+   "family": "PrintToPDF",
+   "pages": 2,
+   "errors": 1,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 1
+   }
+  },
+  {
+   "key": "075ad4da3647d7dc",
+   "pdf": "12.2025-Kenco-SOV.pdf",
+   "family": "Excel",
+   "pages": 6,
+   "errors": 0,
+   "uncovered": 0,
+   "counts": {}
+  },
+  {
+   "key": "50b23088b99df7c2",
+   "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+   "family": "PrintToPDF",
+   "pages": 4,
+   "errors": 0,
+   "uncovered": 0,
+   "counts": {}
+  },
+  {
+   "key": "5d36b973fa9393a8",
+   "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+   "family": "AdobePDFLibrary",
+   "pages": 1,
+   "errors": 0,
+   "uncovered": 0,
+   "counts": {}
+  },
+  {
+   "key": "5e979146e9322953",
+   "pdf": "5007_20-08-Billing.pdf",
+   "family": "Excel",
+   "pages": 9,
+   "errors": 0,
+   "uncovered": 0,
+   "counts": {}
+  },
+  {
+   "key": "9d701a8ad492a6d7",
+   "pdf": "status-mobility-fy2018.pdf",
+   "family": "Distiller",
+   "pages": 2,
+   "errors": 0,
+   "uncovered": 0,
+   "counts": {}
+  }
+ ],
+ "examples": {
+  "value_mismatch/clipped_suffix": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   }
+  ],
+  "value_mismatch/clipped_middle": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 7,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   }
+  ],
+  "value_mismatch/clipped_evidence": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 1,
+    "c": 2,
+    "i": 0,
+    "j": 2,
+    "ref": "\u00ac BEFORE FINAL PRINTING enter any digit to remove the green shading in the data ",
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 1,
+    "c": 2,
+    "i": 0,
+    "j": 2,
+    "ref": "\u00ac BEFORE FINAL PRINTING enter any digit to remove the green shading in the data ",
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 1,
+    "c": 2,
+    "i": 0,
+    "j": 2,
+    "ref": "\u00ac BEFORE FINAL PRINTING enter any digit to remove the green shading in the data ",
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 1,
+    "c": 2,
+    "i": 0,
+    "j": 2,
+    "ref": "\u00ac BEFORE FINAL PRINTING enter any digit to remove the green shading in the data ",
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "b62895f03208009f",
+    "pdf": "85531_1010_Index.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "DGN Files",
+    "r": 112,
+    "c": 4,
+    "i": 20,
+    "j": 2,
+    "ref": "MAINLINE PROFILE - I.R. 90 WB; STA. 169+00 TO STA. 174+00; I.R. 90 WB TEMP STA. ",
+    "got": "MAINLINE PROFILE - I.R. 90 WB; STA. 169+00 TO STA. 174+00; I.R. 90 WB TEMP STA. "
+   }
+  ],
+  "value_mismatch/overflow_hashes": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 132,
+    "c": 8,
+    "i": 6,
+    "j": 8,
+    "ref": " $9.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 133,
+    "c": 8,
+    "i": 7,
+    "j": 8,
+    "ref": " $10.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 134,
+    "c": 8,
+    "i": 8,
+    "j": 8,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 135,
+    "c": 8,
+    "i": 9,
+    "j": 8,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 136,
+    "c": 8,
+    "i": 10,
+    "j": 8,
+    "ref": " $11.00 ",
+    "got": "#"
+   }
+  ],
+  "unverifiable/print_area_overflow": [
+   {
+    "pair": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "FY2018 Revenue vs Appropriation",
+    "r": null,
+    "c": null,
+    "i": 26,
+    "j": 0,
+    "got": "2The appropriations are for the entire fiscal year 2019"
+   }
+  ],
+  "prose_row/outside_workbook": [
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 0,
+    "j": 2,
+    "got": "CO 224: Phase 3 Marine Recovery - Billing Schedule of Values 3-4-2020 Sidebar Me"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 1,
+    "j": 2,
+    "got": "This Change Order amends the Contract to incorporate a negotiated cost increase "
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 1,
+    "j": 10,
+    "got": "Amended -"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 2,
+    "j": 2,
+    "got": "provide full and final resolution f"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 2,
+    "j": 3,
+    "got": "or any and all cost and fe and"
+   }
+  ],
+  "uncovered/absent": [
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 1,
+    "c": 2,
+    "ref": "CO 224: Phase 3 Marine Recovery - Billing Schedule of Values 3-4-2020 Sidebar Me",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 2,
+    "ref": "Description:\nThis Change Order amends the Contract to incorporate a negotiated c",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 3,
+    "ref": "Amended Cost Allocation",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 4,
+    "ref": "Amended Budget Allocation",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 8,
+    "ref": "Progress Estimate 38 Prior Payment",
+    "sub": "absent"
+   }
+  ]
+ },
+ "holdout_included": false
+}

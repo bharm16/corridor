@@ -1,0 +1,68 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9424-v2",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 12,
+ "bytes": 3301776,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "945021e2cb6b1aeedf4715b2bb9213c5d0ae02353754574095439a66c8051c20",
+   "bytes": 270242
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "c7311f92aeb8ccacd3d1dd5485773ee7da4a4beda955bc59e48090e395047c61",
+   "bytes": 312789
+  },
+  {
+   "path": "page-10.png",
+   "sha256": "cd964d530825a75cb9657083b1ee6900a375019fce1b0dcf2f0457f9b79f6ded",
+   "bytes": 296678
+  },
+  {
+   "path": "page-11.png",
+   "sha256": "50f186ef463a957fedac69d68299f85ed8c1a1778a7f74ba2fe057916819a957",
+   "bytes": 127964
+  },
+  {
+   "path": "page-2.png",
+   "sha256": "153eff606fa168858b80a8ee45b834eba9cf9184bf3a555cc3de3ec45794666e",
+   "bytes": 272547
+  },
+  {
+   "path": "page-3.png",
+   "sha256": "1fb71148b128d7ec4edf8488763aba8e8d9f329df0461845f34bcdd15ff4a7b5",
+   "bytes": 368934
+  },
+  {
+   "path": "page-4.png",
+   "sha256": "ec8a5296016f5b8fcd82e0cba931faeaaa13ed7c4c91f75d62acb6fa2cdb1e57",
+   "bytes": 305963
+  },
+  {
+   "path": "page-5.png",
+   "sha256": "d3db461985256ee2dac37f44032b235b516e697bdde2631871003f36b8690c3a",
+   "bytes": 265072
+  },
+  {
+   "path": "page-6.png",
+   "sha256": "6f468a58834acff6b526b66c0ddb36e67518224ccb92c6cc147f7db5e745f3ea",
+   "bytes": 245129
+  },
+  {
+   "path": "page-7.png",
+   "sha256": "b4a25d847de3efafebba0202c188b8021c259c4ebfd09a569958c1358af8b1fd",
+   "bytes": 296407
+  },
+  {
+   "path": "page-8.png",
+   "sha256": "92cd64d4c8937f8adbc5e336a21038d51c4218371d24ab6353f0322726bebe96",
+   "bytes": 318445
+  },
+  {
+   "path": "page-9.png",
+   "sha256": "881d1bb1fd011ba41697f97fbaed8c5d5ffd69dc6d27e3823a978acd0bdb1088",
+   "bytes": 221606
+  }
+ ]
+}
