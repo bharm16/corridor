@@ -6,10 +6,11 @@ from datetime import date, datetime, timezone
 import base64
 from hashlib import sha256
 from inspect import signature
+from io import BytesIO
 import json
 from types import SimpleNamespace
 
-import pymupdf
+from PIL import Image
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -592,11 +593,10 @@ def test_screenshot_evidence_requires_a_decodable_png():
     tiny = base64.b64decode(
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
     )
-    pixmap = pymupdf.Pixmap(pymupdf.csRGB, pymupdf.IRect(0, 0, 900, 600), False)
-    pixmap.clear_with(255)
-    browser_sized = pixmap.tobytes("png")
+    browser_sized = BytesIO()
+    Image.new("RGB", (900, 600), "white").save(browser_sized, format="PNG")
 
-    assert _sensible_png_dimensions(browser_sized) == (900, 600)
+    assert _sensible_png_dimensions(browser_sized.getvalue()) == (900, 600)
     assert _sensible_png_dimensions(tiny) is None
     assert _sensible_png_dimensions(b"not an image") is None
 

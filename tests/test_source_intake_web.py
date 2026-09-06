@@ -10,7 +10,6 @@ from __future__ import annotations
 import hashlib
 from uuid import uuid4
 
-import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -22,21 +21,20 @@ import corridor.source_intake as source_intake
 from corridor.web.app import app, get_human_principal, get_session
 
 from access_support import seed_membership
+from pdf_fixture_support import PdfFixture
 
 TEST_PRINCIPAL = source_intake.HumanPrincipal("local:web-uploader")
 
 
 def _matrix_pdf(marker: str = "AT&T Texas (SWBT)") -> bytes:
-    doc = pymupdf.open()
-    page = doc.new_page()
-    page.insert_text((72, 100), "Utility Conflict Matrix — segment 3C2")
-    page.insert_text(
+    fixture = PdfFixture()
+    page = fixture.add_page()
+    page.text((72, 100), "Utility Conflict Matrix — segment 3C2")
+    page.text(
         (72, 130),
         f"FOC1-1  {marker}  Telecom  underground fiber  STA 1149+00 to 1153+17",
     )
-    body = doc.tobytes()
-    doc.close()
-    return body
+    return fixture.tobytes()
 
 
 @pytest.fixture

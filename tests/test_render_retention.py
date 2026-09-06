@@ -16,7 +16,6 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -34,6 +33,8 @@ from corridor.principals import HumanPrincipal
 from corridor.render_profiles import regenerate_render_derivative
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
 from corridor.source_segments import dereference_source_segment
+
+from pdf_fixture_support import PdfFixture, scan_image
 
 
 ACTOR = HumanPrincipal("local:retention-operator")
@@ -60,35 +61,32 @@ def project(session):
 
 def _minutes_pdf(tmp_path: Path) -> Path:
     path = tmp_path / "coordination-minutes.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            "Meeting notes and attendance.\n"
-            "Action Items:\n"
-            "1. Equistar will submit the signed exhibit by March 2025.\n"
-            "Meeting Notes",
-        )
-        pdf.save(path)
-    return path
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        "Meeting notes and attendance.\n"
+        "Action Items:\n"
+        "1. Equistar will submit the signed exhibit by March 2025.\n"
+        "Meeting Notes",
+    )
+    return fixture.save(path)
 
 
 def _scanned_pdf(tmp_path: Path) -> Path:
     """An image-only page, so routing chooses OCR and renders drive extraction."""
 
-    source = pymupdf.open()
-    page = source.new_page()
-    page.insert_text((72, 120), "UTILITY RELOCATION AGREEMENT", fontsize=22)
-    page.insert_text((72, 170), "CENTERPOINT ENERGY", fontsize=22)
-    pixmap = page.get_pixmap(dpi=300)
-    source.close()
-    scanned = pymupdf.open()
-    out_page = scanned.new_page()
-    out_page.insert_image(out_page.rect, pixmap=pixmap)
-    path = tmp_path / "scanned.pdf"
-    scanned.save(path)
-    scanned.close()
-    return path
+    scan = scan_image(
+        595,
+        842,
+        dpi=300,
+        lines=(
+            ((72, 120), "UTILITY RELOCATION AGREEMENT", 22),
+            ((72, 170), "CENTERPOINT ENERGY", 22),
+        ),
+    )
+    fixture = PdfFixture()
+    fixture.add_page().image((0, 0, 595, 842), scan)
+    return fixture.save(tmp_path / "scanned.pdf")
 
 
 def test_deleting_every_render_leaves_citations_verifiable_and_regenerable(

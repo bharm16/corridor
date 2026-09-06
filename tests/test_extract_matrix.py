@@ -47,6 +47,8 @@ from corridor.models import (
 )
 from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
+from pdf_fixture_support import PdfFixture, TextOverflow
+
 # A TxDOT-shaped page: the owner is a column, every row states its own.
 TXDOT_ROWS = [
     ["Utility ID", "Utility Owner", "Utility Type", "Start Station", "End Station", "Sheet No."],
@@ -62,24 +64,37 @@ FDOT_ROWS = [
 ]
 
 
-def write_pdf(path, rows, banner=None):
-    """A real PDF with a real ruled table, so geometry does its actual work."""
-    doc = pymupdf.open()
-    page = doc.new_page(width=792, height=612)
+def draw_table(page, rows, banner=None):
+    """A real ruled table on ``page``, so geometry does its actual work."""
     x0, y0, width, height = 40, 70, 118, 24
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
-            rect = pymupdf.Rect(
-                x0 + c * width, y0 + r * height,
-                x0 + (c + 1) * width, y0 + (r + 1) * height,
-            )
-            page.draw_rect(rect, color=(0, 0, 0), width=0.6)
-            page.insert_textbox(rect + (3, 5, -3, -3), cell, fontsize=7)
+            left, top = x0 + c * width, y0 + r * height
+            page.rect((left, top, left + width, top + height), width=0.6)
+            box = (left + 3, top + 5, left + width - 3, top + height - 3)
+            # Shrink until it fits. A text box that overflows places nothing,
+            # and the PyMuPDF fixture this replaces did that silently: the
+            # SR 789 band below was never on its page, so its test passed
+            # against a blank cell.
+            for size in (7, 6, 5, 4):
+                try:
+                    page.text_box(box, cell, fontsize=size)
+                except TextOverflow:
+                    continue
+                break
+            else:
+                raise AssertionError(f"{cell!r} does not fit a {width}x{height} cell")
     if banner:
-        page.insert_text((40, 50), banner, fontsize=9)
-    doc.save(path)
-    doc.close()
-    return path
+        page.text((40, 50), banner, fontsize=9)
+
+
+def write_pdf(path, pages_rows, banner=None):
+    """A real PDF, one ruled table a page; the fixture declares each page's text."""
+    fixture = PdfFixture()
+    for rows in pages_rows:
+        draw_table(fixture.add_page(width=792, height=612), rows, banner=banner)
+    fixture.save(path)
+    return fixture
 
 
 class StubClient:
@@ -156,8 +171,9 @@ def project(session):
 
 
 def make_document(session, project, tmp_path, rows, *, banner=None, sha="a", pages=1):
-    """A Document whose stored PDF and page text are both real."""
-    pdf = write_pdf(tmp_path / f"{sha}.pdf", rows, banner=banner)
+    """A Document whose stored PDF is real and whose page text is what it declares."""
+    pdf = tmp_path / f"{sha}.pdf"
+    fixture = write_pdf(pdf, [rows], banner=banner)
     doc = Document(
         project_id=project.id,
         sha256=sha * 64,
@@ -170,11 +186,9 @@ def make_document(session, project, tmp_path, rows, *, banner=None, sha="a", pag
     session.flush()
     image = tmp_path / f"{sha}-0001.png"
     image.write_bytes(b"\x89PNG page image")
-    with pymupdf.open(pdf) as opened:
-        text = opened[0].get_text()
     session.add(
         DocPage(
-            document_id=doc.id, page_no=1, text=text,
+            document_id=doc.id, page_no=1, text=fixture.pages[0].expected_text,
             image_path=str(image), text_source="text_layer",
         )
     )
@@ -190,14 +204,8 @@ def make_multipage_document(session, project, tmp_path, pages_rows, *, sha="m"):
     #101 needs several pages of one document to disagree with each other,
     which `make_document` cannot express — it writes a single page.
     """
-    merged = pymupdf.open()
-    for index, rows in enumerate(pages_rows):
-        one = write_pdf(tmp_path / f"{sha}-p{index}.pdf", rows)
-        with pymupdf.open(one) as opened:
-            merged.insert_pdf(opened)
     path = tmp_path / f"{sha}-all.pdf"
-    merged.save(path)
-    merged.close()
+    fixture = write_pdf(path, pages_rows)
 
     doc = Document(
         project_id=project.id,
@@ -209,20 +217,19 @@ def make_multipage_document(session, project, tmp_path, pages_rows, *, sha="m"):
     )
     session.add(doc)
     session.flush()
-    with pymupdf.open(path) as opened:
-        for index in range(len(pages_rows)):
-            image = tmp_path / f"{sha}-{index:04d}.png"
-            image.write_bytes(b"\x89PNG page image")
-            session.add(
-                DocPage(
-                    document_id=doc.id,
-                    page_no=index + 1,
-                    text=opened[index].get_text(),
-                    image_path=str(image),
-                    text_source="text_layer",
-                )
+    for index, page in enumerate(fixture.pages):
+        image = tmp_path / f"{sha}-{index:04d}.png"
+        image.write_bytes(b"\x89PNG page image")
+        session.add(
+            DocPage(
+                document_id=doc.id,
+                page_no=index + 1,
+                text=page.expected_text,
+                image_path=str(image),
+                text_source="text_layer",
             )
-            _add_layout_derivative(session, doc, index + 1, image)
+        )
+        _add_layout_derivative(session, doc, index + 1, image)
     session.flush()
     doc._pdf_path = str(path)
     return doc
@@ -643,19 +650,14 @@ def test_a_continuation_page_reuses_the_header_printed_earlier(
     mapping the owner column to the wrong field and dropping all 44 rows.
     A printed header outranks a mapping inferred from data.
     """
-    write_pdf(tmp_path / "b.pdf", [["1", "AT&T TCA", "Telecom", "203+40.00", "206+40.00", "9"]])
     doc = make_document(session, project, tmp_path, TXDOT_ROWS, pages=2)
-    with pymupdf.open(tmp_path / "a.pdf") as first, pymupdf.open(tmp_path / "b.pdf") as second:
-        merged = pymupdf.open()
-        merged.insert_pdf(first)
-        merged.insert_pdf(second)
-        merged.save(tmp_path / "merged.pdf")
-        text = second[0].get_text()
+    continuation = [["1", "AT&T TCA", "Telecom", "203+40.00", "206+40.00", "9"]]
+    merged = write_pdf(tmp_path / "merged.pdf", [TXDOT_ROWS, continuation])
     doc._pdf_path = str(tmp_path / "merged.pdf")
     image = tmp_path / "a-0002.png"
     image.write_bytes(b"\x89PNG page image")
     session.add(
-        DocPage(document_id=doc.id, page_no=2, text=text,
+        DocPage(document_id=doc.id, page_no=2, text=merged.pages[1].expected_text,
                 image_path=str(image), text_source="text_layer")
     )
     _add_layout_derivative(session, doc, 2, image)
@@ -868,20 +870,14 @@ def test_a_mixed_document_produces_candidates_from_both_tiers(
     The two batches run separately and are the only place their results are
     stitched together; a single-tier fixture never exercises that.
     """
-    write_pdf(tmp_path / "b.pdf", TXDOT_ROWS)
     doc = make_document(session, project, tmp_path, TXDOT_ROWS, pages=2)
-    with pymupdf.open(tmp_path / "a.pdf") as first, pymupdf.open(tmp_path / "b.pdf") as second:
-        merged = pymupdf.open()
-        merged.insert_pdf(first)
-        merged.insert_pdf(second)
-        merged.save(tmp_path / "mixed.pdf")
-        text = second[0].get_text()
+    mixed = write_pdf(tmp_path / "mixed.pdf", [TXDOT_ROWS, TXDOT_ROWS])
     doc._pdf_path = str(tmp_path / "mixed.pdf")
     image = tmp_path / "a-0002.png"
     image.write_bytes(b"\x89PNG page image")
     # Page 2 was scanned: no text layer, so no word boxes to read.
     session.add(
-        DocPage(document_id=doc.id, page_no=2, text=text,
+        DocPage(document_id=doc.id, page_no=2, text=mixed.pages[1].expected_text,
                 image_path=str(image), text_source="ocr")
     )
     _add_layout_derivative(session, doc, 2, image)

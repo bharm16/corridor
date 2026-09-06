@@ -6,7 +6,6 @@ from email.message import EmailMessage
 from hashlib import sha256
 from uuid import uuid4
 
-import pymupdf
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
@@ -32,6 +31,7 @@ from corridor.web.app import (
     get_session,
 )
 from access_support import seed_membership
+from pdf_fixture_support import PdfFixture
 
 
 @pytest.fixture
@@ -82,10 +82,9 @@ def raw(
 
 
 def pdf_bytes(text: str) -> bytes:
-    document = pymupdf.open()
-    page = document.new_page()
-    page.insert_text((72, 72), text)
-    return document.tobytes()
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 72), text)
+    return fixture.tobytes()
 
 
 def receive(session, payload: bytes) -> email_intake.ReceivedMessage:

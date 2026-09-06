@@ -13,13 +13,14 @@ import json
 from pathlib import Path
 from uuid import uuid4
 
-import pymupdf
 import pytest
 
 from corridor.config import settings
 from corridor.location_discovery import effective_source_url, reference_key
 from corridor.location_discovery_cli import main
 from corridor.models import DiscoveredReference, Document, Project
+
+from pdf_fixture_support import PdfFixture
 
 NOW = datetime(2026, 8, 29, 7, 0, tzinfo=timezone.utc)
 LOCATION = "txdot-loc"
@@ -54,11 +55,9 @@ def _project(factory) -> Project:
 
 
 def _pdf() -> bytes:
-    doc = pymupdf.open()
-    doc.new_page().insert_text((72, 100), "Utility Conflict Matrix")
-    body = doc.tobytes()
-    doc.close()
-    return body
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 100), "Utility Conflict Matrix")
+    return fixture.tobytes()
 
 
 def test_authorize_and_view_through_the_cli(runtime_database, principal, capsys):

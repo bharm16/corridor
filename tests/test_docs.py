@@ -2,7 +2,6 @@ import hashlib
 import json
 from datetime import date
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -16,6 +15,8 @@ from corridor.models import (
     Project,
 )
 from corridor.pipeline import ingest_manifest
+
+from pdf_fixture_support import PdfFixture
 
 
 @pytest.fixture
@@ -38,13 +39,11 @@ def project(session):
 
 
 def make_pdf(path, lines):
-    doc = pymupdf.open()
-    page = doc.new_page()
+    fixture = PdfFixture()
+    page = fixture.add_page()
     for i, line in enumerate(lines):
-        page.insert_text((72, 100 + 30 * i), line)
-    doc.save(path)
-    doc.close()
-    return path
+        page.text((72, 100 + 30 * i), line)
+    return fixture.save(path)
 
 
 def file_sha256(path):

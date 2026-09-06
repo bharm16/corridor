@@ -1,7 +1,6 @@
 import hashlib
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -14,6 +13,8 @@ from corridor.models import (
     PageRenderDerivative,
     Project,
 )
+
+from pdf_fixture_support import PdfFixture, scan_image
 
 
 @pytest.fixture
@@ -38,7 +39,7 @@ def project(session):
 @pytest.fixture
 def pdf(tmp_path):
     """A synthetic PDF. Exercises code paths only — never a quality claim."""
-    doc = pymupdf.open()
+    fixture = PdfFixture()
     # Each page must carry more than MIN_TEXT_CHARS of real text, or the
     # thin-text heuristic correctly treats it as a scan and OCRs it.
     bodies = [
@@ -46,13 +47,10 @@ def pdf(tmp_path):
         "STA 1149+00 to STA 1153+17, offset 303 L/R, crossing IH 69 baseline",
     ]
     for n, body in enumerate(bodies, start=1):
-        page = doc.new_page()
-        page.insert_text((72, 100), f"Page {n}")
-        page.insert_text((72, 130), body)
-    path = tmp_path / "matrix.pdf"
-    doc.save(path)
-    doc.close()
-    return path
+        page = fixture.add_page()
+        page.text((72, 100), f"Page {n}")
+        page.text((72, 130), body)
+    return fixture.save(tmp_path / "matrix.pdf")
 
 
 def ingest(session, project, pdf, images, **kw):
@@ -253,23 +251,21 @@ def test_the_original_file_is_never_modified(session, project, pdf, tmp_path):
 def scanned_pdf(tmp_path):
     """An image-only PDF, as a scanner produces.
 
-    Built by rendering a text page and re-inserting it as an image, so the
-    resulting file has pixels and no text layer.
+    Built by rasterising the text and embedding the raster as the page's only
+    content, so the resulting file has pixels and no text layer.
     """
-    source = pymupdf.open()
-    page = source.new_page()
-    page.insert_text((72, 120), "UTILITY RELOCATION AGREEMENT", fontsize=22)
-    page.insert_text((72, 170), "CENTERPOINT ENERGY", fontsize=22)
-    pixmap = page.get_pixmap(dpi=300)
-    source.close()
-
-    scanned = pymupdf.open()
-    out_page = scanned.new_page()
-    out_page.insert_image(out_page.rect, pixmap=pixmap)
-    path = tmp_path / "scanned.pdf"
-    scanned.save(path)
-    scanned.close()
-    return path
+    scan = scan_image(
+        595,
+        842,
+        dpi=300,
+        lines=(
+            ((72, 120), "UTILITY RELOCATION AGREEMENT", 22),
+            ((72, 170), "CENTERPOINT ENERGY", 22),
+        ),
+    )
+    fixture = PdfFixture()
+    fixture.add_page().image((0, 0, 595, 842), scan)
+    return fixture.save(tmp_path / "scanned.pdf")
 
 
 def test_a_page_with_a_real_text_layer_is_not_ocred(session, project, pdf, tmp_path):
@@ -338,12 +334,9 @@ def test_every_pdf_page_persists_its_inventory_and_routing_decision(
 def test_a_short_clean_native_page_never_calls_ocr(
     session, project, tmp_path, monkeypatch
 ):
-    document = pymupdf.open()
-    page = document.new_page()
-    page.insert_text((72, 100), "OK")
-    path = tmp_path / "short.pdf"
-    document.save(path)
-    document.close()
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 100), "OK")
+    path = fixture.save(tmp_path / "short.pdf")
 
     def unexpected_ocr(*_args, **_kwargs):
         raise AssertionError("short native text must not route by character count")
@@ -367,18 +360,12 @@ def test_a_short_clean_native_page_never_calls_ocr(
 def test_a_mixed_page_routes_native_and_image_regions_independently(
     session, project, tmp_path, monkeypatch
 ):
-    source = pymupdf.open()
-    source_page = source.new_page(width=200, height=100)
-    source_page.insert_text((20, 50), "SCANNED TABLE")
-    pixmap = source_page.get_pixmap(dpi=150)
-    source.close()
-    document = pymupdf.open()
-    page = document.new_page(width=400, height=300)
-    page.insert_text((20, 30), "Native heading")
-    page.insert_image(pymupdf.Rect(20, 70, 380, 270), pixmap=pixmap)
-    path = tmp_path / "mixed.pdf"
-    document.save(path)
-    document.close()
+    scan = scan_image(200, 100, dpi=150, lines=(((20, 50), "SCANNED TABLE", 11),))
+    fixture = PdfFixture()
+    page = fixture.add_page(width=400, height=300)
+    page.text((20, 30), "Native heading")
+    page.image((20, 70, 380, 270), scan)
+    path = fixture.save(tmp_path / "mixed.pdf")
     monkeypatch.setattr(
         "corridor.ingest._ocr_region", lambda *_args, **_kwargs: "OCR TABLE"
     )

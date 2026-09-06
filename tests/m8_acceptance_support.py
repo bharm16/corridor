@@ -21,7 +21,6 @@ import json
 from pathlib import Path
 import shutil
 
-import pymupdf
 import pytest
 from sqlalchemy import select, text
 
@@ -49,6 +48,8 @@ from corridor.m8_acceptance import (
 )
 from corridor.models import Candidate, DocPage
 from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
+
+from pdf_fixture_support import PdfFixture
 
 
 PROMPT_VERSION = "m8-controlled-capture-v1"
@@ -246,7 +247,8 @@ def _write_source_lock(
     filenames = tuple(f"{registry_id}.pdf" for registry_id in REVISION_IDS)
     index = _write_pdf(
         directory / "rid-index.pdf",
-        [
+        identity="nhhip-rid-index-2026-05-01",
+        pages=[
             ["RID index page 1"],
             ["RID index page 2"],
             ["RID index page 3"],
@@ -267,8 +269,12 @@ def _write_source_lock(
         date(2025, 12, 15),
         date(2026, 2, 13),
     )
+    # Five revisions print the same row. Each is its own document with its
+    # own digest, so the identity has to be declared: the builder's bytes are
+    # a function of content alone, and nothing here may rely on a writer
+    # happening to stamp files differently.
     matrices = [
-        _write_pdf(directory / f"{registry_id}.pdf", [[quote]])
+        _write_pdf(directory / f"{registry_id}.pdf", [[quote]], identity=registry_id)
         for registry_id in REVISION_IDS
     ]
     sources = {
@@ -325,15 +331,13 @@ def _lock_record(path, *, registry_id, doc_type, doc_date):
     }
 
 
-def _write_pdf(path: Path, pages: list[list[str]]) -> Path:
-    document = pymupdf.open()
+def _write_pdf(path: Path, pages: list[list[str]], *, identity: str) -> Path:
+    fixture = PdfFixture(identity=identity)
     for lines in pages:
-        page = document.new_page(width=792, height=612)
+        page = fixture.add_page(width=792, height=612)
         for line_no, line in enumerate(lines, start=1):
-            page.insert_text((36, 36 + line_no * 20), line, fontsize=10)
-    document.save(path)
-    document.close()
-    return path
+            page.text((36, 36 + line_no * 20), line, fontsize=10)
+    return fixture.save(path)
 
 
 def _read_export(summary, relative_path):

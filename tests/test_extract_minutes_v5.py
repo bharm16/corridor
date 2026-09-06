@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 from hashlib import sha256
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -30,6 +29,8 @@ from corridor.models import (
     Project,
     SourceFactAppendReceipt,
 )
+
+from pdf_fixture_support import PdfFixture
 
 
 CHAIN = (
@@ -381,18 +382,14 @@ def test_production_batch_seam_emits_action_items_when_model_returns_none(
     session, document, tmp_path
 ):
     source_path = tmp_path / "minutes-v5-production.pdf"
-    with pymupdf.open() as pdf:
-        pdf.new_page()
-        page = pdf.new_page(width=1200, height=1600)
-        page.insert_textbox(
-            pymupdf.Rect(72, 72, 1128, 1528),
-            PAGE_1438,
-            fontsize=10,
-        )
-        pdf.save(source_path)
-    with pymupdf.open(source_path) as pdf:
-        source_text = pdf[1].get_text()
-    _replace_page(session, document, source_text)
+    fixture = PdfFixture()
+    fixture.add_page()
+    page = fixture.add_page(width=1200, height=1600)
+    page.text_box((72, 72, 1128, 1528), PAGE_1438, fontsize=10)
+    fixture.save(source_path)
+    # The page text the extractor reads is the text the fixture declares it
+    # placed, not a reading of the file: the seam's own reader is under test.
+    _replace_page(session, document, page.expected_text)
     document.sha256 = sha256(source_path.read_bytes()).hexdigest()
     document.pages = 2
     document._stored_path = str(source_path)

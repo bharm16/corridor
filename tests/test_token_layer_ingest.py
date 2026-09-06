@@ -12,7 +12,6 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -31,6 +30,8 @@ from corridor.principals import HumanPrincipal
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
 from corridor.source_segments import dereference_source_segment
 from corridor.token_layers import load_token_layer
+
+from pdf_fixture_support import PdfFixture
 
 
 ACTOR = HumanPrincipal("local:retention-operator")
@@ -57,17 +58,15 @@ def project(session):
 
 def _minutes_pdf(tmp_path: Path) -> Path:
     path = tmp_path / "minutes.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            "Meeting notes and attendance.\n"
-            "Action Items:\n"
-            "1. Equistar will submit the signed exhibit by March 2025.\n"
-            "Meeting Notes",
-        )
-        pdf.save(path)
-    return path
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        "Meeting notes and attendance.\n"
+        "Action Items:\n"
+        "1. Equistar will submit the signed exhibit by March 2025.\n"
+        "Meeting Notes",
+    )
+    return fixture.save(path)
 
 
 def test_native_token_layer_persists_with_pinning_and_is_class_b(
@@ -115,13 +114,13 @@ def test_geometry_gates_on_the_native_token_layer_not_the_page_verdict(
     # A page carrying native tokens but tagged text_source="ocr" (a mixed page)
     # is still eligible for geometry — the old text_layer gate discarded it.
     pdf = tmp_path / "table.pdf"
-    with pymupdf.open() as document_pdf:
-        page = document_pdf.new_page(width=420, height=320)
-        page.insert_text((60, 80), "Owner")
-        page.draw_rect(pymupdf.Rect(55, 100, 340, 240))
-        page.draw_line((190, 100), (190, 240))
-        page.insert_text((75, 140), "AT&T")
-        document_pdf.save(pdf)
+    fixture = PdfFixture()
+    page = fixture.add_page(width=420, height=320)
+    page.text((60, 80), "Owner")
+    page.rect((55, 100, 340, 240))
+    page.line((190, 100), (190, 240))
+    page.text((75, 140), "AT&T")
+    fixture.save(pdf)
     import hashlib
 
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()

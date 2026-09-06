@@ -7,7 +7,6 @@ import json
 from pathlib import Path
 from types import SimpleNamespace
 
-import fitz
 import pytest
 
 import corridor.sh99_coordinator_rehearsal as rehearsal
@@ -33,6 +32,8 @@ from corridor.sh99_coordinator_rehearsal import (
     publish_coordinator_rehearsal_bundle,
     verify_coordinator_rehearsal_bundle,
 )
+
+from pdf_fixture_support import PdfFixture
 
 
 EQUISTAR_QUOTE = (
@@ -1589,40 +1590,29 @@ def test_retained_pdf_check_requires_each_party_report_field(label_version):
             "Committed Date Change · later": "Change to promised timing · later",
         }
         text = "\n".join(current_labels.get(line, line) for line in text.splitlines())
-    document = fitz.open()
-    page = document.new_page()
-    page.insert_textbox(fitz.Rect(36, 36, 559, 806), text, fontsize=9)
-    pdf_bytes = document.tobytes()
-    document.close()
-
-    _require_report_pdf_contents(pdf_bytes, (statement,))
-    incomplete = fitz.open()
-    incomplete_page = incomplete.new_page()
-    incomplete_page.insert_text((36, 36), "External Party commitments", fontsize=9)
-    incomplete_bytes = incomplete.tobytes()
-    incomplete.close()
+    _require_report_pdf_contents(_report_pdf(text), (statement,))
+    incomplete = PdfFixture()
+    incomplete.add_page().text((36, 36), "External Party commitments", fontsize=9)
     with pytest.raises(ValueError, match="omits required Report fields"):
-        _require_report_pdf_contents(incomplete_bytes, (statement,))
+        _require_report_pdf_contents(incomplete.tobytes(), (statement,))
 
     # A partial terminology migration cannot mix columns from different profiles.
     old, new = "Milestone Impact", "Effect on key dates"
     mixed_text = text.replace(old, new) if label_version == "legacy" else text.replace(new, old)
-    mixed = fitz.open()
-    mixed_page = mixed.new_page()
-    mixed_page.insert_textbox(fitz.Rect(36, 36, 559, 806), mixed_text, fontsize=9)
-    mixed_bytes = mixed.tobytes()
-    mixed.close()
     with pytest.raises(ValueError, match="omits required Report fields"):
-        _require_report_pdf_contents(mixed_bytes, (statement,))
+        _require_report_pdf_contents(_report_pdf(mixed_text), (statement,))
 
     # Both label profiles still require the source statement and project action.
     for missing_fact in (statement.event.description, statement.plan.next_action):
-        missing = fitz.open()
-        missing_page = missing.new_page()
-        missing_page.insert_textbox(
-            fitz.Rect(36, 36, 559, 806), text.replace(missing_fact, ""), fontsize=9
-        )
-        missing_bytes = missing.tobytes()
-        missing.close()
         with pytest.raises(ValueError, match="omits required Report fields"):
-            _require_report_pdf_contents(missing_bytes, (statement,))
+            _require_report_pdf_contents(
+                _report_pdf(text.replace(missing_fact, "")), (statement,)
+            )
+
+
+def _report_pdf(text: str) -> bytes:
+    """A one-page PDF carrying ``text`` as a released report would."""
+
+    fixture = PdfFixture()
+    fixture.add_page().text_box((36, 36, 559, 806), text, fontsize=9)
+    return fixture.tobytes()

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 from datetime import date
 import json
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -26,6 +25,8 @@ from corridor.models import (
 from corridor.prose_interpretation import interpret_prose_document
 from corridor.typed_output import TypedOutputValidationError
 from corridor.ingest import ingest_document
+
+from pdf_fixture_support import PdfFixture
 
 
 STATEMENT = "Equistar will submit the signed exhibit by March 2025."
@@ -104,18 +105,17 @@ def prepared(session, tmp_path):
         )
     )
     path = tmp_path / "prose-interpretation.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            ("Registered coordination context.\n" * 8)
-            + f"{ATTRIBUTION}\n"
-            + f"{INJECTION}\n"
-            + "Action Items:\n"
-            + f"1. {STATEMENT}\n"
-            + "Meeting Notes",
-        )
-        pdf.save(path)
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        ("Registered coordination context.\n" * 8)
+        + f"{ATTRIBUTION}\n"
+        + f"{INJECTION}\n"
+        + "Action Items:\n"
+        + f"1. {STATEMENT}\n"
+        + "Meeting Notes",
+    )
+    fixture.save(path)
     document = ingest_document(
         session,
         project_id=project.id,

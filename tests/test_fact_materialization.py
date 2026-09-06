@@ -13,7 +13,6 @@ import json
 from pathlib import Path
 
 from openpyxl import Workbook
-import pymupdf
 import pytest
 from sqlalchemy import func, select
 
@@ -42,6 +41,8 @@ from corridor.models import (
 from corridor.prose_interpretation import interpret_prose_document
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 from corridor.typed_output import TypedOutputValidationError
+
+from pdf_fixture_support import PdfFixture
 
 
 MISREADS = Path(__file__).parent / "fixtures" / "vision-misreads.json"
@@ -226,15 +227,14 @@ class StubClient:
 
 def _minutes(session, project, tmp_path, name, lines):
     path = tmp_path / name
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            ("Registered coordination context.\n" * 8)
-            + "\n".join(lines)
-            + "\nMeeting Notes",
-        )
-        pdf.save(path)
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        ("Registered coordination context.\n" * 8)
+        + "\n".join(lines)
+        + "\nMeeting Notes",
+    )
+    fixture.save(path)
     document = ingest_document(
         session,
         project_id=project.id,

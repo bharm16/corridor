@@ -18,33 +18,27 @@ from corridor.token_layers import (
     render_point_to_pdf,
 )
 
-
-def _pdf(path: Path) -> Path:
-    document = pymupdf.open()
-    page = document.new_page(width=420, height=320)
-    page.insert_text((60, 80), "Utility Owner AT&T")
-    page.insert_text((60, 140), "STA 1149+00")
-    document.save(path)
-    document.close()
-    return path
+from pdf_fixture_support import PdfFixture, scan_image
 
 
-def _scanned_pdf(path: Path) -> Path:
-    source = pymupdf.open()
-    page = source.new_page()
-    page.insert_text((72, 120), "CENTERPOINT ENERGY", fontsize=22)
-    pixmap = page.get_pixmap(dpi=300)
-    source.close()
-    scanned = pymupdf.open()
-    out = scanned.new_page()
-    out.insert_image(out.rect, pixmap=pixmap)
-    scanned.save(path)
-    scanned.close()
-    return path
+def _native_fixture() -> PdfFixture:
+    fixture = PdfFixture()
+    page = fixture.add_page(width=420, height=320)
+    page.text((60, 80), "Utility Owner AT&T")
+    page.text((60, 140), "STA 1149+00")
+    return fixture
+
+
+def _scanned_fixture() -> PdfFixture:
+    scan = scan_image(595, 842, dpi=300, lines=(((72, 120), "CENTERPOINT ENERGY", 22),))
+    fixture = PdfFixture()
+    fixture.add_page().image((0, 0, 595, 842), scan)
+    return fixture
 
 
 def test_native_layer_has_positioned_tokens_and_no_confidence(tmp_path):
-    pdf = _pdf(tmp_path / "native.pdf")
+    fixture = _native_fixture()
+    pdf = fixture.save(tmp_path / "native.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
     with pymupdf.open(pdf) as document:
         layer = extract_native_token_layer(
@@ -55,23 +49,31 @@ def test_native_layer_has_positioned_tokens_and_no_confidence(tmp_path):
     assert layer.identity.engine == "pymupdf"
     assert layer.identity.adapter_version
     assert layer.source_sha256 == digest
-    assert layer.tokens, "a text page yields native tokens"
-    words = {token.raw_text for token in layer.tokens}
-    assert "Utility" in words and "1149+00" in words
-    for token in layer.tokens:
+    declared = fixture.pages[0].expected_words
+    assert [token.raw_text for token in layer.tokens] == [
+        word.text for word in declared
+    ]
+    for token, word in zip(layer.tokens, declared, strict=True):
         assert token.origin == "native"
         assert token.confidence is None  # native readings are not estimates
-        assert token.polygon_pdf.x1 > token.polygon_pdf.x0
-        assert token.polygon_pdf.y1 > token.polygon_pdf.y0
         assert token.normalized_text == token.normalized_text.strip()
-    assert layer.quality["token_count"] == len(layer.tokens)
+        x0, y0, x1, y1 = word.fixed_point_box()
+        # Horizontal extents follow the AFM advance widths the fixture also
+        # writes into its font, so the reader agrees to the thousandth of a
+        # point. Vertical extents are the reader's substitute-face convention
+        # against the fixture's AFM bounding box: within two points at 11 pt.
+        assert abs(token.polygon_pdf.x0 - x0) <= 1
+        assert abs(token.polygon_pdf.x1 - x1) <= 1
+        assert abs(token.polygon_pdf.y0 - y0) <= 2_000
+        assert abs(token.polygon_pdf.y1 - y1) <= 2_000
+    assert layer.quality["token_count"] == len(layer.tokens) == len(declared)
     assert layer.quality["rotation_degrees"] == 0
 
 
 def test_ocr_layer_carries_confidence_pdf_and_render_polygons_and_full_pinning(
     tmp_path,
 ):
-    pdf = _scanned_pdf(tmp_path / "scanned.pdf")
+    pdf = _scanned_fixture().save(tmp_path / "scanned.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
     derivative = render_page_derivative(
         pdf_path=pdf,
@@ -113,10 +115,10 @@ def test_ocr_layer_carries_confidence_pdf_and_render_polygons_and_full_pinning(
 
 
 def test_pdf_polygon_maps_inside_the_page_via_the_render_transform(tmp_path):
-    pdf = _scanned_pdf(tmp_path / "scanned.pdf")
+    fixture = _scanned_fixture()
+    pdf = fixture.save(tmp_path / "scanned.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    with pymupdf.open(pdf) as document:
-        page_rect = document[0].rect
+    _, _, page_width, page_height = fixture.pages[0].media_box
     derivative = render_page_derivative(
         pdf_path=pdf,
         page_number=1,
@@ -128,12 +130,12 @@ def test_pdf_polygon_maps_inside_the_page_via_the_render_transform(tmp_path):
     x, y = render_point_to_pdf(
         derivative, (derivative.raster_width / 2, derivative.raster_height / 2)
     )
-    assert -1000 <= x <= (page_rect.width + 1) * 1000
-    assert -1000 <= y <= (page_rect.height + 1) * 1000
+    assert -1000 <= x <= (page_width + 1) * 1000
+    assert -1000 <= y <= (page_height + 1) * 1000
 
 
 def test_canonical_serialization_is_deterministic(tmp_path):
-    pdf = _pdf(tmp_path / "native.pdf")
+    pdf = _native_fixture().save(tmp_path / "native.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
     with pymupdf.open(pdf) as document:
         layer = extract_native_token_layer(

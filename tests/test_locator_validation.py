@@ -16,7 +16,6 @@ from pathlib import Path
 import re
 
 from openpyxl import Workbook
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -46,6 +45,8 @@ from corridor.presentation import (
     statement_type_label,
 )
 from corridor.source_segments import recorded_verbal_statement_segment
+
+from pdf_fixture_support import PdfFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "corridor"
@@ -190,16 +191,15 @@ def test_a_prose_span_locator_validates_against_the_registered_pdf(
     session, project, tmp_path
 ):
     path = tmp_path / "coordination-minutes.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            "Meeting notes and attendance.\n"
-            "Action Items:\n"
-            "1. Equistar will submit the signed exhibit by March 2025.\n"
-            "Meeting Notes",
-        )
-        pdf.save(path)
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        "Meeting notes and attendance.\n"
+        "Action Items:\n"
+        "1. Equistar will submit the signed exhibit by March 2025.\n"
+        "Meeting Notes",
+    )
+    fixture.save(path)
     document = _ingest(session, project, path, tmp_path, doc_type="minutes")
 
     segments = _segments(session, document)
