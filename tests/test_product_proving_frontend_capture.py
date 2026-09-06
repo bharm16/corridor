@@ -601,6 +601,27 @@ def test_screenshot_evidence_requires_a_decodable_png():
     assert _sensible_png_dimensions(b"not an image") is None
 
 
+def test_screenshot_dimensions_are_the_decoded_frame_not_the_header():
+    """A screenshot's dimensions are read from the decoded image, in header order.
+
+    A PNG whose IHDR promises a browser-sized frame but whose pixel data is cut
+    off is not that frame; a header-only reading would accept it. The two
+    orientations pin width before height.
+    """
+    from corridor.product_proving_frontend_capture import _sensible_png_dimensions
+
+    landscape, portrait = BytesIO(), BytesIO()
+    Image.new("RGB", (1280, 720), "white").save(landscape, format="PNG")
+    Image.new("RGB", (900, 1200), "white").save(portrait, format="PNG")
+
+    assert _sensible_png_dimensions(landscape.getvalue()) == (1280, 720)
+    assert _sensible_png_dimensions(portrait.getvalue()) == (900, 1200)
+
+    data = landscape.getvalue()
+    truncated = data[: data.index(b"IDAT") + 64]
+    assert _sensible_png_dimensions(truncated) is None
+
+
 def test_committed_date_change_candidate_does_not_force_a_false_correction(session):
     from corridor.product_proving_execution import ProjectWriteSetDiff
     from corridor.product_proving_frontend_capture import _observe_factual_correction

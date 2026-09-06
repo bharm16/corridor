@@ -17,13 +17,14 @@ from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 import re
 from typing import Any, Literal, Mapping
 from uuid import UUID
 
-import pymupdf
+from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -1253,10 +1254,13 @@ def _sensible_png_dimensions(value: bytes) -> tuple[int, int] | None:
         or not 0.5 <= width / height <= 4.0
     ):
         return None
+    # The header alone is not evidence: the bytes must decode, as a PNG, to
+    # exactly the frame the header declares.
     try:
-        with pymupdf.open(stream=value, filetype="png") as image:
-            if image.page_count != 1:
+        with Image.open(BytesIO(value)) as image:
+            if image.format != "PNG" or image.size != (width, height):
                 return None
+            image.load()
     except Exception:
         return None
     return width, height
