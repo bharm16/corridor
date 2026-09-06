@@ -21,6 +21,8 @@ psql:
 # Fast source and architecture checks with no model or external service calls.
 check:
 	uv run ruff check src/corridor
+	uv run ruff check src/corridor_pdf_reader
+	uv run mypy src/corridor_pdf_reader
 	uv run python -m compileall -q src/corridor
 	uv run pytest tests/test_architecture.py -q
 
@@ -393,3 +395,4 @@ minutes:
 #   make report ARGS="nhhip-3c2"
 report:
 	uv run python -m corridor.report $(ARGS)
+

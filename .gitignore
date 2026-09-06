@@ -25,5 +25,11 @@ infra/node_modules/
 # Local research notes, not part of the tracked record.
 docs/research/lean-extraction-storage-model-2026-08-30.md
 
+# The reader package's answer-key printer needs `ssf` from npm, installed by
+# `make pdf-reader-node` from the committed package-lock.json (#729), and its
+# reference builder writes scratch workbooks under the package's tmp/.
+src/corridor_pdf_reader/paired_trial/node_modules/
+src/corridor_pdf_reader/tmp/
+
 # macOS Finder metadata.
 .DS_Store

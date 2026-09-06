@@ -1,0 +1,44 @@
+{
+ "run": "loop-020",
+ "what": "The baseline measurement of the imported reader on the exact set: the last iteration of the bootstrap loop (bootstrap/LOOP-LOG.md).",
+ "source_commit": "c39363e26c2726b61c4e707f589093c67173e538",
+ "reader": {
+  "engine": "tagged",
+  "dpi": 36,
+  "retain_images": false,
+  "jobs": 4,
+  "driver": "bootstrap.read"
+ },
+ "engines": {
+  "pypdfium2": "5.13.0",
+  "pypdf": "6.17.0",
+  "pdf-oxide": "0.3.77",
+  "pillow": "12.3.0"
+ },
+ "corpus": {
+  "root": "TRUE_PAIRS_ROOT=/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+  "manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "note": "read-receipts.json lists 335 documents: the run read the exact set as it stood on 2026-09-05 16:29, before two more revision pairs were excluded; summary.json scores the 263 development pairs of the 333-pair set"
+ },
+ "split": {
+  "file": "bootstrap/pairs.json",
+  "sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+  "seed": 720
+ },
+ "reference": {
+  "name": "loop-reference-v6",
+  "manifest": "../loop-reference-v6.manifest.json"
+ },
+ "read_seconds": 150.9,
+ "holdout_included": false,
+ "results": {
+  "pairs": "262 / 263",
+  "pages": "1589 / 1589",
+  "cells_exact": "483210 / 483336"
+ },
+ "holdout_results": {
+  "pairs": "70 / 70",
+  "pages": "409 / 409",
+  "recorded_in": "HANDOFF.md 'Numbers that matter' and bootstrap/LOOP-LOG.md; the dev-only summary here never included the holdout"
+ }
+}
