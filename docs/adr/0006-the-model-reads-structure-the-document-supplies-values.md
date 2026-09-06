@@ -4,6 +4,8 @@ domain: extraction
 scope: current product
 amends:
   - ADR-0004
+amended_by:
+  - ADR-0094
 ---
 
 # The model reads the structure; the document supplies the values
