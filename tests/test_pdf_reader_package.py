@@ -113,6 +113,11 @@ def _imported_names(path: Path) -> set[str]:
 # them runs the reader's own algorithm: selection for the record stays with
 # #447. A module leaves this table the day it stops importing the package.
 PRODUCTION_IMPORTERS = {
+    "src/corridor/m8_acceptance.py": (
+        "the RID-index rows an acceptance capture binds its declarations to are "
+        "PDFium glyph boxes clustered by baseline, under pdfium_entry in a "
+        "single-threaded command; a check on the capture, not a record fact"
+    ),
     "src/corridor/web/queue.py": (
         "quote highlights on the review page are PDFium text-search boxes under "
         "pdfium_entry; best effort, degrading to an unmarked page"

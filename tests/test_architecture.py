@@ -637,7 +637,6 @@ ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("src/corridor/geometry.py", ("pymupdf",)),
     ("src/corridor/gold.py", ("pymupdf",)),
     ("src/corridor/ingest.py", ("pymupdf", "tesseract")),
-    ("src/corridor/m8_acceptance.py", ("pymupdf",)),
     ("src/corridor/page_inventory.py", ("pymupdf", "tesseract")),
     ("src/corridor/source_intake_draft.py", ("pymupdf",)),
     ("src/corridor/source_segments.py", ("pymupdf",)),
