@@ -25,7 +25,8 @@ import tempfile
 from typing import Any
 from uuid import uuid4
 
-import pymupdf
+import pypdfium2 as pdfium
+from pypdf import PdfReader
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -56,6 +57,7 @@ from corridor.m8_acceptance_contract import (
     CLAIM_BOUNDARY,
     ControlledContradiction,
 )
+from corridor_pdf_reader.execution import pdfium_entry
 from corridor.m8_acceptance_controlled import (
     run_controlled_lane,
     skipped_controlled_lane,
@@ -855,16 +857,12 @@ def _document_observation(
         .where(DocPage.document_id == document.id)
         .order_by(DocPage.page_no)
     ).all()
-    dimensions: Counter[str] = Counter()
-    with pymupdf.open(source.path) as pdf:
-        for page in pdf:
-            dimensions[f"{page.rect.width:.1f}x{page.rect.height:.1f}"] += 1
     return {
         "registry_id": source.registry_id,
         "sha256": source.record["sha256"],
         "bytes": source.path.stat().st_size,
         "pages": len(pages),
-        "page_dimensions": dict(sorted(dimensions.items())),
+        "page_dimensions": dict(sorted(_page_dimensions(source.path).items())),
         "text_characters": sum(len(page.text or "") for page in pages),
         "text_source_counts": dict(
             sorted(Counter(page.text_source for page in pages).items())
@@ -986,13 +984,79 @@ def _verify_rid_declarations(
         )
 
 
+def _page_dimensions(path: Path) -> Counter[str]:
+    """How many pages display at each size, in points, to one decimal.
+
+    A page displays at its crop box, clipped to the media box, turned as its
+    /Rotate says: a portrait sheet rotated 90 degrees counts as landscape.
+    Retained captures recorded these sizes, so the reading keeps their frame.
+    """
+
+    dimensions: Counter[str] = Counter()
+    for page in PdfReader(str(path)).pages:
+        media, crop = page.mediabox, page.cropbox
+        width = min(float(crop.right), float(media.right)) - max(float(crop.left), float(media.left))
+        height = min(float(crop.top), float(media.top)) - max(float(crop.bottom), float(media.bottom))
+        if page.rotation % 180 == 90:
+            width, height = height, width
+        dimensions[f"{width:.1f}x{height:.1f}"] += 1
+    return dimensions
+
+
+def _page_words(path: Path, page_no: int) -> list[tuple[float, float, float, float, str]]:
+    """Every word on one page with its box: unrotated, crop-box top-left, points.
+
+    A word is a run of non-blank characters in PDFium's text order and its box
+    is the union of their glyph boxes. PDFium is entered through the package's
+    guard, one thread at a time (#729).
+    """
+
+    with pdfium_entry():
+        pdf = pdfium.PdfDocument(path)
+        try:
+            if page_no < 1 or page_no > len(pdf):
+                return []
+            page = pdf[page_no - 1]
+            try:
+                crop_left, _crop_bottom, _crop_right, crop_top = page.get_bbox()
+                textpage = page.get_textpage()
+                try:
+                    text = textpage.get_text_range()
+                    words: list[tuple[float, float, float, float, str]] = []
+                    current: list[Any] | None = None
+                    for index, character in enumerate(text):
+                        if character.isspace():
+                            if current is not None:
+                                words.append(tuple(current))
+                                current = None
+                            continue
+                        left, bottom, right, top = textpage.get_charbox(index)
+                        box = (left - crop_left, crop_top - top, right - crop_left, crop_top - bottom)
+                        if current is None:
+                            current = [*box, character]
+                        else:
+                            current = [
+                                min(current[0], box[0]),
+                                min(current[1], box[1]),
+                                max(current[2], box[2]),
+                                max(current[3], box[3]),
+                                current[4] + character,
+                            ]
+                    if current is not None:
+                        words.append(tuple(current))
+                    return words
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+        finally:
+            pdf.close()
+
+
 def _rid_rows(path: Path, page_no: int) -> tuple[str, ...]:
     """Recover visual table rows by clustering PDF words on their y-axis."""
 
-    with pymupdf.open(path) as pdf:
-        if page_no < 1 or page_no > len(pdf):
-            return ()
-        words = pdf[page_no - 1].get_text("words", sort=True)
+    words = _page_words(path, page_no)
     groups: list[dict[str, Any]] = []
     for word in sorted(words, key=lambda item: ((item[1] + item[3]) / 2, item[0])):
         center = (word[1] + word[3]) / 2

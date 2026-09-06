@@ -1,0 +1,55 @@
+{
+ "ticket": "#740",
+ "tier": "medium",
+ "call_site": "storage_baseline._freeze_pdf",
+ "what_was_compared": "The two retained sealed SH99 exports, which artifacts/storage-baseline/dev-corpus.json (v1) froze as its coordination_report and release members. First, that the pre-#740 reading (PyMuPDF, get_text(sort=True)) still reproduces the v1 digests on those bytes, proving the bytes are the same. Second, the v1 frozen text against the v3 frozen text page by page: v3 is whitespace-normalized content-order text through pypdf. Third, the v3 definition read by both engines: PyMuPDF's plain get_text() whitespace-normalized against pypdf's extract_text() whitespace-normalized, page by page, which is the reading v3 freezes.",
+ "environment": {
+  "pymupdf": "1.28.0",
+  "pypdf": "6.17.0",
+  "python": "3.12.12",
+  "commit": "86c9ed1e5711453e821bc4b9fbef281d709251c6",
+  "schema_version_after": "corridor.storage-duplication-baseline.v3"
+ },
+ "documents": [
+  {
+   "path": "artifacts/product-proving/sh99-9a4342d-two-pass-passed/pass-1-approved-export.pdf",
+   "sha256": "eb54a8615cccd989f951ed63ae5a249c93ee68b9ef2559c65c9dbf2d6cbcef14",
+   "v1_member": "coordination_report",
+   "v1_digest_retained": "9cb38f640cbf182038b6bf8f730ad0bdf2cb95882aa993e950db201fda754141",
+   "v1_digest_reproduced_by_pymupdf_sorted_reading": true,
+   "page_count": {
+    "v1": 77,
+    "v3": 77
+   },
+   "v1_text_equals_v3_text_pages": 0,
+   "v1_text_whitespace_normalized_equals_v3_text_pages": 0,
+   "v3_definition_pymupdf_plain_equals_pypdf_pages": 77,
+   "v3_digest": "d7dde27a4d4f3003003e536522377ca220cccaf21b53dce50b1d7a4ca5e19882",
+   "v3_digest_from_pymupdf_plain_normalized": "d7dde27a4d4f3003003e536522377ca220cccaf21b53dce50b1d7a4ca5e19882",
+   "v3_digest_identical_between_readers": true
+  },
+  {
+   "path": "artifacts/product-proving/sh99-9a4342d-two-pass-passed/pass-2-approved-export.pdf",
+   "sha256": "59ebf093c6488fa552656029ec83bed5521d7347c38b33a2db2cc5386888010d",
+   "v1_member": "release",
+   "v1_digest_retained": "44265b3f20c71a88fbe0f4ef02ebab39f3c4ea13d4c77edc821cb0d4822683b4",
+   "v1_digest_reproduced_by_pymupdf_sorted_reading": true,
+   "page_count": {
+    "v1": 77,
+    "v3": 77
+   },
+   "v1_text_equals_v3_text_pages": 0,
+   "v1_text_whitespace_normalized_equals_v3_text_pages": 0,
+   "v3_definition_pymupdf_plain_equals_pypdf_pages": 77,
+   "v3_digest": "8d4cc80caced8b8719ea05390fd9e917d33817befb0a8246cd84e29389c1ee69",
+   "v3_digest_from_pymupdf_plain_normalized": "8d4cc80caced8b8719ea05390fd9e917d33817befb0a8246cd84e29389c1ee69",
+   "v3_digest_identical_between_readers": true
+  }
+ ],
+ "result": "pass under the v3 definition",
+ "explained_differences": [
+  "v1 froze MuPDF's block-sorted text (get_text(sort=True): blocks ordered by their bottom edge, then left edge). No pure-Python or PDFium reading reproduces MuPDF's blocks, so on the same bytes the v1 text differs from the v3 text on every page, even whitespace-normalized (the count is v1_text_whitespace_normalized_equals_v3_text_pages). This is a change of definition, recorded by the schema version, not a reading of the v3 definition that differs between readers.",
+  "Under v3 the two readers freeze byte-identical text on all 154 pages, so the v3 digests are reader-independent across PyMuPDF and pypdf on these exports.",
+  "The v1 numeric members (known_duplication_bytes, families, target) are untouched by the reader and remain comparable; only the PDF representative-output digests are not."
+ ]
+}

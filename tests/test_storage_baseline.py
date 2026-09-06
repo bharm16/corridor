@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import date
 from hashlib import sha256
+from pathlib import Path
+import re
 
 import pytest
 from sqlalchemy import text
@@ -333,6 +335,49 @@ def test_baseline_freezes_representative_semantics_and_numeric_target(
     }
     assert "artifact-owned PDF bytes" in first["metric_definition"]
     assert len(first["sha256"]) == 64
+
+
+SEALED_EXPORTS = (
+    Path(__file__).resolve().parents[1]
+    / "artifacts/product-proving/sh99-9a4342d-two-pass-passed"
+)
+
+
+def test_frozen_pdf_semantics_of_the_sealed_exports_are_pinned():
+    """The retained SH99 exports freeze to the same v3 semantics every time.
+
+    The digest pins the whole reading: a reader that dropped a page, lost a
+    space between two words or reordered a row would freeze differently. The
+    two exports differ only in their generation stamps, so their page counts
+    agree and their first pages read the same once that stamp is normalized.
+    """
+    from corridor.storage_baseline import _freeze_pdf
+
+    frozen = {
+        name: _freeze_pdf(SEALED_EXPORTS / name)
+        for name in ("pass-1-approved-export.pdf", "pass-2-approved-export.pdf")
+    }
+    first, second = frozen.values()
+    assert first["artifact"]["sha256"] == (
+        "eb54a8615cccd989f951ed63ae5a249c93ee68b9ef2559c65c9dbf2d6cbcef14"
+    )
+    assert second["artifact"]["sha256"] == (
+        "59ebf093c6488fa552656029ec83bed5521d7347c38b33a2db2cc5386888010d"
+    )
+    assert first["content"]["page_count"] == second["content"]["page_count"] == 77
+    assert first["sha256"] == (
+        "d7dde27a4d4f3003003e536522377ca220cccaf21b53dce50b1d7a4ca5e19882"
+    )
+    assert second["sha256"] == (
+        "8d4cc80caced8b8719ea05390fd9e917d33817befb0a8246cd84e29389c1ee69"
+    )
+    stamp = re.compile(r"Generated .*? UTC")
+    assert stamp.sub("Generated <stamp> UTC", first["content"]["pages"][0]["text"]) == (
+        stamp.sub("Generated <stamp> UTC", second["content"]["pages"][0]["text"])
+    )
+    assert first["content"]["pages"][0]["text"].startswith(
+        "Readiness — SH 99 Grand Parkway Segment B-1 Generated 2026-08-27 00:57 UTC"
+    )
 
 
 def test_baseline_can_pin_already_sealed_outputs_when_rows_are_not_in_dev_database(

@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 from openpyxl import Workbook
+from pdf_fixture_support import PdfFixture
 from sqlalchemy import func, select
 
 from corridor.db import Session, engine
@@ -107,6 +108,23 @@ def _staged_workbook(
         sha256=sha256,
         filename=name,
         suffix=".xlsx",
+        stored_path=path,
+        doc_type=doc_type,
+    )
+
+
+def _staged_pdf(
+    tmp_path: Path, pages, *, doc_type="matrix", name="cover.pdf", identity=None
+) -> StagedDraftSource:
+    """A printed source: one fixture page per entry, each a block of lines."""
+    fixture = PdfFixture(identity=identity)
+    for lines in pages:
+        fixture.add_page().text((72, 72), "\n".join(lines), fontsize=11)
+    path = fixture.save(tmp_path / name)
+    return StagedDraftSource(
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        filename=name,
+        suffix=".pdf",
         stored_path=path,
         doc_type=doc_type,
     )
@@ -260,6 +278,73 @@ def test_completed_draft_keeps_source_backed_suggestions(session, project, tmp_p
         )
     ).one()
     assert predecessor.superseded_by is None
+
+
+def test_a_pdf_source_is_read_page_by_page_from_its_text_layer(session, project, tmp_path):
+    """A printed source's pages are its text layer, and a quote is bound to its page.
+
+    The registry number is printed on page 1 and the document date on page 2.
+    Cited where they are printed, both are retained and the frozen source the
+    receipt keeps shows each on its own page; the date cited on page 1, where
+    it is not printed, is refused as not literal on that page. A reading that
+    ran the pages together, or numbered them from zero, would accept the
+    misplaced citation.
+    """
+    _declare_config(session, project)
+    pages = (
+        ("Utility Conflict Matrix Rev 3", "Registry number: UCM-REV-3"),
+        ("Document date: 2024-03-01",),
+    )
+
+    def result(date_ref: str):
+        return {
+            "metadata_suggestions": [
+                {
+                    "field": "registry_id",
+                    "value": "UCM-REV-3",
+                    "source_ref": "P1",
+                    "source_quote": "Registry number: UCM-REV-3",
+                    "basis": "The cover prints a registry number.",
+                },
+                {
+                    "field": "doc_date",
+                    "value": "2024-03-01",
+                    "source_ref": date_ref,
+                    "source_quote": "Document date: 2024-03-01",
+                    "basis": "The second page states the document's date.",
+                },
+            ],
+            "replacement_proposals": [],
+            "uncertainties": [],
+        }
+
+    staged = _staged_pdf(tmp_path, pages)
+    adapter = FakeAdapter(result=result("P2"))
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "completed"
+    assert {
+        (item["field"], item["source_ref"])
+        for item in receipt.proposals_json["metadata_suggestions"]
+    } == {("registry_id", "P1"), ("doc_date", "P2")}
+    frozen_pages = receipt.source_json["pages"]
+    assert [(page["page_ref"], page["page_no"], page["text_source"]) for page in frozen_pages] == [
+        ("P1", 1, "text_layer"),
+        ("P2", 2, "text_layer"),
+    ]
+    assert "Registry number: UCM-REV-3" in frozen_pages[0]["text"]
+    assert "Document date" not in frozen_pages[0]["text"]
+    assert "Document date: 2024-03-01" in frozen_pages[1]["text"]
+    assert len(adapter.calls) == 1
+
+    # A configuration permits one request, so the misplaced citation spends a
+    # newly declared one on a source with the same pages and its own identity.
+    _declare_config(session, project)
+    misplaced = _staged_pdf(tmp_path, pages, name="misplaced.pdf", identity="misplaced")
+    receipt = _draft(session, project, misplaced, FakeAdapter(result=result("P1")))
+
+    assert receipt.status == "validation_refused"
+    assert receipt.reason == "a cited passage is not literal text on its permitted page"
 
 
 def test_repeated_request_reuses_receipt_and_spends_once(session, project, tmp_path):

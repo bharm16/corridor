@@ -1,0 +1,235 @@
+{
+ "ticket": "#740",
+ "tier": "high",
+ "rule": "ADR-0040 released-PDF integrity checks",
+ "what_was_compared": "For each retained sealed export: the reading both integrity checks depend on, the PDF's visible text (report_release._validate_party_statement_pdf_context and sh99_coordinator_rehearsal._require_report_pdf_contents join every page's text and normalize whitespace and case), read by PyMuPDF as before #740 and by pypdf as after; then each check's outcome on the same bytes with the same inputs, before and after.",
+ "environment": {
+  "pymupdf": "1.28.0",
+  "pypdf": "6.17.0",
+  "python": "3.12.12",
+  "commit": "fe831fea4924723d719846568bc028ed41ebc0ca"
+ },
+ "documents": [
+  {
+   "path": "artifacts/product-proving/sh99-9a4342d-two-pass-passed/pass-1-approved-export.pdf",
+   "sha256": "eb54a8615cccd989f951ed63ae5a249c93ee68b9ef2559c65c9dbf2d6cbcef14",
+   "sha256_matches_manifest": true,
+   "pages": {
+    "pymupdf": 77,
+    "pypdf": 77
+   },
+   "normalized_visible_text_sha256": {
+    "pymupdf": "f33c974f352167aa9e8560e4a32b1147a016491beefc5a82af6f2f7c513a439c",
+    "pypdf": "f33c974f352167aa9e8560e4a32b1147a016491beefc5a82af6f2f7c513a439c"
+   },
+   "normalized_visible_text_identical": true,
+   "raw_text_identical": false,
+   "label_counts": {
+    "External Party commitments": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "External Party": {
+     "pymupdf": 80,
+     "pypdf": 80
+    },
+    "Supported statement": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Timing": {
+     "pymupdf": 3,
+     "pypdf": 3
+    },
+    "Timing precision": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Statement type": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Commitment Scope": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Open / past-due status": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Internal Owner": {
+     "pymupdf": 519,
+     "pypdf": 519
+    },
+    "Next Action": {
+     "pymupdf": 520,
+     "pypdf": 520
+    },
+    "Action Due": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Milestone Impact": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Scope not yet known": {
+     "pymupdf": 1,
+     "pypdf": 1
+    }
+   },
+   "equistar_field_pairs_present_once": {
+    "external_party": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "supported_statement": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "internal_owner": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "next_action": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "action_due": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "milestone_impact": {
+     "pymupdf": 1,
+     "pypdf": 1
+    }
+   },
+   "checks_after_740": {
+    "rehearsal_require_report_pdf_contents_with_equistar_statement": {
+     "result": "pass"
+    },
+    "rehearsal_require_report_pdf_contents_with_no_statements": {
+     "result": "pass"
+    },
+    "release_validate_party_statement_pdf_context_current_labels": {
+     "result": "refused",
+     "message": "PDF does not contain its frozen External Party statement fields"
+    }
+   },
+   "checks_before_740": "identical by construction: both checks reduce the PDF to its normalized visible text, and that text is byte-identical between the readers (normalized_visible_text_identical)"
+  },
+  {
+   "path": "artifacts/product-proving/sh99-9a4342d-two-pass-passed/pass-2-approved-export.pdf",
+   "sha256": "59ebf093c6488fa552656029ec83bed5521d7347c38b33a2db2cc5386888010d",
+   "sha256_matches_manifest": true,
+   "pages": {
+    "pymupdf": 77,
+    "pypdf": 77
+   },
+   "normalized_visible_text_sha256": {
+    "pymupdf": "6addb7e679afd9eb9c968abb5107a60d77ac44435c26665e8942dc97b6a891b9",
+    "pypdf": "6addb7e679afd9eb9c968abb5107a60d77ac44435c26665e8942dc97b6a891b9"
+   },
+   "normalized_visible_text_identical": true,
+   "raw_text_identical": false,
+   "label_counts": {
+    "External Party commitments": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "External Party": {
+     "pymupdf": 80,
+     "pypdf": 80
+    },
+    "Supported statement": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Timing": {
+     "pymupdf": 3,
+     "pypdf": 3
+    },
+    "Timing precision": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Statement type": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Commitment Scope": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Open / past-due status": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Internal Owner": {
+     "pymupdf": 519,
+     "pypdf": 519
+    },
+    "Next Action": {
+     "pymupdf": 520,
+     "pypdf": 520
+    },
+    "Action Due": {
+     "pymupdf": 2,
+     "pypdf": 2
+    },
+    "Milestone Impact": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "Scope not yet known": {
+     "pymupdf": 1,
+     "pypdf": 1
+    }
+   },
+   "equistar_field_pairs_present_once": {
+    "external_party": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "supported_statement": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "internal_owner": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "next_action": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "action_due": {
+     "pymupdf": 1,
+     "pypdf": 1
+    },
+    "milestone_impact": {
+     "pymupdf": 1,
+     "pypdf": 1
+    }
+   },
+   "checks_after_740": {
+    "rehearsal_require_report_pdf_contents_with_equistar_statement": {
+     "result": "pass"
+    },
+    "rehearsal_require_report_pdf_contents_with_no_statements": {
+     "result": "pass"
+    },
+    "release_validate_party_statement_pdf_context_current_labels": {
+     "result": "refused",
+     "message": "PDF does not contain its frozen External Party statement fields"
+    }
+   },
+   "checks_before_740": "identical by construction: both checks reduce the PDF to its normalized visible text, and that text is byte-identical between the readers (normalized_visible_text_identical)"
+  }
+ ],
+ "result": "pass",
+ "explained_differences": [
+  "raw_text_identical is false: the readers place line breaks and spaces differently; both checks collapse whitespace before reading, so the property they verify is the normalized text, which is identical.",
+  "The exports were sealed on 2026-08-27 under the legacy label profile (External Party commitments, Internal Owner, Next Action, Action Due, Milestone Impact); the release check verifies the current labels, so it refuses these bytes before and after #740 with the same message, and the rehearsal check, which knows both profiles, passes them."
+ ]
+}

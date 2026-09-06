@@ -238,6 +238,41 @@ def test_four_reader_surfaces_match_view_fed_frozen_reading(
     assert viewed.rows[0].dependency.station_from == "200+00"
 
 
+def test_release_pdf_text_comparison_discriminates_content_not_the_timestamp():
+    """The equivalence gate compares what the release PDF says, page by page.
+
+    Two renders that differ only in their "Generated ... UTC" stamp read the
+    same; a render that changes one word, or gains a page, does not. The
+    fixture declares its own text, so the reading is checked against what was
+    placed rather than against another reader.
+    """
+    from pdf_fixture_support import PdfFixture
+
+    from corridor.current_record import _pdf_text
+
+    def release(stamp: str, statement: str, *, extra_page: bool = False) -> bytes:
+        fixture = PdfFixture()
+        page = fixture.add_page()
+        page.text((72, 72), f"Generated {stamp} UTC · evaluated 2026-08-31", fontsize=10)
+        page.text((72, 120), statement, fontsize=11)
+        if extra_page:
+            fixture.add_page().text((72, 72), "Appendix", fontsize=11)
+        return fixture.tobytes()
+
+    first = release("2026-08-31 09:00", "CenterPoint will relocate the gas main.")
+    restamped = release("2026-08-31 09:07", "CenterPoint will relocate the gas main.")
+    reworded = release("2026-08-31 09:00", "CenterPoint will retain the gas main.")
+    longer = release("2026-08-31 09:00", "CenterPoint will relocate the gas main.", extra_page=True)
+
+    assert _pdf_text(first) == _pdf_text(restamped)
+    assert _pdf_text(first) == (
+        "Generated <normalized> UTC · evaluated 2026-08-31\n"
+        "CenterPoint will relocate the gas main.",
+    )
+    assert _pdf_text(first) != _pdf_text(reworded)
+    assert len(_pdf_text(longer)) == 2 and _pdf_text(longer)[0] == _pdf_text(first)[0]
+
+
 def test_phase0_scale_performance_and_equivalence_receipt_is_recorded():
     path = (
         Path(__file__).resolve().parents[1]

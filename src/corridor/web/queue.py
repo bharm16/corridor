@@ -11,6 +11,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import pypdfium2 as pdfium
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
@@ -19,6 +20,7 @@ from corridor.merge import rank_matches
 from corridor.models import Candidate, Dependency, DocPage, Document
 from corridor.storage import stored_pdf
 from corridor.supersession import actionable_candidate_query
+from corridor_pdf_reader.execution import pdfium_entry
 
 
 @dataclass
@@ -292,36 +294,95 @@ def locate_quote(document: Document, page_no: int, quote: str) -> list[Highlight
     if not path or not quote.strip():
         return []
 
+    # PDFium is entered through the package's guard: one thread at a time,
+    # a second refused rather than queued (#729). A refusal is one more way
+    # the highlight is missing, and lands in the same unmarked page.
     try:
-        import pymupdf
-
-        with pymupdf.open(path) as pdf:
-            if page_no < 1 or page_no > pdf.page_count:
-                return []
-            page = pdf[page_no - 1]
-            rect = page.rect
-            if not rect.width or not rect.height:
-                return []
-
-            found = page.search_for(quote[:180]) or []
-            if not found:
-                # Fall back to the first distinctive token, which is enough
-                # to put the reader's eye in the right place.
-                first = quote.split(" ")[0]
-                if len(first) >= 4:
-                    found = page.search_for(first) or []
-
-            return [
-                Highlight(
-                    left=r.x0 / rect.width,
-                    top=r.y0 / rect.height,
-                    width=(r.x1 - r.x0) / rect.width,
-                    height=(r.y1 - r.y0) / rect.height,
-                )
-                for r in found[:40]
-            ]
+        with pdfium_entry():
+            pdf = pdfium.PdfDocument(path)
+            try:
+                if page_no < 1 or page_no > len(pdf):
+                    return []
+                page = pdf[page_no - 1]
+                try:
+                    return _quote_highlights(page, quote)
+                finally:
+                    page.close()
+            finally:
+                pdf.close()
     except Exception:
         return []
+
+
+def _quote_highlights(page: pdfium.PdfPage, quote: str) -> list[Highlight]:
+    width, height = page.get_size()
+    if not width or not height:
+        return []
+    textpage = page.get_textpage()
+    try:
+        found = _search_boxes(textpage, quote[:180])
+        if not found:
+            # Fall back to the first distinctive token, which is enough
+            # to put the reader's eye in the right place.
+            first = quote.split(" ")[0]
+            if len(first) >= 4:
+                found = _search_boxes(textpage, first)
+    finally:
+        textpage.close()
+
+    # PDFium boxes are in the unrotated page's user space with y upward; the
+    # page image is the displayed page, so they move to the crop box's
+    # top-left frame and turn with the page's /Rotate before normalizing.
+    crop_left, crop_bottom, crop_right, crop_top = page.get_bbox()
+    rotation = page.get_rotation()
+    highlights = []
+    for x_left, y_bottom, x_right, y_top in found[:40]:
+        x0, y0, x1, y1 = _displayed_box(
+            (x_left - crop_left, crop_top - y_top, x_right - crop_left, crop_top - y_bottom),
+            rotation,
+            crop_right - crop_left,
+            crop_top - crop_bottom,
+        )
+        highlights.append(
+            Highlight(
+                left=x0 / width,
+                top=y0 / height,
+                width=(x1 - x0) / width,
+                height=(y1 - y0) / height,
+            )
+        )
+    return highlights
+
+
+def _search_boxes(
+    textpage: pdfium.PdfTextPage, needle: str
+) -> list[tuple[float, float, float, float]]:
+    """Every box of every case-insensitive hit, one box per line of a hit."""
+    searcher = textpage.search(needle)
+    try:
+        boxes: list[tuple[float, float, float, float]] = []
+        while (match := searcher.get_next()) is not None:
+            index, count = match
+            boxes.extend(
+                textpage.get_rect(i) for i in range(textpage.count_rects(index, count))
+            )
+        return boxes
+    finally:
+        searcher.close()
+
+
+def _displayed_box(
+    box: tuple[float, float, float, float], rotation: int, width: float, height: float
+) -> tuple[float, float, float, float]:
+    """A top-left box on the unrotated page, on the page as displayed."""
+    x0, y0, x1, y1 = box
+    if rotation == 90:
+        return (height - y1, x0, height - y0, x1)
+    if rotation == 180:
+        return (width - x1, height - y1, width - x0, height - y0)
+    if rotation == 270:
+        return (y0, width - x1, y1, width - x0)
+    return box
 
 
 @dataclass

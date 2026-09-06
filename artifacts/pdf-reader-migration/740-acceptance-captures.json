@@ -1,0 +1,170 @@
+{
+ "ticket": "#740",
+ "tier": "medium",
+ "call_sites": [
+  "m8_acceptance._document_observation page_dimensions",
+  "m8_acceptance._rid_rows"
+ ],
+ "what_was_compared": "On every source PDF of the retained NHHIP capture (tests/fixtures/m8_acceptance/nhhip-five-revision-v1), by digest: the per-page displayed size histogram as PyMuPDF's page.rect gave it before #740 and as pypdf gives it after (crop box clipped to the media box, turned by /Rotate), against the sizes the capture recorded in fixture.json; and on every page of the RID index the visual rows recovered by clustering word boxes on their vertical centre, PyMuPDF words before #740 and PDFium glyph boxes grouped into words after, compared as exact strings and after the caller's _filename_token normalization (non-alphanumerics dropped, case folded), which is how _verify_rid_declarations matches them.",
+ "environment": {
+  "pymupdf": "1.28.0",
+  "pypdf": "6.17.0",
+  "pypdfium2": "5.13.0",
+  "python": "3.12.12",
+  "commit": "86c9ed1e5711453e821bc4b9fbef281d709251c6"
+ },
+ "page_dimensions": [
+  {
+   "registry_id": "nhhip-rid-index-2026-05-01",
+   "sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "1912.5x1237.5": 4
+   },
+   "pymupdf": {
+    "1912.5x1237.5": 4
+   },
+   "replacement": {
+    "1912.5x1237.5": 4
+   },
+   "identical": true
+  },
+  {
+   "registry_id": "nhhip-ucm-2025-06-20",
+   "sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "792.0x612.0": 9
+   },
+   "pymupdf": {
+    "792.0x612.0": 9
+   },
+   "replacement": {
+    "792.0x612.0": 9
+   },
+   "identical": true
+  },
+  {
+   "registry_id": "nhhip-ucm-2025-07-22",
+   "sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "1423.3x920.9": 12
+   },
+   "pymupdf": {
+    "1423.3x920.9": 12
+   },
+   "replacement": {
+    "1423.3x920.9": 12
+   },
+   "identical": true
+  },
+  {
+   "registry_id": "nhhip-ucm-2025-10-24",
+   "sha256": "b1c03cefd881309146b9f056707c2558305c7d1e557abdaa3b3f5da7f98df5a1",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "792.0x612.0": 35
+   },
+   "pymupdf": {
+    "792.0x612.0": 35
+   },
+   "replacement": {
+    "792.0x612.0": 35
+   },
+   "identical": true
+  },
+  {
+   "registry_id": "nhhip-ucm-2025-12-15",
+   "sha256": "9629b77a525f26298938a579dc0840998634a8d0e4bed282610bcb1c25b04f01",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "1224.0x792.0": 26
+   },
+   "pymupdf": {
+    "1224.0x792.0": 26
+   },
+   "replacement": {
+    "1224.0x792.0": 26
+   },
+   "identical": true
+  },
+  {
+   "registry_id": "nhhip-ucm-2026-02-13",
+   "sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+   "sha256_matches_fixture": true,
+   "recorded_in_capture": {
+    "1224.0x792.0": 28
+   },
+   "pymupdf": {
+    "1224.0x792.0": 28
+   },
+   "replacement": {
+    "1224.0x792.0": 28
+   },
+   "identical": true
+  }
+ ],
+ "rid_rows": [
+  {
+   "page": 1,
+   "rows": {
+    "pymupdf": 64,
+    "replacement": 64
+   },
+   "identical": false,
+   "identical_after_filename_token": true,
+   "differing_rows": [
+    {
+     "pymupdf": "As Builts for Computerized Transportation Management System (CTMS) CSJ 0271-07­",
+     "replacement": "As Builts for Computerized Transportation Management System (CTMS) CSJ 0271-07-"
+    }
+   ]
+  },
+  {
+   "page": 2,
+   "rows": {
+    "pymupdf": 70,
+    "replacement": 70
+   },
+   "identical": true,
+   "identical_after_filename_token": true,
+   "differing_rows": []
+  },
+  {
+   "page": 3,
+   "rows": {
+    "pymupdf": 74,
+    "replacement": 74
+   },
+   "identical": true,
+   "identical_after_filename_token": true,
+   "differing_rows": []
+  },
+  {
+   "page": 4,
+   "rows": {
+    "pymupdf": 27,
+    "replacement": 27
+   },
+   "identical": true,
+   "identical_after_filename_token": true,
+   "differing_rows": []
+  },
+  {
+   "page": 5,
+   "rows": {
+    "pymupdf": 0,
+    "replacement": 0
+   },
+   "identical": true,
+   "identical_after_filename_token": true,
+   "differing_rows": []
+  }
+ ],
+ "explained_differences": [
+  "RID index page 1, one row: PyMuPDF maps the trailing glyph of 'CSJ 0271-07' to U+00AD (soft hyphen) and PDFium to U+002D (hyphen-minus); the same glyph, two engines' Unicode mappings. The caller compares rows through _filename_token, which drops both, and the row binds no declaration."
+ ],
+ "rid_index_sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",
+ "result": "pass"
+}

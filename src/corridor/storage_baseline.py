@@ -12,11 +12,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 from typing import Any
 
-import pymupdf
+from pypdf import PdfReader
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
@@ -30,8 +31,11 @@ from corridor.models import (
 
 # v2 adds the extractor-configuration family (#605). A v1 and a v2 body
 # measure different member sets, so they are not comparable line for line;
-# the version says so instead of leaving a reader to notice.
-SCHEMA_VERSION = "corridor.storage-duplication-baseline.v2"
+# the version says so instead of leaving a reader to notice. v3 freezes a
+# PDF's page text as whitespace-normalized text in content order (#740): v1
+# and v2 froze PyMuPDF's block-sorted text, which no other reader reproduces,
+# so their PDF members are not comparable with v3's either.
+SCHEMA_VERSION = "corridor.storage-duplication-baseline.v3"
 MINIMUM_REDUCTION_PERCENT = 50
 
 
@@ -530,22 +534,28 @@ def _frozen(source_id: int, content: dict[str, Any]) -> dict[str, Any]:
 
 
 def _freeze_pdf(path: Path) -> dict[str, Any]:
-    """Freeze visible PDF semantics separately from encoding-specific bytes."""
+    """Freeze visible PDF semantics separately from encoding-specific bytes.
+
+    The frozen text is each page's text in content order with runs of
+    whitespace collapsed to one space: the reading PyMuPDF and pypdf agree on
+    byte for byte across the retained sealed exports, where line breaks and
+    block order are theirs and the words are the document's.
+    """
 
     raw = path.read_bytes()
     artifact_digest = sha256(raw).hexdigest()
-    with pymupdf.open(stream=raw, filetype="pdf") as pdf:
-        content = {
-            "media_type": "application/pdf",
-            "page_count": len(pdf),
-            "pages": [
-                {
-                    "page_number": page_number,
-                    "text": pdf[page_number - 1].get_text(sort=True),
-                }
-                for page_number in range(1, len(pdf) + 1)
-            ],
-        }
+    pages = PdfReader(BytesIO(raw)).pages
+    content = {
+        "media_type": "application/pdf",
+        "page_count": len(pages),
+        "pages": [
+            {
+                "page_number": page_number,
+                "text": " ".join(page.extract_text().split()),
+            }
+            for page_number, page in enumerate(pages, start=1)
+        ],
+    }
     return {
         "available": True,
         "source_id": None,

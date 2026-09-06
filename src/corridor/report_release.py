@@ -13,11 +13,12 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
-import pymupdf
+from pypdf import PdfReader
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -641,10 +642,9 @@ def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> No
     if not displays:
         return
     try:
-        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-            visible_text = _normalized_visible_text(
-                "\n".join(page.get_text() for page in pdf)
-            )
+        visible_text = reader_independent_text(
+            "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
+        )
     except Exception as exc:
         raise ReleaseRefusal(
             "External Report PDF cannot be read to verify its frozen statement fields"
@@ -660,7 +660,7 @@ def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> No
             )
         for field_id, value in fields.items():
             expected_pairs[
-                _normalized_visible_text(f"{field_labels[field_id]} {value}")
+                reader_independent_text(f"{field_labels[field_id]} {value}")
             ] += 1
     if any(
         visible_text.count(expected) < count
@@ -673,6 +673,22 @@ def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> No
 
 def _normalized_visible_text(value: object) -> str:
     return " ".join(str(value).split()).casefold()
+
+
+def reader_independent_text(value: object) -> str:
+    """Visible text with every separator removed, for comparing against a reader.
+
+    Whether an extractor emits a space between two text-showing operations is
+    its own positioning heuristic, and that heuristic reads font metrics: the
+    same released bytes yield "Organization Release Test Utility" on one
+    machine and "OrganizationRelease Test Utility" on another whose fonts
+    differ. Neither is a fact about the document, so the check compares the
+    glyphs in reading order and ignores the separators the reader invented.
+    Occurrence counts are kept: a field expected twice must still appear
+    twice.
+    """
+
+    return "".join(str(value).split()).casefold()
 
 
 def _evaluation_context(report: Report) -> dict:

@@ -1,0 +1,4174 @@
+{
+ "ticket": "#740",
+ "tier": "medium",
+ "call_site": "source_intake_draft._page_texts (PDF branch)",
+ "what_was_compared": "Every PDF in the corpus manifests (corpus/*.lock.json), by SHA-256, read from the content store through corridor.storage.staged_file: each page's text as PyMuPDF's page.get_text() gave it before #740, against PDFium's textpage.get_text_range() (the replacement, read in a PdfiumExecutor process) and against pypdf's page.extract_text() (the alternative not chosen). Pages compare equal when corridor.verify.normalize (NFKC, line-break hyphens removed, punctuation and whitespace folded, case folded) of both texts is identical; that is the normalization literal_quote_on_page applies when it verifies a cited passage. token_multiset_equal counts pages whose normalized words are the same set in any order.",
+ "environment": {
+  "pymupdf": "1.28.0",
+  "pypdf": "6.17.0",
+  "pypdfium2": "5.13.0",
+  "python": "3.12.12",
+  "commit": "86c9ed1e5711453e821bc4b9fbef281d709251c6",
+  "comparison_run": "2026-09-06T06:33:09Z",
+  "skipped_over_mb": 30.0
+ },
+ "summary": {
+  "documents": 196,
+  "documents_read": 193,
+  "documents_skipped_for_size": 3,
+  "pages": 1246,
+  "pdfium": {
+   "pages_verify_normalize_equal": 744,
+   "pages_token_multiset_equal": 956
+  },
+  "pypdf": {
+   "pages_verify_normalize_equal": 693,
+   "pages_token_multiset_equal": 693
+  },
+  "by_doc_type": {
+   "agreement": {
+    "documents": 11,
+    "pages": 269,
+    "pdfium": {
+     "pages_verify_normalize_equal": 251,
+     "pages_token_multiset_equal": 251
+    },
+    "pypdf": {
+     "pages_verify_normalize_equal": 249,
+     "pages_token_multiset_equal": 249
+    }
+   },
+   "matrix": {
+    "documents": 18,
+    "pages": 190,
+    "pdfium": {
+     "pages_verify_normalize_equal": 169,
+     "pages_token_multiset_equal": 172
+    },
+    "pypdf": {
+     "pages_verify_normalize_equal": 69,
+     "pages_token_multiset_equal": 69
+    }
+   },
+   "minutes": {
+    "documents": 145,
+    "pages": 327,
+    "pdfium": {
+     "pages_verify_normalize_equal": 275,
+     "pages_token_multiset_equal": 275
+    },
+    "pypdf": {
+     "pages_verify_normalize_equal": 287,
+     "pages_token_multiset_equal": 287
+    }
+   },
+   "other": {
+    "documents": 3,
+    "pages": 12,
+    "pdfium": {
+     "pages_verify_normalize_equal": 10,
+     "pages_token_multiset_equal": 10
+    },
+    "pypdf": {
+     "pages_verify_normalize_equal": 10,
+     "pages_token_multiset_equal": 10
+    }
+   },
+   "plan": {
+    "documents": 16,
+    "pages": 448,
+    "pdfium": {
+     "pages_verify_normalize_equal": 39,
+     "pages_token_multiset_equal": 248
+    },
+    "pypdf": {
+     "pages_verify_normalize_equal": 78,
+     "pages_token_multiset_equal": 78
+    }
+   }
+  }
+ },
+ "result": "mismatch: the replacement reads differently from PyMuPDF on a large share of corpus pages; see summary and explained_differences",
+ "explained_differences": [
+  "No permissive reader reproduces MuPDF's text assembly on customer PDFs. Sampled differences (matrix bcf988a9faed p.1, minutes e987872b10e0 p.1, agreement d7640245cd7f p.1): PDFium keeps the same words but orders table cells differently on drawn tables; pypdf merges or splits words at text-operator boundaries ('actionproposed', 'f ederal'); both readers include a word MuPDF omits on some minutes pages ('agenda'); scanned agreements carry OCR-layer punctuation that each reader spaces differently.",
+  "PDFium was chosen over pypdf for this call site because a cited passage must be a literal substring of the page text: PDFium's words are MuPDF's on 956 of 1246 pages (token multiset) against pypdf's 693, and pypdf's merged words would make short quotes unverifiable.",
+  "The reading is self-consistent: the model reads and the validator verifies the same _page_texts output, so a draft's retained passages remain literal quotes of what the person is shown. The draft registers nothing and preselects nothing; the confirmation reconstructs its binding from server-bound inputs (#362).",
+  "Three plan-set PDFs over 30 MB were not read in the comparison (documents_skipped_for_size)."
+ ],
+ "documents": [
+  {
+   "sha256": "c15f7ed8671ebfc99c8243afe3b86c2bf579bfd4095a6c30978106a617eae334",
+   "doc_type": "other",
+   "manifest": "wsdot-9424.lock.json",
+   "bytes": 29589,
+   "status": "ok",
+   "pages": 4,
+   "pdfium": {
+    "pages_verify_normalize_equal": 4,
+    "pages_token_multiset_equal": 4,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 4,
+    "pages_token_multiset_equal": 4,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 61301,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 65924,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 67659,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 68286,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "f4e63806b1c4a03258a2a23542f2be2a4589e0ff4c7df8cedb50a29fd9be17b5",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 75356,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 76621,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "50fc04af385c6a00d5b60ab5c483c29dc7ee1360e56da6595208aaa7fe5be112",
+   "doc_type": "matrix",
+   "manifest": "cross-agency.lock.json",
+   "bytes": 79143,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 84120,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9540.lock.json",
+   "bytes": 87541,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "51224fae4fd5cb0f49d028ee29346732ada14f769697a1a0fb3c258bd50ee62d",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 98995,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "abf1801a3bd0396f455bbbcb74cf220c2eaafe2b6a774c60e06e7b8b3369ab03",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 108997,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e987872b10e0955a594977aebb4c1701e66f0413a5c9c79770decb53232fed22",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 111753,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b33ce79771ae940f5573ae54c538f565bfe347e7a041a555c6929c56b26e8a39",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 112263,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "22dd84353e3f6e9431cf0c946f8ecbf158801c8b74da81dac1def817a4dc93dd",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 112310,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "bcf988a9faed70e0e2cd5beffb251502083b68a9c7a8f8ccb6bcf9fb3edf70a6",
+   "doc_type": "matrix",
+   "manifest": "cross-agency.lock.json",
+   "bytes": 113580,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5c3ea449fb292e9f90a3f1de15f293e0d5a99e29effd646f59470a61b877ccd3",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 114207,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "387f3617e718ee77af2d15b70756867951abd3df9d6b26312b09b4fc2cdb33cc",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 117072,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "dff7b33afeb3a652eb086896f3b398af716d74ded486a617f54b20c3f1d4deb6",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 127726,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "0c5d0e2bb9c234a6c64b02cd64afda4b56d04214641f6e1f6b1f7961768c6d5a",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 127772,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "560e60fd9ec28926c6dbf595a469fd811a2b41a35e24250ccd2fcbc196abaf72",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 127777,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3b7f5b7b7487d1bdd258b385cf265164d10cc80337a56183d5579726f049509c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 127895,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "cc38b9c8a69fd274d0698a0f097eedfde10cb475b5c0d3590017b67d1eb278a7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 127950,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5ed244f1bad429c444efa5d5f5cbc8f8e2dc99648b7120409d8194b10e3c9892",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 128065,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8828f2c8c8f434e6a678e9a1bbebd4cfc7e3e714557dae556b050f0b44615a1c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 128216,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "50099dba5a4ef02590b0b71edf612c807d283c0807705fbab3c22e27f83e1b67",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 128498,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d601b4bbcd731fd0dac87b83bb73951832f49f739982a4839982d2b6594d0ab0",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 128498,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8e8a37d6d0ea82eeda6c319bb06b61dec57f0f9d8587fd9d12e6f641b8c99f81",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 128952,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6ae2bc5387e3e3d5d6f14563738917560a87ad13e2be4c216eda9382b8fbd321",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129118,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "40fd6b6e49369f364d1456f39b1cf6844f54761608ed7443f27f5150ea7b9028",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129248,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1ac281f4843ac650d8170b37338214e0b97f9dc2763e2e728b16af07bcd4fd1c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129289,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "f38a431d4d548fcb5100b6684499b816b984d631b3aad23f4b216246cdb9a005",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129348,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "03e7448367306ab95ffc8bc3e5e1a767875888edd89aff0445dd0e062d803305",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129826,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5d21b980a4f5cdd975a535eea8cb62e685365d4d0b234abae6b8f1ce7ac26fc8",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129915,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "37478c3aa41d9f825770b76cc51e03020e0d9510882e235974510339cb1c30a3",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129948,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "402da6cd4197a04e9211d43b8506f8a079841a78b485b9ebdb5b6c49a146595a",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 129966,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "9d413173b1d5351d05d5ca02d5f8fb131302e4ea4339433ccad5c9dd832c5ade",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130003,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2fe687a50149e79348b7a70bdf28fe9fef6d4a87f100a41caca9934353657bcc",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130103,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "abf342cc6caa8b5f1637338c53c271d6a553ffdd166088b8d1b91440101f8fcb",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130123,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "370e50c7ccf067c4c512c090360287d5be685d1a3f21fa1e1d4c0849d90fcd18",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130228,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "59280177efe2ce43bef8ab2af30cd9fd16d855c657215f63fc9b38e2fa7875d0",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130276,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ada13da24574950264d974f8a352fd07a3dba042ac2b37e825f8409730182eaf",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130584,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "9a729bfda97564086380a16207ef86d9f159a2e784fa441cde46ffe235847405",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130679,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b2fe42ef18ce1832ac4be86dc6826a7a9d841d07ed70f7f6a3b690b0433fff2c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130680,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a355ad95ae3ea71da1ee823fc9593b77f742f80432ac533a2d4d6a77580db2b2",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130705,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3a1b99734bfec0781072539eaf01a258474da098567019949ec0943a80462234",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130731,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "4e177925f956d10d2f82a9a9bc219c54f279a8aae70491885caacd40980d9444",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130928,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d3b762e023163741c0f363e29db0b1d161f49fb4dfd8f9424e393be49a74d706",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130942,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "81497db4848cda6512d7e38dbbdf4da6707d8853f66012beb3235e26266cc055",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 130951,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ea17f0ac80573c2b310274e8a5eb9dbfde16dd5197cf783dcebcc48e00b47c64",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131186,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5a7843770fbf69a7534f46f2a803c7275fbe847296feec810708593f5dc5c795",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131278,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "cc66561935d63b44195b79e399e8d19264934ff64e4862e8f0b2b1108486a07f",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131312,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "30496a385d01869e11dc8a207895be7608888be485f4a6fe288082dcda1f44f5",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131350,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "006a4ed1e172a0fbd4b7d9535d9e3c95c90d8fb20dbcb08fa4c92099e3dda645",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131442,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d01c20ec2c599c9287e38328e07e5b509148ed589e229f6f31bd8b025f197f1e",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131528,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a65cbfe34ce602839577ab8224f6d0ac6cc128a2fc15f47b2756f41f1ee5bfa7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 131628,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "65e2fa89d06c551d00f2f440dced48f2b43cc7ce0146830d3b0dc9682eaa6eb5",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 133758,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8fd4395ca8f2c251a07353a9277c0afdef20694c10e775b9b6105daa3819ffba",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 133854,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "99a7281a0fa87065379b607ae3d8d379593ad4ee5df623f181d283eaf847936c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134229,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "371eb58d7262974c6d2284c1385b753144102d18f218b08ea042c8045175a501",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134469,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8577a041076c517dd924f5858476a98cedbc1cb9c245ad7fb42180373403b46d",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134483,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "4d1d1f9e245564dabc9f965e55e36280aa993066cf299364cc761dd4f3430dde",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134575,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "cf893bf5235fc4f9966a484920e63abc48f0929d7932d190b36b29c0038c32eb",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134646,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a984774ffe8de5016fc68f2d8477c4c8bf9f7a3bfb4470ff7117e865f9351816",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134764,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "fee3d978b0bfff93f34d819eb3b9015b89cacc29fd26797f25d7acdf268f7372",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 134984,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d46162003d28bb30202d60ea3b9579a017228dc03202ac13808c2cb2daf10fad",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135145,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "aec084bb1c1fe84e2d2103a7e85ee9bb29476d623c177fff48e88fcf6820fcf8",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135342,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135467,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8b05573c06dc04844ea41ce17c43c2cfd8073af7e13873ddcc0415d57498f967",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135706,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d6a763512b90fddd9dc963be25f879bfa698f67b040a1bebafadcc59da4bfecf",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135750,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e04058dafa8f4f3756c73e66fc5a9d78f81a0070fd5503d103661b055b1f0690",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135802,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d1e343e0b7d239203b4a2ab448fe161c7ff1debcb88f7ce1d4dcc24481fbe8c7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135840,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "34ccc5ca4a2c0ddf8a75902348902093ad4b9b6d209f9cd3f853c97de2ab7515",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135880,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "9aa7efe5aef0b34d1528987ff68e93db3f9cc3c5b69bdace9e2657d2d749cf37",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 135898,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a21b257a1b20e1a4579a911350e61ac4aeea282528158ca7b666e200a41b3195",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 136449,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b0f1aa64b5924e317edf05197f25ec42fa021dc5e82e09a09ad6a5a5368d0cda",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 136483,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "050ba79d6e26ee34a00625ad87cd1fb3a4fe4a603285839214687bd4e20baf7b",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 136690,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "79f8e9508b48e1d7ea803649cc6ff159de857af785faa0a6893e9a664c558a46",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 136778,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ea4a9bbb0eae3fae52392864632d098d176f134d425aa94539d659ab2325c006",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 136815,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2dbd10a894d03193d4df52970df7b3f2f6475012ab1bf7c7abcd6123a1db4ecc",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137067,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ee1ba40365cb4a95b05fd68e5934d84aa8d0e35e3f333fd3dde7175b4de3531d",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137114,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "39dd65d2ee801f87795cfe0265f37682f8c0812ecc4c2d0215a61cfeeb99fc33",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137257,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "897dac9a223778569b8555ed7c27db448d6a316e56aea0302a959787a20297f6",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137468,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e3e880680bee26747af84f7788caedf663aafc7aba5d88a8cba2c634f5b3a608",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137478,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6ae98d111b50c03e03c0ac1f881bb58f62cbebb7c9d0eddd8acb13846a23db8a",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137506,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1bca3f7b415c2a6ceb4e444eb0a0db70b65a8fbf72e16d9b0911c5c3fe970b74",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137514,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5ad02bde3efc72ca41ae3adc62bd29fbc378b38691f636cd7960da1b24f5424f",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137577,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "deecae64f30d6aea7fa05c0b8c9649ba75c4a29239b041f718f9bb595c21d85b",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137649,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "230029e75ede1b29472d9bb346942501661cca191783c89543683ed80b39a4b1",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137696,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d47de457cdd39fa17982580b4a39dc8c13620bd9def2c8e6f6d8b49871edd174",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 137820,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "fabd6860f7048d0dd8daef8b4a81fddbcb63b42640bf1ffe96a711dc2de8a860",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138242,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "f89d23d57015f75269e2bcd0ffde1d2700a9ed7c10e5ced16005cced891fbf55",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138255,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "176352f80d9427b92459981aa70e5fa304e7e100e66e2b3a4b06b7e57accfc09",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138359,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8fc95acb714740de51de77832b250b798195945d7a445f523914e8dd27af730f",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138433,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2d6bece0d7ff37a9ef4aea492be5c8b83a45745c3314742040444cd8f0385479",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138566,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "791af391e856c4f8b926fa7e7d117344d39ee605350f6f587e937447d535615a",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138615,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5e36d49329daae7fc573519ddd2a3a81c5a0f2687484cdbc9659b244211fcf79",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138652,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "7a8b39349e1d88dc5038e80653c85c715f8885851ab35d2387339909e77e775a",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138653,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1765226d34ac694a309070edd560e443dd5d98bb66805aab333c044caa962903",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138976,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ddde5fd46ddb5cf173f5ce9a922d5c9ad0139b1cf0e1ed510f6f24dce06918e5",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 138998,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "32e4bf8c6e19d05ee792e6ba92e5c80f9a0b21cf34682ca3403e484f079d1cda",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 139004,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "f4e00352e6278495e85a88fd87cc9c4b366e8aea326cf25d6a56f2a331215059",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 139047,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ccb00a645b09c803f118e12aeb2885f450b3b37f27f1cd060f18b1952e62ad8d",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 139290,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d6fe693b2a75988153ee05674ca4ccd76773a7603acb23d44d87994a07b37c03",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 139488,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "48a471945a76a3d8b154d5df5e2f801694b879e105e68e0e57b5c82e39017f05",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140087,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "babaa8c9d8249793eb8718b57d99daf50cb219c06579f175f658a5d21fe81a17",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140232,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6ae2ce75417bc89e269e3d036dd029a91d519a637d0701368ef772f1bae5927b",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140406,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "02afa25f3808a444e2bbdf0d80fa70edb0ed6374762193f0dc05ccb3c1001a39",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140692,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "4b71b9e79b65df0f30ee592d7ea2e15edc8b2e496cc996e7c50fb6229d206c2d",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140700,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "75181bf4f76924a1f4838c30395940c932ac7b5c126c26125f7e43a9342353c3",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 140864,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e681ded6400c13077136d709ace1d34d7e00bc31016a5fb9585c10d561694028",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 141398,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "42fe2fdb1905220b48c6a03cdcb4af19cb4ba32ad4e531c3735b546ab9285726",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 141649,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ae3086d4626ce0b19b2f54eecc513fb7af26d4a6c3b6f247eb7509b854ff9082",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 143174,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a960001b1ad9faf8e5618c68d16f82cb791ce2db3f758ec916dc04f15b163fab",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 143181,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3aae0ed404a06a9eb7f70655f184def0270532b83c56ceb51643abad66d88826",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 143511,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "7ab1f471eeae925a20d5b46b7f317e1217fd27f0482bd36a132f76e70ea9af9c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 143723,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "159141f448aae6dd983b45833a9620f3634d41b846712d7ce90d7a4386a3bddb",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 143724,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "9e3f7980fcbbb14656115ddabf33ef16e555e2b33293e80a4390df3368439e7e",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 144510,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "feeb4b6ec28be9e9e4047c8c1e7274dee5235739b4cc540f64cff908492e3197",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 144639,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "596d2b2fcad46bd6b4308d53cb04dcb55f6e40ea5a9cf7737ddf67d5aacd2c28",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 144896,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "bea34f8b2fc03240fbe04028b0a0aae7398654a273f61cd8fa92746223d73d31",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 146250,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "4d3bf1b0ecb012e85839572dd93522cecf274a7092cca33ca9b4970122e43b7c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 146279,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a46946af90a60ff8dbeac177018c64529e424995e23db1c6b1864fb215170df7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 146499,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e54f36ce913caaeba75d7ec6c0f8e9b1e720aeec564b893e798cf324a9c57e39",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 146669,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "69deef03e4ee87119b379e076c1806db7f627be0f9cf3d925df8e90a899e9b30",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 146724,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "25d8c426fb2e2d8fa217642e2129ebd5fcfd7a21f2cd225e77dbd0032642f7e4",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 147180,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8386fd19e780664ddefcf4ee0d8196a336a46cebd06a489facaafb515454cccd",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 147379,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "0b73f01a81b402750fa54c8d6dfdf1be200942e4edc37ebe2efbdd3c2209ebf7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 148111,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "4ee113301119a887759608d9610a51feb58227ff3e2e4d8c108106fd2e3ca0dd",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 148746,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3a73437faa3eecaf8687bf920cd7c58ee9590d8048ad6c296bd735147da4ea6c",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 149614,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "808840731b5b304d12f00db8ec1d3c3a7752d18c4c06f71b68988ca96038a793",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 150790,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 3
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 3
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d078717933c073f61be2cc5f9695ca5541f53980083ac5c5b0884fa837751813",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 151404,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "01d3491db59147480bdc2d1825d2370f7b918bd5c947ca8b9e51f674a555c856",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 153620,
+   "status": "ok",
+   "pages": 4,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 3
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 3
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2c16910e82d52a5a57d25f35cf4a0011b42b486433ad6d7a3944c5c408273733",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 155242,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "bcc26478c3bbe69109db4aeb8e3367686ec6f171a85821de7e0367abf3b383b8",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 157074,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b271c19f1e37755b9ba94101443034c7a129aafb4714f774a79dff82745117bf",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 157470,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d5f788a683fa3e5f2fbe0ce8258f0f223c12ccda33c66165ff5884c639eb67f2",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 161231,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "34e872e5d7bf3d93ce5bdeca66c9b8872f9fb9b38c3b0cd8dddd19b505085621",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 161460,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",
+   "doc_type": "other",
+   "manifest": "manifest.lock.json",
+   "bytes": 161798,
+   "status": "ok",
+   "pages": 4,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "f273598dbd44a7ba3ce6b704b16d660caa9dd007379ce583479713e743530a53",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 162043,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "047a33b416861e49c7060e29da053026e708e803e39d9a0f2d966d361f6b383e",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 163224,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a9c9c785c900ce8e8c77b763850a016bf5b5da07ed30263ad38626c958d17619",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 163613,
+   "status": "ok",
+   "pages": 4,
+   "pdfium": {
+    "pages_verify_normalize_equal": 4,
+    "pages_token_multiset_equal": 4,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 4,
+    "pages_token_multiset_equal": 4,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "3ce51c843247d6098dc262eb01ad746b33609ed49a3d14025b170fc03aa6c14e",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 165030,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "22f7b59a58324c8f8f52356ce71379b6e44ba07a36cb551b3834fa30f566df49",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 165579,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "83c75124acd35099cf4b7afaf597cba70a4ab21de37559764d118aa8af272397",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 167071,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2ce3101a8059a3f33b6480a789c1df5aee2e5d1c0c3eec0bf03960cf6f6442de",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 167347,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2aac9ec8b6661b28cefce5d56818db8f073d958fa686543c88c30600c76a77f7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 169050,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6711713ff018b9391ffae50ab33e2ef4fcf80b92e6decdb551c6f8e0fb68effb",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 170000,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214",
+   "doc_type": "other",
+   "manifest": "manifest.lock.json",
+   "bytes": 181060,
+   "status": "ok",
+   "pages": 4,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5bf4395a798b76a5f363bd3b38a090253c769fa529fe290ae145808e44aef683",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 181083,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "c818fa0c9d43412db0f7a8d231b4f12327daec42b5223cc9aa4cc5c76e1a072e",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 194963,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "49b072898764ffd2089026e90d2bf1a080ec0c431a77af6f41347f76246fad28",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 195715,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1a56119067e0b188edf846aeb112175d7291410ffcc7ebe99ce2fcc18e6becb0",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 198811,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 216379,
+   "status": "ok",
+   "pages": 6,
+   "pdfium": {
+    "pages_verify_normalize_equal": 6,
+    "pages_token_multiset_equal": 6,
+    "pages_both_empty": 6,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 6,
+    "pages_token_multiset_equal": 6,
+    "pages_both_empty": 6,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d7640245cd7f5593a730dad04d55fbd0464f5256eb6aa6644ee0522401053dc9",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 221637,
+   "status": "ok",
+   "pages": 6,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+   "doc_type": "matrix",
+   "manifest": "manifest.lock.json",
+   "bytes": 232211,
+   "status": "ok",
+   "pages": 9,
+   "pdfium": {
+    "pages_verify_normalize_equal": 9,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+   "doc_type": "matrix",
+   "manifest": "wsdot-9424.lock.json",
+   "bytes": 233706,
+   "status": "ok",
+   "pages": 11,
+   "pdfium": {
+    "pages_verify_normalize_equal": 10,
+    "pages_token_multiset_equal": 10,
+    "pages_both_empty": 0,
+    "first_differing_page": 8
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 10,
+    "pages_token_multiset_equal": 10,
+    "pages_both_empty": 0,
+    "first_differing_page": 8
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2ba01668b4c46216b7b8f0686d1c2491e533e2f5ed0dc3fcb35fbfa3fa70e082",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 246244,
+   "status": "ok",
+   "pages": 5,
+   "pdfium": {
+    "pages_verify_normalize_equal": 5,
+    "pages_token_multiset_equal": 5,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 5,
+    "pages_token_multiset_equal": 5,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "22ab260d777996fcc9ed1be1bb295956a80878721bce409db78f93c7bca67de8",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 312747,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 3,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+   "doc_type": "matrix",
+   "manifest": "fdot-sr789.lock.json",
+   "bytes": 335526,
+   "status": "ok",
+   "pages": 9,
+   "pdfium": {
+    "pages_verify_normalize_equal": 9,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 9,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 382859,
+   "status": "ok",
+   "pages": 16,
+   "pdfium": {
+    "pages_verify_normalize_equal": 16,
+    "pages_token_multiset_equal": 16,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 16,
+    "pages_token_multiset_equal": 16,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44",
+   "doc_type": "matrix",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 428005,
+   "status": "ok",
+   "pages": 17,
+   "pdfium": {
+    "pages_verify_normalize_equal": 17,
+    "pages_token_multiset_equal": 17,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+   "doc_type": "matrix",
+   "manifest": "manifest.lock.json",
+   "bytes": 475966,
+   "status": "ok",
+   "pages": 12,
+   "pdfium": {
+    "pages_verify_normalize_equal": 12,
+    "pages_token_multiset_equal": 12,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 12,
+    "pages_token_multiset_equal": 12,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 485225,
+   "status": "ok",
+   "pages": 14,
+   "pdfium": {
+    "pages_verify_normalize_equal": 14,
+    "pages_token_multiset_equal": 14,
+    "pages_both_empty": 14,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 14,
+    "pages_token_multiset_equal": 14,
+    "pages_both_empty": 14,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "00ebec74e19e20dfcd4b037bf723d14faffb92090e6febca93443bf02f105eac",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 507298,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 562474,
+   "status": "ok",
+   "pages": 25,
+   "pdfium": {
+    "pages_verify_normalize_equal": 25,
+    "pages_token_multiset_equal": 25,
+    "pages_both_empty": 25,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 25,
+    "pages_token_multiset_equal": 25,
+    "pages_both_empty": 25,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1aa787f21bbb252981596c5adf133651409ce5cf0e463877774b63adaf62fbd7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 600680,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "67ff371419861e5e81b9d5458e3c2d232269c6ec966a7efee1aab11bf7280689",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 602238,
+   "status": "ok",
+   "pages": 3,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "493a0ff1785bf962d5cde54a6714f3685e1623787cc4d5af31d7eae785e5d1f7",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 608007,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "99b479a5b213718cb974488a47aa05a058622a9c1c02f4a8d47a602ca0991924",
+   "doc_type": "minutes",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 611064,
+   "status": "ok",
+   "pages": 2,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30",
+   "doc_type": "matrix",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 780122,
+   "status": "ok",
+   "pages": 17,
+   "pdfium": {
+    "pages_verify_normalize_equal": 16,
+    "pages_token_multiset_equal": 16,
+    "pages_both_empty": 0,
+    "first_differing_page": 11
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 16,
+    "pages_token_multiset_equal": 16,
+    "pages_both_empty": 0,
+    "first_differing_page": 11
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 843101,
+   "status": "ok",
+   "pages": 15,
+   "pdfium": {
+    "pages_verify_normalize_equal": 4,
+    "pages_token_multiset_equal": 4,
+    "pages_both_empty": 0,
+    "first_differing_page": 2
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+   "doc_type": "matrix",
+   "manifest": "manifest.lock.json",
+   "bytes": 862750,
+   "status": "ok",
+   "pages": 28,
+   "pdfium": {
+    "pages_verify_normalize_equal": 22,
+    "pages_token_multiset_equal": 22,
+    "pages_both_empty": 0,
+    "first_differing_page": 10
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "70849db01ff3c16ac8f2fa7cfe315177c5e09c97e35e59b502c1f2c3aa118f35",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 877290,
+   "status": "ok",
+   "pages": 15,
+   "pdfium": {
+    "pages_verify_normalize_equal": 15,
+    "pages_token_multiset_equal": 15,
+    "pages_both_empty": 15,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 15,
+    "pages_token_multiset_equal": 15,
+    "pages_both_empty": 15,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "10a077a8124af600c346cfdb7a41f06e57ec6aa08b51e9bf3eeeea0de6fc3f31",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 946166,
+   "status": "ok",
+   "pages": 20,
+   "pdfium": {
+    "pages_verify_normalize_equal": 19,
+    "pages_token_multiset_equal": 19,
+    "pages_both_empty": 19,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 19,
+    "pages_token_multiset_equal": 19,
+    "pages_both_empty": 19,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053",
+   "doc_type": "matrix",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 956061,
+   "status": "ok",
+   "pages": 13,
+   "pdfium": {
+    "pages_verify_normalize_equal": 13,
+    "pages_token_multiset_equal": 13,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 13,
+    "pages_token_multiset_equal": 13,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "7304b14b44b4892cd52121578478ae8d4ca275cb687605485220604fc833d64d",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 1023774,
+   "status": "ok",
+   "pages": 10,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 2,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 2,
+    "pages_both_empty": 2,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b1c03cefd881309146b9f056707c2558305c7d1e557abdaa3b3f5da7f98df5a1",
+   "doc_type": "matrix",
+   "manifest": "manifest.lock.json",
+   "bytes": 1174740,
+   "status": "ok",
+   "pages": 35,
+   "pdfium": {
+    "pages_verify_normalize_equal": 31,
+    "pages_token_multiset_equal": 31,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 1414159,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 1800969,
+   "status": "ok",
+   "pages": 40,
+   "pdfium": {
+    "pages_verify_normalize_equal": 40,
+    "pages_token_multiset_equal": 40,
+    "pages_both_empty": 40,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 40,
+    "pages_token_multiset_equal": 40,
+    "pages_both_empty": 40,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 2104242,
+   "status": "ok",
+   "pages": 46,
+   "pdfium": {
+    "pages_verify_normalize_equal": 46,
+    "pages_token_multiset_equal": 46,
+    "pages_both_empty": 46,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 46,
+    "pages_token_multiset_equal": 46,
+    "pages_both_empty": 46,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "9629b77a525f26298938a579dc0840998634a8d0e4bed282610bcb1c25b04f01",
+   "doc_type": "matrix",
+   "manifest": "manifest.lock.json",
+   "bytes": 2206349,
+   "status": "ok",
+   "pages": 26,
+   "pdfium": {
+    "pages_verify_normalize_equal": 23,
+    "pages_token_multiset_equal": 23,
+    "pages_both_empty": 0,
+    "first_differing_page": 12
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "b7e348f86d9920a2e67f5b015e4ecb09d1f28aee7bf68d9526e91ff121d82faa",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 2671586,
+   "status": "ok",
+   "pages": 9,
+   "pdfium": {
+    "pages_verify_normalize_equal": 2,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": 3
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 9,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 2800271,
+   "status": "ok",
+   "pages": 1,
+   "pdfium": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 1,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "1ee5b940de3088aebd3bbca2e1f1e5c4e1797a60890c1707f3c527a10e87c9c5",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 4300325,
+   "status": "ok",
+   "pages": 10,
+   "pdfium": {
+    "pages_verify_normalize_equal": 9,
+    "pages_token_multiset_equal": 9,
+    "pages_both_empty": 0,
+    "first_differing_page": 8
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac",
+   "doc_type": "plan",
+   "manifest": "wsdot-9424.lock.json",
+   "bytes": 4419336,
+   "status": "ok",
+   "pages": 17,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 1,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 4779913,
+   "status": "ok",
+   "pages": 67,
+   "pdfium": {
+    "pages_verify_normalize_equal": 67,
+    "pages_token_multiset_equal": 67,
+    "pages_both_empty": 67,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 67,
+    "pages_token_multiset_equal": 67,
+    "pages_both_empty": 67,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 7332399,
+   "status": "ok",
+   "pages": 82,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 10,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+   "doc_type": "agreement",
+   "manifest": "manifest.lock.json",
+   "bytes": 7508105,
+   "status": "ok",
+   "pages": 15,
+   "pdfium": {
+    "pages_verify_normalize_equal": 15,
+    "pages_token_multiset_equal": 15,
+    "pages_both_empty": 15,
+    "first_differing_page": null
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 15,
+    "pages_token_multiset_equal": 15,
+    "pages_both_empty": 15,
+    "first_differing_page": null
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 7792426,
+   "status": "ok",
+   "pages": 77,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 16,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "140475ef8ad8f1069d10065fef23e1c4e480f8b43a1e3bd07ffe79907780db48",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 9738973,
+   "status": "ok",
+   "pages": 51,
+   "pdfium": {
+    "pages_verify_normalize_equal": 3,
+    "pages_token_multiset_equal": 51,
+    "pages_both_empty": 0,
+    "first_differing_page": 4
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 44,
+    "pages_token_multiset_equal": 44,
+    "pages_both_empty": 0,
+    "first_differing_page": 6
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 11605986,
+   "status": "ok",
+   "pages": 143,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 127,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "63d2e8d3824cf7017105a78b5bfd27a618d101fe6d8ccabe12de04cf97538dd4",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 12492412,
+   "status": "ok",
+   "pages": 25,
+   "pdfium": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "pypdf": {
+    "pages_verify_normalize_equal": 0,
+    "pages_token_multiset_equal": 0,
+    "pages_both_empty": 0,
+    "first_differing_page": 1
+   },
+   "page_counts_agree": true
+  },
+  {
+   "sha256": "2611bbf6ab03e9de79fc68086eb7f44e85a2a905024f52d8de6777692185021f",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 32564397,
+   "status": "skipped-size"
+  },
+  {
+   "sha256": "92f456c2b22ade6ca68227b4f67a584ddc7922912e3b2dae9c655dc8915988e5",
+   "doc_type": "plan",
+   "manifest": "sh99-grand-parkway.lock.json",
+   "bytes": 55394790,
+   "status": "skipped-size"
+  },
+  {
+   "sha256": "375b4c368c9fd65513155ddc00493627b0240de7959ec83107ce2fcff8a56128",
+   "doc_type": "plan",
+   "manifest": "manifest.lock.json",
+   "bytes": 99400491,
+   "status": "skipped-size"
+  }
+ ]
+}

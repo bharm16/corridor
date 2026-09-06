@@ -57,7 +57,6 @@ import time
 from typing import Callable
 from uuid import uuid4
 
-import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -69,6 +68,7 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.verify import literal_quote_on_page
+from corridor_pdf_reader.execution import PdfiumExecutor
 
 
 PROMPT_VERSION = "source_intake_draft_v1"
@@ -358,6 +358,11 @@ def _page_texts(staged: StagedDraftSource) -> dict[int, str]:
     this renders no page image and writes nothing. A spreadsheet's text is its
     cells (ADR-0005); a PDF's is its text layer. A source that cannot be read
     yields no pages, and the draft simply has nothing to cite.
+
+    A PDF's text layer is read by PDFium, in its own process: the draft runs
+    inside the threaded web application, and PDFium may be entered by one
+    thread of a process at a time, so each draft pays one process for its
+    read rather than refusing a concurrent one (#729).
     """
     suffix = staged.suffix.lower()
     if suffix in SPREADSHEET_SUFFIXES:
@@ -368,12 +373,30 @@ def _page_texts(staged: StagedDraftSource) -> dict[int, str]:
             for index, sheet in enumerate(read_workbook(staged.stored_path), start=1)
         }
     if suffix == ".pdf":
-        texts: dict[int, str] = {}
-        with pymupdf.open(staged.stored_path) as pdf:
-            for index, page in enumerate(pdf, start=1):
-                texts[index] = page.get_text()
-        return texts
+        return PdfiumExecutor().run(_pdf_page_texts, Path(staged.stored_path))
     return {}
+
+
+def _pdf_page_texts(path: Path) -> dict[int, str]:
+    """Each page's text as PDFium reads it; runs inside the reader process."""
+    import pypdfium2 as pdfium
+
+    pdf = pdfium.PdfDocument(path)
+    try:
+        texts: dict[int, str] = {}
+        for index in range(len(pdf)):
+            page = pdf[index]
+            try:
+                textpage = page.get_textpage()
+                try:
+                    texts[index + 1] = textpage.get_text_range()
+                finally:
+                    textpage.close()
+            finally:
+                page.close()
+        return texts
+    finally:
+        pdf.close()
 
 
 def registered_registry_ids(session: Session, project_id: int) -> list[str]:
