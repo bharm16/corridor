@@ -116,3 +116,43 @@ anything here (#447 owns native selection).
   tests need no corpus, no node and no network.
 - The 333-pair reproduction is `make pdf-reader-reproduce`, an explicit
   experiment outside CI; its receipt lives in `receipts/`.
+
+## The reproduction (2026-09-06)
+
+Run from the declared environment, not the laptop's: `UV_PROJECT_ENVIRONMENT`
+pointed at an empty directory, so `uv run --group pdf-reader-experiment`
+created the virtual environment from `uv.lock` before the first command, and
+`make pdf-reader-node` had installed `ssf` 0.11.2 from the committed
+`package-lock.json`.
+
+```bash
+make pdf-reader-node
+UV_PROJECT_ENVIRONMENT=/tmp/fresh-venv make pdf-reader-reproduce \
+    ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain"
+```
+
+`receipts/reproduction-2026-09-06/receipt.json` holds the configuration
+identity: commit `c39363e`, package digest `58ba2e3d…350a1`, pypdfium2
+5.13.0 (PDFium 153.0.7999.0), pypdf 6.17.0, pdf-oxide 0.3.77, pillow 12.3.0,
+openpyxl 3.1.5, xlrd 2.0.2, node v24.10.0, ssf 0.11.2, Python 3.12.12 on an
+Apple M1 Pro (10 cores, macOS 26.6.2), the corpus manifest digest, the split
+digest, every command line with its wall time, and the digests of the keys,
+reads and scores it produced.
+
+| Set | Pairs | Pages | Cells exact | loop-020 |
+|---|---:|---:|---:|---|
+| development (263 pairs) | 262 / 263 | 1,589 / 1,589 | 483,210 / 483,336 | 262 / 263, 1,589 / 1,589, 483,210 / 483,336: identical |
+| holdout (70 pairs) | 70 / 70 | 409 / 409 | 125,498 / 125,529 | 70 / 70, 409 / 409: identical |
+
+The 333 answer keys built by `bootstrap.reference` are byte-identical to the
+retained loop-reference-v6 keys, file for file. The one failing development
+pair is PE-40 (Ghostscript print, the borderless header block loop-020 also
+left), with six uncovered cells; no pair fails on the holdout. The whole
+experiment took 157 s of wall time (keys 24 s, reads 96 s at four jobs,
+scoring 36 s). The run was made twice, first with a draft of the
+driver and then with the committed one; the reads, scores and keys of the
+two runs carry the same digests, so the retained receipt is the second.
+
+The holdout was scored because loop-020 scored it and for no other reason;
+nothing was tuned before or after, and the access is appended to
+`bootstrap/LOOP-LOG.md` and handed to #731 for the ledger (ADR-0008).

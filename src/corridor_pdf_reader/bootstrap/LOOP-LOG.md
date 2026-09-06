@@ -61,3 +61,19 @@ store 0 where LibreOffice's xls export should have cached formula strings
 (their pages print text the key does not hold); H-S-I twins print pages of
 retainage zeros that Excel never printed; the R06_TOC twin descends from a
 converted workbook.
+
+## Holdout access 2026-09-06: reproduction inside Corridor (#729), no tuning
+
+Purpose: reproduce loop-020 from the declared Corridor environment after importing the
+reader unchanged; the holdout was scored because loop-020 scored it, and nothing was
+changed before or after (ADR-0008). Configuration: commit `c39363e`,
+package digest `58ba2e3d18fa690e`, engine `tagged`,
+dpi 36, jobs 4, pypdfium2 5.13.0 (PDFium 153.0.7999.0), pypdf 6.17.0, corpus manifest `ca68b55abfa583a1`, split `529c5ffb00bc96f5`, keys 333 of 333 byte-identical to loop-reference-v6.
+
+| Set | Pairs | Pages | Cells exact |
+|---|---:|---:|---:|
+| development | 262 / 263 | 1589 / 1589 | 483,210 / 483,336 |
+| holdout | 70 / 70 | 409 / 409 | 125,498 / 125,529 |
+
+Result: reproduces loop-020 exactly. Receipt: `receipts/reproduction-2026-09-06/receipt.json` in the Corridor package;
+handed to #731 for the Extraction Measurement ledger.

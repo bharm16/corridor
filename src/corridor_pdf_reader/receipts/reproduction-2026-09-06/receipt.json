@@ -1,0 +1,227 @@
+{
+ "run": "reproduction-2026-09-06",
+ "date": "2026-09-06",
+ "what": "Reproduction of loop-020 inside Corridor from the declared environment; an explicit experiment outside CI (#729, ADR-0008). No tuning.",
+ "source": {
+  "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+  "repository": "pdf-reader-comparison (local, no remote)",
+  "branch": "codex/standalone-comparison",
+  "package_digest": "58ba2e3d18fa690e601a06e8ce80c31b55f48f75b4edf30a5b554000592350a1",
+  "manifest_verified": true
+ },
+ "reader": {
+  "engine": "tagged",
+  "dpi": 36,
+  "jobs": 4,
+  "driver": "bootstrap.read",
+  "retain_images": false
+ },
+ "environment": {
+  "python": "3.12.12",
+  "prefix": "/private/tmp/claude-501/-Users-bryceharmon-Desktop-corridor/d797e906-261d-4f9b-bc14-6f83e4fee794/scratchpad/fresh-venv",
+  "packages": {
+   "pypdfium2": "5.13.0",
+   "pypdf": "6.17.0",
+   "pdf-oxide": "0.3.77",
+   "pillow": "12.3.0",
+   "openpyxl": "3.1.5",
+   "xlrd": "2.0.2"
+  },
+  "pdfium_build": "153.0.7999.0",
+  "pypdfium2_build": "5.13.0",
+  "node": "v24.10.0",
+  "ssf": "0.11.2",
+  "machine": {
+   "platform": "macOS-26.6.2-arm64-arm-64bit",
+   "machine": "arm64",
+   "processor": "arm",
+   "cpu_count": 10,
+   "hostname": "MacBook-Pro-4.local"
+  }
+ },
+ "corpus": {
+  "root": "/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+  "manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "excluded_sha256": "5f2e1d490444470122244d3ab08dcbb7c8cc1e9e5e8895aac4569ddc02996c98",
+  "pairs": 333,
+  "files_checked": 666,
+  "bytes": 190312360,
+  "mismatches": [],
+  "missing": []
+ },
+ "split": {
+  "file": "bootstrap/pairs.json",
+  "sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+  "seed": 720,
+  "development_pairs": 263,
+  "holdout_pairs": 70
+ },
+ "keys": {
+  "retained_manifest": "receipts/loop-reference-v6.manifest.json",
+  "keys": 333,
+  "identical_bytes": 333,
+  "different": [],
+  "absent": [],
+  "build_failures": [],
+  "build_errors": []
+ },
+ "reads": {
+  "engine": "tagged",
+  "seconds": 96.0,
+  "documents": 333,
+  "pages": 1998,
+  "errors": []
+ },
+ "steps": [
+  {
+   "step": "keys",
+   "command": [
+    "/private/tmp/claude-501/-Users-bryceharmon-Desktop-corridor/d797e906-261d-4f9b-bc14-6f83e4fee794/scratchpad/fresh-venv/bin/python",
+    "-m",
+    "corridor_pdf_reader.bootstrap.reference",
+    "--output",
+    "out/pdf-reader/reproduction-2026-09-06/reference",
+    "--jobs",
+    "4"
+   ],
+   "seconds": 23.9,
+   "log": "keys.log"
+  },
+  {
+   "step": "read",
+   "command": [
+    "/private/tmp/claude-501/-Users-bryceharmon-Desktop-corridor/d797e906-261d-4f9b-bc14-6f83e4fee794/scratchpad/fresh-venv/bin/python",
+    "-m",
+    "corridor_pdf_reader.bootstrap.read",
+    "--output",
+    "out/pdf-reader/reproduction-2026-09-06/loop",
+    "--engine",
+    "tagged",
+    "--jobs",
+    "4"
+   ],
+   "seconds": 96.1,
+   "log": "read.log"
+  },
+  {
+   "step": "score-development",
+   "command": [
+    "/private/tmp/claude-501/-Users-bryceharmon-Desktop-corridor/d797e906-261d-4f9b-bc14-6f83e4fee794/scratchpad/fresh-venv/bin/python",
+    "-m",
+    "corridor_pdf_reader.bootstrap.score",
+    "--run",
+    "out/pdf-reader/reproduction-2026-09-06/loop",
+    "--reference",
+    "out/pdf-reader/reproduction-2026-09-06/reference"
+   ],
+   "seconds": 15.7,
+   "log": "score-development.log"
+  },
+  {
+   "step": "score-with-holdout",
+   "command": [
+    "/private/tmp/claude-501/-Users-bryceharmon-Desktop-corridor/d797e906-261d-4f9b-bc14-6f83e4fee794/scratchpad/fresh-venv/bin/python",
+    "-m",
+    "corridor_pdf_reader.bootstrap.score",
+    "--run",
+    "out/pdf-reader/reproduction-2026-09-06/loop",
+    "--reference",
+    "out/pdf-reader/reproduction-2026-09-06/reference",
+    "--include-holdout"
+   ],
+   "seconds": 20.2,
+   "log": "score-with-holdout.log"
+  },
+  {
+   "step": "tally",
+   "command": [
+    "python",
+    "-m",
+    "corridor_pdf_reader.bootstrap.tally",
+    "out/pdf-reader/reproduction-2026-09-06/loop"
+   ],
+   "exit_code": 0,
+   "log": "tally.txt"
+  }
+ ],
+ "results": {
+  "development": {
+   "pairs": [
+    262,
+    263
+   ],
+   "pages": [
+    1589,
+    1589
+   ],
+   "cells_exact": [
+    483210,
+    483336
+   ],
+   "failing_pairs": [
+    "fcbe0ceb23e61b0f"
+   ]
+  },
+  "holdout": {
+   "pairs": [
+    70,
+    70
+   ],
+   "pages": [
+    409,
+    409
+   ],
+   "cells_exact": [
+    125498,
+    125529
+   ],
+   "failing_pairs": []
+  },
+  "development_summary": {
+   "pairs": 263,
+   "pairs_pass": 262,
+   "pages": 1589,
+   "pages_pass": 1589,
+   "reference_cells": 483336,
+   "exact_cells": 483210,
+   "holdout_included": false
+  },
+  "all_summary": {
+   "pairs": 333,
+   "pairs_pass": 332,
+   "pages": 1998,
+   "pages_pass": 1998,
+   "reference_cells": 608865,
+   "exact_cells": 608708,
+   "holdout_included": true
+  }
+ },
+ "loop_020": {
+  "expected": {
+   "development": {
+    "pairs": [
+     262,
+     263
+    ],
+    "pages": [
+     1589,
+     1589
+    ]
+   },
+   "holdout": {
+    "pairs": [
+     70,
+     70
+    ],
+    "pages": [
+     409,
+     409
+    ]
+   }
+  },
+  "matches": true,
+  "differences": []
+ },
+ "wall_seconds": 156.8,
+ "output": "/Users/bryceharmon/Desktop/corridor-wt/729-reader-package/out/pdf-reader/reproduction-2026-09-06"
+}
