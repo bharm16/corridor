@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -424,6 +424,30 @@ TRUE_PAIRS_ROOT ?= /Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spre
 pdf-reader-reproduce:
 	mkdir -p src/corridor_pdf_reader/tmp
 	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.reproduction $(ARGS)
+
+# The paired-rendition Extraction Measurement (#731): score a named
+# configuration (`frozen-reader`, `drawn-grid`) against the registered
+# Reference Dataset in gold/pdf-pairs/v1 and write a receipt that keeps pair,
+# page and cell measures apart and development and holdout apart. The holdout
+# is spent (ADR-0008): it is read only with --include-holdout, an actor and a
+# reason, and every access is appended to gold/pdf-pairs/v1/holdout-access.jsonl.
+# An explicit experiment outside CI; needs the corpus at TRUE_PAIRS_ROOT and
+# `make pdf-reader-node`:
+#   make pdf-pairs-measure ARGS="--configuration frozen-reader --output out/pdf-pairs/<run>"
+#   make pdf-pairs-measure ARGS="--configuration drawn-grid --output out/pdf-pairs/<run> --keys <key> ..."
+# `--retain baseline|failure-proof|measurement` copies the receipt set into
+# gold/pdf-pairs/v1/receipts/<run>/ and indexes it in gold/pdf-pairs/v1/receipts.json.
+pdf-pairs-measure:
+	mkdir -p src/corridor_pdf_reader/tmp
+	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.measurement $(ARGS)
+
+# The frozen reader through the existing PDF evaluation contract (#731): read
+# the gold/pdf/v1 documents from the content store, write an engine run in the
+# contract's shape, and evaluate it with `corridor.pdf_evaluation_cli`. The
+# holdout family is refused without the ledger flags, as for `make pdf-eval`:
+#   make pdf-reader-gold-eval ARGS="--output out/pdf-reader/gold-v1 --include-holdout --holdout-actor <actor> --holdout-reason <reason>"
+pdf-reader-gold-eval:
+	uv run python -m corridor_pdf_reader.gold_evaluation $(ARGS)
 
 # ---- The Textract adapter (#732) ---------------------------------------------
 # Replay retained Textract responses through the adapter's normalizer, twice

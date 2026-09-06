@@ -1,0 +1,26 @@
+AdobePDFLibrary  pairs 0/1  pages 0/1
+Distiller        pairs 0/1  pages 0/2
+Excel            pairs 0/4  pages 18/33
+Ghostscript      pairs 0/2  pages 5/11
+PrintToPDF       pairs 0/2  pages 0/6
+---- failing classes (pages)
+   23 outside_table/cell_text_outside          [('19132-71-VE-June-2023.pdf', 1, '', 'B I L L I N G S U M M A R Y'), ('19132-71-VE-June-2023.pdf', 1, '', 'Project: Seattle Multimodal Te')]
+   15 unexplained_text/numeric                 [('19132-71-VE-June-2023.pdf', 1, '', '$'), ('19132-71-VE-June-2023.pdf', 1, '', '-')]
+    9 unexplained_text/edge                    [('5007_20-08-Billing.pdf', 3, '', 'BEFORE FINAL PRINTING enter an'), ('5007_20-08-Billing.pdf', 3, '', '¬')]
+    9 unexplained_text/text                    [('PE-40_Change-Order-224-Bil', 1, '', 'provide full and final resolut'), ('PE-40_Change-Order-224-Bil', 1, '', 'for any and all cost and fee a')]
+    7 span_mismatch/wider                      [('19132-71-VE-June-2023.pdf', 12, 'Install Electrical Utility', ''), ('12.2025-Kenco-SOV.pdf', 2, 'ITEM #15 - PASSENGER ONLY ', '')]
+    4 missing_row/outside_table                [('REVISED-McClean-December-S', 5, '(blank)', ''), ('REVISED-McClean-December-S', 5, '0', '')]
+    3 missing_row/absent                       [('REVISED-McClean-December-S', 5, ' $-   ', ''), ('REVISED-McClean-December-S', 5, ' $1,250.00 ', '')]
+    3 missing_cell/outside_table               [('12.2025-Kenco-SOV.pdf', 1, '5', ''), ('12.2025-Kenco-SOV.pdf', 1, '6', '')]
+    2 missing_cell/absent                      [('12.2025-Kenco-SOV.pdf', 1, ' $9,398.95 ', ''), ('GEA_608-ROWEstimate_201705', 1, '*Acquisition Service Cost ', '')]
+---- failing pairs 10
+5 Ghostscrip 85531_1010_Index.pdf b62895f03208009f [1, 2, 3, 4, 5] {'outside_table/cell_text_outside': 605, 'unexplained_text/text': 142} 1214
+5 Excel REVISED-McClean-December-SOV.pdf 1ee4a00b8eb6173b [1, 2, 3, 4, 5] {'outside_table/cell_text_outside': 115, 'unexplained_text/numeric': 50} 72
+4 Excel 19132-71-VE-June-2023.pdf 02753bf7e6549f5a [1, 2, 3, 12] {'outside_table/cell_text_outside': 86, 'unexplained_text/numeric': 6} 98
+4 PrintToPDF Billing-Review-Comments-Disposition-Est-95.pdf 50b23088b99df7c2 [1, 2, 3, 4] {'span_mismatch/wider': 4} 0
+3 Excel 12.2025-Kenco-SOV.pdf 075ad4da3647d7dc [1, 2, 3] {'outside_table/cell_text_outside': 61, 'missing_row/outside_table': 15} 68
+3 Excel 5007_20-08-Billing.pdf 5e979146e9322953 [1, 2, 3] {'outside_table/cell_text_outside': 73, 'unexplained_text/numeric': 8} 86
+2 Distiller status-mobility-fy2018.pdf 9d701a8ad492a6d7 [1, 2] {'outside_table/cell_text_outside': 30, 'unexplained_text/text': 29} 105
+2 PrintToPDF status-mobility-fy2019.pdf 99e3871a86ca9971 [1, 2] {'unexplained_text/text': 33, 'outside_table/cell_text_outside': 22} 101
+1 AdobePDFLi GEA_608-ROWEstimate_20170502.pdf 5d36b973fa9393a8 [1] {'outside_table/cell_text_outside': 30, 'missing_row/outside_table': 25} 31
+1 Ghostscrip PE-40_Change-Order-224-Billing-SOV-As-Agreed-3 fcbe0ceb23e61b0f [1] {'unexplained_text/text': 12, 'unexplained_text/edge': 7} 8

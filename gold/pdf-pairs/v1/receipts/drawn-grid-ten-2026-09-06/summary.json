@@ -1,0 +1,855 @@
+{
+ "pairs": 10,
+ "pairs_pass": 0,
+ "pages": 53,
+ "pages_pass": 23,
+ "reference_cells": 14641,
+ "exact_cells": 12844,
+ "read_errors": {},
+ "by_class": {
+  "uncovered": 1783,
+  "outside_table": 1022,
+  "unexplained_text": 370,
+  "missing_row": 100,
+  "span_mismatch": 15,
+  "value_mismatch": 14,
+  "missing_cell": 9
+ },
+ "by_subclass": {
+  "outside_table/cell_text_outside": 1022,
+  "uncovered/outside_table": 1016,
+  "uncovered/absent": 767,
+  "unexplained_text/text": 217,
+  "unexplained_text/numeric": 112,
+  "missing_row/outside_table": 75,
+  "unexplained_text/edge": 41,
+  "missing_row/absent": 25,
+  "span_mismatch/wider": 15,
+  "value_mismatch/overflow_hashes": 12,
+  "missing_cell/outside_table": 7,
+  "missing_cell/absent": 2,
+  "value_mismatch/clipped_suffix": 1,
+  "value_mismatch/clipped_middle": 1
+ },
+ "pages_with_class": {
+  "outside_table": 23,
+  "unexplained_text": 20,
+  "span_mismatch": 7,
+  "missing_row": 4,
+  "missing_cell": 3,
+  "value_mismatch": 2
+ },
+ "pairs_with_class": {
+  "unexplained_text": 9,
+  "uncovered": 9,
+  "outside_table": 8,
+  "missing_row": 4,
+  "span_mismatch": 3,
+  "missing_cell": 3,
+  "value_mismatch": 2
+ },
+ "by_family": {
+  "AdobePDFLibrary": {
+   "pairs": 1,
+   "pairs_pass": 0,
+   "pages": 1,
+   "pages_pass": 0,
+   "reference_cells": 571,
+   "exact_cells": 540
+  },
+  "Distiller": {
+   "pairs": 1,
+   "pairs_pass": 0,
+   "pages": 2,
+   "pages_pass": 0,
+   "reference_cells": 105,
+   "exact_cells": 0
+  },
+  "Excel": {
+   "pairs": 4,
+   "pairs_pass": 0,
+   "pages": 33,
+   "pages_pass": 18,
+   "reference_cells": 12303,
+   "exact_cells": 11965
+  },
+  "Ghostscript": {
+   "pairs": 2,
+   "pairs_pass": 0,
+   "pages": 11,
+   "pages_pass": 5,
+   "reference_cells": 1345,
+   "exact_cells": 123
+  },
+  "PrintToPDF": {
+   "pairs": 2,
+   "pairs_pass": 0,
+   "pages": 6,
+   "pages_pass": 0,
+   "reference_cells": 317,
+   "exact_cells": 216
+  }
+ },
+ "worst_pairs": [
+  {
+   "key": "b62895f03208009f",
+   "pdf": "85531_1010_Index.pdf",
+   "family": "Ghostscript",
+   "pages": 10,
+   "errors": 818,
+   "uncovered": 1214,
+   "counts": {
+    "outside_table": 605,
+    "unexplained_text": 176,
+    "missing_cell": 1,
+    "missing_row": 36
+   }
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pdf": "REVISED-McClean-December-SOV.pdf",
+   "family": "Excel",
+   "pages": 5,
+   "errors": 204,
+   "uncovered": 72,
+   "counts": {
+    "unexplained_text": 54,
+    "outside_table": 115,
+    "value_mismatch": 12,
+    "missing_row": 23
+   }
+  },
+  {
+   "key": "02753bf7e6549f5a",
+   "pdf": "19132-71-VE-June-2023.pdf",
+   "family": "Excel",
+   "pages": 13,
+   "errors": 95,
+   "uncovered": 98,
+   "counts": {
+    "outside_table": 86,
+    "unexplained_text": 6,
+    "value_mismatch": 2,
+    "span_mismatch": 1
+   }
+  },
+  {
+   "key": "9d701a8ad492a6d7",
+   "pdf": "status-mobility-fy2018.pdf",
+   "family": "Distiller",
+   "pages": 2,
+   "errors": 74,
+   "uncovered": 105,
+   "counts": {
+    "outside_table": 30,
+    "unexplained_text": 44
+   }
+  },
+  {
+   "key": "99e3871a86ca9971",
+   "pdf": "status-mobility-fy2019.pdf",
+   "family": "PrintToPDF",
+   "pages": 2,
+   "errors": 69,
+   "uncovered": 101,
+   "counts": {
+    "outside_table": 22,
+    "unexplained_text": 47
+   }
+  },
+  {
+   "key": "075ad4da3647d7dc",
+   "pdf": "12.2025-Kenco-SOV.pdf",
+   "family": "Excel",
+   "pages": 6,
+   "errors": 101,
+   "uncovered": 68,
+   "counts": {
+    "outside_table": 61,
+    "unexplained_text": 9,
+    "missing_cell": 5,
+    "missing_row": 16,
+    "span_mismatch": 10
+   }
+  },
+  {
+   "key": "5e979146e9322953",
+   "pdf": "5007_20-08-Billing.pdf",
+   "family": "Excel",
+   "pages": 9,
+   "errors": 83,
+   "uncovered": 86,
+   "counts": {
+    "outside_table": 73,
+    "unexplained_text": 10
+   }
+  },
+  {
+   "key": "5d36b973fa9393a8",
+   "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+   "family": "AdobePDFLibrary",
+   "pages": 1,
+   "errors": 61,
+   "uncovered": 31,
+   "counts": {
+    "outside_table": 30,
+    "unexplained_text": 3,
+    "missing_cell": 3,
+    "missing_row": 25
+   }
+  },
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+   "family": "Ghostscript",
+   "pages": 1,
+   "errors": 21,
+   "uncovered": 8,
+   "counts": {
+    "unexplained_text": 21
+   }
+  },
+  {
+   "key": "50b23088b99df7c2",
+   "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+   "family": "PrintToPDF",
+   "pages": 4,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "span_mismatch": 4
+   }
+  }
+ ],
+ "examples": {
+  "outside_table/cell_text_outside": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "B I L L I N G S U M M A R Y"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Project: Seattle Multimodal Terminal at Colman Dock Project \u2022 Seattle, WA"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Contractor: Hoffman-Pacific LLC, A Joint Venture \u2022 H-P Job No. 5290015"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Sub: Valley Electric 1100 Merrill Creek Parkway Everett WA 98203"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Bid Package No."
+   }
+  ],
+  "unexplained_text/numeric": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "-"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "38,556,711.08"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "$"
+   }
+  ],
+  "value_mismatch/clipped_suffix": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 6,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   }
+  ],
+  "value_mismatch/clipped_middle": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 6,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   }
+  ],
+  "span_mismatch/wider": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 398,
+    "c": 7,
+    "i": 25,
+    "j": 6,
+    "ref": "Install Electrical Utility Racks at Entry Building per RFI 1653 and as outlined ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 8,
+    "c": 7,
+    "i": 4,
+    "j": 6,
+    "ref": "ITEM #15 - PASSENGER ONLY FERRY GLAZING                                       $1",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 14,
+    "c": 7,
+    "i": 10,
+    "j": 6,
+    "ref": "ITEM #15 - TERMINAL BUILDING GLAZING                                            ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 22,
+    "c": 7,
+    "i": 18,
+    "j": 6,
+    "ref": "ITEM #15 - OHL GLAZING                                                          ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 28,
+    "c": 7,
+    "i": 24,
+    "j": 6,
+    "ref": "ITEM #15- ELEVATOR GLAZING                                                      ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   }
+  ],
+  "uncovered/outside_table": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 1,
+    "ref": "Project: Seattle Multimodal Terminal at Colman Dock Project \u2022 Seattle, WA.",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 9,
+    "ref": "Bid Package No.",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 15,
+    "ref": "Date:",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 16,
+    "ref": "06/20/23",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 3,
+    "c": 1,
+    "ref": "Contractor: Hoffman-Pacific LLC, A Joint Venture \u2022 H-P Job No. 5290015",
+    "sub": "outside_table"
+   }
+  ],
+  "uncovered/absent": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "Actng Only",
+    "r": 19,
+    "c": 3,
+    "ref": " $-   ",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "Actng Only",
+    "r": 21,
+    "c": 6,
+    "ref": " $38,556,711.08 ",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "Actng Only",
+    "r": 22,
+    "c": 6,
+    "ref": " $119,223.00 ",
+    "sub": "absent"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "sheet": "SOV",
+    "r": 1,
+    "c": 2,
+    "ref": "\u00ac BEFORE FINAL PRINTING enter any digit to remove the green shading in the data ",
+    "sub": "absent"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "sheet": "Actng Only",
+    "r": 19,
+    "c": 3,
+    "ref": " $-   ",
+    "sub": "absent"
+   }
+  ],
+  "missing_cell/outside_table": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 24,
+    "c": 2,
+    "i": 6,
+    "j": null,
+    "ref": "5"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 25,
+    "c": 2,
+    "i": 7,
+    "j": null,
+    "ref": "6"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 26,
+    "c": 2,
+    "i": 8,
+    "j": null,
+    "ref": "7"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 27,
+    "c": 2,
+    "i": 9,
+    "j": null,
+    "ref": "9"
+   },
+   {
+    "pair": "5d36b973fa9393a8",
+    "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "RW",
+    "r": 47,
+    "c": 6,
+    "i": 42,
+    "j": null,
+    "ref": "$2,372,400"
+   }
+  ],
+  "missing_cell/absent": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 25,
+    "c": 3,
+    "i": 7,
+    "j": null,
+    "ref": " $9,398.95 "
+   },
+   {
+    "pair": "5d36b973fa9393a8",
+    "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "RW",
+    "r": 56,
+    "c": 5,
+    "i": 44,
+    "j": null,
+    "ref": "*Acquisition Service Cost Includes the following: \n(per ODOT Cost Estimating Pro"
+   }
+  ],
+  "missing_row/outside_table": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 21,
+    "c": 2,
+    "i": null,
+    "j": null,
+    "ref": "00.074215"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 22,
+    "c": 2,
+    "i": null,
+    "j": null,
+    "ref": "2"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 23,
+    "c": 2,
+    "i": null,
+    "j": null,
+    "ref": "3"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 28,
+    "c": 2,
+    "i": null,
+    "j": null,
+    "ref": "10"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 61,
+    "c": 2,
+    "i": null,
+    "j": null,
+    "ref": "44"
+   }
+  ],
+  "missing_row/absent": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 63,
+    "c": 3,
+    "i": null,
+    "j": null,
+    "ref": " $6,769.36 "
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 23,
+    "c": 3,
+    "i": null,
+    "j": null,
+    "ref": " $-   "
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 25,
+    "c": 3,
+    "i": null,
+    "j": null,
+    "ref": " $1,250.00 "
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 27,
+    "c": 3,
+    "i": null,
+    "j": null,
+    "ref": " $-   "
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 45,
+    "c": 3,
+    "i": null,
+    "j": null,
+    "ref": " $-   "
+   }
+  ],
+  "unexplained_text/edge": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "got": "BEFORE FINAL PRINTING enter any digit to remove the green shading in the data en"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "got": "\u00ac"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 2,
+    "got": "ove the green shading in the data entry areas on the forms."
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 3,
+    "got": "ove the green shading in the data entry areas on the forms."
+   }
+  ],
+  "value_mismatch/overflow_hashes": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 132,
+    "c": 8,
+    "i": 2,
+    "j": 7,
+    "ref": " $9.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 133,
+    "c": 8,
+    "i": 3,
+    "j": 7,
+    "ref": " $10.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 134,
+    "c": 8,
+    "i": 4,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 135,
+    "c": 8,
+    "i": 5,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 136,
+    "c": 8,
+    "i": 6,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   }
+  ],
+  "unexplained_text/text": [
+   {
+    "pair": "5d36b973fa9393a8",
+    "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+    "page": 1,
+    "got": "*Acquisition Service Cost Includes the following:"
+   },
+   {
+    "pair": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "page": 1,
+    "got": "Certificate of Title Fees 147,127,455.47"
+   },
+   {
+    "pair": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "page": 1,
+    "got": "Driver Record Info Fees 69,758,639.89"
+   },
+   {
+    "pair": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "page": 1,
+    "got": "Driver's License Fees 149,707,805.67"
+   },
+   {
+    "pair": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "page": 1,
+    "got": "Vehicle Inspection Fees 95,155,107.25"
+   }
+  ]
+ },
+ "holdout_included": false
+}
