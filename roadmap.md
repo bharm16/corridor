@@ -113,15 +113,16 @@ agent can settle. Everything else on the board is buildable work.
 - **#428 — buyer, budget, sponsor, procurement, and pricing.** This is
   evidence work, not a choice waiting to be made: interviews and a synthesis
   in #486 decide whether there is a pilot to run and what may be claimed.
-- **#461 — PyMuPDF licensing.** The option is chosen: the commercial Artifex
-  licence, because PyMuPDF runs through ingest, page inventory, source
-  segmentation, geometry, verification, rendering, and the review surfaces,
-  and a hurried replacement would carry document-fidelity risk into the pilot.
-  What remains is **procurement** — written terms requested, then signed — so
-  the ticket closes on the signed licence, not on the choice. Until it is
-  held, no live customer PDF processing is enabled, and a first pilot may be
-  scoped to XLSX and other non-PDF sources; #606's later-UCM path is exactly
-  that shape. It gates #489 and #535.
+- **#461 — PyMuPDF licensing.** The disposition changed on 2026-09-05:
+  **replacement, not procurement.** PDF facts come from the paired-rendition
+  reader on pypdfium2 and pypdf, scanned pages from Amazon Textract, and
+  PyMuPDF and Tesseract leave the product (ADR-0094, program #727).
+  Commercial procurement is paused. The ticket stays open as the deployment
+  gate, blocked by #741, and closes by decision only when #741 proves the
+  built image no longer contains the dependency. Until then, no live customer
+  PDF processing is enabled, and a first pilot may be scoped to XLSX and
+  other non-PDF sources; #606's later-UCM path is exactly that shape. It
+  gates #489 and #535.
 - **#601 — the nonproduction AWS account and GitHub deployment identity.**
   Account creation, root MFA, a billing budget, and an OIDC role are acts only
   the account owner can perform. #489 waits on it.
@@ -199,12 +200,14 @@ Complete.
 5. #488 pilot-critical Due Work handlers — **done**: connector polling, delta
    generation, report preparation, retention sweep. Its cursor-on-the-receipt
    design was superseded by ADR-0089 and replaced in #599.
-6. Live-activation gates, all owned by #535: **#461** PyMuPDF commercial
-   licence procurement, #522 customer authorization and data handling, #514
-   customer-environment disposition, and #531 pilot identity, authorization,
-   and deprovisioning. #503 and #557 are **closed by decision** — the identity
-   scope is settled with #531 carrying the pilot half, and the approved
-   model-provider processing posture is recorded.
+6. Live-activation gates, all owned by #535: **#461** the PyMuPDF deployment
+   gate (replacement, not procurement; procurement paused; open until #741
+   proves the built image no longer contains the dependency), #522 customer
+   authorization and data handling, #514 customer-environment disposition,
+   and #531 pilot identity, authorization, and deprovisioning. #503 and #557
+   are **closed by decision** — the identity scope is settled with #531
+   carrying the pilot half, and the approved model-provider processing
+   posture is recorded.
 7. #561 compatibility intake on the partner's real workbook, behind #522's
    customer-authorization half, #487, and #490 only. It does not wait for
    #489 or the accepted-record work.
