@@ -69,7 +69,10 @@ from corridor.models import (
 )
 from corridor.exceptions import RULESET_VERSION, Thresholds
 from corridor.principals import HumanPrincipal
-from corridor.report_release import retrieve_released_external_report
+from corridor.report_release import (
+    reader_independent_text,
+    retrieve_released_external_report,
+)
 from corridor.sh99_admission_acceptance import (
     read_rehearsal_project_state,
 )
@@ -2790,12 +2793,16 @@ def _require_report_pdf_contents(pdf_bytes: bytes, statements) -> str:
             required.add("Date not yet known")
         if statement.plan.milestone_impact:
             required.add(statement.plan.milestone_impact.replace("_", " ").capitalize())
-    normalized_rendered_text = _normalized_visible_text(rendered_text)
+    # Compared with the reader's own separators removed, for the reason
+    # `report_release.reader_independent_text` records: whether an extractor
+    # emits a space between two text-showing operations depends on the font
+    # metrics of the machine reading it, not on the released bytes.
+    comparable_text = reader_independent_text(rendered_text)
     missing_profiles = [
         sorted(
             value
             for value in required | profile
-            if _normalized_visible_text(value) not in normalized_rendered_text
+            if reader_independent_text(value) not in comparable_text
         )
         for profile, _, _ in profiles
     ]
