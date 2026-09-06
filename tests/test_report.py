@@ -1304,7 +1304,9 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
     session,
 ):
     """The fixed PDF must preserve prose, provenance, and logical rows."""
-    import pymupdf
+    from io import BytesIO
+
+    from pypdf import PdfReader
 
     from corridor.export import to_pdf_bytes
     from corridor.work_decisions import assign_internal_owner, set_next_action
@@ -1368,50 +1370,106 @@ def test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together(
     appendix_rows = section(report, "Appendix").rows
     pdf_bytes = to_pdf_bytes(render(report))
 
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-        assert pdf.page_count > 1
-        page_text = [
-            " ".join(page.get_text().split()).replace("- ", "-") for page in pdf
+    pages = PdfReader(BytesIO(pdf_bytes)).pages
+    assert len(pages) > 1
+    page_text = [
+        " ".join(page.extract_text().split()).replace("- ", "-") for page in pages
+    ]
+    compact_page_text = ["".join(text.split()) for text in page_text]
+    all_text = " ".join(page_text)
+
+    for cell in (coordination_action, milestone_at_risk, *exception_whys):
+        published_cell = " ".join(f"{cell.value} {cell.provenance.marker}".split())
+        assert published_cell in all_text
+
+    for row in appendix_rows:
+        source_id = row[1].value
+        source_pages = [
+            page_number
+            for page_number, text in enumerate(compact_page_text)
+            if source_id in text
         ]
-        compact_page_text = ["".join(text.split()) for text in page_text]
-        all_text = " ".join(page_text)
+        assert len(source_pages) == 1
+        row_page = compact_page_text[source_pages[0]]
+        for cell in row:
+            published_cell = "".join(
+                f"{cell.value} {cell.provenance.marker}".split()
+            )
+            assert published_cell in row_page
 
-        for cell in (coordination_action, milestone_at_risk, *exception_whys):
-            published_cell = " ".join(f"{cell.value} {cell.provenance.marker}".split())
-            assert published_cell in all_text
-
-        for row in appendix_rows:
-            source_id = row[1].value
-            source_pages = [
-                page_number
-                for page_number, text in enumerate(compact_page_text)
-                if source_id in text
-            ]
-            assert len(source_pages) == 1
-            row_page = compact_page_text[source_pages[0]]
-            for cell in row:
-                published_cell = "".join(
-                    f"{cell.value} {cell.provenance.marker}".split()
+    report_margin_points = 1.5 * 72 / 2.54
+    for page in pages:
+        assert float(page.mediabox.width) == pytest.approx(595.276, abs=0.1)
+        assert float(page.mediabox.height) == pytest.approx(841.89, abs=0.1)
+    for words in _pdf_word_boxes(pdf_bytes):
+        review_headers = [box for box, text in words if text == "Documentation"]
+        requirement_headers = [box for box, text in words if text == "required"]
+        for review_header in review_headers:
+            for requirement_header in requirement_headers:
+                assert not _boxes_intersect(review_header, requirement_header), (
+                    "documentation-review and required-document headings overlap"
                 )
-                assert published_cell in row_page
+        for (x0, _y0, x1, _y1), _text in words:
+            assert x0 >= report_margin_points - 1
+            assert x1 <= 595.276 - report_margin_points + 1
 
-        report_margin_points = 1.5 * 72 / 2.54
-        for page in pdf:
-            assert page.rect.width == pytest.approx(595.276, abs=0.1)
-            assert page.rect.height == pytest.approx(841.89, abs=0.1)
-            words = page.get_text("words")
-            review_headers = [word for word in words if word[4] == "Documentation"]
-            requirement_headers = [word for word in words if word[4] == "required"]
-            for review_header in review_headers:
-                for requirement_header in requirement_headers:
-                    assert not pymupdf.Rect(review_header[:4]).intersects(
-                        pymupdf.Rect(requirement_header[:4])
-                    ), "documentation-review and required-document headings overlap"
-            for x0, _y0, x1, _y1, text, *_rest in page.get_text("blocks"):
-                if not text.strip():
-                    continue
-                assert x0 >= report_margin_points - 1
-                assert x1 <= page.rect.width - report_margin_points + 1
+
+def _pdf_word_boxes(pdf_bytes: bytes) -> list[list[tuple[tuple[float, float, float, float], str]]]:
+    """Each page's words with their boxes, top-left points, from PDFium's glyphs.
+
+    Loose glyph boxes span the font's ascent and descent and the glyph's
+    advance, as PyMuPDF's word boxes did, so two headings that share a line
+    are seen to touch when their advances meet.
+    """
+    import pypdfium2 as pdfium
+
+    from corridor_pdf_reader.execution import pdfium_entry
+
+    result = []
+    with pdfium_entry():
+        pdf = pdfium.PdfDocument(pdf_bytes)
+        try:
+            for index in range(len(pdf)):
+                page = pdf[index]
+                _left, _bottom, _right, top = page.get_bbox()
+                textpage = page.get_textpage()
+                words: list[tuple[tuple[float, float, float, float], str]] = []
+                current: list | None = None
+                for position, character in enumerate(textpage.get_text_range()):
+                    if character.isspace():
+                        if current is not None:
+                            words.append((tuple(current[:4]), current[4]))
+                            current = None
+                        continue
+                    left, bottom, right, glyph_top = textpage.get_charbox(position, loose=True)
+                    box = (left, top - glyph_top, right, top - bottom)
+                    if current is None:
+                        current = [*box, character]
+                    else:
+                        current = [
+                            min(current[0], box[0]),
+                            min(current[1], box[1]),
+                            max(current[2], box[2]),
+                            max(current[3], box[3]),
+                            current[4] + character,
+                        ]
+                if current is not None:
+                    words.append((tuple(current[:4]), current[4]))
+                textpage.close()
+                page.close()
+                result.append(words)
+        finally:
+            pdf.close()
+    return result
+
+
+def _boxes_intersect(first, second) -> bool:
+    return not (
+        first[2] <= second[0]
+        or second[2] <= first[0]
+        or first[3] <= second[1]
+        or second[3] <= first[1]
+    )
 
 
 def test_a_decision_cell_over_no_receipts_is_bare(session):
@@ -1569,12 +1627,14 @@ def test_report_publishes_open_unknown_scope_party_commitments_with_their_plans(
         entry["current_event_id"]
         for entry in captured["external_party_commitments"].values()
     } == {january.id, due_soon.id, changed.id}
+    from io import BytesIO
+
+    from pypdf import PdfReader
+
     from corridor.export import to_pdf_bytes
-    import pymupdf
 
     pdf_bytes = to_pdf_bytes(render(report))
-    with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-        pdf_text = "\n".join(page.get_text() for page in pdf)
+    pdf_text = "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
     normalized_pdf_text = " ".join(pdf_text.split())
     for expected in (
         "Statement type",

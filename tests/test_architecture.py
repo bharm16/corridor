@@ -648,7 +648,6 @@ ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tests/test_m8_acceptance_capture.py", ("pymupdf",)),
     ("tests/test_page_inventory.py", ("pymupdf",)),
     ("tests/test_render_retention.py", ("tesseract",)),
-    ("tests/test_report.py", ("pymupdf",)),
     ("tests/test_token_layers.py", ("pymupdf", "tesseract")),
     ("tests/test_unreadable_cells.py", ("tesseract",)),
     ("workers/render/render_worker.py", ("pymupdf",)),
