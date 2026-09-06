@@ -11,7 +11,6 @@ import os
 from pathlib import Path
 
 from openpyxl import Workbook
-import pymupdf
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
@@ -24,6 +23,8 @@ from corridor.source_segments import (
     SourceSegmentDigestMismatch,
     dereference_source_segment,
 )
+
+from pdf_fixture_support import PdfFixture
 
 REAL_WORKBOOK_SHA256 = (
     "3cd94fea058a3e61ac95ab1efd566e684e146f64ce6f25048d93cf9db55f83ba"
@@ -107,17 +108,15 @@ def _ingest(session, project, workbook, tmp_path):
 
 def _minutes_pdf(tmp_path):
     path = tmp_path / "coordination-minutes.pdf"
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            "Meeting notes and attendance.\n"
-            "Action Items:\n"
-            f"1. {MINUTES_STATEMENT}\n"
-            "Meeting Notes",
-        )
-        pdf.save(path)
-    return path
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        "Meeting notes and attendance.\n"
+        "Action Items:\n"
+        f"1. {MINUTES_STATEMENT}\n"
+        "Meeting Notes",
+    )
+    return fixture.save(path)
 
 
 def test_workbook_ingest_appends_one_exact_segment_per_populated_cell(

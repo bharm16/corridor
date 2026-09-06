@@ -4,7 +4,6 @@ from datetime import date
 import os
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -49,6 +48,8 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import _run_inputs
 
+from pdf_fixture_support import PdfFixture
+
 
 STATEMENT = "Equistar will submit the signed exhibit by March 2025."
 REAL_MINUTES_SHA256 = (
@@ -80,18 +81,16 @@ class StubClient:
 
 def _minutes_pdf(tmp_path, *, name="equistar-minutes.pdf", statement=STATEMENT):
     path = tmp_path / name
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text(
-            (72, 72),
-            ("Registered coordination context.\n" * 8)
-            +
-            "Action Items:\n"
-            f"1. {statement}\n"
-            "Meeting Notes",
-        )
-        pdf.save(path)
-    return path
+    fixture = PdfFixture()
+    fixture.add_page().text(
+        (72, 72),
+        ("Registered coordination context.\n" * 8)
+        +
+        "Action Items:\n"
+        f"1. {statement}\n"
+        "Meeting Notes",
+    )
+    return fixture.save(path)
 
 
 def test_scoped_append_creates_pending_statement_wording_with_role_tagged_spans(
