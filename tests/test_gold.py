@@ -13,12 +13,13 @@ flagged rather than dropped, and the caveat must survive in the report.
 
 import hashlib
 import json
-import pymupdf
 import pytest
 
 from corridor.db import Session, engine
 from corridor.gold import WORKSHEET_COLUMNS, prepare, render, worksheet
 from corridor.models import Candidate, DocPage, Document, Project
+
+from pdf_fixture_support import PdfFixture, TextOverflow
 
 HEADERS = ["Owner", "Conflict ID", "Facility Type", "Location", "Notes"]
 ROWS = [
@@ -32,9 +33,7 @@ ROWS = [
 ]
 
 
-def write_pdf(path, rows):
-    doc = pymupdf.open()
-    page = doc.new_page(width=792, height=612)
+def draw_table(page, rows):
     # Width adapts to the column count: a fixed 140pt puts an 8-column
     # WSDOT-shaped header off the page edge, and geometry cannot read
     # cells that were never drawn.
@@ -42,22 +41,27 @@ def write_pdf(path, rows):
     width = min(140, (792 - 2 * x0) // max(1, len(rows[0])))
     for r, row in enumerate(rows):
         for c, cell in enumerate(row):
-            rect = pymupdf.Rect(
-                x0 + c * width, y0 + r * height,
-                x0 + (c + 1) * width, y0 + (r + 1) * height,
-            )
-            page.draw_rect(rect, color=(0, 0, 0), width=0.6)
-            # Shrink until it fits. `insert_textbox` returns a negative
-            # number and renders NOTHING when the text overflows, which
-            # made the spanning band read as an empty row and the anchor
-            # look broken when the fixture was at fault.
-            box = rect + (3, 5, -3, -3)
+            left, top = x0 + c * width, y0 + r * height
+            page.rect((left, top, left + width, top + height), width=0.6)
+            # Shrink until it fits. A text box that overflows places NOTHING,
+            # which made the spanning band read as an empty row and the
+            # anchor look broken when the fixture was at fault.
+            box = (left + 3, top + 5, left + width - 3, top + height - 3)
             for size in (7, 6, 5, 4, 3):
-                if page.insert_textbox(box, cell, fontsize=size) >= 0:
-                    break
-    doc.save(path)
-    doc.close()
-    return path
+                try:
+                    page.text_box(box, cell, fontsize=size)
+                except TextOverflow:
+                    continue
+                break
+
+
+def write_pdf(path, pages_rows):
+    """A real PDF, one ruled table a page; the fixture declares each page's text."""
+    fixture = PdfFixture()
+    for rows in pages_rows:
+        draw_table(fixture.add_page(width=792, height=612), rows)
+    fixture.save(path)
+    return fixture
 
 
 @pytest.fixture
@@ -80,7 +84,8 @@ def project(session):
 
 
 def make_document(session, project, tmp_path, rows=None):
-    pdf = write_pdf(tmp_path / "m.pdf", rows or ROWS)
+    pdf = tmp_path / "m.pdf"
+    fixture = write_pdf(pdf, [rows or ROWS])
     doc = Document(
         project_id=project.id,
         sha256="g" * 64,
@@ -91,11 +96,9 @@ def make_document(session, project, tmp_path, rows=None):
     )
     session.add(doc)
     session.flush()
-    with pymupdf.open(pdf) as opened:
-        text = opened[0].get_text()
     session.add(
         DocPage(
-            document_id=doc.id, page_no=1, text=text,
+            document_id=doc.id, page_no=1, text=fixture.pages[0].expected_text,
             image_path=str(tmp_path / "p1.png"), text_source="text_layer",
         )
     )
@@ -546,14 +549,8 @@ def test_a_band_without_readable_marks_still_refuses(session, project, tmp_path)
 
 def make_multipage(session, project, tmp_path, pages_rows, sha="mp"):
     """A Document of N real pages, so continuation pages are real."""
-    merged = pymupdf.open()
-    for i, rows in enumerate(pages_rows):
-        one = write_pdf(tmp_path / f"{sha}-{i}.pdf", rows)
-        with pymupdf.open(one) as opened:
-            merged.insert_pdf(opened)
     path = tmp_path / f"{sha}.pdf"
-    merged.save(path)
-    merged.close()
+    fixture = write_pdf(path, pages_rows)
 
     doc = Document(
         project_id=project.id, sha256=sha[0] * 64, filename=f"{sha}.pdf",
@@ -561,16 +558,15 @@ def make_multipage(session, project, tmp_path, pages_rows, sha="mp"):
     )
     session.add(doc)
     session.flush()
-    with pymupdf.open(path) as opened:
-        for i in range(len(pages_rows)):
-            session.add(
-                DocPage(
-                    document_id=doc.id, page_no=i + 1,
-                    text=opened[i].get_text(),
-                    image_path=str(tmp_path / f"{sha}-{i}.png"),
-                    text_source="text_layer",
-                )
+    for i, page in enumerate(fixture.pages):
+        session.add(
+            DocPage(
+                document_id=doc.id, page_no=i + 1,
+                text=page.expected_text,
+                image_path=str(tmp_path / f"{sha}-{i}.png"),
+                text_source="text_layer",
             )
+        )
     session.flush()
     doc._pdf_path = str(path)
     return doc
