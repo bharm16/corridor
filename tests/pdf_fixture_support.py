@@ -360,10 +360,17 @@ def _split_keeping_spaces(text: str) -> list[str]:
 
 
 class PdfFixture:
-    """A document of ``PageFixture`` pages and the bytes that encode them."""
+    """A document of ``PageFixture`` pages and the bytes that encode them.
 
-    def __init__(self) -> None:
+    The bytes are a pure function of what was drawn, so two fixtures with the
+    same content are the same file and the same digest. A fixture that must
+    be a distinct document despite identical content - five revisions of one
+    matrix - says so with ``identity``, which becomes the trailer's ``/ID``.
+    """
+
+    def __init__(self, *, identity: str | None = None) -> None:
         self.pages: list[PageFixture] = []
+        self.identity = identity
 
     def add_page(
         self,
@@ -447,9 +454,12 @@ class PdfFixture:
         out.write(b"0000000000 65535 f \n")
         for offset in offsets:
             out.write(f"{offset:010d} 00000 n \n".encode())
+        trailer = f"/Size {len(objects) + 1} /Root 1 0 R"
+        if self.identity is not None:
+            digest = sha256(self.identity.encode("utf-8")).hexdigest()[:32].upper()
+            trailer += f" /ID [<{digest}> <{digest}>]"
         out.write(
-            f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\n"
-            f"startxref\n{startxref}\n%%EOF\n".encode()
+            f"trailer\n<< {trailer} >>\nstartxref\n{startxref}\n%%EOF\n".encode()
         )
         return out.getvalue()
 

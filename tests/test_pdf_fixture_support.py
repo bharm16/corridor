@@ -118,6 +118,24 @@ def test_save_writes_exactly_the_bytes_tobytes_returns(tmp_path):
     assert path.read_bytes() == fixture.tobytes()
 
 
+def test_a_document_identity_distinguishes_files_with_identical_content():
+    def build(identity):
+        fixture = PdfFixture(identity=identity)
+        fixture.add_page().text((36, 56), "SEED-1 captured source row")
+        return fixture.tobytes()
+
+    plain = build(None)
+    first, again, second = build("ucm-2025-06-20"), build("ucm-2025-06-20"), build("ucm-2025-07-22")
+
+    assert plain == build(None), "the bytes are a pure function of the content"
+    assert first == again, "the same identity and content are the same bytes"
+    assert len({plain, first, second}) == 3
+    assert b"/ID" not in _trailer(plain)
+    digest = sha256(b"ucm-2025-06-20").hexdigest()[:32].upper()
+    assert f"/ID [<{digest}> <{digest}>]".encode() in _trailer(first)
+    assert _objects(first) == _objects(plain), "identity lives in the trailer alone"
+
+
 # --- Pages -------------------------------------------------------------------
 
 

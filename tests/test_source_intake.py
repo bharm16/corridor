@@ -15,7 +15,6 @@ import hashlib
 from datetime import datetime, timezone
 from uuid import uuid4
 
-import pymupdf
 import pytest
 from sqlalchemy import func, select
 
@@ -55,6 +54,8 @@ from corridor.source_intake import (
     validate_and_stage,
 )
 
+from pdf_fixture_support import PdfFixture
+
 PRINCIPAL = HumanPrincipal("local:uploader")
 PROMPT_VERSION = "matrix_v1"
 SCHEMA_VERSION = "matrix_candidate_shape_v1"
@@ -65,16 +66,14 @@ EXTRACTOR_IDENTITY = "deployed-matrix-v1"
 def _matrix_pdf(marker: str = "AT&T Texas (SWBT)") -> bytes:
     """A synthetic matrix PDF. Exercises the pipeline only, never a quality claim."""
 
-    doc = pymupdf.open()
-    page = doc.new_page()
-    page.insert_text((72, 100), "Utility Conflict Matrix — segment 3C2")
-    page.insert_text(
+    fixture = PdfFixture()
+    page = fixture.add_page()
+    page.text((72, 100), "Utility Conflict Matrix — segment 3C2")
+    page.text(
         (72, 130),
         f"FOC1-1  {marker}  Telecom  underground fiber  STA 1149+00 to 1153+17",
     )
-    body = doc.tobytes()
-    doc.close()
-    return body
+    return fixture.tobytes()
 
 
 @pytest.fixture

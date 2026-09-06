@@ -17,7 +17,6 @@ from uuid import uuid4
 import zipfile
 
 import httpx
-import pymupdf
 import pytest
 from sqlalchemy import func, select
 
@@ -60,6 +59,8 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 
+from pdf_fixture_support import PdfFixture
+
 PRINCIPAL = HumanPrincipal("local:operator")
 LOCATION = "txdot-loc"
 HOST = "docs.example.gov"
@@ -96,13 +97,11 @@ class AdvancingClock:
 
 
 def _pdf(marker: str = "Utility Conflict Matrix") -> bytes:
-    doc = pymupdf.open()
-    page = doc.new_page()
-    page.insert_text((72, 100), marker)
-    page.insert_text((72, 130), "FOC1-1  AT&T Texas  Telecom  STA 1149+00 to 1153+17")
-    body = doc.tobytes()
-    doc.close()
-    return body
+    fixture = PdfFixture()
+    page = fixture.add_page()
+    page.text((72, 100), marker)
+    page.text((72, 130), "FOC1-1  AT&T Texas  Telecom  STA 1149+00 to 1153+17")
+    return fixture.tobytes()
 
 
 def _zip(members: dict[str, bytes]) -> bytes:

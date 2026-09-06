@@ -14,7 +14,6 @@ from email.message import EmailMessage
 from hashlib import sha256
 from uuid import uuid4
 
-import pymupdf
 import pytest
 from sqlalchemy import func, select, text
 
@@ -32,6 +31,8 @@ from corridor.models import (
     PushIntakeCredential,
 )
 from corridor.object_storage import content_store
+
+from pdf_fixture_support import PdfFixture
 
 
 ALPHA_ALIAS = "intake+alpha-a1b2c3@corridor.test"
@@ -107,10 +108,9 @@ def push(session, alias: str, payload: bytes, *, delivery_id: str | None = None)
 
 
 def pdf_bytes(text: str) -> bytes:
-    document = pymupdf.open()
-    page = document.new_page()
-    page.insert_text((72, 72), text)
-    return document.tobytes()
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 72), text)
+    return fixture.tobytes()
 
 
 def dependency(session, project: Project, ref_code: str) -> Dependency:

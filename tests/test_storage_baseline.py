@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import date
 from hashlib import sha256
 
-import pymupdf
 import pytest
 from sqlalchemy import text
 
@@ -23,6 +22,8 @@ from corridor.models import (
 )
 from corridor.storage_baseline import BaselineSelection, build_storage_baseline
 
+from pdf_fixture_support import PdfFixture
+
 
 @pytest.fixture
 def session():
@@ -36,10 +37,9 @@ def session():
 
 
 def _pdf_bytes(text: str) -> bytes:
-    with pymupdf.open() as pdf:
-        page = pdf.new_page()
-        page.insert_text((72, 72), text)
-        return pdf.tobytes()
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 72), text)
+    return fixture.tobytes()
 
 
 def _seed_representative_state(session, tmp_path):

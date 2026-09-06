@@ -61,6 +61,7 @@ from later_revision_support import (
     deliver,
     workbook_bytes,
 )
+from pdf_fixture_support import PdfFixture
 
 
 @pytest.fixture
@@ -149,12 +150,9 @@ def _message(
 
 
 def _pdf(text: str) -> bytes:
-    import pymupdf
-
-    document = pymupdf.open()
-    page = document.new_page()
-    page.insert_text((72, 72), text)
-    return document.tobytes()
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 72), text)
+    return fixture.tobytes()
 
 
 # --- the paths that hold a proven delivery ----------------------------------
