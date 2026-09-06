@@ -207,6 +207,7 @@ class PdfiumExecutor:
         )
         process.start()
         sender.close()
+        finished = False
         try:
             if not receiver.poll(self.limits.wall_seconds):
                 process.kill()
@@ -218,13 +219,14 @@ class PdfiumExecutor:
                 outcome = receiver.recv()
             except EOFError:
                 code = _finish(process)
+                finished = True
                 raise PdfiumProcessDied(
                     "PdfiumProcessDied",
                     f"reader process ended without a result (exit code {code})",
                 ) from None
         finally:
             receiver.close()
-            if not getattr(process, "_closed", False):
+            if not finished:
                 _finish(process)
         if outcome[0] == "ok":
             return outcome[1]
