@@ -118,7 +118,6 @@ def compare_keys(built: Path, retained_manifest: Path, keys: list[str]) -> dict[
         for entry in json.loads(retained_manifest.read_text(encoding="utf-8"))["entries"]
     }
     identical: list[str] = []
-    equal_content: list[str] = []
     different: list[str] = []
     absent: list[str] = []
     for key in keys:
@@ -135,10 +134,13 @@ def compare_keys(built: Path, retained_manifest: Path, keys: list[str]) -> dict[
         else:
             different.append(key)
     return {
-        "retained_manifest": str(retained_manifest.relative_to(PACKAGE_ROOT)),
+        "retained_manifest": (
+            str(retained_manifest.relative_to(PACKAGE_ROOT))
+            if retained_manifest.is_relative_to(PACKAGE_ROOT)
+            else str(retained_manifest)
+        ),
         "keys": len(keys),
         "identical_bytes": len(identical),
-        "equal_content_only": equal_content,
         "different": different,
         "absent": absent,
     }
@@ -412,7 +414,7 @@ def main(argv: list[str] | None = None) -> int:
         "output": str(args.output.resolve()),
     }
     (args.output / "receipt.json").write_text(json.dumps(receipt, indent=1) + "\n")
-    print(json.dumps({"development": development_counts, "holdout": holdout_counts, "loop_020": receipt["loop_020"], "keys": {k: v for k, v in keys_comparison.items() if k != "equal_content_only"}, "wall_seconds": receipt["wall_seconds"]}, indent=1))
+    print(json.dumps({"development": development_counts, "holdout": holdout_counts, "loop_020": receipt["loop_020"], "keys": keys_comparison, "wall_seconds": receipt["wall_seconds"]}, indent=1))
     if args.retain:
         target = retain(args.output, receipt)
         print(f"retained in {target}; holdout access appended to {LOOP_LOG}")
