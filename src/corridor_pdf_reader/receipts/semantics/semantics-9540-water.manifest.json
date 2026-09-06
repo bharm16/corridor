@@ -1,0 +1,18 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-water",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 2,
+ "bytes": 429958,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "eb8649418cb622c2beb1718c782f161390fbbb931d23d31cbc223d7f3e265590",
+   "bytes": 41922
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "2e3c463b43ac476cdd5c6b47f4b6e95fa2f73ad18a7ccaafddb2acfa3ea30ed3",
+   "bytes": 388036
+  }
+ ]
+}

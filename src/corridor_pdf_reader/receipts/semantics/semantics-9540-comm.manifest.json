@@ -1,0 +1,28 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-comm",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 4,
+ "bytes": 1275553,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "e4e81e993306895914ccba9258a40e12914e4175caec60ac42d9d54081c8322e",
+   "bytes": 119313
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "ebd1907a95ac6c40485972f7b2ea1f5d6bf0bfc93e7771b7dc69e96920dd0e9d",
+   "bytes": 431604
+  },
+  {
+   "path": "page-2.png",
+   "sha256": "a3670abb7069ee43cca32b9700a10bd6a0526d9314cf6e76c1b6c035c3a79fac",
+   "bytes": 441236
+  },
+  {
+   "path": "page-3.png",
+   "sha256": "211d9bf427587e21e4c6ddffbe01483b31fa2a41a2c85c1e47d0ea346dbae4e9",
+   "bytes": 283400
+  }
+ ]
+}

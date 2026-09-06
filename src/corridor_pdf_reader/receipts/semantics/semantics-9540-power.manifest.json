@@ -1,0 +1,23 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-power",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 3,
+ "bytes": 648912,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "1f7aa75d81f8479e14fb9849902095cb4031ec3758536b2693c1b1a3e39660e0",
+   "bytes": 58037
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "64161d1c7278b3a92153e44da4061cdb7a1c0dac9d890c2d0bcde87dd5fbcfa9",
+   "bytes": 397838
+  },
+  {
+   "path": "page-2.png",
+   "sha256": "f4f96941d854e840aa94187c3632ba04402d21c2c7d400c79b33170614cf2d9f",
+   "bytes": 193037
+  }
+ ]
+}

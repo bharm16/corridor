@@ -1,0 +1,68 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results/semantics-9424-textract-A",
+ "not_committed": "document.json and page renders of the WSDOT 9424 semantics check through Textract pages (TEXTRACT-RESULTS.md); digests only",
+ "files": 12,
+ "bytes": 2505394,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "4cd0401575a1e6818d8518dd4941dbd3199ab95700d002512be3c3a2b9a2488c",
+   "bytes": 278984
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "02f1293616de54a7632d39812e75965d7344f6ca063bf64bc102806f1991fcd3",
+   "bytes": 214824
+  },
+  {
+   "path": "page-10.png",
+   "sha256": "88223f544216c1b8dacb5199c61aa300f56e7c79869df9cf22f7998ca03b8bb4",
+   "bytes": 227353
+  },
+  {
+   "path": "page-11.png",
+   "sha256": "d4824c5114ae0c97cf41fa888f150aad3c995487d7a90532eab47dcb757664ef",
+   "bytes": 99842
+  },
+  {
+   "path": "page-2.png",
+   "sha256": "3cabbd5720af2d8820b722c60e99d535a533309ff98eb32d7b3384cd035439dd",
+   "bytes": 196524
+  },
+  {
+   "path": "page-3.png",
+   "sha256": "8d98e0eb7421621ac4e6c042e0a4088b7c2e58e5458ed6d6d34519a5a990dc28",
+   "bytes": 262204
+  },
+  {
+   "path": "page-4.png",
+   "sha256": "dbbdbbbb868004b2bc03bddd456ccdf4ffbb3660edfc7900dec9b66946c578c2",
+   "bytes": 208566
+  },
+  {
+   "path": "page-5.png",
+   "sha256": "eb0b5181971f84f082358cfd7c1a431408b1018881f0b47348577347d1bbbbfe",
+   "bytes": 197757
+  },
+  {
+   "path": "page-6.png",
+   "sha256": "26f6627f95de9663cc03e8cbc68b7abb394c8cfd0dc683ee92ba0b8be43e0fac",
+   "bytes": 186034
+  },
+  {
+   "path": "page-7.png",
+   "sha256": "d656c14b6ba0eb55cdb4ccd8988ac3f1528e3ce6af4ed57f1ff28559806508c4",
+   "bytes": 201467
+  },
+  {
+   "path": "page-8.png",
+   "sha256": "49be256c713b6a136d5a4723134c4d6d060e4853cbc137b89476d5915f0724d3",
+   "bytes": 239166
+  },
+  {
+   "path": "page-9.png",
+   "sha256": "d02e8c7e7528601461f2d74a3b3c1044844b5b12d9df6427f75e4f5e8da3949b",
+   "bytes": 192673
+  }
+ ]
+}

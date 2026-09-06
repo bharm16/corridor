@@ -1,0 +1,42 @@
+{
+ "run": "syn-003",
+ "what": "The loop-020 reader with the final scorer on the synthetic set (bootstrap/LOOP-LOG.md, 'Synthetic set').",
+ "source_commit": "c39363e26c2726b61c4e707f589093c67173e538",
+ "reader": {
+  "engine": "tagged",
+  "dpi": 36,
+  "retain_images": false,
+  "driver": "bootstrap.read"
+ },
+ "engines": {
+  "pypdfium2": "5.13.0",
+  "pypdf": "6.17.0",
+  "pdf-oxide": "0.3.77",
+  "pillow": "12.3.0"
+ },
+ "corpus": {
+  "root": "TRUE_PAIRS_ROOT=/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact/synthetic/out TRUE_PAIRS_SPLIT=bootstrap/pairs-synthetic.json",
+  "note": "LibreOffice-rendered twins of the exact pairs"
+ },
+ "split": {
+  "file": "bootstrap/pairs-synthetic.json",
+  "seed": 720
+ },
+ "reference": {
+  "name": "syn-reference-v1",
+  "manifest": "../syn-reference-v1.manifest.json"
+ },
+ "read_seconds": 147.3,
+ "documents_read": 351,
+ "holdout_included": false,
+ "results": {
+  "pairs": "261 / 281",
+  "pages": "1592 / 1627",
+  "cells_exact": "535687 / 536967"
+ },
+ "reads_not_committed": {
+  "files": 351,
+  "bytes": 91430027,
+  "manifest": "reads.manifest.json"
+ }
+}

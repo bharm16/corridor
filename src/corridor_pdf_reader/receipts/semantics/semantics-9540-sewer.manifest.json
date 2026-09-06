@@ -1,0 +1,18 @@
+{
+ "retained_at": "/Users/bryceharmon/Desktop/pdf-reader-comparison/results/semantics-9540-sewer",
+ "not_committed": "document.json (the model's structure answers, the checked reading, the listing) and page renders; digests only",
+ "files": 2,
+ "bytes": 362623,
+ "entries": [
+  {
+   "path": "document.json",
+   "sha256": "1b1e72f9744b227c15d6c7cf26d3cb2564f659aaf289a1cfd0dd23eeb6de235b",
+   "bytes": 35830
+  },
+  {
+   "path": "page-1.png",
+   "sha256": "eafe4e7e121019c7e8daab65e823381b3ea8e5886555c2c0567d3a9ca78d400e",
+   "bytes": 326793
+  }
+ ]
+}

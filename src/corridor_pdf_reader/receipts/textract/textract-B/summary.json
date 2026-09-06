@@ -1,0 +1,1295 @@
+{
+ "pairs": 10,
+ "pairs_pass": 0,
+ "pages": 53,
+ "pages_pass": 7,
+ "reference_cells": 14641,
+ "exact_cells": 13450,
+ "read_errors": {},
+ "by_class": {
+  "uncovered": 1171,
+  "value_mismatch": 923,
+  "unexplained_text": 161,
+  "outside_table": 142,
+  "span_mismatch": 23,
+  "missing_cell": 4,
+  "missing_value": 3,
+  "merged_cells": 3,
+  "prose_row": 2,
+  "extra_value": 1,
+  "merged_rows": 1
+ },
+ "by_subclass": {
+  "uncovered/value_mismatch": 898,
+  "value_mismatch/different": 726,
+  "outside_table/cell_text_outside": 142,
+  "uncovered/outside_table": 139,
+  "value_mismatch/format_only": 137,
+  "uncovered/absent": 134,
+  "unexplained_text/edge": 77,
+  "unexplained_text/text": 55,
+  "value_mismatch/unicode_variant": 34,
+  "unexplained_text/numeric": 29,
+  "span_mismatch/wider": 23,
+  "value_mismatch/overflow_hashes": 12,
+  "value_mismatch/clipped_prefix": 4,
+  "value_mismatch/reader_has_more": 4,
+  "missing_cell/absent": 4,
+  "missing_value/outside_table": 3,
+  "value_mismatch/clipped_edge": 3,
+  "value_mismatch/clipped_suffix": 2,
+  "prose_row/outside_workbook": 2,
+  "merged_cells/text_intact": 2,
+  "value_mismatch/clipped_middle": 1,
+  "merged_cells/text_differs": 1,
+  "extra_value/not_in_workbook": 1,
+  "merged_rows/text_intact": 1
+ },
+ "pages_with_class": {
+  "value_mismatch": 38,
+  "unexplained_text": 22,
+  "outside_table": 18,
+  "span_mismatch": 14,
+  "merged_cells": 3,
+  "prose_row": 2,
+  "missing_value": 2,
+  "extra_value": 1,
+  "merged_rows": 1,
+  "missing_cell": 1
+ },
+ "pairs_with_class": {
+  "uncovered": 10,
+  "unexplained_text": 9,
+  "value_mismatch": 9,
+  "outside_table": 9,
+  "span_mismatch": 8,
+  "prose_row": 2,
+  "merged_cells": 1,
+  "missing_value": 1,
+  "extra_value": 1,
+  "merged_rows": 1,
+  "missing_cell": 1
+ },
+ "by_family": {
+  "AdobePDFLibrary": {
+   "pairs": 1,
+   "pairs_pass": 0,
+   "pages": 1,
+   "pages_pass": 0,
+   "reference_cells": 571,
+   "exact_cells": 556
+  },
+  "Distiller": {
+   "pairs": 1,
+   "pairs_pass": 0,
+   "pages": 2,
+   "pages_pass": 0,
+   "reference_cells": 105,
+   "exact_cells": 67
+  },
+  "Excel": {
+   "pairs": 4,
+   "pairs_pass": 0,
+   "pages": 33,
+   "pages_pass": 3,
+   "reference_cells": 12303,
+   "exact_cells": 11816
+  },
+  "Ghostscript": {
+   "pairs": 2,
+   "pairs_pass": 0,
+   "pages": 11,
+   "pages_pass": 4,
+   "reference_cells": 1345,
+   "exact_cells": 749
+  },
+  "PrintToPDF": {
+   "pairs": 2,
+   "pairs_pass": 0,
+   "pages": 6,
+   "pages_pass": 0,
+   "reference_cells": 317,
+   "exact_cells": 262
+  }
+ },
+ "worst_pairs": [
+  {
+   "key": "b62895f03208009f",
+   "pdf": "85531_1010_Index.pdf",
+   "family": "Ghostscript",
+   "pages": 10,
+   "errors": 588,
+   "uncovered": 584,
+   "counts": {
+    "outside_table": 20,
+    "value_mismatch": 566,
+    "unexplained_text": 2
+   }
+  },
+  {
+   "key": "5e979146e9322953",
+   "pdf": "5007_20-08-Billing.pdf",
+   "family": "Excel",
+   "pages": 9,
+   "errors": 223,
+   "uncovered": 211,
+   "counts": {
+    "unexplained_text": 20,
+    "outside_table": 13,
+    "value_mismatch": 183,
+    "extra_value": 1,
+    "merged_rows": 1,
+    "missing_cell": 4,
+    "span_mismatch": 1
+   }
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pdf": "REVISED-McClean-December-SOV.pdf",
+   "family": "Excel",
+   "pages": 5,
+   "errors": 147,
+   "uncovered": 73,
+   "counts": {
+    "unexplained_text": 56,
+    "outside_table": 40,
+    "missing_value": 3,
+    "merged_cells": 3,
+    "value_mismatch": 42,
+    "span_mismatch": 2,
+    "prose_row": 1
+   }
+  },
+  {
+   "key": "075ad4da3647d7dc",
+   "pdf": "12.2025-Kenco-SOV.pdf",
+   "family": "Excel",
+   "pages": 6,
+   "errors": 98,
+   "uncovered": 102,
+   "counts": {
+    "unexplained_text": 18,
+    "outside_table": 20,
+    "value_mismatch": 58,
+    "span_mismatch": 1,
+    "prose_row": 1
+   }
+  },
+  {
+   "key": "02753bf7e6549f5a",
+   "pdf": "19132-71-VE-June-2023.pdf",
+   "family": "Excel",
+   "pages": 13,
+   "errors": 87,
+   "uncovered": 83,
+   "counts": {
+    "unexplained_text": 18,
+    "outside_table": 22,
+    "value_mismatch": 46,
+    "span_mismatch": 1
+   }
+  },
+  {
+   "key": "9d701a8ad492a6d7",
+   "pdf": "status-mobility-fy2018.pdf",
+   "family": "Distiller",
+   "pages": 2,
+   "errors": 33,
+   "uncovered": 38,
+   "counts": {
+    "unexplained_text": 17,
+    "outside_table": 8,
+    "span_mismatch": 7,
+    "value_mismatch": 1
+   }
+  },
+  {
+   "key": "99e3871a86ca9971",
+   "pdf": "status-mobility-fy2019.pdf",
+   "family": "PrintToPDF",
+   "pages": 2,
+   "errors": 28,
+   "uncovered": 35,
+   "counts": {
+    "unexplained_text": 12,
+    "outside_table": 8,
+    "value_mismatch": 2,
+    "span_mismatch": 6
+   }
+  },
+  {
+   "key": "50b23088b99df7c2",
+   "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+   "family": "PrintToPDF",
+   "pages": 4,
+   "errors": 27,
+   "uncovered": 20,
+   "counts": {
+    "span_mismatch": 4,
+    "value_mismatch": 23
+   }
+  },
+  {
+   "key": "5d36b973fa9393a8",
+   "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+   "family": "AdobePDFLibrary",
+   "pages": 1,
+   "errors": 16,
+   "uncovered": 15,
+   "counts": {
+    "unexplained_text": 7,
+    "outside_table": 8,
+    "span_mismatch": 1
+   }
+  },
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+   "family": "Ghostscript",
+   "pages": 1,
+   "errors": 16,
+   "uncovered": 10,
+   "counts": {
+    "outside_table": 3,
+    "unexplained_text": 11,
+    "value_mismatch": 2
+   }
+  }
+ ],
+ "examples": {
+  "unexplained_text/edge": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "HOFFMAN"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "PACIFIC"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "LLC"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "A JOINT VENTURE"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 3,
+    "got": "Project: Seattle Multimodal Terminal at Colman Dock Project Seattle, WA."
+   }
+  ],
+  "outside_table/cell_text_outside": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "BILLING SUMMARY"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Sub: Valley Electric 1100 Merrill Creek Parkway Everett WA 98203"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Progress Billing No."
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "70"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Billing Period"
+   }
+  ],
+  "unexplained_text/text": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Project: Seattle Multimodal Terminal at Colman Dock Project Seattle, WA"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Contractor: Hoffman-Pacific LLC, A Joint Venture H-P Job No. 5290015"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Bid Package No. 0"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Invoice No. 70"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "Date: 06/20/23"
+   }
+  ],
+  "unexplained_text/numeric": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "-"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 1,
+    "got": "119,223.00"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 1,
+    "got": "$"
+   }
+  ],
+  "value_mismatch/different": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 6,
+    "c": 7,
+    "i": 1,
+    "j": 6,
+    "ref": "BID ITEM #01 - Valley Electric - Mini MACC ",
+    "got": "BID ITEM #01 Valley Electric - Mini MACC"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 16,
+    "c": 7,
+    "i": 11,
+    "j": 6,
+    "ref": "BID ITEM #04 - South Trestle - Under Pier - $4,632,180",
+    "got": "BID ITEM #04 South Trestle Under Pier - $4,632,180"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 27,
+    "c": 7,
+    "i": 22,
+    "j": 6,
+    "ref": "BID ITEM #04 - North Trestle - Under Pier - $2,614,766",
+    "got": "BID ITEM #04 North Trestle Under Pier - $2,614,766"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 45,
+    "c": 7,
+    "i": 40,
+    "j": 6,
+    "ref": "BID ITEM #05 - South Trestle - Above Pier - $5,842,046",
+    "got": "BID ITEM #05 South Trestle Above Pier $5,842,046"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 67,
+    "c": 7,
+    "i": 18,
+    "j": 6,
+    "ref": "Bid Item #05 - At Grade Walkway - $54,256",
+    "got": "Bid Item #05 At Grade Walkway - $54,256"
+   }
+  ],
+  "value_mismatch/format_only": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 287,
+    "c": 14,
+    "i": 18,
+    "j": 13,
+    "ref": " $-   ",
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 288,
+    "c": 10,
+    "i": 19,
+    "j": 9,
+    "ref": " $-   ",
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 288,
+    "c": 14,
+    "i": 19,
+    "j": 13,
+    "ref": " $-   ",
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 303,
+    "c": 16,
+    "i": 34,
+    "j": 15,
+    "ref": " $-   ",
+    "got": "$"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 304,
+    "c": 16,
+    "i": 35,
+    "j": 15,
+    "ref": " $-   ",
+    "got": "$"
+   }
+  ],
+  "value_mismatch/clipped_prefix": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 10,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 337,
+    "c": 5,
+    "i": 33,
+    "j": 4,
+    "ref": "WSF CO 239",
+    "got": "WSF CO"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 12,
+    "i": 0,
+    "j": 11,
+    "ref": "Billing Period  ",
+    "got": "Billing"
+   },
+   {
+    "pair": "b62895f03208009f",
+    "pdf": "85531_1010_Index.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "DGN Files",
+    "r": 149,
+    "c": 4,
+    "i": 57,
+    "j": 2,
+    "ref": "PLAN AND PROFILE; ORANGE AVE. STA. 32+00 TO STA. 35+00; ONTARIO ST. STA. 25+00 T",
+    "got": "PLAN AND PROFILE; ORANGE AVE. STA. 32+00 TO STA. 35+00; ONTARIO ST. STA. 25+00"
+   },
+   {
+    "pair": "b62895f03208009f",
+    "pdf": "85531_1010_Index.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "DGN Files",
+    "r": 386,
+    "c": 4,
+    "i": 21,
+    "j": 2,
+    "ref": "STRUCTURE GENERAL NOTES - 1; BRIDGE NO. CUY-90-1524; EXISTING RAMP E1 OVER GCRTA",
+    "got": "STRUCTURE GENERAL NOTES - 1; BRIDGE NO. CUY-90-1524; EXISTING RAMP E1 OVER"
+   }
+  ],
+  "value_mismatch/clipped_suffix": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 10,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 337,
+    "c": 5,
+    "i": 33,
+    "j": 5,
+    "ref": "WSF CO 239",
+    "got": "239"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 6,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   }
+  ],
+  "value_mismatch/clipped_middle": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 6,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   }
+  ],
+  "span_mismatch/wider": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 398,
+    "c": 7,
+    "i": 25,
+    "j": 6,
+    "ref": "Install Electrical Utility Racks at Entry Building per RFI 1653 and as outlined ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 28,
+    "c": 7,
+    "i": 23,
+    "j": 6,
+    "ref": "ITEM #15- ELEVATOR GLAZING                                                      ",
+    "expected": [
+     7
+    ],
+    "got_columns": [
+     7,
+     8
+    ]
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "Sub: McClean Iron Works 2102 Ross Ave Everett WA 98201",
+    "expected": [
+     1
+    ],
+    "got_columns": [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ]
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 16,
+    "i": 0,
+    "j": 15,
+    "ref": "12/31/25",
+    "expected": [
+     16
+    ],
+    "got_columns": [
+     16,
+     17
+    ]
+   },
+   {
+    "pair": "50b23088b99df7c2",
+    "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Billing Issues",
+    "r": 1,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "Seattle Multimodal Terminal at Colman Dock",
+    "expected": [
+     1
+    ],
+    "got_columns": [
+     1,
+     2
+    ]
+   }
+  ],
+  "uncovered/absent": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 1,
+    "ref": "Project: Seattle Multimodal Terminal at Colman Dock Project \u2022 Seattle, WA.",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 3,
+    "c": 1,
+    "ref": "Contractor: Hoffman-Pacific LLC, A Joint Venture \u2022 H-P Job No. 5290015",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 3,
+    "c": 9,
+    "ref": "Invoice No.",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 4,
+    "c": 9,
+    "ref": "Subcontract No.",
+    "sub": "absent"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 4,
+    "c": 10,
+    "ref": "5290015-39632",
+    "sub": "absent"
+   }
+  ],
+  "uncovered/outside_table": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 9,
+    "ref": "Bid Package No.",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 15,
+    "ref": "Date:",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 2,
+    "c": 16,
+    "ref": "06/20/23",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 3,
+    "c": 10,
+    "ref": "70",
+    "sub": "outside_table"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 3,
+    "c": 12,
+    "ref": "Progress Billing No.",
+    "sub": "outside_table"
+   }
+  ],
+  "uncovered/value_mismatch": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 6,
+    "c": 7,
+    "ref": "BID ITEM #01 - Valley Electric - Mini MACC ",
+    "sub": "value_mismatch"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 16,
+    "c": 7,
+    "ref": "BID ITEM #04 - South Trestle - Under Pier - $4,632,180",
+    "sub": "value_mismatch"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 27,
+    "c": 7,
+    "ref": "BID ITEM #04 - North Trestle - Under Pier - $2,614,766",
+    "sub": "value_mismatch"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 45,
+    "c": 7,
+    "ref": "BID ITEM #05 - South Trestle - Above Pier - $5,842,046",
+    "sub": "value_mismatch"
+   },
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "sheet": "SOV",
+    "r": 67,
+    "c": 7,
+    "ref": "Bid Item #05 - At Grade Walkway - $54,256",
+    "sub": "value_mismatch"
+   }
+  ],
+  "prose_row/outside_workbook": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": null,
+    "c": null,
+    "i": 1,
+    "j": 6,
+    "got": "ITEM #11 PED, VIEW,STAIRS,ELEV, METAL PANELS\n$102,240.00"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": null,
+    "c": null,
+    "i": 0,
+    "j": 11,
+    "got": "Billing"
+   }
+  ],
+  "value_mismatch/unicode_variant": [
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 102,
+    "c": 7,
+    "i": 11,
+    "j": 6,
+    "ref": "Perform glazing work on OT at the Slip 3 OHL cab as outlined in Kenco COR 43.",
+    "got": "Perform glazing work on oT at the Slip 3 OHL cab as outlined in Kenco COR 43."
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 107,
+    "c": 5,
+    "i": 16,
+    "j": 4,
+    "ref": "WSF CO 300",
+    "got": "WSF co 300"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 109,
+    "c": 5,
+    "i": 18,
+    "j": 4,
+    "ref": "WSF CO 300",
+    "got": "WSF co 300"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 111,
+    "c": 5,
+    "i": 20,
+    "j": 4,
+    "ref": "WSF CO 300",
+    "got": "WSF co 300"
+   },
+   {
+    "pair": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 115,
+    "c": 5,
+    "i": 24,
+    "j": 4,
+    "ref": "WSF CO 300",
+    "got": "WSF co 300"
+   }
+  ],
+  "missing_value/outside_table": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "Sub: McClean Iron Works 2102 Ross Ave Everett WA 98201"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 13,
+    "i": 0,
+    "j": 12,
+    "ref": "12/1/2025"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "Sub: McClean Iron Works 2102 Ross Ave Everett WA 98201"
+   }
+  ],
+  "merged_cells/text_differs": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 9,
+    "i": 0,
+    "j": 8,
+    "ref": "Subcontract No. | 5290015-40298",
+    "got": "No. 5290015-40298",
+    "columns": [
+     9,
+     10
+    ]
+   }
+  ],
+  "merged_cells/text_intact": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 9,
+    "i": 0,
+    "j": 8,
+    "ref": "Subcontract No. | 5290015-40298",
+    "got": "Subcontract No. 5290015-40298",
+    "columns": [
+     9,
+     10
+    ]
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 9,
+    "i": 0,
+    "j": 8,
+    "ref": "Subcontract No. | 5290015-40298",
+    "got": "Subcontract No. 5290015-40298",
+    "columns": [
+     9,
+     10
+    ]
+   }
+  ],
+  "value_mismatch/overflow_hashes": [
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 132,
+    "c": 8,
+    "i": 3,
+    "j": 7,
+    "ref": " $9.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 133,
+    "c": 8,
+    "i": 4,
+    "j": 7,
+    "ref": " $10.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 134,
+    "c": 8,
+    "i": 5,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 135,
+    "c": 8,
+    "i": 6,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 136,
+    "c": 8,
+    "i": 7,
+    "j": 7,
+    "ref": " $11.00 ",
+    "got": "#"
+   }
+  ],
+  "value_mismatch/reader_has_more": [
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 2,
+    "c": 10,
+    "i": 0,
+    "j": 9,
+    "ref": "1",
+    "got": "1\n5290015-39648"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 31,
+    "c": 10,
+    "i": 29,
+    "j": 9,
+    "ref": " $-   ",
+    "got": "$\n-\nI"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 34,
+    "c": 10,
+    "i": 32,
+    "j": 9,
+    "ref": " $-   ",
+    "got": "$\n-\n-"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 48,
+    "c": 10,
+    "i": 46,
+    "j": 9,
+    "ref": " $-   ",
+    "got": "$\n-\n-"
+   }
+  ],
+  "extra_value/not_in_workbook": [
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 2,
+    "c": 12,
+    "i": 0,
+    "j": 11,
+    "got": "Progress Billing No.\nBilling Period"
+   }
+  ],
+  "merged_rows/text_intact": [
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 3,
+    "c": 14,
+    "i": 1,
+    "j": 13,
+    "ref": "39",
+    "got": "39\n07/12/20",
+    "rows": [
+     3,
+     4
+    ]
+   }
+  ],
+  "missing_cell/absent": [
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 3,
+    "c": 1,
+    "i": 1,
+    "j": null,
+    "ref": "Contractor: Hoffman-Pacific LLC, A Joint Venture \u2022 H-P Job No. 5290015"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 3,
+    "c": 12,
+    "i": 1,
+    "j": null,
+    "ref": "Progress Billing No."
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 10,
+    "i": 2,
+    "j": null,
+    "ref": "5290015-39648"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 12,
+    "i": 2,
+    "j": null,
+    "ref": "Billing Period  "
+   }
+  ],
+  "value_mismatch/clipped_edge": [
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 7,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 214,
+    "c": 7,
+    "i": 20,
+    "j": 6,
+    "ref": "Subcontractor shall add a pre-action fire sprinkler system to the TB IT room, a ",
+    "got": "Subcontractor shall add a pre-action fire sprinkler system to the TB IT room, a "
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 8,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 227,
+    "c": 7,
+    "i": 4,
+    "j": 6,
+    "ref": "Make adjustment to previously issued subcontractor modification #023 to match re",
+    "got": "Make adjustment to previously issued subcontractor modification #023 to match re"
+   },
+   {
+    "pair": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "page": 8,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 228,
+    "c": 7,
+    "i": 5,
+    "j": 6,
+    "ref": "Make adjustment to previously issued subcontractor modification #023 to match re",
+    "got": "Make adjustment to previously issued subcontractor modification #023 to match re"
+   }
+  ]
+ },
+ "holdout_included": false
+}
