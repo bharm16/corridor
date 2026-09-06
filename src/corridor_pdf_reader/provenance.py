@@ -36,14 +36,14 @@ SOURCE_BRANCH = "codex/standalone-comparison"
 
 # The rewrite touches only `from <package>...` statements at the start of a
 # line (indented ones inside functions included) whose package is one of the
-# two imported ones. `[.\s]` after the name keeps `from bootstrap_x` alone.
+# three imported ones. `[.\s]` after the name keeps `from bootstrap_x` alone.
 _FORWARD = re.compile(
-    rb"^(?P<indent>[ \t]*)from (?P<package>replacement|bootstrap)(?P<rest>[.\s])",
+    rb"^(?P<indent>[ \t]*)from (?P<package>replacement|bootstrap|textract)(?P<rest>[.\s])",
     re.M,
 )
 _REVERSE = re.compile(
     rb"^(?P<indent>[ \t]*)from corridor_pdf_reader\."
-    rb"(?P<package>replacement|bootstrap)(?P<rest>[.\s])",
+    rb"(?P<package>replacement|bootstrap|textract)(?P<rest>[.\s])",
     re.M,
 )
 

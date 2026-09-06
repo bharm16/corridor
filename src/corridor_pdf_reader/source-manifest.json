@@ -698,6 +698,222 @@
    "size": 4027,
    "rewritten_imports": false,
    "appended": false
+  },
+  {
+   "path": "textract/README.md",
+   "source_path": "textract/README.md",
+   "blob_sha1": "b09b48867148dc6a5d34d8901861b9de36713e95",
+   "sha256": "23a3d69ff0c0004af50487b9259ac9250addcee46b0396b34b148312b0a8b144",
+   "size": 5522,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/__init__.py",
+   "source_path": "textract/__init__.py",
+   "blob_sha1": "a5955758a5807b42f65fc13bf049cd8dc4618d90",
+   "sha256": "6120521d3468182569315ac72e6c24da797138003eefdf9f134cbbe71c2b1f47",
+   "size": 543,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/blocks.py",
+   "source_path": "textract/blocks.py",
+   "blob_sha1": "56faa28b9d639100af6e2dfa88fb902c8debe673",
+   "sha256": "15671411ef671662f288d287da5fd1516a6b161c86384f1c2f7df9a05aaf5c45",
+   "size": 7466,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/client.py",
+   "source_path": "textract/client.py",
+   "blob_sha1": "9a2675759c122c0b9ee5804edac7a8151f74e1d0",
+   "sha256": "475c328d7e85468231a30c88781fcc1eb202f68cb96388c58d1e19de3841074d",
+   "size": 6303,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/pyproject.toml",
+   "source_path": "textract/pyproject.toml",
+   "blob_sha1": "574aecf1ffe32b0f7efba8f175c62426ce2d80e3",
+   "sha256": "e2c8dec14e7a9f3a6aac47d527c3ad42599e5847337a92ec8fa250f0af43ec73",
+   "size": 447,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/read.py",
+   "source_path": "textract/read.py",
+   "blob_sha1": "6ab61324085f6a93f7eedab5457f4a716df69fe2",
+   "sha256": "167a4693cf42d3fe5c97b8fcfd0f402e4eb7e77d72fc3d9310dd9b092a81f36e",
+   "size": 12988,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/remap.py",
+   "source_path": "textract/remap.py",
+   "blob_sha1": "2f0f40b015be4bbc0ea2e39291ccb73a122b9218",
+   "sha256": "e398c9258f64f2fb029236b33addd210899ce1bbabf6e055a19892e246768b22",
+   "size": 5508,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/render.py",
+   "source_path": "textract/render.py",
+   "blob_sha1": "168e49c1accd89dce469c310bf8e94f1c7d2178f",
+   "sha256": "5948835e046e7d769db904159046dd91eaca99b2f8a3c61c7d6d0b01f62583a7",
+   "size": 4641,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/semantics.py",
+   "source_path": "textract/semantics.py",
+   "blob_sha1": "f877ef9875c48dc64108ded8201b8037fe05761a",
+   "sha256": "bbdd967302ec7c648277c34e002f1b69474bc8976658e510287a9ba133af3b9d",
+   "size": 4610,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/__init__.py",
+   "source_path": "textract/tests/__init__.py",
+   "blob_sha1": "e69de29bb2d1d6434b8b29ae775ad8c2e48c5391",
+   "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+   "size": 0,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/conftest.py",
+   "source_path": "textract/tests/conftest.py",
+   "blob_sha1": "662d3b3fd63dd0458c573ad67c64b61959f80dc9",
+   "sha256": "171f754db47d7bca021fb33351e081c03a5bcc7751aca5415cf726c53b43c481",
+   "size": 144,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/fixtures/holmberg-5007-page2-clean.json",
+   "source_path": "textract/tests/fixtures/holmberg-5007-page2-clean.json",
+   "blob_sha1": "ba56965b265ac90e16fcd635f402d13429a1aa29",
+   "sha256": "47081dd3964c312cbe8a79cd182b805647ff93c450bf329f70346e7a1a01ca41",
+   "size": 23645,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/fixtures/status-mobility-fy2018-page2-clean.json",
+   "source_path": "textract/tests/fixtures/status-mobility-fy2018-page2-clean.json",
+   "blob_sha1": "91470ca8cf63aa7418395f6654d8eed52eedf5bf",
+   "sha256": "79f848f223ea9851dabf2dc245f4cd32097510619d601bce94dda5d983e1d15d",
+   "size": 149225,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/fixtures/status-mobility-fy2018-page2-degraded.json",
+   "source_path": "textract/tests/fixtures/status-mobility-fy2018-page2-degraded.json",
+   "blob_sha1": "2de7ce3a26e430f6a12d6792f75a652f7af2eae5",
+   "sha256": "4c36fdb31319d11448e25d4888bd03de152e1b16deea8e98da4138160abc789b",
+   "size": 154089,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/fixtures/synthetic-grid-merged.json",
+   "source_path": "textract/tests/fixtures/synthetic-grid-merged.json",
+   "blob_sha1": "e087af695d1c6be06989e35cbe63cc1afd7732a1",
+   "sha256": "c30e00a18587e1a5ea34c5200e2566beb63d19524b7efa540682079fcc0fa8e7",
+   "size": 21713,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/helpers.py",
+   "source_path": "textract/tests/helpers.py",
+   "blob_sha1": "caa3374580d5d5b7ddccddd849ba99a8da651ced",
+   "sha256": "7d00b4da1af195cf935d39b1de9e4d4777ca3462e91319b60f6f4b9cff6ec7d9",
+   "size": 5583,
+   "rewritten_imports": false,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_blocks.py",
+   "source_path": "textract/tests/test_blocks.py",
+   "blob_sha1": "06cbf8758f639e29e933cefb1bac1b2dfcf210db",
+   "sha256": "c711a0834052853762e083e229896198c901cd1cafcf88b3d9a8f9be4aacda84",
+   "size": 7768,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_client.py",
+   "source_path": "textract/tests/test_client.py",
+   "blob_sha1": "006d381edd59ae9b8dbe2b2bc80bf86963528a97",
+   "sha256": "1ee32ed700e4d58b8c954dca3ed9f80cd63f1d6618f9d9c469f3a068e2ffcab7",
+   "size": 4094,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_read.py",
+   "source_path": "textract/tests/test_read.py",
+   "blob_sha1": "4e25616c040a4b617d2a2718c145b8f157fb0e21",
+   "sha256": "78209c31f116eb306b04ae8196216d9e672941afa36224985be87c8cdf641ed4",
+   "size": 4330,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_remap.py",
+   "source_path": "textract/tests/test_remap.py",
+   "blob_sha1": "36ea62e8533e0783951e90512eb1b8a73205aa40",
+   "sha256": "d55c3ce9f8c3ff1a5b491f767adf5bdf79ed425c651516e1848a8fd22d033ce2",
+   "size": 6195,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_render.py",
+   "source_path": "textract/tests/test_render.py",
+   "blob_sha1": "e1d5b087e653238f0cf1de7cb0d6abd4665ccf69",
+   "sha256": "c1493e9d4fe2a451dfa28a0f1738f0d39d7ae27ba48942408011b0d58917253a",
+   "size": 2018,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/tests/test_transport.py",
+   "source_path": "textract/tests/test_transport.py",
+   "blob_sha1": "476fd7c6afee5fb0b95ddb4915e2b0e438126bff",
+   "sha256": "2835cf88494f8fcbdfa8ac426bd59cf9ff86901bf9e14348547a0e58ade60c3a",
+   "size": 1488,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/transport.py",
+   "source_path": "textract/transport.py",
+   "blob_sha1": "88a7c5034b3b1686af149b11faa573227d46caea",
+   "sha256": "03026df37ed338b1ae16a256aaab02afbb5f7819d1188f3fa0fd78a2a7a71dc8",
+   "size": 4641,
+   "rewritten_imports": true,
+   "appended": false
+  },
+  {
+   "path": "textract/uv.lock",
+   "source_path": "textract/uv.lock",
+   "blob_sha1": "41c973a84645e84e15edd6aad9ef514b0bbcd5bf",
+   "sha256": "7feb62ea01e36e5503848304630da783ad226e27f832f41b0ffb5162f604342e",
+   "size": 31471,
+   "rewritten_imports": false,
+   "appended": false
   }
  ]
 }

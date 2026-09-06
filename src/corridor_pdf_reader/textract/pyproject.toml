@@ -1,0 +1,19 @@
+[project]
+name = "textract-rung"
+version = "0.1.0"
+description = "AWS Textract as the last rung of the PyMuPDF replacement: cached AnalyzeDocument TABLES reads in the reader's page shape"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "boto3>=1.40",
+    "botocore[crt]>=1.40",
+    "pypdfium2==5.13.0",
+    "pillow==12.3.0",
+    "pypdf==6.17.0",
+    "httpx>=0.28.1",
+]
+
+[dependency-groups]
+dev = ["pytest==9.1.1"]
+
+[tool.uv]
+package = false
