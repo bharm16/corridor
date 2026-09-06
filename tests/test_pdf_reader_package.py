@@ -118,6 +118,11 @@ PRODUCTION_IMPORTERS = {
         "PDFium glyph boxes clustered by baseline, under pdfium_entry in a "
         "single-threaded command; a check on the capture, not a record fact"
     ),
+    "src/corridor/source_intake_draft.py": (
+        "a staged PDF's page text for an intake draft is PDFium's, read in one "
+        "PdfiumExecutor process per draft because the draft runs on a web "
+        "thread; a suggestion the person confirms elsewhere, not a record fact"
+    ),
     "src/corridor/web/queue.py": (
         "quote highlights on the review page are PDFium text-search boxes under "
         "pdfium_entry; best effort, degrading to an unmarked page"
