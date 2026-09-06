@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -405,3 +405,22 @@ report:
 #   make pdf-reader-inspect ARGS="--file corpus/files/<sha256>.pdf --json"
 pdf-reader-inspect:
 	uv run python -m corridor_pdf_reader.rendition_cli $(ARGS)
+
+# The answer-key printer's number-format library (`ssf`), from the committed
+# package-lock.json. Needed by the reproduction only; CI never runs it.
+pdf-reader-node:
+	cd src/corridor_pdf_reader/paired_trial && npm ci --ignore-scripts --no-audit --no-fund
+
+# The 333-pair reproduction of loop-020: verify the corpus digests, build the
+# answer keys and compare them with the retained key digests, read every pair
+# with the measured engine, score the development set and the spent holdout,
+# tally, and write a receipt carrying the configuration identity. An explicit
+# experiment outside pytest and CI (ADR-0008); needs the reference corpus at
+# TRUE_PAIRS_ROOT, `make pdf-reader-node`, and tens of minutes:
+#   make pdf-reader-reproduce ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain"
+# `--retain` copies the receipt set into src/corridor_pdf_reader/receipts/ and
+# appends the holdout access to bootstrap/LOOP-LOG.md (ADR-0008).
+TRUE_PAIRS_ROOT ?= /Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact
+pdf-reader-reproduce:
+	mkdir -p src/corridor_pdf_reader/tmp
+	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.reproduction $(ARGS)
