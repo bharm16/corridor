@@ -1,0 +1,1510 @@
+{
+  "by_document": {
+    "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 358,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 106643456,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 5,
+        "false_positive": 63,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 10,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 847,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 0.0,
+        "false_negative": 1,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 115376128,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 3,
+        "false_positive": 14,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 15,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 12,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 390,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 89145344,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 13,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 4,
+        "false_positive": 320,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 12,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 908,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 120668160,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 29,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 9,
+        "false_positive": 985,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.04761904761904762,
+        "false_negative": 3,
+        "false_positive": 37,
+        "precision": 0.02631578947368421,
+        "recall": 0.25,
+        "true_positive": 1
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 2039,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 2
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 2
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 2,
+      "peak_memory_bytes": 181092352,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 3,
+        "false_positive": 61,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.6666666666666666,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.5,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 11,
+        "false_positive": 593,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 5,
+        "false_positive": 56,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 864,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 2
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 2
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 2,
+      "peak_memory_bytes": 110247936,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 4,
+        "false_positive": 99,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.6666666666666666,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.5,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    }
+  },
+  "by_page_class": {
+    "ambiguous-retirement-matrix": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 298,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 28,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 864,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 110247936,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 65,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "image-only-agreement": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 358,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 106643456,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "marked-resolution-matrix": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 11,
+        "false_positive": 295,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 5,
+        "false_positive": 28,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 864,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 110247936,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 4,
+        "false_positive": 34,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "matrix-body": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 9,
+        "false_positive": 481,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.08695652173913043,
+        "false_negative": 3,
+        "false_positive": 18,
+        "precision": 0.05263157894736842,
+        "recall": 0.25,
+        "true_positive": 1
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 2039,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 181092352,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 3,
+        "false_positive": 30,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "matrix-continuation": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 4,
+        "false_positive": 320,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 12,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 908,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 120668160,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 29,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    },
+    "matrix-cover": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 504,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 19,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 2039,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 181092352,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 31,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "mixed-native-scanned-agreement": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 15,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 12,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 390,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 89145344,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 13,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 0.0,
+        "false_negative": 0,
+        "false_positive": 1,
+        "precision": 0.0,
+        "recall": 1.0,
+        "true_positive": 0
+      }
+    },
+    "page-scoped-owner-matrix": {
+      "abstained_pages": 0,
+      "abstention_rate": 0.0,
+      "canonical_mapping_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_span_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_state_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_text_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cell_topology_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "cells": {
+        "f1": 0.0,
+        "false_negative": 5,
+        "false_positive": 63,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "columns": {
+        "f1": 0.0,
+        "false_negative": 2,
+        "false_positive": 10,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "documents": 1,
+      "failed_documents": 0,
+      "failure_rate": 0.0,
+      "header_relationships_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "latency_ms": 847,
+      "page_classification": {
+        "accuracy": 0.0,
+        "correct": 0,
+        "total": 1
+      },
+      "page_coverage": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      },
+      "page_scoped_values": {
+        "f1": 0.0,
+        "false_negative": 1,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "pages": 1,
+      "peak_memory_bytes": 115376128,
+      "row_disposition_exact": {
+        "accuracy": 1.0,
+        "correct": 0,
+        "total": 0
+      },
+      "rows": {
+        "f1": 0.0,
+        "false_negative": 3,
+        "false_positive": 14,
+        "precision": 0.0,
+        "recall": 0.0,
+        "true_positive": 0
+      },
+      "tables": {
+        "f1": 1.0,
+        "false_negative": 0,
+        "false_positive": 0,
+        "precision": 1.0,
+        "recall": 1.0,
+        "true_positive": 1
+      }
+    }
+  },
+  "configuration_sha256": "9e04839879161682b6f1839ba45e57903bdb10477e0e39340301dfe138f5722d",
+  "dataset_version": "2026-08-31.2",
+  "engine": "corridor_pdf_reader frozen-reader",
+  "engine_version": "commit c39363e, pypdfium2 5.13.0 (PDFium 153.0.7999.0), pypdf 6.17.0, engine tagged at 36 dpi",
+  "key_metric": {
+    "avoided": 7,
+    "emitted": 0,
+    "name": "wrong_source_cited_proposals_avoided",
+    "opportunities": 7,
+    "rate": 1.0
+  },
+  "overall": {
+    "abstained_pages": 0,
+    "abstention_rate": 0.0,
+    "canonical_mapping_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "cell_span_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "cell_state_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "cell_text_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "cell_topology_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "cells": {
+      "f1": 0.0,
+      "false_negative": 29,
+      "false_positive": 1976,
+      "precision": 0.0,
+      "recall": 0.0,
+      "true_positive": 0
+    },
+    "columns": {
+      "f1": 0.014184397163120567,
+      "false_negative": 12,
+      "false_positive": 127,
+      "precision": 0.0078125,
+      "recall": 0.07692307692307693,
+      "true_positive": 1
+    },
+    "documents": 6,
+    "failed_documents": 0,
+    "failure_rate": 0.0,
+    "header_relationships_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "latency_ms": 5406,
+    "page_classification": {
+      "accuracy": 0.0,
+      "correct": 0,
+      "total": 8
+    },
+    "page_coverage": {
+      "f1": 1.0,
+      "false_negative": 0,
+      "false_positive": 0,
+      "precision": 1.0,
+      "recall": 1.0,
+      "true_positive": 8
+    },
+    "page_scoped_values": {
+      "f1": 0.0,
+      "false_negative": 1,
+      "false_positive": 0,
+      "precision": 1.0,
+      "recall": 0.0,
+      "true_positive": 0
+    },
+    "pages": 8,
+    "peak_memory_bytes": 181092352,
+    "row_disposition_exact": {
+      "accuracy": 1.0,
+      "correct": 0,
+      "total": 0
+    },
+    "rows": {
+      "f1": 0.0,
+      "false_negative": 12,
+      "false_positive": 216,
+      "precision": 0.0,
+      "recall": 0.0,
+      "true_positive": 0
+    },
+    "tables": {
+      "f1": 0.7272727272727273,
+      "false_negative": 0,
+      "false_positive": 3,
+      "precision": 0.5714285714285714,
+      "recall": 1.0,
+      "true_positive": 4
+    }
+  },
+  "passed": false,
+  "schema_version": "corridor.pdf-evaluation.v1",
+  "thresholds_met": {
+    "abstention_rate": true,
+    "canonical_mapping_exact": true,
+    "cell_f1": false,
+    "cell_span_exact": true,
+    "cell_state_exact": true,
+    "cell_text_exact": true,
+    "cell_topology_exact": true,
+    "column_f1": false,
+    "failure_rate": true,
+    "header_relationships_exact": true,
+    "latency": true,
+    "memory": true,
+    "page_class_accuracy": false,
+    "page_coverage": true,
+    "page_scoped_values": false,
+    "row_disposition_exact": true,
+    "row_f1": false,
+    "table_f1": false,
+    "wrong_source_cited_proposals": true
+  }
+}

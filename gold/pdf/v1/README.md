@@ -48,3 +48,15 @@ forward/inverse affine chain from PDF user space through page rotation, clip,
 raster scale, and any deskew. The source bytes plus that manifest are sufficient
 to regenerate the artifact; reviewer pixels are never overwritten by a
 preprocessed derivative.
+
+## Frozen paired-rendition reader baseline (#731)
+
+The imported paired-rendition reader (`src/corridor_pdf_reader`, commit
+`c39363e`, engine `tagged` at 36 dpi) was scored once through this contract
+by `make pdf-reader-gold-eval`; the engine run, the evaluation JSON and
+Markdown, the adapter's frame record and the per-threshold applicability
+record are retained under `gold/pdf-pairs/v1/pdf-v1/frozen-reader-2026-09-06/`
+and read in `gold/pdf-pairs/v1/README.md`. The FDOT holdout access is the
+2026-09-06 line of `holdout-access.jsonl`. The run is a predeclared baseline,
+not a pass: layers the frozen reader does not produce are marked absent and
+labelled not applicable there, never scored as reader results.

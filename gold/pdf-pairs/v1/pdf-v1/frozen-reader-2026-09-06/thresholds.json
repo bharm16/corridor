@@ -1,0 +1,102 @@
+{
+ "passed_as_the_contract_scores_it": false,
+ "thresholds": {
+  "abstention_rate": {
+   "met": true,
+   "applies": true,
+   "why": "the reader never abstains; every labelled page read is a page answered"
+  },
+  "canonical_mapping_exact": {
+   "met": true,
+   "applies": false,
+   "why": "no canonical mapping is emitted; the semantics tier was not run (#737)"
+  },
+  "cell_f1": {
+   "met": false,
+   "applies": true,
+   "why": "the reader's cells are text boxes, the gold's are cell rectangles, and the gold labels a sample of each table's cells; every unlabelled reader cell counts as a false positive"
+  },
+  "cell_span_exact": {
+   "met": true,
+   "applies": true,
+   "why": "over matched cells only: the reader's row and column spans"
+  },
+  "cell_state_exact": {
+   "met": true,
+   "applies": false,
+   "why": "the reader has no state tier; every cell carries the contract's default `confirmed`"
+  },
+  "cell_text_exact": {
+   "met": true,
+   "applies": true,
+   "why": "over matched cells only: the reader's text as read against the label; vacuous when no cell matches"
+  },
+  "cell_topology_exact": {
+   "met": true,
+   "applies": true,
+   "why": "over matched cells only, and only through matched rows and columns"
+  },
+  "column_f1": {
+   "met": false,
+   "applies": true,
+   "why": "columns are bounding boxes of the reader's cell text boxes, not ruled bands"
+  },
+  "failure_rate": {
+   "met": true,
+   "applies": true,
+   "why": "documents the isolated reader process failed on"
+  },
+  "header_relationships_exact": {
+   "met": true,
+   "applies": false,
+   "why": "the reader names no header cells; the semantics tier was not run (#737)"
+  },
+  "latency": {
+   "met": true,
+   "applies": true,
+   "why": "wall time of the isolated reader process per document, spawn included"
+  },
+  "memory": {
+   "met": true,
+   "applies": true,
+   "why": "peak resident set of the isolated reader process per document"
+  },
+  "page_class_accuracy": {
+   "met": false,
+   "applies": false,
+   "why": "the frozen reader has no page classifier; every page is `unclassified` (#734 owns inventory and routing)"
+  },
+  "page_coverage": {
+   "met": true,
+   "applies": true,
+   "why": "the adapter reads every page the gold labels; coverage measures that the reader returned each"
+  },
+  "page_scoped_values": {
+   "met": false,
+   "applies": false,
+   "why": "no page-scoped value is emitted; the semantics tier was not run"
+  },
+  "row_disposition_exact": {
+   "met": true,
+   "applies": false,
+   "why": "every row carries the placeholder `active`; the frozen reader has no disposition tier (#737)"
+  },
+  "row_f1": {
+   "met": false,
+   "applies": true,
+   "why": "rows are bounding boxes of the reader's cell text boxes, not ruled bands; a row's IoU with a labelled band is bounded by that"
+  },
+  "table_f1": {
+   "met": false,
+   "applies": true,
+   "why": "the reader reconstructs tables with a box; matched by IoU in the gold page's declared frame"
+  },
+  "wrong_source_cited_proposals": {
+   "met": true,
+   "applies": false,
+   "why": "no Extracted Proposal is emitted, so none can be wrong; met vacuously"
+  }
+ },
+ "informative_thresholds_met": false,
+ "note": "`applies` is fixed before any run from what the frozen reader produces; a met threshold on a layer it does not produce is vacuous and says nothing about the reader"
+}
