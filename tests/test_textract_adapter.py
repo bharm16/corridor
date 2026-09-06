@@ -647,6 +647,21 @@ def test_the_boto3_service_name_appears_only_where_the_boundary_constructs_the_l
     assert _textract_client_constructions(IMPORTED_ROOT / "client.py") == [150], "the imported client's own construction, unreachable but through the boundary"
 
 
+# The rung and the adapter, the two module trees no production path may reach.
+# The wider rule -- which production modules may import the reader package at
+# all -- is `tests/test_pdf_reader_package.py`, which carries the reasoned
+# exceptions (#740 entered PDFium for glyph geometry from three modules). This
+# rule is about the provider: nothing in production may reach a Textract call.
+TEXTRACT_TREES = (
+    "corridor_pdf_reader.textract",
+    "corridor_pdf_reader.textract_adapter",
+)
+
+
+def _reaches_textract(name: str) -> bool:
+    return any(name == tree or name.startswith(f"{tree}.") for tree in TEXTRACT_TREES)
+
+
 def test_no_production_module_imports_the_textract_rung_or_the_adapter():
     offenders = []
     for root in PRODUCTION_ROOTS:
@@ -658,10 +673,10 @@ def test_no_production_module_imports_the_textract_rung_or_the_adapter():
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     names = [node.module]
-                if any(name == "corridor_pdf_reader" or name.startswith("corridor_pdf_reader.") for name in names):
+                if any(_reaches_textract(name) for name in names):
                     offenders.append(str(path.relative_to(REPO_ROOT)))
                     break
-            if "corridor_pdf_reader" in source and "import_module(" in source:
+            if "import_module(" in source and any(tree in source for tree in TEXTRACT_TREES):
                 offenders.append(f"{path.relative_to(REPO_ROOT)} (dynamic import)")
 
     assert offenders == []
