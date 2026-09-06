@@ -1255,12 +1255,19 @@ def _sensible_png_dimensions(value: bytes) -> tuple[int, int] | None:
     ):
         return None
     # The header alone is not evidence: the bytes must decode, as a PNG, to
-    # exactly the frame the header declares.
+    # exactly the frame the header declares, and be whole. `verify` checks the
+    # chunk digests and refuses a truncated file whatever
+    # `ImageFile.LOAD_TRUNCATED_IMAGES` says; WeasyPrint sets that global True
+    # for the whole process when it is imported, so a decode alone would accept
+    # a cut-off screenshot in a process that has rendered a PDF and refuse the
+    # same bytes in one that has not. `verify` consumes the file, so the frame
+    # is read first, from its own reader.
     try:
         with Image.open(BytesIO(value)) as image:
             if image.format != "PNG" or image.size != (width, height):
                 return None
-            image.load()
+        with Image.open(BytesIO(value)) as image:
+            image.verify()
     except Exception:
         return None
     return width, height
