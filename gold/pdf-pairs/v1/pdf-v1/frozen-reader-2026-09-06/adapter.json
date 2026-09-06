@@ -1,0 +1,370 @@
+{
+ "adapter": "corridor.pdf-pairs.gold-adapter.v1",
+ "gold": {
+  "file": "gold/pdf/v1/dataset.json",
+  "dataset_version": "2026-08-31.2",
+  "sha256": "73f3e0c019c22e2e5a38d873019f9b3510f632b3883a9033f7c284e8c79b2951"
+ },
+ "configuration": {
+  "adapter": "corridor.pdf-pairs.gold-adapter.v1",
+  "configuration": "frozen-reader",
+  "engine": "tagged",
+  "dpi": 36,
+  "reader": {
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "package_digest": "7fd94c5fcaaa5531a3cea2ef90dc71a4aafe083fbbbdad47f0234fa371895524",
+   "matches_commit": true
+  },
+  "pypdfium2": "5.13.0",
+  "pdfium": "153.0.7999.0",
+  "pypdf": "6.17.0",
+  "absent": {
+   "page_class": "unclassified",
+   "row_dispositions": "placeholder `active` on every row; not a reader output",
+   "page_scoped_values": "none",
+   "proposals": "none",
+   "header_cell_ids": "none",
+   "canonical_mapping": "none",
+   "cell_state": "the contract's default, `confirmed`; not a reader output"
+  }
+ },
+ "configuration_sha256": "9e04839879161682b6f1839ba45e57903bdb10477e0e39340301dfe138f5722d",
+ "documents_selected": [
+  "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+  "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30",
+  "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+  "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+  "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+  "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2"
+ ],
+ "holdout_included": true,
+ "documents": [
+  {
+   "document_sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+   "family": "txdot-nhhip-ucm-2026",
+   "split": "development",
+   "page_count": 28,
+   "pages_read": [
+    1,
+    2
+   ],
+   "latency_ms": 2039,
+   "read_ms": 1710,
+   "peak_rss_bytes": 181092352,
+   "pages": [
+    {
+     "page_number": 1,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      1224.0,
+      792.0
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1224.0,
+      792.0
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 90,
+     "scaled": true,
+     "scale": [
+      0.647059,
+      0.772727
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 504,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    },
+    {
+     "page_number": 2,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      1224.0,
+      792.0
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1224.0,
+      792.0
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 90,
+     "scaled": true,
+     "scale": [
+      0.647059,
+      0.772727
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 481,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    }
+   ]
+  },
+  {
+   "document_sha256": "8b93d8b934b8501b5464ff33db9f2e83c2f716b2910c7eb5385dde9d45075a30",
+   "family": "txdot-sh99-ucm-2025",
+   "split": "regression",
+   "page_count": 17,
+   "pages_read": [
+    2
+   ],
+   "latency_ms": 908,
+   "read_ms": 649,
+   "peak_rss_bytes": 120668160,
+   "pages": [
+    {
+     "page_number": 2,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      1224.0,
+      792.0
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1224.0,
+      792.0
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 0,
+     "scaled": true,
+     "scale": [
+      0.647059,
+      0.772727
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 320,
+     "outside_strings": 11,
+     "clipped_runs": 0
+    }
+   ]
+  },
+  {
+   "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+   "family": "fdot-sr789-roundabout-ucm",
+   "split": "holdout",
+   "page_count": 9,
+   "pages_read": [
+    2
+   ],
+   "latency_ms": 847,
+   "read_ms": 586,
+   "peak_rss_bytes": 115376128,
+   "pages": [
+    {
+     "page_number": 2,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      1237.5,
+      956.25
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1237.5,
+      956.25
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 0,
+     "scaled": true,
+     "scale": [
+      0.64,
+      0.64
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 63,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    }
+   ]
+  },
+  {
+   "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+   "family": "wsdot-9424-appendix-u2",
+   "split": "development",
+   "page_count": 11,
+   "pages_read": [
+    5,
+    9
+   ],
+   "latency_ms": 864,
+   "read_ms": 639,
+   "peak_rss_bytes": 110247936,
+   "pages": [
+    {
+     "page_number": 5,
+     "reader_crop_box": [
+      -11.990599632263184,
+      11.962200164794922,
+      1212.010009765625,
+      803.9619750976562
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1224.0006093978882,
+      791.9997749328613
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 0,
+     "scaled": true,
+     "scale": [
+      0.647059,
+      0.772727
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 295,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    },
+    {
+     "page_number": 9,
+     "reader_crop_box": [
+      -11.990599632263184,
+      11.962200164794922,
+      1212.010009765625,
+      803.9619750976562
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      1224.0006093978882,
+      791.9997749328613
+     ],
+     "gold_declared_points": [
+      792.0,
+      612.0
+     ],
+     "gold_rotation": 0,
+     "scaled": true,
+     "scale": [
+      0.647059,
+      0.772727
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 298,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    }
+   ]
+  },
+  {
+   "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+   "family": "coh-municipal-maintenance-agreement-1969",
+   "split": "development",
+   "page_count": 15,
+   "pages_read": [
+    1
+   ],
+   "latency_ms": 358,
+   "read_ms": 131,
+   "peak_rss_bytes": 106643456,
+   "pages": [
+    {
+     "page_number": 1,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      612.0,
+      792.0
+     ],
+     "reader_rotation": 180,
+     "reader_displayed_points": [
+      612.0,
+      792.0
+     ],
+     "gold_declared_points": [
+      612.0,
+      792.0
+     ],
+     "gold_rotation": 0,
+     "scaled": false,
+     "scale": [
+      1.0,
+      1.0
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 0,
+     "cells": 0,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    }
+   ]
+  },
+  {
+   "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+   "family": "coh-parking-agreement-amendment-2012",
+   "split": "development",
+   "page_count": 15,
+   "pages_read": [
+    1
+   ],
+   "latency_ms": 390,
+   "read_ms": 156,
+   "peak_rss_bytes": 89145344,
+   "pages": [
+    {
+     "page_number": 1,
+     "reader_crop_box": [
+      0.0,
+      0.0,
+      610.5599975585938,
+      791.6400146484375
+     ],
+     "reader_rotation": 0,
+     "reader_displayed_points": [
+      610.5599975585938,
+      791.6400146484375
+     ],
+     "gold_declared_points": [
+      610.56,
+      791.64
+     ],
+     "gold_rotation": 0,
+     "scaled": false,
+     "scale": [
+      1.0,
+      1.0
+     ],
+     "boxes_clamped_to_page": 0,
+     "cells_dropped_as_degenerate": 0,
+     "tables": 1,
+     "cells": 15,
+     "outside_strings": 0,
+     "clipped_runs": 0
+    }
+   ]
+  }
+ ],
+ "limits": "Paired renditions are the measurement method, not a prerequisite for reading a production PDF. Cell comparison does not independently establish prose outside tables, raster fidelity, routing correctness, source-locator replay, malicious-document handling, production concurrency, or operational cost and coordinator burden. Those belong to their own tickets."
+}

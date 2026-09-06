@@ -1,0 +1,430 @@
+{
+ "schema_version": "corridor.pdf-pairs-receipt.v1",
+ "run": "drawn-grid-ten-2026-09-06",
+ "date": "2026-09-06",
+ "what": "Extraction Measurement of configuration `drawn-grid` against the registered paired-rendition Reference Dataset; an explicit experiment outside CI.",
+ "configuration": {
+  "name": "drawn-grid",
+  "description": "the reader's drawn-grid engine (`pdfium`) without Excel's structure tree: not the measured configuration and not a candidate; it reads less than the frozen reader so the gate is proven to fail",
+  "engine": "pdfium",
+  "dpi": 36,
+  "jobs": 4,
+  "driver": "bootstrap.read",
+  "retain_images": false,
+  "reader": {
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "repository": "pdf-reader-comparison (local, no remote)",
+   "package_digest": "7fd94c5fcaaa5531a3cea2ef90dc71a4aafe083fbbbdad47f0234fa371895524",
+   "matches_commit": true
+  },
+  "environment": {
+   "python": "3.12.12",
+   "packages": {
+    "pypdfium2": "5.13.0",
+    "pypdf": "6.17.0",
+    "pdf-oxide": "0.3.77",
+    "pillow": "12.3.0",
+    "openpyxl": "3.1.5",
+    "xlrd": "2.0.2"
+   },
+   "pdfium_build": "153.0.7999.0",
+   "pypdfium2_build": "5.13.0",
+   "node": "v24.10.0",
+   "ssf": "0.11.2",
+   "machine": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "hostname": "MacBook-Pro-4.local"
+   }
+  }
+ },
+ "dataset": {
+  "file": "gold/pdf-pairs/v1/dataset.json",
+  "schema_version": "corridor.pdf-pairs-dataset.v1",
+  "dataset_version": "2026-09-06.1",
+  "sha256": "46d5a66491d1ac04fbbce7d5959d8c2366619603e0be44cf2b4b84904ac0b67c",
+  "corpus_manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "split_sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+  "reference_manifest_sha256": "2c778dc65d0ad91cfa2d3b7ac2211e34efcb2b0078744903cafd4c3a1a661d4f"
+ },
+ "selection": {
+  "development_keys": 10,
+  "holdout_keys": 0,
+  "subset": true,
+  "keys": [
+   "02753bf7e6549f5a",
+   "075ad4da3647d7dc",
+   "1ee4a00b8eb6173b",
+   "50b23088b99df7c2",
+   "5d36b973fa9393a8",
+   "5e979146e9322953",
+   "99e3871a86ca9971",
+   "9d701a8ad492a6d7",
+   "b62895f03208009f",
+   "fcbe0ceb23e61b0f"
+  ],
+  "keys_sha256": "93197b0111aa2c267eff6e7c9a91b89d72c6527efa110e08779cd27dde0980a0"
+ },
+ "corpus": {
+  "root": "/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+  "manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "excluded_sha256": "5f2e1d490444470122244d3ab08dcbb7c8cc1e9e5e8895aac4569ddc02996c98",
+  "pairs": 333,
+  "files_checked": 666,
+  "bytes": 190312360,
+  "mismatches": [],
+  "missing": []
+ },
+ "reference": {
+  "retained_manifest": "receipts/loop-reference-v6.manifest.json",
+  "keys": 10,
+  "identical_bytes": 10,
+  "different": [],
+  "absent": [],
+  "source": "built"
+ },
+ "reads": {
+  "engine": "pdfium",
+  "seconds": 1.8,
+  "documents": 10,
+  "pages": 53,
+  "errors": []
+ },
+ "steps": [
+  {
+   "step": "keys",
+   "command": [
+    "/Users/bryceharmon/Desktop/corridor-wt/731-measurement-contract/.venv/bin/python3",
+    "-m",
+    "corridor_pdf_reader.bootstrap.reference",
+    "--output",
+    "out/pdf-pairs/drawn-grid-ten-2026-09-06/reference",
+    "--jobs",
+    "4",
+    "--keys",
+    "02753bf7e6549f5a",
+    "075ad4da3647d7dc",
+    "1ee4a00b8eb6173b",
+    "50b23088b99df7c2",
+    "5d36b973fa9393a8",
+    "5e979146e9322953",
+    "99e3871a86ca9971",
+    "9d701a8ad492a6d7",
+    "b62895f03208009f",
+    "fcbe0ceb23e61b0f"
+   ],
+   "seconds": 0.8,
+   "log": "keys.log"
+  },
+  {
+   "step": "read",
+   "command": [
+    "/Users/bryceharmon/Desktop/corridor-wt/731-measurement-contract/.venv/bin/python3",
+    "-m",
+    "corridor_pdf_reader.bootstrap.read",
+    "--output",
+    "out/pdf-pairs/drawn-grid-ten-2026-09-06/loop",
+    "--engine",
+    "pdfium",
+    "--jobs",
+    "4",
+    "--keys",
+    "02753bf7e6549f5a",
+    "075ad4da3647d7dc",
+    "1ee4a00b8eb6173b",
+    "50b23088b99df7c2",
+    "5d36b973fa9393a8",
+    "5e979146e9322953",
+    "99e3871a86ca9971",
+    "9d701a8ad492a6d7",
+    "b62895f03208009f",
+    "fcbe0ceb23e61b0f"
+   ],
+   "seconds": 1.9,
+   "log": "read.log"
+  },
+  {
+   "step": "score",
+   "command": [
+    "bootstrap.score.score_pair",
+    "in process, over the selection"
+   ],
+   "seconds": 0.5
+  },
+  {
+   "step": "tally",
+   "command": [
+    "/Users/bryceharmon/Desktop/corridor-wt/731-measurement-contract/.venv/bin/python3",
+    "-m",
+    "corridor_pdf_reader.bootstrap.tally",
+    "out/pdf-pairs/drawn-grid-ten-2026-09-06/loop"
+   ],
+   "exit_code": 0,
+   "log": "tally.txt"
+  }
+ ],
+ "results": {
+  "development": {
+   "keys_selected": 10,
+   "pairs": [
+    0,
+    10
+   ],
+   "pages": [
+    23,
+    53
+   ],
+   "cells_exact": [
+    12844,
+    14641
+   ],
+   "failing_pairs": [
+    "02753bf7e6549f5a",
+    "075ad4da3647d7dc",
+    "1ee4a00b8eb6173b",
+    "50b23088b99df7c2",
+    "5d36b973fa9393a8",
+    "5e979146e9322953",
+    "99e3871a86ca9971",
+    "9d701a8ad492a6d7",
+    "b62895f03208009f",
+    "fcbe0ceb23e61b0f"
+   ],
+   "failing_pages": 30,
+   "unscored_keys": [],
+   "read_errors": {},
+   "by_class": {
+    "uncovered": 1783,
+    "outside_table": 1022,
+    "unexplained_text": 370,
+    "missing_row": 100,
+    "span_mismatch": 15,
+    "value_mismatch": 14,
+    "missing_cell": 9
+   },
+   "by_subclass": {
+    "outside_table/cell_text_outside": 1022,
+    "uncovered/outside_table": 1016,
+    "uncovered/absent": 767,
+    "unexplained_text/text": 217,
+    "unexplained_text/numeric": 112,
+    "missing_row/outside_table": 75,
+    "unexplained_text/edge": 41,
+    "missing_row/absent": 25,
+    "span_mismatch/wider": 15,
+    "value_mismatch/overflow_hashes": 12,
+    "missing_cell/outside_table": 7,
+    "missing_cell/absent": 2,
+    "value_mismatch/clipped_suffix": 1,
+    "value_mismatch/clipped_middle": 1
+   },
+   "pairs_with_class": {
+    "unexplained_text": 9,
+    "uncovered": 9,
+    "outside_table": 8,
+    "missing_row": 4,
+    "span_mismatch": 3,
+    "missing_cell": 3,
+    "value_mismatch": 2
+   },
+   "pages_with_class": {
+    "outside_table": 23,
+    "unexplained_text": 20,
+    "span_mismatch": 7,
+    "missing_row": 4,
+    "missing_cell": 3,
+    "value_mismatch": 2
+   },
+   "by_family": {
+    "AdobePDFLibrary": {
+     "pairs": 1,
+     "pairs_pass": 0,
+     "pages": 1,
+     "pages_pass": 0,
+     "reference_cells": 571,
+     "exact_cells": 540
+    },
+    "Distiller": {
+     "pairs": 1,
+     "pairs_pass": 0,
+     "pages": 2,
+     "pages_pass": 0,
+     "reference_cells": 105,
+     "exact_cells": 0
+    },
+    "Excel": {
+     "pairs": 4,
+     "pairs_pass": 0,
+     "pages": 33,
+     "pages_pass": 18,
+     "reference_cells": 12303,
+     "exact_cells": 11965
+    },
+    "Ghostscript": {
+     "pairs": 2,
+     "pairs_pass": 0,
+     "pages": 11,
+     "pages_pass": 5,
+     "reference_cells": 1345,
+     "exact_cells": 123
+    },
+    "PrintToPDF": {
+     "pairs": 2,
+     "pairs_pass": 0,
+     "pages": 6,
+     "pages_pass": 0,
+     "reference_cells": 317,
+     "exact_cells": 216
+    }
+   },
+   "worst_pairs": [
+    {
+     "key": "b62895f03208009f",
+     "pdf": "85531_1010_Index.pdf",
+     "family": "Ghostscript",
+     "pages": 10,
+     "errors": 818,
+     "uncovered": 1214,
+     "counts": {
+      "outside_table": 605,
+      "unexplained_text": 176,
+      "missing_cell": 1,
+      "missing_row": 36
+     }
+    },
+    {
+     "key": "1ee4a00b8eb6173b",
+     "pdf": "REVISED-McClean-December-SOV.pdf",
+     "family": "Excel",
+     "pages": 5,
+     "errors": 204,
+     "uncovered": 72,
+     "counts": {
+      "unexplained_text": 54,
+      "outside_table": 115,
+      "value_mismatch": 12,
+      "missing_row": 23
+     }
+    },
+    {
+     "key": "02753bf7e6549f5a",
+     "pdf": "19132-71-VE-June-2023.pdf",
+     "family": "Excel",
+     "pages": 13,
+     "errors": 95,
+     "uncovered": 98,
+     "counts": {
+      "outside_table": 86,
+      "unexplained_text": 6,
+      "value_mismatch": 2,
+      "span_mismatch": 1
+     }
+    },
+    {
+     "key": "9d701a8ad492a6d7",
+     "pdf": "status-mobility-fy2018.pdf",
+     "family": "Distiller",
+     "pages": 2,
+     "errors": 74,
+     "uncovered": 105,
+     "counts": {
+      "outside_table": 30,
+      "unexplained_text": 44
+     }
+    },
+    {
+     "key": "99e3871a86ca9971",
+     "pdf": "status-mobility-fy2019.pdf",
+     "family": "PrintToPDF",
+     "pages": 2,
+     "errors": 69,
+     "uncovered": 101,
+     "counts": {
+      "outside_table": 22,
+      "unexplained_text": 47
+     }
+    }
+   ]
+  },
+  "holdout": null
+ },
+ "summary_over_selection": {
+  "pairs": 10,
+  "pairs_pass": 0,
+  "pages": 53,
+  "pages_pass": 23,
+  "reference_cells": 14641,
+  "exact_cells": 12844,
+  "holdout_included": false
+ },
+ "gate": {
+  "development": {
+   "all_pairs_pass": false,
+   "failing_pairs": [
+    "02753bf7e6549f5a",
+    "075ad4da3647d7dc",
+    "1ee4a00b8eb6173b",
+    "50b23088b99df7c2",
+    "5d36b973fa9393a8",
+    "5e979146e9322953",
+    "99e3871a86ca9971",
+    "9d701a8ad492a6d7",
+    "b62895f03208009f",
+    "fcbe0ceb23e61b0f"
+   ],
+   "failing_pages": 30,
+   "unscored_keys": [],
+   "read_errors": []
+  }
+ },
+ "baseline_comparison": {
+  "against": "frozen-reader-2026-09-06",
+  "baseline_path": "gold/pdf-pairs/v1/receipts/frozen-reader-2026-09-06",
+  "baseline_configuration": {
+   "name": "frozen-reader",
+   "engine": "tagged",
+   "dpi": 36,
+   "jobs": 4,
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "package_digest": "7fd94c5fcaaa5531a3cea2ef90dc71a4aafe083fbbbdad47f0234fa371895524",
+   "pypdfium2": "5.13.0",
+   "pdfium": "153.0.7999.0",
+   "pypdf": "6.17.0"
+  },
+  "by_set": {
+   "development": {
+    "pairs_compared": 10,
+    "pairs_regressed": [
+     "02753bf7e6549f5a",
+     "075ad4da3647d7dc",
+     "1ee4a00b8eb6173b",
+     "50b23088b99df7c2",
+     "5d36b973fa9393a8",
+     "5e979146e9322953",
+     "99e3871a86ca9971",
+     "9d701a8ad492a6d7",
+     "b62895f03208009f"
+    ],
+    "pairs_improved": [],
+    "pairs_not_in_baseline": [],
+    "pages_pass": {
+     "baseline": 53,
+     "this_run": 23
+    },
+    "cells_exact": {
+     "baseline": 14615,
+     "this_run": 12844
+    },
+    "regressed": true
+   }
+  },
+  "regressed": true
+ },
+ "holdout": {
+  "included": false
+ },
+ "limits": "Paired renditions are the measurement method, not a prerequisite for reading a production PDF. Cell comparison does not independently establish prose outside tables, raster fidelity, routing correctness, source-locator replay, malicious-document handling, production concurrency, or operational cost and coordinator burden. Those belong to their own tickets.",
+ "wall_seconds": 3.7,
+ "output": "/Users/bryceharmon/Desktop/corridor-wt/731-measurement-contract/out/pdf-pairs/drawn-grid-ten-2026-09-06"
+}
