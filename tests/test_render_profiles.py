@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
@@ -29,6 +28,8 @@ from corridor.render_profiles import (
 )
 from corridor.unreadable_cells import prepare_cell_detail_render
 
+from pdf_fixture_support import PdfFixture
+
 
 @pytest.fixture
 def session():
@@ -42,21 +43,17 @@ def session():
 
 
 def synthetic_pdf(path: Path) -> Path:
-    document = pymupdf.open()
-    page = document.new_page(width=420, height=320)
-    page.set_cropbox(pymupdf.Rect(30, 20, 390, 300))
-    page.set_rotation(90)
-    page.insert_text((60, 70), "Utility Owner")
-    page.draw_rect(pymupdf.Rect(55, 100, 340, 240))
-    page.draw_line((190, 100), (190, 240))
-    page.draw_line((55, 165), (340, 165))
-    page.insert_text((75, 140), "AT&T")
-    page.insert_text((215, 140), "UC-1")
-    page.insert_text((75, 210), "1149+00")
-    page.insert_text((215, 210), "1153+17")
-    document.save(path)
-    document.close()
-    return path
+    fixture = PdfFixture()
+    page = fixture.add_page(width=420, height=320, rotation=90, cropbox=(30, 20, 390, 300))
+    page.text((60, 70), "Utility Owner")
+    page.rect((55, 100, 340, 240))
+    page.line((190, 100), (190, 240))
+    page.line((55, 165), (340, 165))
+    page.text((75, 140), "AT&T")
+    page.text((215, 140), "UC-1")
+    page.text((75, 210), "1149+00")
+    page.text((215, 210), "1153+17")
+    return fixture.save(path)
 
 
 def test_opencv_is_locked_only_in_the_render_worker():
@@ -117,7 +114,8 @@ def test_review_render_round_trips_rotated_cropped_page_without_preprocessing(
         derivative.artifact_path.read_bytes()
     ).hexdigest()
     assert derivative.rotation_degrees == 90
-    assert derivative.media_box != derivative.crop_box
+    assert derivative.media_box == PageBox(x0=0, y0=0, x1=420_000, y1=320_000)
+    assert derivative.crop_box == PageBox(x0=30_000, y0=20_000, x1=390_000, y1=300_000)
     assert abs(
         derivative.raster_width
         - round(
