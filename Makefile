@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -396,3 +396,12 @@ minutes:
 report:
 	uv run python -m corridor.report $(ARGS)
 
+# ---- The imported paired-rendition reader (#729) -----------------------------
+# Print a stored Document Rendition as the reader sees it: pages, tables,
+# cells with their semantics-tier IDs, text outside every table, clipped runs.
+# The read runs in a PDFium-isolated child process (corridor_pdf_reader.execution).
+# Address the rendition by content digest through the storage interface, or by path:
+#   make pdf-reader-inspect ARGS="--sha256 <sha256> --pages 1 2"
+#   make pdf-reader-inspect ARGS="--file corpus/files/<sha256>.pdf --json"
+pdf-reader-inspect:
+	uv run python -m corridor_pdf_reader.rendition_cli $(ARGS)
