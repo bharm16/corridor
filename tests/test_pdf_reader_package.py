@@ -19,6 +19,7 @@ import re
 import tomllib
 
 import pytest
+from test_architecture import PYMUPDF_PACKAGES, TESSERACT_PACKAGES
 
 from corridor_pdf_reader import provenance
 
@@ -127,7 +128,10 @@ def test_no_production_module_imports_the_reader_package():
 
 
 def test_the_package_never_imports_pymupdf_or_tesseract():
-    forbidden = {"fitz", "pymupdf", "pytesseract"}
+    # The engine names come from the architecture guard so the two checks
+    # cannot drift, and so this file names no engine in a literal that the
+    # guard would count as a use of it.
+    forbidden = set(PYMUPDF_PACKAGES) | set(TESSERACT_PACKAGES)
     offenders = []
     for path in sorted(PACKAGE_ROOT.rglob("*.py")):
         names = {name.split(".")[0] for name in _imported_names(path)}
