@@ -1,8 +1,9 @@
-"""The imported reader is commit c39363e, unchanged, and nothing in production reaches it (#729).
+"""The imported reader and Textract rung are commit c39363e, unchanged, and nothing in production reaches them (#729, #732).
 
 Three claims the ticket makes are checked here mechanically rather than in
-prose: every imported file still hashes to the blob git recorded for it once
-the one import-prefix rewrite is undone; no module under `src/corridor` (or
+prose: every imported file (the reader, the harness and, since #732, the
+Textract rung) still hashes to the blob git recorded for it once the one
+import-prefix rewrite is undone; no module under `src/corridor` (or
 the render worker) imports the package, so no production path can call PDFium
 through it before #447's selection; and the configuration the package
 declares is the one loop-020 measured.
@@ -27,13 +28,13 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "corridor_pdf_reader"
 PRODUCTION_ROOTS = (REPO_ROOT / "src" / "corridor", REPO_ROOT / "workers" / "render")
 
-IMPORT_LINE = re.compile(rb"^[ \t]*from (corridor_pdf_reader\.)?(replacement|bootstrap)[.\s]")
+IMPORT_LINE = re.compile(rb"^[ \t]*from (corridor_pdf_reader\.)?(replacement|bootstrap|textract)[.\s]")
 
 
 def test_every_imported_file_matches_commit_c39363e():
     manifest = provenance.load_manifest()
 
-    assert len(manifest) == 77
+    assert len(manifest) == 101
     assert provenance.SOURCE_COMMIT == "c39363e26c2726b61c4e707f589093c67173e538"
     assert provenance.verify() == []
 
@@ -43,7 +44,7 @@ def test_the_only_textual_change_is_the_import_prefix():
     syntax trees differ in nothing but those module names."""
 
     rewritten = [entry for entry in provenance.load_manifest() if entry.rewritten_imports]
-    assert len(rewritten) == 16
+    assert len(rewritten) == 26
 
     for entry in rewritten:
         current = (PACKAGE_ROOT / entry.path).read_bytes()

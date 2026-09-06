@@ -18,7 +18,9 @@ the import began, and what was deliberately changed.
 | `corpus/fixtures/*.pdf`, `corpus/fixtures.json` | same | Eleven tiny synthetic PDFs (four rotations with and without a CropBox, a raster-only page, malformed bytes, a password) generated independently of every engine, for bounded fixture tests |
 | `receipts/notes/{HANDOFF,SEMANTICS-RESULTS,TEXTRACT-RESULTS}.md` | repository root | The logs the ticket names, beside the baseline receipts |
 
-Not imported: `textract/` (#732's), `tests/test_replacement.py` (it builds
+| `textract/` | `textract/` | The Textract rung (#732, imported after the reader): the rasterizer, the cached and retried AnalyzeDocument client, the block mapping into the reader's page shape, the lane A native-glyph re-map with its two measured variants, the harness driver, the semantics runner, the presigned-URL transport, its lock, and its tests with the four retained responses |
+
+Not imported: `tests/test_replacement.py` (it builds
 its PDFs with reportlab and compares against the PyMuPDF baseline in the
 comparison harness, neither of which Corridor may carry; the bounded fixture
 tests in `tests/test_pdf_reader_package.py` cover the same fixture PDFs
@@ -27,7 +29,8 @@ harnesses, which measured other engines.
 
 Every imported file is listed in `source-manifest.json` with its git blob id
 (from `git ls-tree -r -l c39363e`), the SHA-256 of the archived bytes and its
-size. `provenance.verify()` recomputes all of it, and
+size: 77 files for the reader and the harness, 24 more for the Textract rung.
+`provenance.verify()` recomputes all of it, and
 `tests/test_pdf_reader_package.py` fails if anything differs.
 
 The commands, run from the Corridor worktree with the source worktree at
@@ -45,13 +48,23 @@ git -C /Users/bryceharmon/Desktop/pdf-reader-comparison-base archive c39363e \
 git -C /Users/bryceharmon/Desktop/pdf-reader-comparison-base ls-tree -r -l c39363e <the same paths>
 ```
 
+The Textract rung came the same way, later, for #732 (24 files, every blob
+id checked against `ls-tree` before the rewrite):
+
+```bash
+git -C /Users/bryceharmon/Desktop/pdf-reader-comparison-base archive c39363e textract \
+  | tar -x -C src/corridor_pdf_reader
+```
+
 ## The one change: the import prefix
 
-The two packages import each other by absolute name (`from replacement.layout
-import ...`, `from bootstrap.corpus import ...`). Under Corridor they are
-`corridor_pdf_reader.replacement` and `corridor_pdf_reader.bootstrap`, so
-every such statement gained the prefix: sixteen files, twenty-nine lines,
-nothing but `from X` becoming `from corridor_pdf_reader.X`
+The packages import each other by absolute name (`from replacement.layout
+import ...`, `from bootstrap.corpus import ...`, `from textract.blocks import
+...`). Under Corridor they are `corridor_pdf_reader.replacement`,
+`corridor_pdf_reader.bootstrap` and `corridor_pdf_reader.textract`, so every
+such statement gained the prefix: sixteen files and twenty-nine lines for the
+reader and the harness (#729), ten files and twenty-six lines for the Textract
+rung (#732), nothing but `from X` becoming `from corridor_pdf_reader.X`
 (`provenance.rewrite_imports`). `provenance.restore_imports` is the exact
 inverse, and the parity test proves that restoring every rewritten file
 yields bytes with the recorded blob id, and that the abstract syntax trees
@@ -71,6 +84,25 @@ into `sys.path` (a no-op for the rewritten imports), `reference.py` also adds
 a `paired_trial/vendor` directory that did not exist at the commit, and
 `reference.py` writes a scratch copy of a zip-behind-`.xls` workbook under
 `<package>/tmp/`, which `make pdf-reader-reproduce` creates and git ignores.
+The Textract rung's `read.py`, `semantics.py`, `transport.py` and
+`tests/conftest.py` insert the same package root the same way, and `read.py`
+and `transport.py` default their cache and PNG directories to
+`<package>/results/`, which nothing in Corridor creates.
+
+## The Textract rung's harness entry points are retained, not wired (#732)
+
+`textract/read.py`, `textract/semantics.py` and `textract/transport.py` are
+the standalone experiment's command-line drivers, kept byte-identical because
+they are the provenance of the retained lanes (`receipts/textract/`). None is
+reachable from a Corridor module or a `make` target: `tests/test_textract_adapter.py`
+fails if any module outside the adapter's outbound boundary imports
+`textract.client`, `textract.transport`, `textract.read` or
+`textract.semantics`. Invoking one as `python -m` by hand is a live path with
+the standalone repository's defaults (the `corridor` AWS profile, `us-east-2`,
+the source's page budget) and is not covered by the customer-authorization
+check; Corridor's own path to Textract is `corridor_pdf_reader.textract_adapter`,
+whose `SOURCE`-level record is that package's docstring and
+`docs/operations/textract-provider-posture.md`.
 
 `bootstrap/LOOP-LOG.md` is the one file that grows: ADR-0008 requires every
 holdout access to be appended to the experiment log, and the reproduction
@@ -112,8 +144,10 @@ anything here (#447 owns native selection).
   this package only. pypdf's own annotations are skipped for mypy because the
   source checked `replacement/` in an environment where pypdf was absent.
 - `make test` collects the imported `bootstrap/tests` through
-  `tests/test_pdf_reader_imported_tests.py`, and the package's own bounded
-  tests need no corpus, no node and no network.
+  `tests/test_pdf_reader_imported_tests.py` and the imported `textract/tests`
+  through `tests/test_textract_imported_tests.py`; the package's own bounded
+  tests need no corpus, no node and no network, and the Textract tests run
+  against a fake service and file URLs only.
 - The 333-pair reproduction is `make pdf-reader-reproduce`, an explicit
   experiment outside CI; its receipt lives in `receipts/`.
 
