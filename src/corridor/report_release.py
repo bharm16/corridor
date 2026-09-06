@@ -13,11 +13,12 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import PurePath
 from typing import TYPE_CHECKING
 
-import pymupdf
+from pypdf import PdfReader
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -641,10 +642,9 @@ def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> No
     if not displays:
         return
     try:
-        with pymupdf.open(stream=pdf_bytes, filetype="pdf") as pdf:
-            visible_text = _normalized_visible_text(
-                "\n".join(page.get_text() for page in pdf)
-            )
+        visible_text = _normalized_visible_text(
+            "\n".join(page.extract_text() for page in PdfReader(BytesIO(pdf_bytes)).pages)
+        )
     except Exception as exc:
         raise ReleaseRefusal(
             "External Report PDF cannot be read to verify its frozen statement fields"
