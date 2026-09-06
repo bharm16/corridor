@@ -1,0 +1,216 @@
+{
+ "kind": "textract-retained-response-replay",
+ "replayed_at": "2026-09-06T06:46:44+00:00",
+ "adapter": {
+  "adapter_version": "corridor-textract-adapter-1",
+  "source_commit": "c39363e26c2726b61c4e707f589093c67173e538",
+  "provider": "aws-textract",
+  "operation": "AnalyzeDocument",
+  "feature_types": [
+   "TABLES"
+  ],
+  "local_reader": {
+   "module": "corridor_pdf_reader.replacement.reader.read_pdf",
+   "engine": "tagged",
+   "dpi": 36
+  },
+  "rasterizer": {
+   "module": "corridor_pdf_reader.textract.render.render_page",
+   "pypdfium2": "5.13.0",
+   "pdfium": "153.0.7999.0",
+   "pillow": "12.3.0"
+  },
+  "parser": {
+   "module": "corridor_pdf_reader.textract.blocks.page_from_blocks",
+   "method": "textract-analyze-document-tables-v1"
+  },
+  "remap": {
+   "module": "corridor_pdf_reader.textract.remap.remap_page",
+   "text_source": "pdfium-glyphs"
+  },
+  "provider_model": {
+   "pinned": false,
+   "reported_as": "AnalyzeDocumentModelVersion",
+   "note": "AnalyzeDocument exposes no version selector for the TABLES model; the version each response reports is recorded, never promised"
+  }
+ },
+ "package_digest": "181719aab8acae237dec64f3935570eb68a56c07f10d71ec4d540387b6c12028",
+ "passes": 2,
+ "source": {
+  "fixtures": "textract/tests/fixtures",
+  "files": 4
+ },
+ "summary": {
+  "entries": 4,
+  "readings": 4,
+  "identical_readings": 4,
+  "all_identical": true,
+  "entries_without_a_frame": 0,
+  "distinct_raw_response_digests": 4,
+  "model_versions": {
+   "1.0": 4
+  },
+  "blocks": 565,
+  "tables": 7,
+  "cells": 99,
+  "outside": 25
+ },
+ "entries": [
+  {
+   "name": "holmberg-5007-page2-clean",
+   "raster_sha256": "e1ba840771e54efa2710b33f94fee9b457dbbcc791b93003d0c95933aa5de4ab",
+   "raster_bytes": null,
+   "transport": null,
+   "requested_at": null,
+   "attempts": null,
+   "feature_types": null,
+   "model_version": "1.0",
+   "raw_response_digest": "6b2c34ed80484ba555a21b9390b6499980a1a06f9fa4255682a4d8704c714378",
+   "blocks": 39,
+   "readings": [
+    {
+     "frame": {
+      "size": [
+       612.0,
+       792.0
+      ],
+      "rotation": 0,
+      "from": "holmberg-5007-page2-clean: displayed_size"
+     },
+     "normalization": {
+      "text_source": "textract-words",
+      "parser": "textract-analyze-document-tables-v1",
+      "remap_margin": 0.0,
+      "rescue_runs": false
+     },
+     "digests": [
+      "8fc6bd565f0716f3ed9a5ae5effefe0cded14b14a9caa966143ac097466ba3be",
+      "8fc6bd565f0716f3ed9a5ae5effefe0cded14b14a9caa966143ac097466ba3be"
+     ],
+     "identical": true,
+     "tables": 1,
+     "cells": 16,
+     "outside": 0,
+     "clipped": 0
+    }
+   ]
+  },
+  {
+   "name": "status-mobility-fy2018-page2-clean",
+   "raster_sha256": "637fb480d22209acce65726433d21a888fbd6da09af0c46faf2ec1a95e5f2335",
+   "raster_bytes": null,
+   "transport": null,
+   "requested_at": null,
+   "attempts": null,
+   "feature_types": null,
+   "model_version": "1.0",
+   "raw_response_digest": "acccd0c045c4dc92126392b5fe71565951aa163fd72971e8df617218679d2024",
+   "blocks": 246,
+   "readings": [
+    {
+     "frame": {
+      "size": [
+       612.0,
+       792.0
+      ],
+      "rotation": 0,
+      "from": "status-mobility-fy2018-page2-clean: displayed_size"
+     },
+     "normalization": {
+      "text_source": "textract-words",
+      "parser": "textract-analyze-document-tables-v1",
+      "remap_margin": 0.0,
+      "rescue_runs": false
+     },
+     "digests": [
+      "da79b0c09bdc416d92f97f99f5f16a34d0246b2d591a403dc571740ae444bc0f",
+      "da79b0c09bdc416d92f97f99f5f16a34d0246b2d591a403dc571740ae444bc0f"
+     ],
+     "identical": true,
+     "tables": 2,
+     "cells": 37,
+     "outside": 12,
+     "clipped": 0
+    }
+   ]
+  },
+  {
+   "name": "status-mobility-fy2018-page2-degraded",
+   "raster_sha256": "abd284aa3ace820bb929b1dad8b4a967b998f71d219e1740d7573c7d246ba910",
+   "raster_bytes": null,
+   "transport": null,
+   "requested_at": null,
+   "attempts": null,
+   "feature_types": null,
+   "model_version": "1.0",
+   "raw_response_digest": "f4b66ab45d1b3c115346ffc91bb0fe00ce404b89c5ae5b9424d2bffe572637f8",
+   "blocks": 253,
+   "readings": [
+    {
+     "frame": {
+      "size": [
+       612.0,
+       792.0
+      ],
+      "rotation": 0,
+      "from": "status-mobility-fy2018-page2-degraded: displayed_size"
+     },
+     "normalization": {
+      "text_source": "textract-words",
+      "parser": "textract-analyze-document-tables-v1",
+      "remap_margin": 0.0,
+      "rescue_runs": false
+     },
+     "digests": [
+      "afe8d9df5d10a010a5882c04281bfa7f2c763c02d60ae1525adaa544de81b1e9",
+      "afe8d9df5d10a010a5882c04281bfa7f2c763c02d60ae1525adaa544de81b1e9"
+     ],
+     "identical": true,
+     "tables": 3,
+     "cells": 41,
+     "outside": 11,
+     "clipped": 0
+    }
+   ]
+  },
+  {
+   "name": "synthetic-grid-merged",
+   "raster_sha256": null,
+   "raster_bytes": null,
+   "transport": null,
+   "requested_at": null,
+   "attempts": null,
+   "feature_types": null,
+   "model_version": "1.0",
+   "raw_response_digest": "5bacce89ff0745a5b3ada9450ba63df639cdec73e760494f54bdac92bd010f21",
+   "blocks": 27,
+   "readings": [
+    {
+     "frame": {
+      "size": [
+       612.0,
+       792.0
+      ],
+      "rotation": 0,
+      "from": "synthetic-grid-merged: displayed_size"
+     },
+     "normalization": {
+      "text_source": "textract-words",
+      "parser": "textract-analyze-document-tables-v1",
+      "remap_margin": 0.0,
+      "rescue_runs": false
+     },
+     "digests": [
+      "3b5453828cf5977376e7da0f1b8079a06de435692d60cd28325a7e6691b19b6c",
+      "3b5453828cf5977376e7da0f1b8079a06de435692d60cd28325a7e6691b19b6c"
+     ],
+     "identical": true,
+     "tables": 1,
+     "cells": 5,
+     "outside": 2,
+     "clipped": 0
+    }
+   ]
+  }
+ ]
+}

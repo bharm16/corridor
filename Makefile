@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -424,3 +424,17 @@ TRUE_PAIRS_ROOT ?= /Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spre
 pdf-reader-reproduce:
 	mkdir -p src/corridor_pdf_reader/tmp
 	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.reproduction $(ARGS)
+
+# ---- The Textract adapter (#732) ---------------------------------------------
+# Replay retained Textract responses through the adapter's normalizer, twice
+# each, and write a receipt of raw-response and normalized-reading digests
+# (ADR-0094: exact replay is the retained response, never a fresh call). An
+# explicit experiment outside pytest and CI over the 116-entry experiment
+# cache, which stays in the standalone worktree and is only read; the retained
+# lane reads under the same results root supply each raster's page frame. CI
+# replays only the four committed fixtures (tests/test_textract_adapter_replay.py).
+# No AWS call is made by this target or by anything under textract_adapter.
+#   make textract-replay ARGS="--output out/textract/experiment-cache-replay-2026-09-06.json --retain"
+TEXTRACT_RESULTS ?= /Users/bryceharmon/Desktop/pdf-reader-comparison-textract/results
+textract-replay:
+	uv run python -m corridor_pdf_reader.textract_adapter.replay --cache $(TEXTRACT_RESULTS)/textract-cache --reads $(TEXTRACT_RESULTS) $(ARGS)
