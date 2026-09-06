@@ -623,6 +623,187 @@ def test_the_render_worker_has_no_database_or_storage_dependency():
     assert not any(f'name = "{name}"' in lock for name in forbidden)
 
 
+# PyMuPDF and Tesseract leave the product (ADR-0094, #727). The allowlist below
+# is the measured remainder: every module that still depends on either engine,
+# with the engine(s) it uses. A later ticket deletes the lines for the modules
+# it moved; #741 empties the list. The decision does not remove an engine, and
+# neither does this guard; it holds the remainder still while the replacement
+# lands.
+ENGINE_SCAN_ROOTS = ("src/corridor", "workers/render", "tests", "scripts")
+PYMUPDF_PACKAGES = frozenset({"fitz", "pymupdf"})
+TESSERACT_PACKAGES = frozenset({"pytesseract"})
+ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
+    ("src/corridor/current_record.py", ("pymupdf",)),
+    ("src/corridor/extract_matrix.py", ("pymupdf",)),
+    ("src/corridor/geometry.py", ("pymupdf",)),
+    ("src/corridor/gold.py", ("pymupdf",)),
+    ("src/corridor/ingest.py", ("pymupdf", "tesseract")),
+    ("src/corridor/m8_acceptance.py", ("pymupdf",)),
+    ("src/corridor/page_inventory.py", ("pymupdf", "tesseract")),
+    ("src/corridor/product_proving_frontend_capture.py", ("pymupdf",)),
+    ("src/corridor/report_release.py", ("pymupdf",)),
+    ("src/corridor/sh99_coordinator_rehearsal.py", ("pymupdf",)),
+    ("src/corridor/source_intake_draft.py", ("pymupdf",)),
+    ("src/corridor/source_segments.py", ("pymupdf",)),
+    ("src/corridor/storage_baseline.py", ("pymupdf",)),
+    ("src/corridor/token_layers.py", ("pymupdf", "tesseract")),
+    ("src/corridor/unreadable_cells.py", ("tesseract",)),
+    ("src/corridor/web/queue.py", ("pymupdf",)),
+    ("tests/m8_acceptance_support.py", ("pymupdf",)),
+    ("tests/test_docs.py", ("pymupdf",)),
+    ("tests/test_document_delivery_link.py", ("pymupdf",)),
+    ("tests/test_email_intake.py", ("pymupdf",)),
+    ("tests/test_extract_matrix.py", ("pymupdf",)),
+    ("tests/test_extract_minutes_v5.py", ("pymupdf",)),
+    ("tests/test_fact_materialization.py", ("pymupdf",)),
+    ("tests/test_geometry.py", ("pymupdf",)),
+    ("tests/test_gold.py", ("pymupdf",)),
+    ("tests/test_ingest.py", ("pymupdf", "tesseract")),
+    ("tests/test_location_discovery.py", ("pymupdf",)),
+    ("tests/test_location_discovery_cli.py", ("pymupdf",)),
+    ("tests/test_locator_validation.py", ("pymupdf",)),
+    ("tests/test_m8_acceptance_capture.py", ("pymupdf",)),
+    ("tests/test_page_inventory.py", ("pymupdf",)),
+    ("tests/test_product_proving_frontend_capture.py", ("pymupdf",)),
+    ("tests/test_prose_facts.py", ("pymupdf",)),
+    ("tests/test_prose_interpretation.py", ("pymupdf",)),
+    ("tests/test_push_intake.py", ("pymupdf",)),
+    ("tests/test_render_profiles.py", ("pymupdf",)),
+    ("tests/test_render_retention.py", ("pymupdf", "tesseract")),
+    ("tests/test_report.py", ("pymupdf",)),
+    ("tests/test_report_release.py", ("pymupdf",)),
+    ("tests/test_sh99_coordinator_rehearsal.py", ("pymupdf",)),
+    ("tests/test_source_intake.py", ("pymupdf",)),
+    ("tests/test_source_intake_web.py", ("pymupdf",)),
+    ("tests/test_source_segments.py", ("pymupdf",)),
+    ("tests/test_storage_baseline.py", ("pymupdf",)),
+    ("tests/test_token_layer_ingest.py", ("pymupdf",)),
+    ("tests/test_token_layers.py", ("pymupdf", "tesseract")),
+    ("tests/test_unreadable_cells.py", ("tesseract",)),
+    ("workers/render/render_worker.py", ("pymupdf",)),
+)
+
+
+def _engines_used(tree: ast.Module) -> frozenset[str]:
+    """The engines one module depends on.
+
+    PyMuPDF is an import of `pymupdf` or its `fitz` alias. Tesseract is an
+    import of `pytesseract`, or a string literal naming the engine: the
+    executable handed to `shutil.which` and `subprocess`, the engine identity
+    written on routing and provenance rows, the read identity the cell-reading
+    harness enumerates, and the engine a test names when it simulates one.
+    Docstrings and comments are prose, not dependencies, and are not scanned.
+    """
+
+    docstrings: set[ast.Constant] = set()
+    for node in ast.walk(tree):
+        if not isinstance(
+            node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+        ):
+            continue
+        first = node.body[0] if node.body else None
+        if (
+            isinstance(first, ast.Expr)
+            and isinstance(first.value, ast.Constant)
+            and isinstance(first.value.value, str)
+        ):
+            docstrings.add(first.value)
+    engines: set[str] = set()
+    for node in ast.walk(tree):
+        packages: set[str] = set()
+        if isinstance(node, ast.Import):
+            packages = {alias.name.split(".")[0] for alias in node.names}
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            packages = {node.module.split(".")[0]}
+        elif (
+            isinstance(node, ast.Constant)
+            and isinstance(node.value, str)
+            and node not in docstrings
+            and "tesseract" in node.value.lower()
+        ):
+            engines.add("tesseract")
+        if packages & PYMUPDF_PACKAGES:
+            engines.add("pymupdf")
+        if packages & TESSERACT_PACKAGES:
+            engines.add("tesseract")
+    return frozenset(engines)
+
+
+def _engine_uses() -> dict[str, frozenset[str]]:
+    """Repository-relative path -> engines, for every scanned Python module.
+
+    Hidden directories are skipped because the render worker's own `.venv`
+    holds PyMuPDF itself, and this file is skipped because it names both
+    engines in order to guard them.
+    """
+
+    uses: dict[str, frozenset[str]] = {}
+    for root in ENGINE_SCAN_ROOTS:
+        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+            relative = path.relative_to(REPO_ROOT)
+            if any(
+                part.startswith(".") or part == "__pycache__"
+                for part in relative.parts
+            ) or path == Path(__file__).resolve():
+                continue
+            engines = _engines_used(_tree(path))
+            if engines:
+                uses[relative.as_posix()] = engines
+    return uses
+
+
+def test_the_engine_scanner_sees_every_form_of_dependency():
+    """The allowlist is only as honest as the scanner behind it."""
+
+    cases = {
+        "import fitz\n": {"pymupdf"},
+        "from pymupdf import Rect\n": {"pymupdf"},
+        "def ocr():\n    import pytesseract\n    return pytesseract\n": {"tesseract"},
+        "OCR_ENGINE = 'tesseract'\n": {"tesseract"},
+        "raise RuntimeError(f'{name}: Tesseract unavailable')\n": {"tesseract"},
+        '"""Tesseract and PyMuPDF named in prose."""\n': set(),
+        "def read():\n    '''Tesseract in a docstring.'''\n": set(),
+        "import pypdf  # neither pymupdf nor tesseract\n": set(),
+    }
+
+    assert {
+        source: set(_engines_used(ast.parse(source))) for source in cases
+    } == cases
+
+
+def test_only_allowlisted_modules_still_use_pymupdf_or_tesseract():
+    """ADR-0094: PDF facts come from the paired-rendition reader, scanned pages
+    from Textract, and PyMuPDF and Tesseract leave the product. The decision
+    removes nothing; #741 proves the removal. Until then this guard is exact in
+    both directions: a module outside the allowlist that uses an engine fails,
+    and a listed module that no longer uses the engine named for it fails, so
+    the list can only shrink, and only honestly.
+    """
+
+    paths = [path for path, _ in ENGINE_ALLOWLIST]
+    assert paths == sorted(set(paths)), "the allowlist is sorted and names each module once"
+    assert all(
+        isinstance(engines, tuple) and engines for _, engines in ENGINE_ALLOWLIST
+    ), "each entry names its engines as a non-empty tuple"
+    listed = {path: frozenset(engines) for path, engines in ENGINE_ALLOWLIST}
+    found = _engine_uses()
+    problems: dict[str, str] = {}
+    for path in sorted(set(listed) | set(found)):
+        if path not in listed:
+            problems[path] = (
+                f"uses {', '.join(sorted(found[path]))} and is not on the allowlist"
+            )
+        elif path not in found:
+            problems[path] = "no longer uses either engine; delete its allowlist line"
+        elif listed[path] != found[path]:
+            problems[path] = (
+                f"allowlisted for {', '.join(sorted(listed[path]))} "
+                f"but uses {', '.join(sorted(found[path]))}"
+            )
+
+    assert problems == {}
+
+
 def test_database_upgrade_tests_are_one_explicitly_marked_baseline_contract():
     paths = sorted((REPO_ROOT / "tests").glob("test_*migration*.py"))
 
