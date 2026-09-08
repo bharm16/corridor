@@ -786,7 +786,7 @@ def textract_reading_tokens(reading: dict[str, Any]) -> tuple[Token, ...]:
                     raw_text=text,
                     normalized_text=normalize(text),
                     polygon_pdf=_rect_from_points(*cell["box"]),
-                    confidence=_provider_confidence(cell.get("confidence")),
+                    confidence=provider_confidence(cell.get("confidence")),
                     block=table_no,
                     line=int(cell["row"]),
                 )
@@ -802,13 +802,13 @@ def textract_reading_tokens(reading: dict[str, Any]) -> tuple[Token, ...]:
                 raw_text=text,
                 normalized_text=normalize(text),
                 polygon_pdf=_rect_from_points(*item["box"]),
-                confidence=_provider_confidence(item.get("confidence")),
+                confidence=provider_confidence(item.get("confidence")),
             )
         )
     return tuple(tokens)
 
 
-def _provider_confidence(value: object) -> float | None:
+def provider_confidence(value: object) -> float | None:
     """Textract reports 0..100; a token layer records 0..1, or nothing at all."""
 
     if value is None:

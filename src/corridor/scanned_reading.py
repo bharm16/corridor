@@ -53,6 +53,7 @@ from corridor.token_layers import (
     READER_ENGINE,
     Token,
     TokenLayer,
+    provider_confidence,
     textract_token_layer,
 )
 from corridor.models import UnreadableCellResolution
@@ -360,7 +361,7 @@ def classify_region_values(
                     value=text,
                     value_source="textract_words",
                     state="unconfirmed",
-                    confidence=_confidence(cell.get("confidence")),
+                    confidence=provider_confidence(cell.get("confidence")),
                     locator=None,
                     provenance=_cell_provenance(
                         provenance, region, source="textract_words"
@@ -476,12 +477,6 @@ def _fixed(box) -> PdfRect:
         x1=round(x1 * FIXED_POINT_SCALE),
         y1=round(y1 * FIXED_POINT_SCALE),
     )
-
-
-def _confidence(value: object) -> float | None:
-    if value is None:
-        return None
-    return max(0.0, min(1.0, float(value) / 100.0))
 
 
 # --- Tier 2: disagreement, which is not verification ----------------------------
