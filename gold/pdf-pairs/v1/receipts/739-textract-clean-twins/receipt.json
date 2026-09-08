@@ -1,0 +1,264 @@
+{
+ "schema_version": "corridor.pdf-pairs-receipt.v1",
+ "run": "739-textract-clean-twins",
+ "date": "2026-09-08",
+ "twin": "clean",
+ "what": "Corridor's record of the scanned reading measured on the clean 300 dpi scan twins of the ten development pairs, recorded from the retained standalone lane rather than re-run: the responses are retained, the corpus twins are outside this repository, and no provider call was made to write this receipt. Every number below is recomputed from the retained per-pair score files and checked against the lane's own summary (#739).",
+ "not_a_claim": "This is a measurement of the declared unconfirmed-reading role, not a qualification of it and not a selection of it. Textract has not earned verified scanned-cell transcription: 695 of the 901 mismatched cells in the clean lane carried a mean word confidence of 95 or more (ADR-0094). Native promotion never implies that OCR reached native-cell accuracy.",
+ "configuration": {
+  "name": "textract-scanned-clean",
+  "description": "Textract AnalyzeDocument with FeatureTypes [TABLES] over the clean 300 dpi scan twins of the ten development pairs; Textract's words are the values, which makes every one of them an Unconfirmed reading",
+  "engine": "textract",
+  "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+  "value_source": "textract_words",
+  "geometry_source": "textract",
+  "render_dpi": 300,
+  "api": "AnalyzeDocument",
+  "feature_types": [
+   "TABLES"
+  ],
+  "region": "us-east-2",
+  "reader": {
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "engines": {
+    "pypdfium2": "5.13.0",
+    "pypdf": "6.17.0",
+    "pdf-oxide": "0.3.77",
+    "pillow": "12.3.0"
+   }
+  },
+  "twins": "true-pairs/exact/scans-clean"
+ },
+ "dataset": {
+  "dataset_version": "2026-09-06.1",
+  "registration_sha256": "46d5a66491d1ac04fbbce7d5959d8c2366619603e0be44cf2b4b84904ac0b67c",
+  "corpus_manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "split_sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+  "answer_key": "loop-reference-v6 (src/corridor_pdf_reader/receipts/loop-reference-v6.manifest.json)",
+  "population": "ten development pairs of the exact set (53 pages, 14,641 reference cells), keys in src/corridor_pdf_reader/receipts/textract/ten-keys.txt",
+  "keys": [
+   "5e979146e9322953",
+   "1ee4a00b8eb6173b",
+   "075ad4da3647d7dc",
+   "02753bf7e6549f5a",
+   "50b23088b99df7c2",
+   "99e3871a86ca9971",
+   "fcbe0ceb23e61b0f",
+   "b62895f03208009f",
+   "5d36b973fa9393a8",
+   "9d701a8ad492a6d7"
+  ],
+  "twins": "true-pairs/exact/scans-clean"
+ },
+ "evidence": {
+  "retained_lane": "src/corridor_pdf_reader/receipts/textract/textract-B",
+  "retained_lane_role": "imported-textract-lane",
+  "derived_from": "scores/*.json, one file per development pair",
+  "checked_against": "summary.json of the same lane",
+  "responses": "the 116-entry experiment cache retained in the standalone worktree, read-only; four of its entries are committed as fixtures and replayed in CI (src/corridor_pdf_reader/receipts/textract/fixture-replay.json)",
+  "files": {
+   "SUMMARY.md": "8cdcbe9e3437a8b55f73855be7ec4eb79909b8040f5fb032fab986e25d7f9db3",
+   "configuration.json": "b927d3ff8789ee87c8246986e2cc0432a2fa103d9f505dbad7cc8c6ee690b626",
+   "read-receipts.json": "18d5195a0611f46f69d5dfd89ac7afc776e703be9ba6e8e43f4ed6875520e487",
+   "reads.manifest.json": "a1e78dde297235cdd17064e7fafd244b93f3832e3f24e14d5fd7b1ed6c907d65",
+   "scores/02753bf7e6549f5a.json": "04f429a1c681ed708c036871a9ac7392c427190477e6e7e5e43e9af49382f499",
+   "scores/075ad4da3647d7dc.json": "ad698dbf17aac1abf78e219959e57ce93817bfe38ed363d3b4b71f46a93b94b4",
+   "scores/1ee4a00b8eb6173b.json": "1673cd26419b42e887823678843d4e2a4e8d7a13cde986a8faadcf9402faabdb",
+   "scores/50b23088b99df7c2.json": "303cd99664c9d32f72f838065af07c467a4370c4a068e184dafd4460cbfb9791",
+   "scores/5d36b973fa9393a8.json": "22cc1b2842ff6d620c3e7adb30bfa374186d809f779b5c3c5781c778e3891e7b",
+   "scores/5e979146e9322953.json": "0f8a063698cf45801c69456e180812d96f3af9f5a7e8cdb24bb6a8c0327a9fe6",
+   "scores/99e3871a86ca9971.json": "6c92e1f0f110ce146dc4613f715e312c81dd05d48a3be4344533da6a79925a1c",
+   "scores/9d701a8ad492a6d7.json": "1706013ed597ab13ca0af71c64543a5f0a277a0cf3ee83ec7ee2a52ae2c510f5",
+   "scores/b62895f03208009f.json": "f4e9d1c2922b1802ba7e91c2cc68ca59d4b74fe97e60faf5167fc42161285b25",
+   "scores/fcbe0ceb23e61b0f.json": "1ed3a894ac3f3fc5f5f093c529163ae8772c2e163b6d561c5b868f977a5ba2fe",
+   "summary.json": "6afa26b71f03868667e130744606444cc60e352581fc1f1f79c6a2cebe94397f"
+  }
+ },
+ "measures": {
+  "pairs": [
+   0,
+   10
+  ],
+  "pages": [
+   7,
+   53
+  ],
+  "cells_exact": [
+   13450,
+   14641
+  ],
+  "note": "three readings that must never be collapsed into one number: a pair passes only when every one of its pages passes, so the cell count says nothing about the pair count and neither says anything about the page count",
+  "by_pair": [
+   {
+    "key": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "family": "Excel",
+    "passes": false,
+    "pages": 13,
+    "pages_pass": 1,
+    "reference_cells": 4858,
+    "exact_cells": 4772
+   },
+   {
+    "key": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "family": "Excel",
+    "passes": false,
+    "pages": 6,
+    "pages_pass": 0,
+    "reference_cells": 2106,
+    "exact_cells": 2004
+   },
+   {
+    "key": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "family": "Excel",
+    "passes": false,
+    "pages": 5,
+    "pages_pass": 0,
+    "reference_cells": 1925,
+    "exact_cells": 1840
+   },
+   {
+    "key": "50b23088b99df7c2",
+    "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+    "family": "PrintToPDF",
+    "passes": false,
+    "pages": 4,
+    "pages_pass": 0,
+    "reference_cells": 216,
+    "exact_cells": 196
+   },
+   {
+    "key": "5d36b973fa9393a8",
+    "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+    "family": "AdobePDFLibrary",
+    "passes": false,
+    "pages": 1,
+    "pages_pass": 0,
+    "reference_cells": 571,
+    "exact_cells": 556
+   },
+   {
+    "key": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "family": "Excel",
+    "passes": false,
+    "pages": 9,
+    "pages_pass": 2,
+    "reference_cells": 3414,
+    "exact_cells": 3200
+   },
+   {
+    "key": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "family": "PrintToPDF",
+    "passes": false,
+    "pages": 2,
+    "pages_pass": 0,
+    "reference_cells": 101,
+    "exact_cells": 66
+   },
+   {
+    "key": "9d701a8ad492a6d7",
+    "pdf": "status-mobility-fy2018.pdf",
+    "family": "Distiller",
+    "passes": false,
+    "pages": 2,
+    "pages_pass": 0,
+    "reference_cells": 105,
+    "exact_cells": 67
+   },
+   {
+    "key": "b62895f03208009f",
+    "pdf": "85531_1010_Index.pdf",
+    "family": "Ghostscript",
+    "passes": false,
+    "pages": 10,
+    "pages_pass": 4,
+    "reference_cells": 1218,
+    "exact_cells": 632
+   },
+   {
+    "key": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "family": "Ghostscript",
+    "passes": false,
+    "pages": 1,
+    "pages_pass": 0,
+    "reference_cells": 127,
+    "exact_cells": 117
+   }
+  ]
+ },
+ "cost": {
+  "distinct_rasters": 52,
+  "list_price_per_page_usd": 0.015,
+  "list_charge_usd": 0.78,
+  "note": "the grayscale 300 dpi render of an original is pixel-identical to the render of its clean twin, so lane A and this lane share one call per page (85531's two blank pages render identically, so 52 calls cover 53 pages)",
+  "per_document": [
+   {
+    "key": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "pages": 13,
+    "list_charge_usd": 0.195
+   },
+   {
+    "key": "075ad4da3647d7dc",
+    "pdf": "12.2025-Kenco-SOV.pdf",
+    "pages": 6,
+    "list_charge_usd": 0.09
+   },
+   {
+    "key": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "pages": 5,
+    "list_charge_usd": 0.075
+   },
+   {
+    "key": "50b23088b99df7c2",
+    "pdf": "Billing-Review-Comments-Disposition-Est-95.pdf",
+    "pages": 4,
+    "list_charge_usd": 0.06
+   },
+   {
+    "key": "5d36b973fa9393a8",
+    "pdf": "GEA_608-ROWEstimate_20170502.pdf",
+    "pages": 1,
+    "list_charge_usd": 0.015
+   },
+   {
+    "key": "5e979146e9322953",
+    "pdf": "5007_20-08-Billing.pdf",
+    "pages": 9,
+    "list_charge_usd": 0.135
+   },
+   {
+    "key": "99e3871a86ca9971",
+    "pdf": "status-mobility-fy2019.pdf",
+    "pages": 2,
+    "list_charge_usd": 0.03
+   },
+   {
+    "key": "9d701a8ad492a6d7",
+    "pdf": "status-mobility-fy2018.pdf",
+    "pages": 2,
+    "list_charge_usd": 0.03
+   },
+   {
+    "key": "b62895f03208009f",
+    "pdf": "85531_1010_Index.pdf",
+    "pages": 10,
+    "list_charge_usd": 0.15
+   },
+   {
+    "key": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "pages": 1,
+    "list_charge_usd": 0.015
+   }
+  ],
+  "since": "every re-read and re-score since has been served from the retained cache and cost nothing"
+ },
+ "limits": "Paired renditions are the measurement method, not a prerequisite for reading a production PDF. Cell comparison does not independently establish prose outside tables, raster fidelity, routing correctness, source-locator replay, malicious-document handling, production concurrency, or operational cost and coordinator burden. Those belong to their own tickets."
+}
