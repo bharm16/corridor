@@ -531,9 +531,10 @@ def _extract_pages(
             # 1-based: citations are written for humans, and [D12 p.4] must
             # mean the page a reader sees.
             page_no = index + 1
+            incumbent_text = page.get_text()
             # The Page Inventory reads the incumbent's text on both settings,
             # so the routing decision is the same decision either way.
-            inventory = inventory_page(page, native_text=page.get_text())
+            inventory = inventory_page(page, native_text=incumbent_text)
             routing = route_page(inventory)
             reader_layer = reader_layers.get(page_no)
             if settings.native_reader_token_layer and reader_layer is None:
@@ -545,7 +546,7 @@ def _extract_pages(
             native_text = (
                 page_text_projection(reader_layer)
                 if reader_layer is not None
-                else page.get_text()
+                else incumbent_text
             )
             # The layout/model derivative is purpose-specific even when OCR is
             # not needed; vision consumers never borrow reviewer pixels. All
