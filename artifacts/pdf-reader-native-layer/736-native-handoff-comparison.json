@@ -1,0 +1,115 @@
+{
+  "schema_version": "corridor.native-segment-measurement-comparison.v1",
+  "implementation_commit": "46c6e25c093dd7923cb62018597a247a9f64a2a5",
+  "scope": "Exact parsed JSON comparison of all frozen and native scorer inputs after removing only source-segment receipt annotations; text, cell/table geometry, spans and outside/clipped metadata remain in the comparison. Actual score objects are compared without exclusions. No database persistence is claimed.",
+  "frozen_receipt": {
+    "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-frozen-reader-46c6e25/receipt.json",
+    "sha256": "71786462a14b7bc1f9845d53065a02bb7e9169c8816c69596eadf87752438046"
+  },
+  "native_receipt": {
+    "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-native-segments-v1-46c6e25/receipt.json",
+    "sha256": "8695bbb1794583996ce787ed89c04e42c2b211e7fa3ae27d7c2dc72af262d761"
+  },
+  "keys_compared": 333,
+  "missing_native_reads": [],
+  "extra_native_reads": [],
+  "different_scorer_inputs": [],
+  "different_score_objects": [],
+  "source_segment_metrics": {
+    "pages": 1998,
+    "nonempty_reader_cells": 621990,
+    "empty_reader_cells": 0,
+    "generated_cell_segments": 621990,
+    "materialized_nonempty_cells": 621990,
+    "omitted_nonempty_cells": 0,
+    "missing_cell_segments": 0,
+    "ambiguous_cell_segments": 0,
+    "invalid_cell_segments": 0,
+    "cell_segment_records_not_used": 0,
+    "generated_page_spans": 136307,
+    "generated_clipped_spans": 203,
+    "source_characters": 6738920,
+    "outside_source_characters": 1657,
+    "ambiguously_assigned_source_characters": 0,
+    "characters_assigned_to_materialized_cells": 6737263,
+    "characters_not_in_materialized_cells": 1657,
+    "page_characters_in_source_spans": 6738920,
+    "clipped_source_characters": 4871,
+    "clipped_characters_in_source_spans": 4871
+  },
+  "metrics_match_native_receipt": true,
+  "native_integration_identities": [
+    "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74"
+  ],
+  "implementation_files_match_current": {
+    "src/corridor/native_segment_measurement.py": true,
+    "src/corridor/reader_segments.py": true,
+    "src/corridor/token_layers.py": true,
+    "src/corridor/prose_spans.py": true,
+    "src/corridor/source_append.py": true,
+    "src/corridor_pdf_reader/measurement.py": true
+  },
+  "native_summary": {
+    "pairs": 333,
+    "pairs_pass": 332,
+    "pages": 1998,
+    "pages_pass": 1998,
+    "reference_cells": 608865,
+    "exact_cells": 608708,
+    "holdout_included": true
+  },
+  "frozen_summary": {
+    "pairs": 333,
+    "pairs_pass": 332,
+    "pages": 1998,
+    "pages_pass": 1998,
+    "reference_cells": 608865,
+    "exact_cells": 608708,
+    "holdout_included": true
+  },
+  "frozen_gate": {
+    "development": {
+      "all_pairs_pass": false,
+      "failing_pairs": [
+        "fcbe0ceb23e61b0f"
+      ],
+      "failing_pages": 0,
+      "unscored_keys": [],
+      "read_errors": []
+    },
+    "holdout": {
+      "all_pairs_pass": true,
+      "failing_pairs": [],
+      "failing_pages": 0,
+      "unscored_keys": [],
+      "read_errors": []
+    }
+  },
+  "native_gate": {
+    "development": {
+      "all_pairs_pass": false,
+      "failing_pairs": [
+        "fcbe0ceb23e61b0f"
+      ],
+      "failing_pages": 0,
+      "unscored_keys": [],
+      "read_errors": []
+    },
+    "holdout": {
+      "all_pairs_pass": true,
+      "failing_pairs": [],
+      "failing_pages": 0,
+      "unscored_keys": [],
+      "read_errors": []
+    }
+  },
+  "native_read_driver": [
+    "/Users/bryceharmon/Desktop/corridor-lanes/736-reader-segments/.venv/bin/python3",
+    "-m",
+    "corridor.native_segment_measurement"
+  ],
+  "wall_seconds": {
+    "frozen": 158.4,
+    "native": 476.1
+  }
+}
