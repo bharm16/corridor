@@ -18,6 +18,17 @@ using the exact Makefile example. Missing or unsupported cadence, timezone,
 missed-run, retention, retry, lease, deadline, concurrency, model, notification,
 scope, or version data is refused before the job is enabled.
 
+Release preparation (#690) is declared per project and runs on request. Run
+this through the worker capability with the actual synthetic project slug and
+an hour-aligned UTC start time before exercising the deployed preparation path:
+
+```bash
+make due-work ARGS="configure-release-preparation <project-slug> --configuration-version=release-preparation-v1 --starts-at=<UTC-hour> --cadence=on_request --timezone=UTC --missed-run-policy=every_occurrence --retention-days=365 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=900 --deadline-seconds=600 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+```
+
+The request, attempt, and terminal receipt prove execution. A configured
+declaration or a healthy idle supervisor alone does not.
+
 Run `make due-work ARGS="supervise --poll-seconds=5"` in a process separate
 from the web server. Each invocation generates a distinct runtime owner;
 `--owner=runtime:<worker-id>` remains available for an explicitly named

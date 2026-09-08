@@ -673,14 +673,26 @@ def test_migration_receives_both_runtime_passwords(stacks):
         "CORRIDOR_DB_ADMIN_PASSWORD",
         "CORRIDOR_WEB_DB_PASSWORD",
         "CORRIDOR_WORKER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OWNER_DB_USERNAME",
+        "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
+        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME",
+        "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
     }
 
 
 def test_web_and_batch_still_receive_only_their_own_login(stacks):
     template = stacks["application"].to_json()["Resources"]
     expected = {
-        "Web": {"CORRIDOR_WEB_DB_PASSWORD"},
-        "Batch": {"CORRIDOR_WORKER_DB_PASSWORD"},
+        "Web": {
+            "CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_CUSTOMER_ROUTING_KEY",
+            "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+        },
+        "Batch": {
+            "CORRIDOR_WORKER_DB_PASSWORD", "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME",
+            "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+        },
     }
     for role, wanted in expected.items():
         task = [

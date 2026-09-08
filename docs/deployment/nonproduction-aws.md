@@ -202,7 +202,13 @@ execution receipts.
     machine routes such as `/health`; do not inject the worker credential
     into web to make that route pass.
     Deliver and use a real sign-in link to the declared synthetic test
-    recipient. Run the synthetic source → Review → preparation → authorized
+    recipient. Before requesting preparation for the synthetic project, run
+    its explicit `configure-release-preparation` declaration through the
+    worker capability (the retained Batch task). The existing supervisor
+    requires a declared handler; a healthy idle process alone does not
+    establish that preparation can execute. The complete command is in the
+    [Due Work runbook](../operations/due-work-runtime.md).
+    Run the synthetic source → Review → preparation → authorized
     package workflow, retain the preparation attempt and Due Work receipt,
     and verify object dereferencing with the runtime roles. Record the image
     digest, task ARNs, customer/environment binding, and exact receipt IDs.
@@ -236,14 +242,31 @@ or destroyed.
    state is present and the later mutation is absent; record both results.
 6. Reconcile all restored object references with the retained S3 namespace
    and verify their exact bytes/digests through the normal storage interface.
-7. Run the synthetic workflow against the restored database and retain its
-   application receipts. The restored route is an explicit synthetic binding;
-   it must not redirect the active customer's authenticated traffic.
+7. Provision an empty, temporary **rehearsal control-plane database** on the
+   retained control-plane instance, with separate operations and resolver
+   logins. Point only the rehearsal processes at it. Preserve the three
+   customer/environment/deployment IDs in the restored database's immutable
+   `customer_environment_binding`; do not invent new IDs, rewrite that row,
+   or change the primary registry's endpoint.
+   Supply those original IDs, the **restored** customer endpoint and its
+   runtime credentials, the temporary control-plane URLs, and the retained
+   object namespace to `make deployment-bootstrap ARGS=configure`. Its empty
+   registry can register the restored endpoint under the preserved IDs, and
+   the bootstrap verifies the existing attestation before migration. Enable
+   that rehearsal registry entry through the explicit operations command;
+   then use `configure --require-enabled` to prove both routed capabilities.
+   Run the synthetic workflow only through these isolated processes and
+   retain its receipts. Production processes retain their primary resolver
+   URLs and routes throughout. The local bootstrap fixture proves that a
+   matching retained attestation works with a fresh registry; it does not
+   substitute for this actual RDS restore.
 8. Retain the restore receipt externally, including the source and target
    instance IDs, restore timestamp, both state observations, object check
    results, workflow receipts and cleanup outcome.
-9. Delete only the named temporary restored instance. Record its final
-   absence and any remaining snapshots or backup expiration. A failed
+9. Delete only the named temporary restored instance and the temporary
+   rehearsal control-plane database/logins. Preserve the primary control
+   plane and externally retained receipt. Record the temporary resources'
+   final absence and any remaining snapshots or backup expiration. A failed
    cleanup remains outstanding in the receipt.
 
 No restore receipt has been recorded here. #514 later consumes external

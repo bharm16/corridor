@@ -53,7 +53,7 @@ def _task_arns(client, *, cluster: str, **filters: str) -> set[str]:
 
 
 def _tasks(client, *, cluster: str, arns: set[str]) -> list[dict[str, Any]]:
-    tasks = []
+    tasks: list[dict[str, Any]] = []
     ordered = sorted(arns)
     for start in range(0, len(ordered), 100):
         batch = ordered[start:start + 100]

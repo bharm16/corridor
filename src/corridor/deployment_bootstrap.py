@@ -21,7 +21,7 @@ import re
 import subprocess
 import sys
 
-from sqlalchemy import create_engine, text
+from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
@@ -90,6 +90,7 @@ class DeploymentConfiguration:
 
     def registration(self) -> EnvironmentRegistration:
         address = make_url(self.customer_owner_url)
+        assert address.host is not None and address.port is not None and address.database is not None
         return EnvironmentRegistration(
             **asdict(self.identity), database_host=address.host,
             database_port=address.port, database_name=address.database,
@@ -207,6 +208,20 @@ def configure_deployment(
     operations = create_engine(configuration.control_operations_url, hide_parameters=True)
     runtime = None
     try:
+        # A restored or already-used destination may already be bound. Check
+        # its identity before Alembic can mutate it, including when no route
+        # exists yet in this control plane. A fresh database may have no
+        # binding table; the post-migration binder establishes it below.
+        with customer.connect() as connection:
+            if inspect(connection).has_table("customer_environment_binding", schema="public"):
+                bindings = connection.execute(text(
+                    "select customer_id, environment_id, deployment_id "
+                    "from public.customer_environment_binding"
+                )).mappings().all()
+                if bindings and (
+                    len(bindings) != 1 or dict(bindings[0]) != asdict(configuration.identity)
+                ):
+                    raise DeploymentRefused("customer database is already bound to another environment")
         initialize_control_plane(owner)
         provision_control_logins(
             owner, operations_url=configuration.control_operations_url,

@@ -9,10 +9,10 @@ from dataclasses import replace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import text
+from sqlalchemy import create_engine, text
 
 from corridor.control_plane import ControlPlane, RouteRefused
-from corridor.customer_routing import CustomerIdentity
+from corridor.customer_routing import CustomerIdentity, bind_customer_environment
 from corridor.deployment_bootstrap import (
     DeploymentConfiguration, DeploymentRefused, configure_deployment,
     provision_control_logins,
@@ -86,6 +86,51 @@ def test_a_conflicting_existing_binding_refuses_before_customer_migration(deploy
 
     assert migrated == []
     assert registry.inspect(configuration.identity.environment_id).object_namespace_ref == configuration.object_namespace_ref
+
+
+def test_a_different_customer_database_refuses_before_any_migration(deployment):
+    configuration, registry = deployment
+    customer = create_engine(configuration.customer_owner_url, hide_parameters=True)
+    try:
+        bind_customer_environment(
+            customer, CustomerIdentity("another-customer", "another-environment", "another-deployment")
+        )
+    finally:
+        customer.dispose()
+    migrated = []
+
+    with pytest.raises((DeploymentRefused, RouteRefused)):
+        configure_deployment(configuration, migrate_customer=lambda: migrated.append(True))
+
+    assert migrated == [], "a foreign database must not be migrated before identity refusal"
+    with pytest.raises(RouteRefused):
+        registry.inspect(configuration.identity.environment_id)
+
+
+def test_an_isolated_registry_can_route_a_restored_database_with_its_original_identity(deployment):
+    configuration, registry = deployment
+    # A restored database retains its original immutable identity. Its
+    # rehearsal registry is separate and starts empty, so the source registry
+    # endpoint never needs to be changed or reused by the rehearsal process.
+    customer = create_engine(configuration.customer_owner_url, hide_parameters=True)
+    try:
+        bind_customer_environment(customer, configuration.identity)
+        result = configure_deployment(configuration, migrate_customer=lambda: None)
+        assert result["enabled"] is False
+        registry.set_state(configuration.identity.environment_id, enabled=True, hold=False)
+        assert configure_deployment(
+            configuration, migrate_customer=lambda: None, require_enabled=True
+        )["enabled"] is True
+        with customer.connect() as connection:
+            binding = connection.execute(text(
+                "select customer_id, environment_id, deployment_id from customer_environment_binding"
+            )).one()
+        assert tuple(binding) == (
+            configuration.identity.customer_id, configuration.identity.environment_id,
+            configuration.identity.deployment_id,
+        )
+    finally:
+        customer.dispose()
 
 
 def test_a_failed_customer_migration_leaves_registration_absent_and_can_be_retried(deployment):
