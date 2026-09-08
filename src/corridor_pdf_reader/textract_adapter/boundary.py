@@ -403,23 +403,38 @@ class AuthorizedTextract:
         """The reader's page for this raster, from the scope or from one counted call.
 
         With `native_glyphs`, Textract supplies geometry only and the reading's
-        text is the document's own glyphs (the measured lane A). That input is
-        required for the named native geometry purpose; it must never silently
-        become an OCR reading. The raw response remains provider evidence.
+        text is the document's own glyphs (the measured lane A). Supplying that
+        input selects native materialization, rather than attaching incidental
+        evidence, so a customer request must name the native geometry purpose.
+        That purpose also requires usable glyphs and cannot become an OCR
+        reading. Experiments may compare both modes. The raw response remains
+        provider evidence.
         The consuming route selects values per region on mixed native/image
         pages; this boundary does not classify the page from a native header.
         """
         self.receipt.pages_requested += 1
-        if self.request.purpose == NATIVE_GEOMETRY_PURPOSE and (
+        purpose_refusal = None
+        if (
+            isinstance(self.record, CustomerAuthorization)
+            and native_glyphs is not None
+            and self.request.purpose != NATIVE_GEOMETRY_PURPOSE
+        ):
+            purpose_refusal = (
+                f"purpose: native glyphs select {NATIVE_GEOMETRY_PURPOSE!r}; "
+                f"the customer request names {self.request.purpose!r}"
+            )
+        elif self.request.purpose == NATIVE_GEOMETRY_PURPOSE and (
             native_glyphs is None
             or not any(isinstance(char.get("text"), str) and char["text"].strip() for char in native_glyphs.characters)
         ):
+            purpose_refusal = (
+                f"purpose: {NATIVE_GEOMETRY_PURPOSE!r} requires usable native glyphs; "
+                "Textract words cannot substitute for them"
+            )
+        if purpose_refusal is not None:
             failure = TextractProcessingFailure(
                 "authorization-refused",
-                mismatches=(
-                    f"purpose: {NATIVE_GEOMETRY_PURPOSE!r} requires usable native glyphs; "
-                    "Textract words cannot substitute for them",
-                ),
+                mismatches=(purpose_refusal,),
                 outbound_requests=0,
                 request=self.request,
             )

@@ -562,6 +562,46 @@ def test_native_glyphs_fill_textract_geometry_and_textract_words_are_never_store
     assert len(service.calls) == 1, "one response, two readings, one charge"
 
 
+@pytest.mark.parametrize("purpose", ["scanned-page-reading", "image-region-reading"])
+@pytest.mark.parametrize("record_names_native", [False, True])
+@pytest.mark.parametrize("cached", [False, True])
+def test_customer_native_materialization_requires_its_named_purpose_before_cache_or_transport(tmp_path, monkeypatch, purpose, record_names_native, cached):
+    pdf = minimal_pdf(tmp_path / "native.pdf", text="Total")
+    raster = rasterize_page(pdf, 1, CONFIGURATION)
+    glyphs = native_glyphs(pdf, 1)
+    purposes = {purpose, NATIVE_GEOMETRY_PURPOSE} if record_names_native else {purpose}
+    record = authorization(purposes=frozenset(purposes))
+    boundary = request(purpose=purpose)
+    if cached:
+        primer = opened(tmp_path, RecordedService(response_around_total()), record, boundary, extraction_run="prime")
+        retained = primer.analyze_page(raster, rendition_sha256="scan", page_number=1)
+        assert retained.binding.normalization["text_source"] == "textract-words"
+        assert (primer.directory / f"{retained.binding.raster_sha256}.json").is_file()
+    service = FailingService()
+    adapter = opened(tmp_path, service, record, boundary)
+    cache_reads = []
+
+    def forbidden_cache_read(*args, **kwargs):
+        cache_reads.append(args)
+        pytest.fail("a wrongly scoped native reading must not read a retained response")
+
+    monkeypatch.setattr("corridor_pdf_reader.textract.client.read_entry", forbidden_cache_read)
+    monkeypatch.setattr("corridor_pdf_reader.textract_adapter.boundary.read_entry", forbidden_cache_read)
+
+    with pytest.raises(TextractProcessingFailure) as caught:
+        adapter.analyze_page(raster, rendition_sha256="native", page_number=1, native_glyphs=glyphs)
+
+    assert caught.value.reason == "authorization-refused"
+    assert caught.value.mismatches[0].startswith("purpose:")
+    assert NATIVE_GEOMETRY_PURPOSE in caught.value.mismatches[0]
+    assert caught.value.outbound_requests == service.calls == 0
+    assert cache_reads == []
+    assert adapter.receipt.as_dict()["counts"] == {
+        "pages_requested": 1, "hits": 0, "calls": 0, "retries": 0, "failed_attempts": 0, "outbound_requests": 0, "failures": 1,
+    }
+    assert not adapter.receipt.bindings
+
+
 @pytest.mark.parametrize("glyphs", [None, NativeGlyphs(), NativeGlyphs(characters=[{"text": " "}]), NativeGlyphs(characters=[{"text": None}]), NativeGlyphs(clipped=[{"text": "Total"}])])
 def test_native_geometry_purpose_refuses_an_ocr_fallback_before_any_request(tmp_path, glyphs):
     service = FailingService()
@@ -620,7 +660,7 @@ def test_image_region_reading_is_permitted_with_native_header_evidence(tmp_path)
     )
 
     native = native_glyphs(pdf, 1)
-    reading = adapter.analyze_page(rasterize_page(pdf, 1, CONFIGURATION), rendition_sha256="mixed", page_number=1)
+    reading = adapter.analyze_page(rasterize_page(pdf, 1, CONFIGURATION), rendition_sha256="mixed", page_number=1, native_glyphs=None)
 
     assert "".join(char["text"] for char in native.characters) == "Header"
     assert reading.page["tables"][0]["cells"][0]["text"] == "125"
