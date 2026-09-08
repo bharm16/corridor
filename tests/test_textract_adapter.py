@@ -892,5 +892,7 @@ def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
 
     assert imported == {
         "corridor_pdf_reader.textract_adapter.boundary",
+        "corridor_pdf_reader.textract_adapter.identity",
+        "corridor_pdf_reader.textract_adapter.records",
         "corridor_pdf_reader.textract_adapter.rendering",
     }

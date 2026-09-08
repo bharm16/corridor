@@ -67,7 +67,10 @@ from corridor.verify import normalize
 from corridor_pdf_reader.textract_adapter.boundary import (
     AuthorizedTextract,
     TextractProcessingFailure,
+    open_boundary,
 )
+from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
+from corridor_pdf_reader.textract_adapter.records import PROVIDER_POSTURE, RequestBoundary
 from corridor_pdf_reader.textract_adapter.rendering import rasterize_page
 
 
@@ -721,3 +724,166 @@ def recovered_text(reading: dict[str, Any]) -> str:
         if text:
             lines.append(text)
     return "\n".join(lines)
+
+
+# --- ingest's handle on the route ----------------------------------------------
+
+# What an ingest request claims about itself. The purpose and source class are
+# the posture's own words for reading a scanned page; the region is the
+# posture's, because a request naming another one is refused by the check
+# rather than served from a second posture nobody accepted.
+INGEST_SOURCE_CLASS = "scanned-pdf"
+INGEST_PURPOSE = "scanned-page-reading"
+
+
+@dataclass(frozen=True)
+class ScannedReader:
+    """Ingest's handle on the scanned route: an opened boundary, or the refusal instead.
+
+    A refusal is held rather than raised because it is a per-region Processing
+    Failure, not a failed document: the page still has its inventory, its
+    routing decision, its renders and its native reading, and the record should
+    say that Textract did not read it and why. What a refusal must never do is
+    hand the region to the incumbent engine, which is why `adapter` and
+    `refusal` are the only two states and there is no third.
+    """
+
+    adapter: AuthorizedTextract | None
+    refusal: TextractProcessingFailure | None
+    request: RequestBoundary
+
+    @property
+    def configuration(self) -> dict[str, Any]:
+        if self.adapter is not None:
+            return self.adapter.configuration.as_dict()
+        return RequestConfiguration().as_dict()
+
+
+def open_scanned_reader(
+    project: str,
+    *,
+    extraction_run: str,
+    cache_root: Path,
+    record: object | None = None,
+    service: Any = None,
+    stage: str = "production",
+    configuration: RequestConfiguration = RequestConfiguration(),
+) -> ScannedReader:
+    """Open the boundary ingest reads scanned pages through, or hold its refusal.
+
+    Corridor has no source of a customer authorization record yet: the provider
+    posture is proposed rather than accepted, its retention, opt-out and
+    permissions are the maintainer's to verify (#732), and the customer-specific
+    authorization is #522's. So the ordinary answer today is a refusal with zero
+    outbound requests — which is the answer this route is supposed to give, and
+    the seam a signed record will arrive at unchanged.
+
+    The refusal is the adapter's, taken by calling the real check rather than
+    anticipating it here, so a record that ever does arrive is matched on every
+    field by the module that owns that job.
+    """
+
+    request = RequestBoundary(
+        project=project,
+        source_class=INGEST_SOURCE_CLASS,
+        purpose=INGEST_PURPOSE,
+        region=PROVIDER_POSTURE.region,
+        posture_identity=PROVIDER_POSTURE.identity,
+        stage=stage,
+    )
+    if record is not None and service is None:
+        raise ValueError(
+            "an authorized scanned read needs the service to read through; "
+            "the boundary constructs the client, and the caller supplies it"
+        )
+    try:
+        adapter = open_boundary(
+            record,
+            request,
+            extraction_run=extraction_run,
+            cache_root=cache_root,
+            service=service,
+            configuration=configuration,
+        )
+    except TextractProcessingFailure as refusal:
+        return ScannedReader(adapter=None, refusal=refusal, request=request)
+    return ScannedReader(adapter=adapter, refusal=None, request=request)
+
+
+@dataclass(frozen=True)
+class ScannedPageOutcome:
+    """One routed page's answer: the reading, or the Processing Failure instead.
+
+    Never both, and never neither. A page the decision routes nowhere does not
+    produce an outcome at all — `read_routed_page` returns None for it, because
+    an ordinary blank page and a clean native page are not scanned work that
+    failed, they are scanned work that was never asked for.
+    """
+
+    reading: ScannedPageReading | None
+    failure: ScannedProcessingFailure | None
+    regions: tuple[RoutedRegion, ...]
+
+
+def read_routed_page(
+    scanned: ScannedReader,
+    source: Path,
+    *,
+    page_no: int,
+    routing: PageRoutingDecision,
+    rendition_sha256: str,
+    source_sha256: str,
+    native_layer: TokenLayer | None = None,
+    render_profile_id: str | None = None,
+) -> ScannedPageOutcome | None:
+    """Read one routed page through the reader's boundary, or record why not.
+
+    This is the whole of what a caller needs, so a caller need not name the
+    adapter to use it: the raster is made by the adapter's own rasterizer under
+    the boundary's configuration — the bytes the retained identity says were
+    sent — and a refused or failed read comes back as a Processing Failure
+    rather than an exception, because the page still has its inventory, its
+    routing decision, its renders and its native reading, and the record should
+    say that Textract did not read it and why.
+    """
+
+    regions = routed_textract_regions(routing)
+    if not regions:
+        return None
+    if scanned.adapter is None:
+        assert scanned.refusal is not None
+        return ScannedPageOutcome(
+            None,
+            processing_failure(
+                scanned.refusal,
+                page_no=page_no,
+                regions=regions,
+                rendition_sha256=rendition_sha256,
+                configuration=scanned.configuration,
+            ),
+            regions,
+        )
+    try:
+        reading = read_scanned_page(
+            scanned.adapter,
+            rasterize_page(source, page_no, scanned.adapter.configuration),
+            routing=routing,
+            page_no=page_no,
+            rendition_sha256=rendition_sha256,
+            source_sha256=source_sha256,
+            native_layer=native_layer,
+            render_profile_id=render_profile_id,
+        )
+    except TextractProcessingFailure as raised:
+        return ScannedPageOutcome(
+            None,
+            processing_failure(
+                raised,
+                page_no=page_no,
+                regions=regions,
+                rendition_sha256=rendition_sha256,
+                configuration=scanned.configuration,
+            ),
+            regions,
+        )
+    return ScannedPageOutcome(reading, None, regions)

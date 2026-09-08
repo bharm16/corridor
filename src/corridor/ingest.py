@@ -88,6 +88,12 @@ from corridor.source_segments import (
     SPREADSHEET_SUFFIXES,
     append_ingested_source_segments,
 )
+from corridor.scanned_reading import (
+    ScannedReader,
+    open_scanned_reader,
+    read_routed_page,
+    recovered_text,
+)
 from corridor.token_layers import (
     OcrRequest,
     TesseractEngine,
@@ -296,7 +302,7 @@ def ingest_document(
 
     try:
         token_dir = Path(images_dir) / sha256
-        pages = _extract(path, token_dir, sha256)
+        pages = _extract(path, token_dir, sha256, project=str(document.project_id))
     except Exception:
         # Registered and visibly failed rather than silently absent. A
         # document missing from the ledger looks the same as one that was
@@ -348,7 +354,7 @@ def reparse_document(
     path = Path(path)
     try:
         token_dir = Path(images_dir) / document.sha256
-        pages = _extract(path, token_dir, document.sha256)
+        pages = _extract(path, token_dir, document.sha256, project=str(document.project_id))
     except Exception:
         document.parse_status = "failed"
         document.pages = 0
@@ -496,12 +502,14 @@ def _ocr_layout_artifact(
     return None
 
 
-def _extract(path: Path, images_dir: Path, source_sha256: str) -> list[ExtractedPage]:
+def _extract(
+    path: Path, images_dir: Path, source_sha256: str, *, project: str
+) -> list[ExtractedPage]:
     if path.suffix.lower() in SPREADSHEET_SUFFIXES:
         return _extract_sheets(path)
     if path.suffix.lower() == ".eml":
         return _extract_message(path)
-    return _extract_pages(path, images_dir, source_sha256)
+    return _extract_pages(path, images_dir, source_sha256, project=project)
 
 
 def _extract_message(path: Path) -> list[ExtractedPage]:
@@ -551,11 +559,35 @@ def _extract_sheets(path: Path) -> list[ExtractedPage]:
 
 
 def _extract_pages(
-    path: Path, images_dir: Path, source_sha256: str
+    path: Path, images_dir: Path, source_sha256: str, *, project: str = ""
 ) -> list[ExtractedPage]:
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[ExtractedPage] = []
-    ocr_engine = TesseractEngine()
+    # Which engine actually reads an OCR region. The route names one (#734),
+    # and ADR-0094 makes that Textract; `textract_scanned_reading` is what
+    # decides whether ingest reads through the authorized adapter or through
+    # the incumbent engine (#739). Exactly one of the two is built, so a
+    # refused Textract read can never be quietly answered by Tesseract.
+    scanned = (
+        open_scanned_reader(
+            project,
+            extraction_run=source_sha256,
+            cache_root=Path(images_dir) / "textract",
+        )
+        if settings.textract_scanned_reading
+        else None
+    )
+    ocr_engine = None if scanned is not None else TesseractEngine()
+    if scanned is not None and not settings.reader_page_inventory:
+        # The engine an OCR route names comes from the reader-backed router.
+        # With the incumbent inventory the route names the incumbent engine,
+        # and the scanned setting would have ingest read regions Textract was
+        # never routed to. Refuse the pair rather than route by the setting.
+        raise ValueError(
+            f"{path.name}: the Textract scanned path reads what the "
+            "reader-backed Page Inventory routes to it; enable "
+            "reader_page_inventory beside it, or neither"
+        )
     # One isolated read of the whole document, before the page loop, when the
     # replacement adapter is selected. A failure here fails the document
     # attempt like any other engine failure; it is never quietly answered by
@@ -629,7 +661,25 @@ def _extract_pages(
             ocr_text: list[str] = []
             failures: list[PageFailure] = []
             ocr_attempts: list[OcrAttempt] = []
+            scanned_layer: TokenLayer | None = None
+            if scanned is not None:
+                outcome = _read_scanned_page(
+                    scanned,
+                    path=path,
+                    images_dir=images_dir,
+                    page_no=page_no,
+                    source_sha256=source_sha256,
+                    routing=routing,
+                    native_layer=reader_layer,
+                    render_profile_id=ocr_derivative.profile_id,
+                )
+                ocr_text.extend(outcome.text)
+                failures.extend(outcome.failures)
+                ocr_attempts.extend(outcome.attempts)
+                scanned_layer = outcome.token_layer
             for region in routing.regions:
+                if scanned is not None:
+                    break
                 if region.mode not in {"ocr", "both"}:
                     continue
                 scope = {
@@ -721,7 +771,9 @@ def _extract_pages(
                     page, page_no=page_no, source_sha256=source_sha256
                 )
             ]
-            if routing.page_mode in {"ocr", "both"}:
+            if scanned_layer is not None:
+                token_layers.append(scanned_layer)
+            elif ocr_engine is not None and routing.page_mode in {"ocr", "both"}:
                 token_layers.append(
                     ocr_engine.recognize(
                         OcrRequest(
@@ -750,6 +802,107 @@ def _extract_pages(
             )
 
     return out
+
+
+@dataclass(frozen=True)
+class _ScannedPageOutcome:
+    """What one page's Textract read produced, in the shapes the page loop keeps."""
+
+    text: tuple[str, ...]
+    failures: tuple[PageFailure, ...]
+    attempts: tuple[OcrAttempt, ...]
+    token_layer: TokenLayer | None
+
+
+def _read_scanned_page(
+    scanned: ScannedReader,
+    *,
+    path: Path,
+    images_dir: Path,
+    page_no: int,
+    source_sha256: str,
+    routing: PageRoutingDecision,
+    native_layer: TokenLayer | None,
+    render_profile_id: str,
+) -> _ScannedPageOutcome:
+    """One page through the authorized adapter, as the page loop records it.
+
+    A page the decision routes nowhere is not read and is not a failure: an
+    ordinary blank page and a clean native page are not scanned work. A page
+    that is routed and cannot be read is a Processing Failure per routed
+    region, naming the provider that failed, the request configuration and the
+    page scope — and the incumbent engine is not asked to fill the gap, so the
+    record says Textract did not read this page rather than showing a reading
+    from an engine nobody selected.
+    """
+
+    outcome = read_routed_page(
+        scanned,
+        path,
+        page_no=page_no,
+        routing=routing,
+        rendition_sha256=source_sha256,
+        source_sha256=source_sha256,
+        native_layer=native_layer,
+        render_profile_id=render_profile_id,
+    )
+    if outcome is None:
+        return _ScannedPageOutcome((), (), (), None)
+    scope = {
+        "page_number": page_no,
+        "region_ids": [region.region_id for region in outcome.regions],
+        "router_version": routing.router_version,
+    }
+    if outcome.failure is not None:
+        failure = outcome.failure
+        receipt = _write_raw_ocr_receipt(
+            images_dir,
+            page_no=page_no,
+            region_id="page",
+            configuration=failure.configuration,
+            scope=failure.scope,
+            outcome="failed",
+            text=None,
+            error_type=failure.reason,
+            error_message=failure.detail,
+        )
+        return _ScannedPageOutcome(
+            (),
+            tuple(
+                PageFailure(
+                    engine=failure.engine,
+                    configuration=failure.configuration,
+                    region_id=region.region_id,
+                    scope=dict(scope, region_id=region.region_id),
+                    error_type=failure.reason,
+                    error_message=failure.detail,
+                )
+                for region in outcome.regions
+            ),
+            (OcrAttempt("page", "failed", receipt),),
+            None,
+        )
+    reading = outcome.reading
+    assert reading is not None
+    recovered = recovered_text(reading.reading)
+    result = "recovered" if recovered.strip() else "empty"
+    receipt = _write_raw_ocr_receipt(
+        images_dir,
+        page_no=page_no,
+        region_id="page",
+        configuration={"engine": reading.token_layer.identity.engine, "provenance": reading.provenance},
+        scope=scope,
+        outcome=result,
+        text=recovered,
+        error_type=None,
+        error_message=None,
+    )
+    return _ScannedPageOutcome(
+        (recovered.strip(),) if recovered.strip() else (),
+        (),
+        (OcrAttempt("page", result, receipt),),
+        reading.token_layer,
+    )
 
 
 def _write_raw_ocr_receipt(
