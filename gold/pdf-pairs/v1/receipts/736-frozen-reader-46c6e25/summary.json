@@ -1,0 +1,990 @@
+{
+ "pairs": 333,
+ "pairs_pass": 332,
+ "pages": 1998,
+ "pages_pass": 1998,
+ "reference_cells": 608865,
+ "exact_cells": 608708,
+ "read_errors": {},
+ "by_class": {
+  "value_mismatch": 155,
+  "unverifiable": 50,
+  "columns_folded": 17,
+  "prose_row": 15,
+  "uncovered": 6,
+  "merged_rows": 1
+ },
+ "by_subclass": {
+  "value_mismatch/clipped_evidence": 76,
+  "unverifiable/print_area_overflow": 50,
+  "value_mismatch/clipped_prefix": 27,
+  "value_mismatch/overflow_hashes": 23,
+  "columns_folded/unmapped_column": 17,
+  "value_mismatch/clipped_suffix": 15,
+  "prose_row/outside_workbook": 15,
+  "value_mismatch/clipped_middle": 12,
+  "uncovered/absent": 6,
+  "value_mismatch/rounded_to_width": 2,
+  "merged_rows/text_intact": 1
+ },
+ "pages_with_class": {
+  "value_mismatch": 82,
+  "unverifiable": 14,
+  "columns_folded": 7,
+  "merged_rows": 1,
+  "prose_row": 1
+ },
+ "pairs_with_class": {
+  "value_mismatch": 53,
+  "unverifiable": 14,
+  "columns_folded": 5,
+  "merged_rows": 1,
+  "prose_row": 1,
+  "uncovered": 1
+ },
+ "by_family": {
+  "AdobePDFLibrary": {
+   "pairs": 7,
+   "pairs_pass": 7,
+   "pages": 17,
+   "pages_pass": 17,
+   "reference_cells": 1603,
+   "exact_cells": 1603
+  },
+  "Distiller": {
+   "pairs": 1,
+   "pairs_pass": 1,
+   "pages": 2,
+   "pages_pass": 2,
+   "reference_cells": 105,
+   "exact_cells": 105
+  },
+  "Excel": {
+   "pairs": 284,
+   "pairs_pass": 284,
+   "pages": 1741,
+   "pages_pass": 1741,
+   "reference_cells": 592297,
+   "exact_cells": 592156
+  },
+  "Ghostscript": {
+   "pairs": 12,
+   "pairs_pass": 11,
+   "pages": 32,
+   "pages_pass": 32,
+   "reference_cells": 4257,
+   "exact_cells": 4245
+  },
+  "PrintToPDF": {
+   "pairs": 29,
+   "pairs_pass": 29,
+   "pages": 206,
+   "pages_pass": 206,
+   "reference_cells": 10603,
+   "exact_cells": 10599
+  }
+ },
+ "worst_pairs": [
+  {
+   "key": "fcbe0ceb23e61b0f",
+   "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+   "family": "Ghostscript",
+   "pages": 1,
+   "errors": 15,
+   "uncovered": 6,
+   "counts": {
+    "prose_row": 15
+   }
+  },
+  {
+   "key": "1ee4a00b8eb6173b",
+   "pdf": "REVISED-McClean-December-SOV.pdf",
+   "family": "Excel",
+   "pages": 5,
+   "errors": 16,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 16
+   }
+  },
+  {
+   "key": "68f6277236871887",
+   "pdf": "H-S-I-Billing-Inv-078-07-20-25-r0.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 10,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 9,
+    "columns_folded": 1
+   }
+  },
+  {
+   "key": "ed6b83273cf12cf1",
+   "pdf": "H-S-I-Billing-Inv-067-05-20-24-r2.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 9,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 8,
+    "columns_folded": 1
+   }
+  },
+  {
+   "key": "e4e7e3b5fa093bc6",
+   "pdf": "sov.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 8,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 8
+   }
+  },
+  {
+   "key": "642f81cf6857b000",
+   "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+   "family": "Excel",
+   "pages": 6,
+   "errors": 7,
+   "uncovered": 0,
+   "counts": {
+    "columns_folded": 7
+   }
+  },
+  {
+   "key": "6f9405fa2ea1b2af",
+   "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.26.22-WSF-Final.pdf",
+   "family": "Excel",
+   "pages": 6,
+   "errors": 7,
+   "uncovered": 0,
+   "counts": {
+    "columns_folded": 7
+   }
+  },
+  {
+   "key": "1c1b3b097169c693",
+   "pdf": "19132-92---July-2025.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "1fe3560d4705f672",
+   "pdf": "19132-87-VE-December-2024---R1.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "4d5c3b52fd29dd09",
+   "pdf": "Valley-19132-95---December-2025.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "737f85b2d5fb9382",
+   "pdf": "19132-84-VE-September-2024---Rev1.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "cdec342ad4a70521",
+   "pdf": "19132-86-VE-November-2024---R2.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "d84e75cee9409385",
+   "pdf": "Copy-of-19132-85-VE-October-2024---R1.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "e3db3014b7973d93",
+   "pdf": "3.2024-Colman-Dock-Billing.pdf",
+   "family": "Excel",
+   "pages": 7,
+   "errors": 6,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 6
+   }
+  },
+  {
+   "key": "b62895f03208009f",
+   "pdf": "85531_1010_Index.pdf",
+   "family": "Ghostscript",
+   "pages": 10,
+   "errors": 5,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 5
+   }
+  },
+  {
+   "key": "d16164dcb786aa95",
+   "pdf": "19132-76-VE-December-2023.pdf",
+   "family": "Excel",
+   "pages": 14,
+   "errors": 5,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 5
+   }
+  },
+  {
+   "key": "0aa1faaab782ded0",
+   "pdf": "5007_19-03-Billing.pdf",
+   "family": "Excel",
+   "pages": 3,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "17e56e5a74783c63",
+   "pdf": "Copy-of-19132-73-VE-August-2023.pdf",
+   "family": "Excel",
+   "pages": 13,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "value_mismatch": 4
+   }
+  },
+  {
+   "key": "2449edb4c2805be4",
+   "pdf": "5007_19-09-Billing.pdf",
+   "family": "Excel",
+   "pages": 5,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "45a1e6e00e2a2656",
+   "pdf": "5007_19-02-Billing.pdf",
+   "family": "Excel",
+   "pages": 3,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "610d4097dfa0a45d",
+   "pdf": "5007_18-11-Billing.pdf",
+   "family": "Excel",
+   "pages": 3,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "75c22360dc4d5128",
+   "pdf": "Feb-SOV-2022.pdf",
+   "family": "Excel",
+   "pages": 2,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "columns_folded": 1,
+    "unverifiable": 3
+   }
+  },
+  {
+   "key": "9a201e0540236c5b",
+   "pdf": "Dec.-2019.pdf",
+   "family": "Excel",
+   "pages": 7,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "b0897cf80a736933",
+   "pdf": "5007_20-01-Billing.pdf",
+   "family": "Excel",
+   "pages": 7,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  },
+  {
+   "key": "b41beda78ccc7583",
+   "pdf": "5007_19-07-Billing.pdf",
+   "family": "Excel",
+   "pages": 4,
+   "errors": 4,
+   "uncovered": 0,
+   "counts": {
+    "unverifiable": 4
+   }
+  }
+ ],
+ "examples": {
+  "value_mismatch/clipped_suffix": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   },
+   {
+    "pair": "084701d0ea4a9037",
+    "pdf": "19132-61-VE-May-2022.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 28,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   },
+   {
+    "pair": "0c8e468d6b76883a",
+    "pdf": "19132-64-VE-August-2022.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined verison) and as directed by HPJV. Work was done"
+   },
+   {
+    "pair": "1c1b3b097169c693",
+    "pdf": "19132-92---July-2025.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined version) and as directed by HPJV. Work was done"
+   },
+   {
+    "pair": "1fe3560d4705f672",
+    "pdf": "19132-87-VE-December-2024---R1.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 19,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "in Valley CP 064.2 (WSF redlined version) and as directed by HPJV. Work was done"
+   }
+  ],
+  "value_mismatch/clipped_middle": [
+   {
+    "pair": "02753bf7e6549f5a",
+    "pdf": "19132-71-VE-June-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 7,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   },
+   {
+    "pair": "084701d0ea4a9037",
+    "pdf": "19132-61-VE-May-2022.pdf",
+    "page": 13,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 1,
+    "j": 7,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   },
+   {
+    "pair": "0c8e468d6b76883a",
+    "pdf": "19132-64-VE-August-2022.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 7,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "electric activtiesw and compllete path work to be able to complete and turn over"
+   },
+   {
+    "pair": "1c1b3b097169c693",
+    "pdf": "19132-92---July-2025.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 7,
+    "ref": "Provide premium overtime only, including straight OT and double time OT, to acce",
+    "got": "electric activtiesw and complete path work to be able to complete and turn over "
+   },
+   {
+    "pair": "1fe3560d4705f672",
+    "pdf": "19132-87-VE-December-2024---R1.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 20,
+    "j": 7,
+    "ref": "Provide premium overtime only, including straight OT and double time OT, to acce",
+    "got": "electric activtiesw and complete path work to be able to complete and turn over "
+   }
+  ],
+  "value_mismatch/clipped_evidence": [
+   {
+    "pair": "061df62683e2813f",
+    "pdf": "2017-281-November-Seattle-excel-SOV.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 6,
+    "c": 1,
+    "i": 4,
+    "j": 1,
+    "ref": "VENDOR# 806207",
+    "got": "ENDOR# 806207"
+   },
+   {
+    "pair": "0b3f04713b184494",
+    "pdf": "Long.pdf",
+    "page": 5,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 105,
+    "c": 5,
+    "i": 24,
+    "j": 5,
+    "ref": "Email direction B/C",
+    "got": "direction\nB/C"
+   },
+   {
+    "pair": "10036f98f9b22c0d",
+    "pdf": "Copy-of-Copy-of-4.2024-Colman-Dock-Billing-by-GE-050724.pdf",
+    "page": 6,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 147,
+    "c": 5,
+    "i": 8,
+    "j": 5,
+    "ref": "WSF CO 368\nMCA 101",
+    "got": "368\nMCA 101"
+   },
+   {
+    "pair": "11e04a9671934fb0",
+    "pdf": "Billing-Review-Comments-Disposition---Estimate-77.pdf",
+    "page": 10,
+    "table": 0,
+    "sheet": "Billing Issues",
+    "r": 84,
+    "c": 10,
+    "i": 7,
+    "j": 10,
+    "ref": "Updated SOV to correct the amount Work Complete Previously billed is acknowledge",
+    "got": "Updated SOV to correct the amount Work\nComplete Previously billed is\nacknowledge"
+   },
+   {
+    "pair": "1365981f856ebeb5",
+    "pdf": "Copy-of-12-20-22-United-PSG---Billing-App-10.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 105,
+    "c": 10,
+    "i": null,
+    "j": null,
+    "ref": " $-   ",
+    "got": ""
+   }
+  ],
+  "unverifiable/print_area_overflow": [
+   {
+    "pair": "0aa1faaab782ded0",
+    "pdf": "5007_19-03-Billing.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": null,
+    "c": null,
+    "i": 0,
+    "j": 1,
+    "got": "ORE FINAL PRINTING enter any digit to remove the green shading in the data entry"
+   },
+   {
+    "pair": "0aa1faaab782ded0",
+    "pdf": "5007_19-03-Billing.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 2,
+    "c": 3,
+    "i": 1,
+    "j": 1,
+    "got": "imodal Terminal at Colman Dock Project \u2022 Seattle, WA."
+   },
+   {
+    "pair": "0aa1faaab782ded0",
+    "pdf": "5007_19-03-Billing.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 3,
+    "c": 3,
+    "i": 2,
+    "j": 1,
+    "got": "-Pacific LLC, A Joint Venture \u2022 H-P Job No. 5290015"
+   },
+   {
+    "pair": "0aa1faaab782ded0",
+    "pdf": "5007_19-03-Billing.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 4,
+    "c": 7,
+    "i": 3,
+    "j": 5,
+    "got": "erg Co. 15400 SE 30th Pl, Ste 100 Bellevue, WA 98007"
+   },
+   {
+    "pair": "2449edb4c2805be4",
+    "pdf": "5007_19-09-Billing.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 1,
+    "c": 3,
+    "i": 0,
+    "j": 1,
+    "got": "ORE FINAL PRINTING enter any digit to remove the green shading in the data entry"
+   }
+  ],
+  "value_mismatch/overflow_hashes": [
+   {
+    "pair": "0fa28bdd38a7ed63",
+    "pdf": "McClean-Iron-Works-Colman-Dock-Project-Billing-Application-013-Mar.-2019.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 21,
+    "c": 6,
+    "i": 12,
+    "j": 8,
+    "ref": " $1,284,214.00 ",
+    "got": "###########"
+   },
+   {
+    "pair": "1e0e43f52016e8e2",
+    "pdf": "Hoffman-Pacific-Billing-Master-Form-HP-June-2023.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "Summary-HCC Only",
+    "r": 5,
+    "c": 16,
+    "i": 1,
+    "j": 8,
+    "ref": "10/20/2021",
+    "got": "#########"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 132,
+    "c": 8,
+    "i": 6,
+    "j": 8,
+    "ref": " $9.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 133,
+    "c": 8,
+    "i": 7,
+    "j": 8,
+    "ref": " $10.00 ",
+    "got": "#"
+   },
+   {
+    "pair": "1ee4a00b8eb6173b",
+    "pdf": "REVISED-McClean-December-SOV.pdf",
+    "page": 4,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 134,
+    "c": 8,
+    "i": 8,
+    "j": 8,
+    "ref": " $11.00 ",
+    "got": "#"
+   }
+  ],
+  "value_mismatch/clipped_prefix": [
+   {
+    "pair": "11e04a9671934fb0",
+    "pdf": "Billing-Review-Comments-Disposition---Estimate-77.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "Billing Issues",
+    "r": 25,
+    "c": 7,
+    "i": 8,
+    "j": 7,
+    "ref": "Excel row 120, North Trestle \u2013 Sediment Capping \u2013 Phase 3, incorrectly indicates",
+    "got": "Excel row 120, North Trestle \u2013 Sediment Capping \u2013 Phase 3,\nincorrectly indicates"
+   },
+   {
+    "pair": "17e56e5a74783c63",
+    "pdf": "Copy-of-19132-73-VE-August-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 15,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "Provide premium overtime labor only to install electrical work at TB trestle lev"
+   },
+   {
+    "pair": "17e56e5a74783c63",
+    "pdf": "Copy-of-19132-73-VE-August-2023.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 393,
+    "c": 7,
+    "i": 16,
+    "j": 7,
+    "ref": "Provide premiuim overtime only, including straight OT and double time OT, to acc",
+    "got": "Provide premiuim overtime only, including straight OT and double time OT, to acc"
+   },
+   {
+    "pair": "17e56e5a74783c63",
+    "pdf": "Copy-of-19132-73-VE-August-2023.pdf",
+    "page": 13,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 417,
+    "c": 7,
+    "i": 10,
+    "j": 7,
+    "ref": "Supply and Install revised skyline wireway for OFCI Turnstile Electrical \nChange",
+    "got": "Supply and Install revised skyline wireway for OFCI Turnstile Electrical\nChanges"
+   },
+   {
+    "pair": "3f621b62db8aeb3e",
+    "pdf": "19132-63-VE-July-2022.pdf",
+    "page": 12,
+    "table": 0,
+    "sheet": "SOV",
+    "r": 392,
+    "c": 7,
+    "i": 15,
+    "j": 7,
+    "ref": "Provide premium overtime labor only to install electrical work at TB trestle lev",
+    "got": "Provide premium overtime labor only to install electrical work at TB trestle lev"
+   }
+  ],
+  "columns_folded/unmapped_column": [
+   {
+    "pair": "642f81cf6857b000",
+    "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "Summary",
+    "r": 1,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "DCW Cost Management",
+    "got": "DCW Cost Management"
+   },
+   {
+    "pair": "642f81cf6857b000",
+    "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "Summary",
+    "r": 2,
+    "c": 1,
+    "i": 1,
+    "j": 0,
+    "ref": "Washington State Department of Transportation",
+    "got": "Washington State Department of Transportation"
+   },
+   {
+    "pair": "642f81cf6857b000",
+    "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+    "page": 2,
+    "table": 0,
+    "sheet": "Summary",
+    "r": 3,
+    "c": 1,
+    "i": 2,
+    "j": 0,
+    "ref": "Multimodal Terminal at Colman Dock - Yesler Site",
+    "got": "Multimodal Terminal at Colman Dock - Yesler Site"
+   },
+   {
+    "pair": "642f81cf6857b000",
+    "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "Summary",
+    "r": 1,
+    "c": 1,
+    "i": 0,
+    "j": 0,
+    "ref": "DCW Cost Management",
+    "got": "DCW Cost Management"
+   },
+   {
+    "pair": "642f81cf6857b000",
+    "pdf": "DCW-Cost-Bid-Tab-Comparative---Plaza-Cost-Report---Yesler-10.14.22-WSF.pdf",
+    "page": 3,
+    "table": 0,
+    "sheet": "Summary",
+    "r": 1,
+    "c": 7,
+    "i": 0,
+    "j": 8,
+    "ref": "Cost Estimate      October 14th, 2022   ",
+    "got": "Cost Estimate October 14th, 2022"
+   }
+  ],
+  "value_mismatch/rounded_to_width": [
+   {
+    "pair": "68f6277236871887",
+    "pdf": "H-S-I-Billing-Inv-078-07-20-25-r0.pdf",
+    "page": 14,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 327,
+    "c": 12,
+    "i": 9,
+    "j": 8,
+    "ref": "26945.2854",
+    "got": "26945.29"
+   },
+   {
+    "pair": "ed6b83273cf12cf1",
+    "pdf": "H-S-I-Billing-Inv-067-05-20-24-r2.pdf",
+    "page": 14,
+    "table": 0,
+    "sheet": "Actng Only",
+    "r": 327,
+    "c": 12,
+    "i": 9,
+    "j": 8,
+    "ref": "26945.2854",
+    "got": "26945.29"
+   }
+  ],
+  "merged_rows/text_intact": [
+   {
+    "pair": "cf36a6eaefa412e8",
+    "pdf": "Billing-Review-Comments-Disposition---Estimate-73.pdf",
+    "page": 9,
+    "table": 0,
+    "sheet": "Billing Issues",
+    "r": 59,
+    "c": 8,
+    "i": 4,
+    "j": 8,
+    "ref": "Please see attached PE #73R2",
+    "got": "Please see attached PE #73R2\nPlease see attached PE #73R2",
+    "rows": [
+     59,
+     60
+    ]
+   }
+  ],
+  "prose_row/outside_workbook": [
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 0,
+    "j": 2,
+    "got": "CO 224: Phase 3 Marine Recovery - Billing Schedule of Values 3-4-2020 Sidebar Me"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 1,
+    "j": 2,
+    "got": "This Change Order amends the Contract to incorporate a negotiated cost increase "
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 1,
+    "j": 10,
+    "got": "Amended -"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 2,
+    "j": 2,
+    "got": "provide full and final resolution f"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "page": 1,
+    "table": 0,
+    "sheet": "3-4-20 SOV",
+    "r": null,
+    "c": null,
+    "i": 2,
+    "j": 3,
+    "got": "or any and all cost and fe and"
+   }
+  ],
+  "uncovered/absent": [
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 1,
+    "c": 2,
+    "ref": "CO 224: Phase 3 Marine Recovery - Billing Schedule of Values 3-4-2020 Sidebar Me",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 2,
+    "ref": "Description:\nThis Change Order amends the Contract to incorporate a negotiated c",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 3,
+    "ref": "Amended Cost Allocation",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 4,
+    "ref": "Amended Budget Allocation",
+    "sub": "absent"
+   },
+   {
+    "pair": "fcbe0ceb23e61b0f",
+    "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+    "sheet": "3-4-20 SOV",
+    "r": 2,
+    "c": 8,
+    "ref": "Progress Estimate 38 Prior Payment",
+    "sub": "absent"
+   }
+  ]
+ },
+ "holdout_included": true
+}

@@ -5,7 +5,10 @@ slightly different text copy.  Source Segments give those consumers one durable
 address instead. Structured workbook cells and Minutes prose spans are the first
 two locator shapes. Both come directly from original bytes: native cell
 coordinates for a workbook, and page-local character bounds for a PDF text
-layer (ADR-0068).
+layer (ADR-0068). The new pdf_span/pdf_cell schemes delegate to reader_segments
+(#736), which records the rendition, exact reader/configuration result and
+physical glyph locations. The legacy prose_span kind always retains its old
+reader and offsets; selecting a challenger cannot reinterpret them.
 
 The module deliberately owns both directions of the contract.  Segmentation
 turns source bytes into ordered append-only rows; dereference follows a row's
@@ -27,24 +30,21 @@ from sqlalchemy.orm import Session
 
 from corridor.models import Document, SourceSegment
 from corridor.source_append import SegmentValues, append_source_segments
+from corridor.prose_spans import (
+    NumberedActionSpan,
+    numbered_action_spans,
+    page_prose_ranges,
+)
 
 SPREADSHEET_SUFFIXES = frozenset({".xlsx", ".xlsm"})
 
 
-class SourceSegmentIntegrityError(ValueError):
-    """A segment cannot be proven against its registered source bytes."""
-
-
-class SourceDocumentDigestMismatch(SourceSegmentIntegrityError):
-    """The supplied bytes are not the segment's registered Document."""
-
-
-class SourceSegmentDigestMismatch(SourceSegmentIntegrityError):
-    """Stored or dereferenced segment text does not match its digest."""
-
-
-class SourceSegmentLocatorMismatch(SourceSegmentIntegrityError):
-    """A typed locator is invalid or no longer recovers the stored text."""
+from corridor.source_segment_errors import (
+    SourceSegmentIntegrityError,
+    SourceDocumentDigestMismatch,
+    SourceSegmentDigestMismatch,
+    SourceSegmentLocatorMismatch,
+)
 
 
 @dataclass(frozen=True)
@@ -68,27 +68,6 @@ class ProseSegment:
     end_offset: int
     exact_text: str
     content_sha256: str
-
-
-@dataclass(frozen=True)
-class NumberedActionSpan:
-    """One numbered Action Item with the marker excluded from exact wording."""
-
-    number: int
-    exact_text: str
-    start: int
-    end: int
-
-
-_ACTION_ITEMS_HEADING = re.compile(
-    r"^[ \t]*Action Items(?:[ \t]*[:\-\u2013\u2014])?[ \t]*$",
-    re.IGNORECASE | re.MULTILINE,
-)
-_NUMBERED_ITEM = re.compile(r"^[ \t]*(\d+)\.[ \t]*", re.MULTILINE)
-_PAGE_FOOTER = re.compile(r"^[ \t]*Meeting Notes[ \t]*$", re.MULTILINE)
-_BLANK_BLOCK_BOUNDARY = re.compile(r"\r?\n[ \t]*\r?\n")
-_TEXT_LINE = re.compile(r"[^\r\n]+")
-_SENTENCE_BOUNDARY = re.compile(r"[.!?](?=[ \t]+[A-Z0-9])")
 
 
 def spreadsheet_segments(path: Path | str) -> tuple[SpreadsheetSegment, ...]:
@@ -127,7 +106,7 @@ def pdf_prose_segments(path: Path | str) -> tuple[ProseSegment, ...]:
         for page_index, page in enumerate(pdf):
             page_no = page_index + 1
             text = page.get_text()
-            for start, end in _page_prose_ranges(text):
+            for start, end in page_prose_ranges(text):
                 exact_text = text[start:end]
                 segments.append(
                     ProseSegment(
@@ -142,50 +121,23 @@ def pdf_prose_segments(path: Path | str) -> tuple[ProseSegment, ...]:
     return tuple(segments)
 
 
-def numbered_action_spans(text: str) -> tuple[NumberedActionSpan, ...]:
-    """Enumerate non-overlapping exact Action Item wording from Minutes text."""
-
-    headings = tuple(_ACTION_ITEMS_HEADING.finditer(text))
-    spans: list[NumberedActionSpan] = []
-    for heading_index, heading in enumerate(headings):
-        section_end = (
-            headings[heading_index + 1].start()
-            if heading_index + 1 < len(headings)
-            else len(text)
-        )
-        footer = _PAGE_FOOTER.search(text, heading.end(), section_end)
-        if footer is not None:
-            section_end = footer.start()
-        starts = tuple(_NUMBERED_ITEM.finditer(text, heading.end(), section_end))
-        for index, marker in enumerate(starts):
-            raw_start = marker.end()
-            raw_end = (
-                starts[index + 1].start()
-                if index + 1 < len(starts)
-                else section_end
-            )
-            blank = _BLANK_BLOCK_BOUNDARY.search(text, raw_start, raw_end)
-            if blank is not None:
-                raw_end = blank.start()
-            start, end = _trimmed_bounds(text, raw_start, raw_end)
-            if start < end:
-                spans.append(
-                    NumberedActionSpan(
-                        number=int(marker.group(1)),
-                        exact_text=text[start:end],
-                        start=start,
-                        end=end,
-                    )
-                )
-    return tuple(spans)
-
-
 def append_ingested_source_segments(
-    session: Session, document: Document, path: Path | str
+    session: Session, document: Document, path: Path | str, *, native_reading=None
 ) -> tuple[SourceSegment, ...]:
     """Append the supported segments for registered source bytes, at most once."""
 
     original = Path(path)
+    # A configured native challenger must never append incumbent prose beside
+    # its new page string, including the ordinary ingest deduplication path.
+    from corridor.config import settings
+    from corridor.reader_segments import append_native_segments, read_native_pdf
+
+    if native_reading is not None or (
+        settings.native_reader_token_layer and original.suffix.lower() == ".pdf"
+    ):
+        _require_registered_bytes(document, original)
+        reading = native_reading or read_native_pdf(original, source_sha256=document.sha256)
+        return append_native_segments(session, document, reading)
     is_spreadsheet = original.suffix.lower() in SPREADSHEET_SUFFIXES
     is_minutes_pdf = (
         document.doc_type == "minutes" and original.suffix.lower() == ".pdf"
@@ -197,6 +149,7 @@ def append_ingested_source_segments(
         session.scalars(
             select(SourceSegment)
             .where(SourceSegment.document_id == document.id)
+            .where(SourceSegment.kind.in_(("spreadsheet_cell", "prose_span")))
             .order_by(SourceSegment.ordinal)
         ).all()
     )
@@ -291,6 +244,10 @@ def dereference_source_segment(
         )
     elif segment.kind == "prose_span":
         recovered = _dereference_pdf_prose_span(original, segment)
+    elif segment.kind in {"pdf_span", "pdf_cell"}:
+        from corridor.reader_segments import replay_native_segment
+
+        recovered = replay_native_segment(document, segment, original)
     else:
         raise SourceSegmentLocatorMismatch(
             f"unsupported source segment kind {segment.kind!r}"
@@ -411,46 +368,6 @@ def _dereference_pdf_prose_span(path: Path, segment: SourceSegment) -> str:
     if segment.end_offset > len(page_text):
         raise SourceSegmentLocatorMismatch("prose span bounds exceed the page text")
     return page_text[segment.start_offset : segment.end_offset]
-
-
-def _page_prose_ranges(text: str) -> tuple[tuple[int, int], ...]:
-    action_ranges = tuple((item.start, item.end) for item in numbered_action_spans(text))
-    spans: list[tuple[int, int]] = []
-    cursor = 0
-    for start, end in action_ranges:
-        spans.extend(_plain_prose_ranges(text, cursor, start))
-        spans.append((start, end))
-        cursor = end
-    spans.extend(_plain_prose_ranges(text, cursor, len(text)))
-    return tuple(sorted(spans))
-
-
-def _plain_prose_ranges(text: str, start: int, end: int) -> list[tuple[int, int]]:
-    ranges: list[tuple[int, int]] = []
-    for line in _TEXT_LINE.finditer(text, start, end):
-        line_start, line_end = _trimmed_bounds(text, line.start(), line.end())
-        if line_start >= line_end:
-            continue
-        cursor = line_start
-        for boundary in _SENTENCE_BOUNDARY.finditer(text, line_start, line_end):
-            sentence_start, sentence_end = _trimmed_bounds(
-                text, cursor, boundary.end()
-            )
-            if sentence_start < sentence_end:
-                ranges.append((sentence_start, sentence_end))
-            cursor = boundary.end()
-        sentence_start, sentence_end = _trimmed_bounds(text, cursor, line_end)
-        if sentence_start < sentence_end:
-            ranges.append((sentence_start, sentence_end))
-    return ranges
-
-
-def _trimmed_bounds(text: str, start: int, end: int) -> tuple[int, int]:
-    while start < end and text[start].isspace():
-        start += 1
-    while end > start and text[end - 1].isspace():
-        end -= 1
-    return start, end
 
 
 def _exact_cell_text(value: object) -> str:

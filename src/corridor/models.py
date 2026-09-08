@@ -1161,11 +1161,14 @@ class SourceSegment(Base):
         UniqueConstraint(
             "project_id", "id", name="uq_source_segments_project_id"
         ),
+        Index(
+            "uq_source_segments_document_kind_ordinal",
+            "document_id", "kind", "ordinal", unique=True,
+            postgresql_where=text("reading_sha256 is null"),
+        ),
         UniqueConstraint(
-            "document_id",
-            "kind",
-            "ordinal",
-            name="uq_source_segments_document_kind_ordinal",
+            "document_id", "reading_sha256", "kind", "ordinal",
+            name="uq_source_segments_reading_ordinal",
         ),
         UniqueConstraint(
             "document_id",
@@ -1174,13 +1177,18 @@ class SourceSegment(Base):
             "cell_range",
             name="uq_source_segments_spreadsheet_locator",
         ),
+        Index(
+            "uq_source_segments_prose_locator",
+            "document_id", "kind", "page_no", "start_offset", "end_offset",
+            unique=True, postgresql_where=text("reading_sha256 is null"),
+        ),
         UniqueConstraint(
-            "document_id",
-            "kind",
-            "page_no",
-            "start_offset",
-            "end_offset",
-            name="uq_source_segments_prose_locator",
+            "document_id", "reading_sha256", "page_no", "span_stream",
+            "start_offset", "end_offset", name="uq_source_segments_native_span",
+        ),
+        UniqueConstraint(
+            "document_id", "reading_sha256", "page_no", "table_index",
+            "cell_row", "cell_column", name="uq_source_segments_pdf_cell",
         ),
         ForeignKeyConstraint(
             ["project_id", "document_id"],
@@ -1188,7 +1196,7 @@ class SourceSegment(Base):
             name="fk_source_segments_document_scope",
         ),
         CheckConstraint(
-            "kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement')",
+            "kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement', 'pdf_span', 'pdf_cell')",
             name="ck_source_segments_kind",
         ),
         CheckConstraint(
@@ -1208,11 +1216,43 @@ class SourceSegment(Base):
             "and recorded_verbal_origin_id is null and sheet_name is null "
             "and cell_range is null "
             "and page_no > 0 and start_offset >= 0 and end_offset > start_offset) or "
+            "(kind = 'pdf_span' and document_id is not null "
+            "and recorded_verbal_origin_id is null and sheet_name is null "
+            "and cell_range is null and page_no > 0 and start_offset >= 0 "
+            "and end_offset > start_offset and span_stream in ('page', 'clipped') "
+            "and table_index is null and cell_row is null and cell_column is null "
+            "and row_span is null and column_span is null) or "
+            "(kind = 'pdf_cell' and document_id is not null "
+            "and recorded_verbal_origin_id is null and sheet_name is null "
+            "and cell_range is null and page_no > 0 and start_offset is null "
+            "and end_offset is null and span_stream is null "
+            "and table_index >= 0 and cell_row >= 0 and cell_column >= 0 "
+            "and row_span > 0 and column_span > 0) or "
             "(kind = 'recorded_verbal_statement' and document_id is null "
             "and recorded_verbal_origin_id is not null and sheet_name is null "
             "and cell_range is null and page_no is null and start_offset is null "
             "and end_offset is null)",
             name="ck_source_segments_locator",
+        ),
+        CheckConstraint(
+            "(kind in ('pdf_span', 'pdf_cell') "
+            "and rendition_sha256 is not null and rendition_sha256 ~ '^[0-9a-f]{64}$' "
+            "and reading_sha256 is not null and reading_sha256 ~ '^[0-9a-f]{64}$' "
+            "and reader_identity is not null and jsonb_typeof(reader_identity) = 'object' "
+            "and location_json is not null and jsonb_typeof(location_json) = 'object') or "
+            "(kind not in ('pdf_span', 'pdf_cell') and rendition_sha256 is null "
+            "and reading_sha256 is null and reader_identity is null and location_json is null "
+            "and span_stream is null and table_index is null and cell_row is null "
+            "and cell_column is null and row_span is null and column_span is null)",
+            name="ck_source_segments_reading",
+        ),
+        CheckConstraint(
+            "kind not in ('pdf_span', 'pdf_cell') or (page_no is not null and "
+            "((kind = 'pdf_span' and span_stream is not null and start_offset is not null "
+            "and end_offset is not null) or (kind = 'pdf_cell' and table_index is not null "
+            "and cell_row is not null and cell_column is not null "
+            "and row_span is not null and column_span is not null)))",
+            name="ck_source_segments_native_complete",
         ),
         ForeignKeyConstraint(
             ["project_id", "recorded_verbal_origin_id"],
@@ -1243,6 +1283,16 @@ class SourceSegment(Base):
     page_no: Mapped[int | None] = mapped_column(Integer)
     start_offset: Mapped[int | None] = mapped_column(Integer)
     end_offset: Mapped[int | None] = mapped_column(Integer)
+    rendition_sha256: Mapped[str | None] = mapped_column(String(64))
+    reading_sha256: Mapped[str | None] = mapped_column(String(64))
+    reader_identity: Mapped[dict | None] = mapped_column(JSONB)
+    location_json: Mapped[dict | None] = mapped_column(JSONB)
+    span_stream: Mapped[str | None] = mapped_column(String(16))
+    table_index: Mapped[int | None] = mapped_column(Integer)
+    cell_row: Mapped[int | None] = mapped_column(Integer)
+    cell_column: Mapped[int | None] = mapped_column(Integer)
+    row_span: Mapped[int | None] = mapped_column(Integer)
+    column_span: Mapped[int | None] = mapped_column(Integer)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

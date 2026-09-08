@@ -1,0 +1,874 @@
+{
+ "schema_version": "corridor.pdf-pairs-receipt.v1",
+ "run": "736-native-segments-v1-46c6e25",
+ "date": "2026-09-08",
+ "what": "Extraction Measurement of configuration `native-segments-v1` against the registered paired-rendition Reference Dataset; an explicit experiment outside CI.",
+ "configuration": {
+  "name": "native-segments-v1",
+  "description": "the disabled Corridor native Source Segment handoff, using read_native_pdf and native_segment_values with the frozen tagged reader at 36 dpi; missing typed cells remain omissions in the unchanged paired scorer",
+  "engine": "tagged",
+  "dpi": 36,
+  "jobs": 4,
+  "driver": "corridor.native_segment_measurement",
+  "retain_images": false,
+  "reader": {
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "repository": "pdf-reader-comparison (local, no remote)",
+   "package_digest": "181719aab8acae237dec64f3935570eb68a56c07f10d71ec4d540387b6c12028",
+   "matches_commit": true
+  },
+  "source_segment_adapter": {
+   "driver": "corridor.native_segment_measurement",
+   "version": "native-segments-measurement-v1",
+   "segment_scheme": "corridor.pdf-segments.v1",
+   "native_adapter_version": "native-reader-v2",
+   "implementation_files": {
+    "src/corridor/native_segment_measurement.py": "5afe9e0d897603c9aac36857baff253b8e4cf9cc997351e610bf5e3ffddff83c",
+    "src/corridor/reader_segments.py": "737782506d420bcb263adb3cddb287962ab74e467aad9b6c06b8468ead842946",
+    "src/corridor/token_layers.py": "6f1e58307d033f09ab34e358925f1024c2d521aa8dfe53be47203e09d51759d2",
+    "src/corridor/prose_spans.py": "f61316942c9bab388c7575b995a2402bfe9e3ef1601cb1586ae31a94eaabc738",
+    "src/corridor/source_append.py": "c967714701226a4eb9b8721e1908b47e9458d9b3501786eb3a8d7746ab91e661",
+    "src/corridor_pdf_reader/measurement.py": "b0440bfae96fb6e035fda5bb64a349bd1128808e5c563a930ef1b3a8fc39666c"
+   },
+   "identity_sha256": "a99db1eed4fa807072977865dc7813b1a8612d4fefed5dbe8a9fd392d6c324a8"
+  },
+  "environment": {
+   "python": "3.12.12",
+   "packages": {
+    "pypdfium2": "5.13.0",
+    "pypdf": "6.17.0",
+    "pdf-oxide": "0.3.77",
+    "pillow": "12.3.0",
+    "openpyxl": "3.1.5",
+    "xlrd": "2.0.2"
+   },
+   "pdfium_build": "153.0.7999.0",
+   "pypdfium2_build": "5.13.0",
+   "node": "v24.10.0",
+   "ssf": "0.11.2",
+   "machine": {
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "machine": "arm64",
+    "cpu_count": 10,
+    "hostname": "MacBook-Pro-4.local"
+   }
+  }
+ },
+ "dataset": {
+  "file": "gold/pdf-pairs/v1/dataset.json",
+  "schema_version": "corridor.pdf-pairs-dataset.v1",
+  "dataset_version": "2026-09-06.1",
+  "sha256": "46d5a66491d1ac04fbbce7d5959d8c2366619603e0be44cf2b4b84904ac0b67c",
+  "corpus_manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "split_sha256": "529c5ffb00bc96f52f51156e5640bdb5ae12d2c2383b27b468861eff83bb281f",
+  "reference_manifest_sha256": "2c778dc65d0ad91cfa2d3b7ac2211e34efcb2b0078744903cafd4c3a1a661d4f"
+ },
+ "selection": {
+  "development_keys": 263,
+  "holdout_keys": 70,
+  "subset": false,
+  "keys": "every registered pair of each scored set",
+  "keys_sha256": "0a7cd95ce7b9fb5e035b3b01ebda2347abacbe7b22ac1a39bf6c5b25a13ef455"
+ },
+ "corpus": {
+  "root": "/Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact",
+  "manifest_sha256": "ca68b55abfa583a1046bf97aeebfece37d5de39d39d1380b74242aec17427a52",
+  "excluded_sha256": "5f2e1d490444470122244d3ab08dcbb7c8cc1e9e5e8895aac4569ddc02996c98",
+  "pairs": 333,
+  "files_checked": 666,
+  "bytes": 190312360,
+  "mismatches": [],
+  "missing": []
+ },
+ "reference": {
+  "retained_manifest": "receipts/loop-reference-v6.manifest.json",
+  "keys": 333,
+  "identical_bytes": 333,
+  "different": [],
+  "absent": [],
+  "source": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-frozen-reader-46c6e25/reference"
+ },
+ "reads": {
+  "engine": "tagged",
+  "seconds": 452.3,
+  "documents": 333,
+  "pages": 1998,
+  "errors": []
+ },
+ "steps": [
+  {
+   "step": "read",
+   "command": [
+    "/Users/bryceharmon/Desktop/corridor-lanes/736-reader-segments/.venv/bin/python3",
+    "-m",
+    "corridor.native_segment_measurement",
+    "--output",
+    "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-native-segments-v1-46c6e25/loop",
+    "--engine",
+    "tagged",
+    "--jobs",
+    "4",
+    "--keys",
+    "01f937421e878ad7",
+    "02753bf7e6549f5a",
+    "036093f377dd8ccf",
+    "048a65cda7eaf90e",
+    "061f5aae30c90bdb",
+    "063a8278fc81ee99",
+    "075ad4da3647d7dc",
+    "084701d0ea4a9037",
+    "0a19875c2c8bc070",
+    "0aa1faaab782ded0",
+    "0aa24f1aade461c8",
+    "0b246d8615997289",
+    "0c8e468d6b76883a",
+    "0e929fe048eb1329",
+    "0f33738aaf68c4f7",
+    "10036f98f9b22c0d",
+    "11e04a9671934fb0",
+    "1365981f856ebeb5",
+    "1677cd5e222aa387",
+    "17e56e5a74783c63",
+    "18052b9c121ecf89",
+    "18a5cb821a4c8ba4",
+    "1a11d991a60cf215",
+    "1a954b65d22e767d",
+    "1bddaca7d46bb933",
+    "1c1b3b097169c693",
+    "1d6387ad58ee45dc",
+    "1e0e43f52016e8e2",
+    "1ee4a00b8eb6173b",
+    "22eb479caa26c8dd",
+    "24442fa4c3bc0d81",
+    "2449edb4c2805be4",
+    "2477971cd2e352a6",
+    "2646eb62944ffb59",
+    "268b3e4442ea09f3",
+    "26c22a95b2be4aa3",
+    "26e4ce0d248d87be",
+    "277068d486e80acb",
+    "28cfacb596aaef2a",
+    "296049b380f50cda",
+    "2a7a8cfce40cbff8",
+    "2e0e52e6208f0921",
+    "2e95c4f4e87e2539",
+    "2f4535d678966d1f",
+    "2f93c3250444bddc",
+    "30c122afd0b1f263",
+    "3316a52a50b35c80",
+    "334343284dc65bf5",
+    "3529d00978360dbd",
+    "35f799faa1d06d94",
+    "35f9e0568a76a5d3",
+    "3660e47fe00b4622",
+    "3738ee3a67eb9e1a",
+    "388f9a2900b4c5f3",
+    "39ac9fb3934d2499",
+    "3a34c4fabc1c4b0c",
+    "3b3ce5ea0085f0a6",
+    "3da16b4d1b10efa4",
+    "3e1330c65ac811bb",
+    "40cecca209bfcacc",
+    "415f02553a7d5c1a",
+    "422ebddca6186cea",
+    "43444ada6722f91c",
+    "44176497fa502349",
+    "44d20a82a208eef4",
+    "44ed9f67b36770c3",
+    "4581c2ae3fa57867",
+    "45fc6434ba4b4817",
+    "467e3bb1fed879e4",
+    "47f9c288b8ebbcaf",
+    "487a452cc25c2639",
+    "48be456ddb7f3d04",
+    "4bcef698b77fdd4e",
+    "4d5c3b52fd29dd09",
+    "4dd4a91a0f872eee",
+    "4ed298f91b333c7c",
+    "4ee2d7eb63792343",
+    "4f10e0439f4ec7b4",
+    "4f8f21264b60e311",
+    "5060895951c92f09",
+    "50b23088b99df7c2",
+    "510d430d7763468c",
+    "53f4e63c126e34b6",
+    "54039c59f0869941",
+    "55bca04246b678d6",
+    "55feb758651d3a98",
+    "57b16be9ab8ef143",
+    "58eb6ea6accb481b",
+    "58ef7f5162ea9f6c",
+    "58fe1310b2292102",
+    "59ea420010578999",
+    "5b149cc0b7004dd5",
+    "5b9eee1c84530a5d",
+    "5c5c95994469b266",
+    "5ce00d76bc26e6bd",
+    "5d36b973fa9393a8",
+    "5e979146e9322953",
+    "5fc907ca5bf72a69",
+    "610d4097dfa0a45d",
+    "629beafddfeb6515",
+    "63b410721357f002",
+    "63fc55538a40f04a",
+    "642f81cf6857b000",
+    "655a757d0bd2ef4a",
+    "677c837bd2e183fa",
+    "68f5e4335d1f280c",
+    "68f6277236871887",
+    "6a612d85b0f52cfd",
+    "6b0055353b859a3a",
+    "6ba4dc0c69c3998e",
+    "6f9405fa2ea1b2af",
+    "704a36c61b57cb09",
+    "70652ba8c894cb04",
+    "737f85b2d5fb9382",
+    "75295368e8f29549",
+    "765add3f09bd39ee",
+    "7680b502e26d4813",
+    "773685ca027bdb64",
+    "77a338ab5ecc47ef",
+    "78428fa01a7bba0b",
+    "7ac9452d81f2f091",
+    "7cdeeb2d14bb70df",
+    "7d20fa93e1b85561",
+    "7df585a126597f0d",
+    "7e694eca63449245",
+    "7e78146a3971c7c8",
+    "805bd18e2cdecd89",
+    "8071e64143b90844",
+    "8081799325cbf8de",
+    "8125e07252de8561",
+    "8144fdc0fd70edb2",
+    "817af73d96c30764",
+    "836def1c437efbed",
+    "84916accefa53e1f",
+    "850ea613b938fc7f",
+    "851e0930f312651b",
+    "86f5b4311ab12c84",
+    "87cfb10137a9f6a0",
+    "89a7ba1f81d8ab4c",
+    "8c566ed8b12d2c23",
+    "8cb8fe52849d79ee",
+    "8cdc193f8723ddd7",
+    "8da10c47cb158949",
+    "901778c000474327",
+    "901c49df4e475618",
+    "919cf17cc9c19b3f",
+    "92623c28c82ba362",
+    "94bd92578a69bbcf",
+    "959759602715b1ec",
+    "97793117df3f902e",
+    "98cfca6a5c89080d",
+    "99797c014892c87e",
+    "99e3871a86ca9971",
+    "9a201e0540236c5b",
+    "9bc470082c787989",
+    "9c3f974ddf3ca1ec",
+    "9c73aaa004f25ac9",
+    "9d3d6637aa692a43",
+    "9d701a8ad492a6d7",
+    "9d916c12ae794af2",
+    "9fed846cb6136b20",
+    "a040631331156dca",
+    "a14b79da2e3eb659",
+    "a21e1c43fba775a7",
+    "a357d52c174e2c0b",
+    "a3e5a4d67dc03ae5",
+    "a4257b6d518f0a50",
+    "a451b6cb408404f3",
+    "a4c70a8fd1c41ddc",
+    "a763241155fd62f9",
+    "aa1b03cb0ab8568b",
+    "aa225b3b50547e89",
+    "aab8180e0ace36b3",
+    "aad65120dd155fe3",
+    "aaee03bddac9af27",
+    "abdad41ebfbcad3d",
+    "ad4e359b40f73051",
+    "aeea007211f10780",
+    "b1366ca2fcbb99cb",
+    "b146eda93e5e028e",
+    "b22b51b2d8fe0fa7",
+    "b24024b08bcafbbc",
+    "b2fdbd26dd556f54",
+    "b343720f5dc7fd09",
+    "b3b820cf9be2d63f",
+    "b42f8c3e9db8a9e7",
+    "b474aacebf890dd4",
+    "b62895f03208009f",
+    "b68e397d6ee5e5be",
+    "b6b9945c73f0e466",
+    "b88ab10b340427ed",
+    "b904336d3e900cdc",
+    "bb31cd1becb5e9cd",
+    "bd7b7f123087e04b",
+    "bf94376aa359930e",
+    "c048ff289404b66c",
+    "c15972df8830e9e0",
+    "c1c16714e5abdf1f",
+    "c2304fad21da21c5",
+    "c2eac69df2dfe53c",
+    "c4827f72027c7b50",
+    "c778431c43c8525d",
+    "c805b47858c6eba8",
+    "ca1bd93210ce9e18",
+    "cab3abfe4e20de9a",
+    "cc597f98144c6c50",
+    "ccbcb88452456021",
+    "ccdfb043b9c04d75",
+    "cd2b6e28aae618dc",
+    "cec87f0d61682271",
+    "cf36a6eaefa412e8",
+    "d16164dcb786aa95",
+    "d1991db59e9225c2",
+    "d386de6be12906b3",
+    "d45001ce495b3d51",
+    "d493f36366bb71b1",
+    "d4bd6642b42c4708",
+    "d5387ef63fd7d4c2",
+    "d542f53aae2cf3dd",
+    "d72e01123b493873",
+    "d84e75cee9409385",
+    "da3264da0b141ffd",
+    "db0b049a68d3e3ba",
+    "dc32100b739c75a3",
+    "dd067e96c6df8aee",
+    "dd340993c3dfd22b",
+    "dd5d52199e872e1d",
+    "e2b7f6146a4e720d",
+    "e30e1ef329dcf61f",
+    "e3b09ecb71284715",
+    "e3db3014b7973d93",
+    "e4c48fea8a88a640",
+    "e4e7e3b5fa093bc6",
+    "e6f7a2ff5e82f50d",
+    "e8b6c73f68c91b90",
+    "e8d70c6037ba0895",
+    "e97e405a1a54c03d",
+    "e9fcd8864af4817e",
+    "ebce7f0fb9928fa0",
+    "ed6b83273cf12cf1",
+    "eea52732b6c43814",
+    "ef6d6a975b3e405e",
+    "efdfda491a57411a",
+    "f006bd298925329e",
+    "f10a5f2374d94acc",
+    "f14c2387f29a4af7",
+    "f26008dd76bb15ac",
+    "f2db2a4eb8853c8e",
+    "f3b307ced0a230e4",
+    "f3e0e0af4a07f551",
+    "f439640d7342ba69",
+    "f5bce11d53caedc1",
+    "f640a50e6eef0909",
+    "f644f27a66b5ef3d",
+    "f71cae3293bd9048",
+    "f753b582e4859233",
+    "f83ff4dac4a0f2b1",
+    "fa2e9dec867ca728",
+    "fcbe0ceb23e61b0f",
+    "fe1d4feb4a609ec0",
+    "fe45d541dc3f28ca",
+    "ffa206c2c41bfc37",
+    "fff666f73583758d",
+    "00f5c132a5762295",
+    "061df62683e2813f",
+    "075d8a716903a6b2",
+    "0b3f04713b184494",
+    "0fa28bdd38a7ed63",
+    "1684afaf5c0dcfbb",
+    "184cf7d51abca373",
+    "1b2f68d9172b78fc",
+    "1d3c39775b6f706d",
+    "1fe3560d4705f672",
+    "22a27b9c0c51d853",
+    "260f45fcbb0c1f48",
+    "292b5b0f11f40870",
+    "2a5b04b957451226",
+    "2ae72923ec350018",
+    "31c4605dc7605a54",
+    "32d44b2a6a670485",
+    "3f621b62db8aeb3e",
+    "401b43afbca6b7a7",
+    "419c4e3bf0d10767",
+    "44049e510b0d42ee",
+    "444e8085896e07ab",
+    "458f453d951b3b40",
+    "45a1e6e00e2a2656",
+    "4bc12a60ccab5791",
+    "4e67712ff1dbf093",
+    "5625d5704fb76fd9",
+    "56c21f7fe491e777",
+    "5a210d83eeaf81e5",
+    "5cd6e09ed335658b",
+    "629c2a036a453cf8",
+    "66e52c62dbf3324f",
+    "6e235e310c888ee6",
+    "7488d1fdff20c0a7",
+    "75c22360dc4d5128",
+    "765c9c7026e857e6",
+    "7660dc021db38d2c",
+    "76709b194076e73c",
+    "76daa571db6b4cd3",
+    "782b9b09cd5059ba",
+    "7d385920357ee278",
+    "7ee33fc52944e799",
+    "883fd222fbc3f60c",
+    "8bdd4d62a97f33ea",
+    "905ef90bca199db7",
+    "92136ebf2601af2d",
+    "959d8e550fc81df9",
+    "96df37178e07d370",
+    "a56193184bb3df9a",
+    "a660603eacf51d9d",
+    "a699bbbaa455fb6a",
+    "a6cb3e8228ed6bbe",
+    "a8963da0587fa0d4",
+    "aae2b86e31de22c7",
+    "b0897cf80a736933",
+    "b18e478d75387a4e",
+    "b41beda78ccc7583",
+    "b72e902139088a6a",
+    "bae872038fefc592",
+    "bdd2166d3d61290e",
+    "c0d975b4f71a248f",
+    "c209010b398a5bed",
+    "c654c0a29ceb7a66",
+    "cd3c2e47de21f060",
+    "cdec342ad4a70521",
+    "d1a195dfabccd2d6",
+    "d350d5f6df657e2b",
+    "d4fa7421ccfd3076",
+    "f4990cc1ac74767d",
+    "f7f2c24367934b34"
+   ],
+   "seconds": 453.0,
+   "log": "read.log"
+  },
+  {
+   "step": "score",
+   "command": [
+    "bootstrap.score.score_pair",
+    "in process, over the selection"
+   ],
+   "seconds": 21.6
+  },
+  {
+   "step": "tally",
+   "command": [
+    "/Users/bryceharmon/Desktop/corridor-lanes/736-reader-segments/.venv/bin/python3",
+    "-m",
+    "corridor_pdf_reader.bootstrap.tally",
+    "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-native-segments-v1-46c6e25/loop"
+   ],
+   "exit_code": 0,
+   "log": "tally.txt"
+  }
+ ],
+ "results": {
+  "development": {
+   "keys_selected": 263,
+   "pairs": [
+    262,
+    263
+   ],
+   "pages": [
+    1589,
+    1589
+   ],
+   "cells_exact": [
+    483210,
+    483336
+   ],
+   "failing_pairs": [
+    "fcbe0ceb23e61b0f"
+   ],
+   "failing_pages": 0,
+   "unscored_keys": [],
+   "read_errors": {},
+   "by_class": {
+    "value_mismatch": 124,
+    "unverifiable": 29,
+    "columns_folded": 16,
+    "prose_row": 15,
+    "uncovered": 6,
+    "merged_rows": 1
+   },
+   "by_subclass": {
+    "value_mismatch/clipped_evidence": 63,
+    "unverifiable/print_area_overflow": 29,
+    "value_mismatch/overflow_hashes": 22,
+    "value_mismatch/clipped_prefix": 20,
+    "columns_folded/unmapped_column": 16,
+    "prose_row/outside_workbook": 15,
+    "value_mismatch/clipped_suffix": 9,
+    "value_mismatch/clipped_middle": 8,
+    "uncovered/absent": 6,
+    "value_mismatch/rounded_to_width": 2,
+    "merged_rows/text_intact": 1
+   },
+   "pairs_with_class": {
+    "value_mismatch": 39,
+    "unverifiable": 8,
+    "columns_folded": 4,
+    "merged_rows": 1,
+    "prose_row": 1,
+    "uncovered": 1
+   },
+   "pages_with_class": {
+    "value_mismatch": 64,
+    "unverifiable": 8,
+    "columns_folded": 6,
+    "merged_rows": 1,
+    "prose_row": 1
+   },
+   "by_family": {
+    "AdobePDFLibrary": {
+     "pairs": 6,
+     "pairs_pass": 6,
+     "pages": 15,
+     "pages_pass": 15,
+     "reference_cells": 1496,
+     "exact_cells": 1496
+    },
+    "Distiller": {
+     "pairs": 1,
+     "pairs_pass": 1,
+     "pages": 2,
+     "pages_pass": 2,
+     "reference_cells": 105,
+     "exact_cells": 105
+    },
+    "Excel": {
+     "pairs": 221,
+     "pairs_pass": 221,
+     "pages": 1368,
+     "pages_pass": 1368,
+     "reference_cells": 468951,
+     "exact_cells": 468841
+    },
+    "Ghostscript": {
+     "pairs": 10,
+     "pairs_pass": 9,
+     "pages": 29,
+     "pages_pass": 29,
+     "reference_cells": 3856,
+     "exact_cells": 3844
+    },
+    "PrintToPDF": {
+     "pairs": 25,
+     "pairs_pass": 25,
+     "pages": 175,
+     "pages_pass": 175,
+     "reference_cells": 8928,
+     "exact_cells": 8924
+    }
+   },
+   "worst_pairs": [
+    {
+     "key": "fcbe0ceb23e61b0f",
+     "pdf": "PE-40_Change-Order-224-Billing-SOV-As-Agreed-3-4-2020.pdf",
+     "family": "Ghostscript",
+     "pages": 1,
+     "errors": 15,
+     "uncovered": 6,
+     "counts": {
+      "prose_row": 15
+     }
+    },
+    {
+     "key": "1ee4a00b8eb6173b",
+     "pdf": "REVISED-McClean-December-SOV.pdf",
+     "family": "Excel",
+     "pages": 5,
+     "errors": 16,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 16
+     }
+    },
+    {
+     "key": "68f6277236871887",
+     "pdf": "H-S-I-Billing-Inv-078-07-20-25-r0.pdf",
+     "family": "Excel",
+     "pages": 14,
+     "errors": 10,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 9,
+      "columns_folded": 1
+     }
+    },
+    {
+     "key": "ed6b83273cf12cf1",
+     "pdf": "H-S-I-Billing-Inv-067-05-20-24-r2.pdf",
+     "family": "Excel",
+     "pages": 14,
+     "errors": 9,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 8,
+      "columns_folded": 1
+     }
+    },
+    {
+     "key": "e4e7e3b5fa093bc6",
+     "pdf": "sov.pdf",
+     "family": "Excel",
+     "pages": 14,
+     "errors": 8,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 8
+     }
+    }
+   ]
+  },
+  "holdout": {
+   "keys_selected": 70,
+   "pairs": [
+    70,
+    70
+   ],
+   "pages": [
+    409,
+    409
+   ],
+   "cells_exact": [
+    125498,
+    125529
+   ],
+   "failing_pairs": [],
+   "failing_pages": 0,
+   "unscored_keys": [],
+   "read_errors": {},
+   "by_class": {
+    "value_mismatch": 31,
+    "unverifiable": 21,
+    "columns_folded": 1
+   },
+   "by_subclass": {
+    "unverifiable/print_area_overflow": 21,
+    "value_mismatch/clipped_evidence": 13,
+    "value_mismatch/clipped_prefix": 7,
+    "value_mismatch/clipped_suffix": 6,
+    "value_mismatch/clipped_middle": 4,
+    "value_mismatch/overflow_hashes": 1,
+    "columns_folded/unmapped_column": 1
+   },
+   "pairs_with_class": {
+    "value_mismatch": 14,
+    "unverifiable": 6,
+    "columns_folded": 1
+   },
+   "pages_with_class": {
+    "value_mismatch": 18,
+    "unverifiable": 6,
+    "columns_folded": 1
+   },
+   "by_family": {
+    "AdobePDFLibrary": {
+     "pairs": 1,
+     "pairs_pass": 1,
+     "pages": 2,
+     "pages_pass": 2,
+     "reference_cells": 107,
+     "exact_cells": 107
+    },
+    "Excel": {
+     "pairs": 63,
+     "pairs_pass": 63,
+     "pages": 373,
+     "pages_pass": 373,
+     "reference_cells": 123346,
+     "exact_cells": 123315
+    },
+    "Ghostscript": {
+     "pairs": 2,
+     "pairs_pass": 2,
+     "pages": 3,
+     "pages_pass": 3,
+     "reference_cells": 401,
+     "exact_cells": 401
+    },
+    "PrintToPDF": {
+     "pairs": 4,
+     "pairs_pass": 4,
+     "pages": 31,
+     "pages_pass": 31,
+     "reference_cells": 1675,
+     "exact_cells": 1675
+    }
+   },
+   "worst_pairs": [
+    {
+     "key": "1fe3560d4705f672",
+     "pdf": "19132-87-VE-December-2024---R1.pdf",
+     "family": "Excel",
+     "pages": 14,
+     "errors": 6,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 6
+     }
+    },
+    {
+     "key": "cdec342ad4a70521",
+     "pdf": "19132-86-VE-November-2024---R2.pdf",
+     "family": "Excel",
+     "pages": 14,
+     "errors": 6,
+     "uncovered": 0,
+     "counts": {
+      "value_mismatch": 6
+     }
+    },
+    {
+     "key": "45a1e6e00e2a2656",
+     "pdf": "5007_19-02-Billing.pdf",
+     "family": "Excel",
+     "pages": 3,
+     "errors": 4,
+     "uncovered": 0,
+     "counts": {
+      "unverifiable": 4
+     }
+    },
+    {
+     "key": "75c22360dc4d5128",
+     "pdf": "Feb-SOV-2022.pdf",
+     "family": "Excel",
+     "pages": 2,
+     "errors": 4,
+     "uncovered": 0,
+     "counts": {
+      "columns_folded": 1,
+      "unverifiable": 3
+     }
+    },
+    {
+     "key": "b0897cf80a736933",
+     "pdf": "5007_20-01-Billing.pdf",
+     "family": "Excel",
+     "pages": 7,
+     "errors": 4,
+     "uncovered": 0,
+     "counts": {
+      "unverifiable": 4
+     }
+    }
+   ]
+  }
+ },
+ "summary_over_selection": {
+  "pairs": 333,
+  "pairs_pass": 332,
+  "pages": 1998,
+  "pages_pass": 1998,
+  "reference_cells": 608865,
+  "exact_cells": 608708,
+  "holdout_included": true
+ },
+ "gate": {
+  "development": {
+   "all_pairs_pass": false,
+   "failing_pairs": [
+    "fcbe0ceb23e61b0f"
+   ],
+   "failing_pages": 0,
+   "unscored_keys": [],
+   "read_errors": []
+  },
+  "holdout": {
+   "all_pairs_pass": true,
+   "failing_pairs": [],
+   "failing_pages": 0,
+   "unscored_keys": [],
+   "read_errors": []
+  }
+ },
+ "baseline_comparison": {
+  "against": "frozen-reader-2026-09-06",
+  "baseline_path": "gold/pdf-pairs/v1/receipts/frozen-reader-2026-09-06",
+  "baseline_configuration": {
+   "name": "frozen-reader",
+   "engine": "tagged",
+   "dpi": 36,
+   "jobs": 4,
+   "commit": "c39363e26c2726b61c4e707f589093c67173e538",
+   "package_digest": "7fd94c5fcaaa5531a3cea2ef90dc71a4aafe083fbbbdad47f0234fa371895524",
+   "pypdfium2": "5.13.0",
+   "pdfium": "153.0.7999.0",
+   "pypdf": "6.17.0"
+  },
+  "by_set": {
+   "development": {
+    "pairs_compared": 263,
+    "pairs_regressed": [],
+    "pairs_improved": [],
+    "pairs_not_in_baseline": [],
+    "pages_pass": {
+     "baseline": 1589,
+     "this_run": 1589
+    },
+    "cells_exact": {
+     "baseline": 483210,
+     "this_run": 483210
+    },
+    "regressed": false
+   },
+   "holdout": {
+    "pairs_compared": 70,
+    "pairs_regressed": [],
+    "pairs_improved": [],
+    "pairs_not_in_baseline": [],
+    "pages_pass": {
+     "baseline": 409,
+     "this_run": 409
+    },
+    "cells_exact": {
+     "baseline": 125498,
+     "this_run": 125498
+    },
+    "regressed": false
+   }
+  },
+  "regressed": false
+ },
+ "holdout": {
+  "included": true,
+  "actor": "codex:issue-736",
+  "reason": "#736 disabled source-segment integration reproduces frozen loop-020 and measures actual typed segment handoff",
+  "ledger": "gold/pdf-pairs/v1/holdout-access.jsonl",
+  "ledger_entry": "2026-09-08T05:20:07Z"
+ },
+ "limits": "Paired renditions are the measurement method, not a prerequisite for reading a production PDF. Cell comparison does not independently establish prose outside tables, raster fidelity, routing correctness, source-locator replay, malicious-document handling, production concurrency, or operational cost and coordinator burden. Those belong to their own tickets.",
+ "wall_seconds": 476.1,
+ "output": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/736-native-segments-v1-46c6e25",
+ "source_segment_handoff": {
+  "scope": "Actual read_native_pdf -> native_segment_values -> typed cell handoff; no database persistence or customer-citation audit. Outside and clipped scorer evidence comes from reader metadata; generated source spans are retained separately without whitespace restoration. Source addresses name readings, not model-facing registered Document IDs.",
+  "metrics": {
+   "pages": 1998,
+   "nonempty_reader_cells": 621990,
+   "empty_reader_cells": 0,
+   "generated_cell_segments": 621990,
+   "materialized_nonempty_cells": 621990,
+   "omitted_nonempty_cells": 0,
+   "missing_cell_segments": 0,
+   "ambiguous_cell_segments": 0,
+   "invalid_cell_segments": 0,
+   "cell_segment_records_not_used": 0,
+   "generated_page_spans": 136307,
+   "generated_clipped_spans": 203,
+   "source_characters": 6738920,
+   "outside_source_characters": 1657,
+   "ambiguously_assigned_source_characters": 0,
+   "characters_assigned_to_materialized_cells": 6737263,
+   "characters_not_in_materialized_cells": 1657,
+   "page_characters_in_source_spans": 6738920,
+   "clipped_source_characters": 4871,
+   "clipped_characters_in_source_spans": 4871
+  }
+ }
+}

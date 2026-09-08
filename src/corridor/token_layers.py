@@ -47,13 +47,19 @@ page text was a separate call the layer cannot reproduce.
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from functools import cached_property
 from datetime import datetime, timezone
 from hashlib import sha256
+from importlib.metadata import version as distribution_version
 import json
+import hmac
+import inspect
 import math
 from pathlib import Path
 import shutil
 import statistics
+import secrets
 import subprocess
 from typing import Any, Literal, Protocol
 
@@ -69,8 +75,9 @@ from corridor.object_storage import content_store
 from corridor.render_profiles import RenderDerivative
 from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
-from corridor_pdf_reader.execution import MEASURED_DPI, PdfiumExecutor
-from corridor_pdf_reader.provenance import SOURCE_COMMIT
+from corridor_pdf_reader.execution import MEASURED_DPI, MEASURED_ENGINE, PdfiumExecutor
+from corridor_pdf_reader.provenance import SOURCE_COMMIT, PACKAGE_ROOT
+from corridor.source_segment_errors import SourceDocumentDigestMismatch, SourceSegmentLocatorMismatch
 
 
 NATIVE_ADAPTER_VERSION = "native-pymupdf-v1"
@@ -80,7 +87,9 @@ OCR_ADAPTER_VERSION = "ocr-tesseract-v1"
 # the structure tree, and it is the reader's own assembly of the two that a
 # layer records.
 READER_ENGINE = "corridor-pdf-reader"
-READER_NATIVE_ADAPTER_VERSION = "native-reader-v1"
+READER_NATIVE_ADAPTER_VERSION = "native-reader-v2"
+PDF_SEGMENT_SCHEME = "corridor.pdf-segments.v1"
+_NATIVE_READING_SEAL_KEY = secrets.token_bytes(32)
 TESSERACT_OEM = 3
 TESSERACT_PSM = 6
 
@@ -227,6 +236,154 @@ def extract_native_token_layer(
 
 
 
+def _canonical(value: object) -> str:
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _digest(value: str) -> str:
+    return sha256(value.encode("utf-8")).hexdigest()
+
+
+@dataclass(frozen=True)
+class NativePdfReading:
+    """A sealed value: mutable reader dictionaries never escape as its state."""
+
+    rendition_sha256: str
+    identity_json: str
+    pages_json: str
+    seal: bytes = field(default=b"", repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        if not hmac.compare_digest(self.seal, _native_reading_seal(
+            self.rendition_sha256, self.identity_json, self.pages_json
+        )):
+            raise SourceSegmentLocatorMismatch("a native reading must come from registered PDF bytes")
+
+    @property
+    def identity(self) -> dict:
+        return json.loads(self.identity_json)
+
+    @property
+    def pages(self) -> tuple[dict, ...]:
+        return tuple(json.loads(self.pages_json))
+
+    @cached_property
+    def reading_sha256(self) -> str:
+        return _digest(_canonical({
+            "rendition_sha256": self.rendition_sha256,
+            "identity": self.identity,
+            "pages": self.pages,
+        }))
+
+    @property
+    def token_layers(self) -> tuple[TokenLayer, ...]:
+        identity = EngineIdentity.model_validate(self.identity["native_layer"])
+        identity = identity.model_copy(update={"configuration": {
+            **identity.configuration,
+            "reading_sha256": self.reading_sha256,
+            "segment_scheme": PDF_SEGMENT_SCHEME,
+        }})
+        return tuple(
+            reader_native_token_layer(
+                page, identity=identity, source_sha256=self.rendition_sha256
+            ) for page in self.pages
+        )
+
+    def page_text(self, page_no: int, *, stream: str = "page") -> str:
+        layer = self.layer(page_no, stream=stream)
+        return page_text_projection(layer)
+
+    def layer(self, page_no: int, *, stream: str = "page") -> TokenLayer:
+        if stream not in {"page", "clipped"}:
+            raise SourceSegmentLocatorMismatch("unknown native span stream")
+        pages = {page["number"]: page for page in self.pages}
+        if page_no not in pages:
+            raise SourceSegmentLocatorMismatch("native reading page does not exist")
+        layer = next(layer for layer in self.token_layers if layer.page_no == page_no)
+        if stream == "page":
+            return layer
+        page = pages[page_no]
+        return reader_native_token_layer(
+            {**page, "characters": page["clipped"]},
+            identity=layer.identity, source_sha256=self.rendition_sha256,
+        )
+
+
+def read_native_pdf(
+    path: Path | str,
+    *,
+    source_sha256: str,
+    executor: PdfiumExecutor | None = None,
+    engine: str = MEASURED_ENGINE,
+    dpi: int = MEASURED_DPI,
+) -> NativePdfReading:
+    """Execute the explicit challenger, including for previously ingested bytes."""
+
+    original = Path(path)
+    if sha256(original.read_bytes()).hexdigest() != source_sha256:
+        raise SourceDocumentDigestMismatch("native reading bytes do not match the rendition")
+    if engine not in {"tagged", "pdfium"} or not isinstance(dpi, int) or not 1 <= dpi <= 300:
+        raise SourceSegmentLocatorMismatch("unsupported native reader configuration")
+    result = (executor or PdfiumExecutor()).read_document(original, engine=engine, dpi=dpi)
+    if (result["source_sha256"] != source_sha256
+            or sha256(original.read_bytes()).hexdigest() != source_sha256):
+        raise SourceDocumentDigestMismatch("source bytes changed during the native reading")
+    identity = reader_native_engine_identity(result).model_copy(update={"dpi": dpi})
+    identity_data = {
+        "scheme": PDF_SEGMENT_SCHEME,
+        "native_layer": identity.model_dump(mode="json"),
+        "reader_runtime_sha256": _digest(_canonical({
+            name: sha256((PACKAGE_ROOT / "replacement" / name).read_bytes()).hexdigest()
+            for name in ("reader.py", "layout.py", "table_structure.py", "tags.py", "text_layout.py")
+        })),
+        "pypdf_version": distribution_version("pypdf"),
+        # A version label alone cannot distinguish an accidentally changed
+        # projection. Pin the application assembly alongside the untouched
+        # imported reader; an unavailable earlier assembly refuses replay.
+        "integration_sha256": native_integration_digest(),
+    }
+    # Timing, wall-clock and diagnostic raster artifacts are not reading
+    # identity. The actual characters, clipping and reconstructed cells are.
+    pages = [
+        {key: page[key] for key in ("number", "geometry", "text", "characters", "tables", "clipped")}
+        for page in result["pages"]
+    ]
+    if [page["number"] for page in pages] != list(range(1, len(pages) + 1)):
+        raise SourceSegmentLocatorMismatch("native reader returned an incomplete page sequence")
+    identity_json, pages_json = _canonical(identity_data), _canonical(pages)
+    return NativePdfReading(
+        source_sha256, identity_json, pages_json,
+        _native_reading_seal(source_sha256, identity_json, pages_json),
+    )
+
+
+def _native_reading_seal(rendition_sha256: str, identity_json: str, pages_json: str) -> bytes:
+    return hmac.new(
+        _NATIVE_READING_SEAL_KEY,
+        _canonical((rendition_sha256, identity_json, pages_json)).encode("utf-8"),
+        sha256,
+    ).digest()
+
+
+def native_integration_digest() -> str:
+    """Pin the native assembly without coupling replay to unrelated rollback code."""
+    return _digest(_canonical({
+        "native_code": {
+            target.__name__: _digest(inspect.getsource(target))
+            for target in (
+                NativePdfReading, read_native_pdf, reader_native_engine_identity,
+                reader_native_token_layer, page_text_projection, _reader_word_lines,
+                _line_words, _canonical, _digest, _native_reading_seal,
+            )
+        },
+        "native_modules": {
+            name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
+            for name in ("reader_segments.py", "prose_spans.py")
+        },
+    }))
+
+
+
 def read_native_token_layers(
     path: Path | str,
     *,
@@ -242,12 +399,10 @@ def read_native_token_layers(
     hole, and ingest refuses one.
     """
 
-    result = (executor or PdfiumExecutor()).read_document(Path(path))
-    identity = reader_native_engine_identity(result)
-    return tuple(
-        _reader_native_token_layer(page, identity=identity, source_sha256=source_sha256)
-        for page in result["pages"]
-    )
+    # The shared reading is also the owner of prose offsets and cell IDs.
+    return read_native_pdf(
+        path, source_sha256=source_sha256, executor=executor
+    ).token_layers
 
 
 def reader_native_engine_identity(result: dict[str, Any]) -> EngineIdentity:
@@ -273,7 +428,7 @@ def reader_native_engine_identity(result: dict[str, Any]) -> EngineIdentity:
     )
 
 
-def _reader_native_token_layer(
+def reader_native_token_layer(
     page: dict[str, Any], *, identity: EngineIdentity, source_sha256: str
 ) -> TokenLayer:
     # A line the reader assembles from whitespace alone contributes no words,
@@ -283,7 +438,7 @@ def _reader_native_token_layer(
     lines = [line for line in _reader_word_lines(page["characters"]["value"]) if line]
     tokens: list[Token] = []
     for line_no, line in enumerate(lines):
-        for raw_text, box, object_id in line:
+        for raw_text, box, object_id, _ in line:
             tokens.append(
                 Token(
                     ordinal=len(tokens),
@@ -295,7 +450,7 @@ def _reader_native_token_layer(
                     line=line_no,
                 )
             )
-    projected = "\n".join(" ".join(word for word, _, _ in line) for line in lines)
+    projected = "\n".join(" ".join(word for word, _, _, _ in line) for line in lines)
     return TokenLayer(
         page_no=page["number"],
         origin="native",
@@ -307,6 +462,7 @@ def _reader_native_token_layer(
             "line_count": len(lines),
             "rotation_degrees": int(page["geometry"]["rotation"]),
             "clipped_runs": len(page.get("clipped", {}).get("value", [])),
+            "token_source_indices": [indices for line in lines for _, _, _, indices in line],
             # The projection is the page string ingest writes, so whether it
             # reproduces the reader's own page text is a fact about this
             # layer, recorded rather than assumed.
@@ -343,7 +499,7 @@ def page_text_projection(layer: TokenLayer) -> str:
 
 def _reader_word_lines(
     characters: list[dict[str, Any]],
-) -> list[list[tuple[str, list[float], int]]]:
+) -> list[list[tuple[str, list[float], int, list[int]]]]:
     """The reader's characters as lines of words, each with its display box.
 
     This is `replacement.layout.ordered_text`'s own assembly — the same
@@ -399,7 +555,7 @@ def _reader_word_lines(
 
 def _line_words(
     line: list[tuple[list[float], dict[str, Any]]], height: float
-) -> list[tuple[str, list[float], int]]:
+) -> list[tuple[str, list[float], int, list[int]]]:
     ink = [box for box, character in line if not character["text"].isspace()]
     degenerate_metrics = bool(ink) and statistics.median(
         box[3] - box[1] for box in ink
@@ -417,17 +573,19 @@ def _line_words(
             for other in ink
         )
     ]
-    words: list[tuple[str, list[float], int]] = []
+    words: list[tuple[str, list[float], int, list[int]]] = []
+    source_indices: list[int] = []
     text = ""
     word_box: list[float] | None = None
     object_id = 0
     previous: list[float] | None = None
 
     def close() -> None:
-        nonlocal text, word_box
+        nonlocal text, word_box, source_indices
         if text and word_box is not None:
-            words.append((text, word_box, object_id))
+            words.append((text, word_box, object_id, source_indices))
         text, word_box = "", None
+        source_indices = []
 
     for box, character in sorted(line, key=lambda item: item[0][0]):
         boundary = character.get("break_before")
@@ -453,6 +611,7 @@ def _line_words(
                     max(word_box[3], display[3]),
                 ]
             text += character["text"]
+            source_indices.append(character["source_index"])
         previous = box
     close()
     return words

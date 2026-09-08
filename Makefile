@@ -441,7 +441,7 @@ pdf-reader-reproduce:
 	TRUE_PAIRS_ROOT=$(TRUE_PAIRS_ROOT) uv run --group pdf-reader-experiment python -m corridor_pdf_reader.reproduction $(ARGS)
 
 # The paired-rendition Extraction Measurement (#731): score a named
-# configuration (`frozen-reader`, `drawn-grid`) against the registered
+# configuration (`frozen-reader`, `native-segments-v1`, `drawn-grid`) against the registered
 # Reference Dataset in gold/pdf-pairs/v1 and write a receipt that keeps pair,
 # page and cell measures apart and development and holdout apart. The holdout
 # is spent (ADR-0008): it is read only with --include-holdout, an actor and a
@@ -464,15 +464,15 @@ pdf-pairs-measure:
 pdf-reader-gold-eval:
 	uv run python -m corridor_pdf_reader.gold_evaluation $(ARGS)
 
-# The prose-locator regression (#733): take every PDF prose Source Segment the
-# production segmentation appends for the registered corpus, re-verify each
-# against the page text the reader-backed native adapter would write, and
-# write a receipt carrying the configuration identity. Each segment is
-# recorded as verified unchanged, verified through the stated compatibility
-# path, or incompatible; an explained mismatch is recorded as incompatible.
+# The prose-locator audit (#733, clarified by #736): reconstruct historical
+# prose spans from registered corpus bytes and compare exact text with the
+# native reader projection. This does not query persisted Source Segments or
+# customer citations. Text matches are candidates; physical location remains
+# unresolved without an independent occurrence-bound source anchor. The receipt
+# separates exact-text recovery from source-location proof and pins the code.
 # An explicit experiment outside pytest and CI. It reads the content store
 # read-only and writes nothing into it, and takes several minutes:
-#   make prose-locator-regression ARGS="--output artifacts/pdf-reader-native-layer/733-prose-locator-regression.json"
+#   make prose-locator-regression ARGS="--output out/prose-locators/<new-run>.json"
 prose-locator-regression:
 	uv run python scripts/prose_locator_regression.py $(ARGS)
 
