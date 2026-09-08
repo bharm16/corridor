@@ -5553,12 +5553,7 @@ def review_source_changes(
     project = _project(session, slug, principal)
     now = clock()
     context = _review_context(session, project, now=now, opened_key=item)
-    analytics_binding = binding_for_session(session)
-    for view in context["items"]:
-        emit_packet_surfacing(context["reading"], view["item"], principal_subject=principal.subject, binding=analytics_binding)
-    if context["opened"] is not None:
-        emit_packet_opening(context["reading"], context["opened"], principal_subject=principal.subject, binding=analytics_binding)
-    return TEMPLATES.TemplateResponse(request, "review.html", context)
+    return _render_review_response(request, session, context, principal=principal, record_opening=True)
 
 
 @app.get("/review/{slug}/source")
@@ -5619,6 +5614,7 @@ def save_source_changes(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key="",
             selected=selected,
@@ -5654,6 +5650,7 @@ def save_source_changes(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             selected=selected,
@@ -5671,6 +5668,7 @@ def save_source_changes(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             selected=selected,
@@ -5712,6 +5710,7 @@ def save_source_changes(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             selected=selected,
@@ -5729,6 +5728,7 @@ def save_source_changes(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             selected=[row.delta_id for row in result.preserved_selections],
@@ -5758,6 +5758,7 @@ def save_source_changes(
         request,
         session,
         project,
+        principal=principal,
         now=now,
         opened_key="",
         saved={
@@ -5822,6 +5823,7 @@ def save_focused_answers(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             refusal={
@@ -5874,6 +5876,7 @@ def save_focused_answers(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key="",
             answers=typed,
@@ -5902,6 +5905,7 @@ def save_focused_answers(
                 request,
                 session,
                 project,
+                principal=principal,
                 now=now,
                 opened_key=item_key,
                 answers=typed,
@@ -5917,6 +5921,7 @@ def save_focused_answers(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             answers=typed,
@@ -5934,6 +5939,7 @@ def save_focused_answers(
             request,
             session,
             project,
+            principal=principal,
             now=now,
             opened_key=item_key,
             answers=typed,
@@ -5964,6 +5970,7 @@ def save_focused_answers(
         request,
         session,
         project,
+        principal=principal,
         now=now,
         opened_key="",
         saved={
@@ -5999,6 +6006,7 @@ def _review_render(
     session: Session,
     project: Project,
     *,
+    principal: HumanPrincipal,
     now: datetime,
     opened_key: str,
     selected: list[int] | None = None,
@@ -6021,9 +6029,20 @@ def _review_render(
         refusal=refusal,
         errors=errors,
     )
-    return TEMPLATES.TemplateResponse(
-        request, "review.html", context, status_code=status_code
-    )
+    return _render_review_response(request, session, context, principal=principal, status_code=status_code)
+
+
+def _render_review_response(request, session, context, *, principal, status_code=200, record_opening=False):
+    """Record every actual presentation, including Save and refusal responses."""
+    response = TEMPLATES.TemplateResponse(request, "review.html", context, status_code=status_code)
+    binding = binding_for_session(session)
+    for view in context["items"]:
+        emit_packet_surfacing(context["reading"], view["item"],
+                              principal_subject=principal.subject, binding=binding)
+    if record_opening and context["opened"] is not None:
+        emit_packet_opening(context["reading"], context["opened"],
+                           principal_subject=principal.subject, binding=binding)
+    return response
 
 
 @app.get("/queue/{slug}", response_class=HTMLResponse)

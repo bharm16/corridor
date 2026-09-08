@@ -80,7 +80,7 @@ def read_domain_receipts(
                            and e.payload.get("project_id") == project_id
                            and e.binding.database_identity == origin
                            and e.binding.customer_id == customer_id
-                           and _same_receipt_event(e, payload, row.id)]
+                           and _same_receipt_event(e, payload, row, at)]
                 if matches and len({json.dumps(e.binding.as_dict(), sort_keys=True) for e in matches}) == 1:
                     binding = matches[0].binding
                     payload["binding_event_ids"] = [e.event_id for e in matches]
@@ -265,6 +265,7 @@ def read_domain_receipts(
                     if row.model is not None:
                         document = documents[row.document_id]
                         emit(EventFamily.PROVIDER_USAGE, row, row.completed_at,
+                             extraction_run_id=row.id,
                              usage_id=f"extraction_run:{row.id}", mode="unclassified_usage",
                              purpose="unavailable", source_class=document.doc_type, model=row.model,
                              prompt_version=row.prompt_version, policy_version=row.postprocessor_sha256,
@@ -274,15 +275,50 @@ def read_domain_receipts(
     return tuple(output)
 
 
-def _same_receipt_event(event, payload, receipt_id) -> bool:
+def _same_receipt_event(event, payload, row, at) -> bool:
+    """Corroborate one exact act, never a shared declaration, digest or delta alone."""
     p = event.payload
-    if p.get("receipt_id") == receipt_id:
-        return True
-    for key in ("candidate_identity", "package_identity", "coverage_declaration_id", "content_sha256"):
-        if payload.get(key) is not None and p.get(key) == payload[key]:
-            return True
-    if payload.get("delta_id") is not None:
-        return p.get("delta_id") == payload["delta_id"] or payload["delta_id"] in p.get("delta_ids", [])
-    if payload.get("request_id") is not None and p.get("request_id") == payload["request_id"]:
-        return p.get("started_at") == payload.get("started_at")
+    family = event.family
+    expected_at = row.prepared_at if isinstance(row, m.ReleaseCandidate) else at
+    if event.occurred_at != expected_at or (p.get("refusal_code") and family != EventFamily.PREPARATION_ATTEMPT):
+        return False
+    status = p.get("outcome", p.get("status", event.metric_labels.get("status")))
+    if family == EventFamily.PREPARATION_REQUEST:
+        return (p.get("request_id") == row.id and status == "requested"
+                and p.get("principal_subject") == row.requested_by_principal)
+    if family == EventFamily.COVERAGE_CONFIRMATION:
+        return (p.get("coverage_declaration_id") == row.id
+                and p.get("unchanged_declaration_reused") is False
+                and p.get("principal_subject") == row.confirmed_by_principal)
+    if family == EventFamily.PREPARATION_ATTEMPT:
+        if isinstance(row, m.ReleasePreparationReading):
+            return (p.get("request_id") == row.request_id and status == "started"
+                    and p.get("started_at") == row.bound_at.isoformat())
+        return (p.get("attempt_id") == row.id and p.get("request_id") == row.request_id
+                and status == row.outcome and p.get("started_at") == row.started_at.isoformat())
+    if family == EventFamily.PACKET_SAVE:
+        return p.get("receipt_id") == row.id and status == "saved"
+    if family == EventFamily.CHILD_DECISION:
+        actions = {"accept": "apply", "edit": "edit_and_apply", "reject": "keep_current"}
+        action = actions.get(p.get("action"), p.get("action"))
+        expected_action = actions.get(payload["action"], payload["action"])
+        outcomes = {"deferred"} if expected_action == "defer" else {"saved", "resolved"}
+        return (p.get("delta_id") == payload["delta_id"] and action == expected_action
+                and status in outcomes)
+    if family == EventFamily.DELTA_SUPERSESSION:
+        return (p.get("prior_delta_id") == row.prior_delta_id
+                and p.get("superseding_delta_id") == row.superseding_delta_id)
+    if family == EventFamily.PROPOSED_DELTA_CREATION:
+        return status in {None, "created"} and (p.get("delta_id") == row.id or row.id in p.get("delta_ids", []))
+    if family == EventFamily.FOLLOW_UP_PLAN_CREATION:
+        return p.get("follow_up_plan_id") == row.id and p.get("delta_id") == row.delta_id
+    if family == EventFamily.RELEASE_CANDIDATE_PREPARATION:
+        return p.get("candidate_identity") == row.candidate_identity and status == row.readiness
+    if family == EventFamily.RELEASE_AUTHORIZATION:
+        return (p.get("package_identity") == row.package_identity and status == "authorized"
+                and p.get("principal_subject") == row.authorized_by_principal)
+    if family == EventFamily.SOURCE_ARRIVAL:
+        return p.get("source_identity") == f"delivery:{row.id}" or p.get("source_delivery_id") == row.id
+    if family == EventFamily.SOURCE_CAPTURE:
+        return p.get("document_id") == row.id
     return False

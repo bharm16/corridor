@@ -178,8 +178,7 @@ def test_cohort_change_requires_a_new_predeclared_period_and_missing_time_is_not
 
 
 def test_quiet_zero_click_requires_presentation_and_complete_observation_period():
-    presented = event(EventFamily.PORTFOLIO_READING, hour=1, principal_subject="human:reader",
-                       projects=[{"project_id": 1, "state": "nothing_needs_you"}])
+    presented = portfolio_event(context=portfolio_context())
     report = derive_measurement([period()], [presented])["periods"][0]
     assert report["portfolio"]["zero_click"] is True
     assert report["volume_stratum"] == "quiet"
@@ -292,3 +291,77 @@ def test_verified_receipt_export_does_not_count_a_rolled_back_log_or_duplicate_a
     assert report["committed_decision_count"] == 1
     assert report["interaction_counts"]["child_decisions"] == 2
     assert len(report["observations"]) == 4
+
+
+@pytest.mark.parametrize("missing", ["actor", "evidence_reference"])
+def test_unattributed_samples_cannot_establish_any_positive_numerator(missing):
+    candidate = event(EventFamily.RELEASE_CANDIDATE_PREPARATION, hour=2, candidate_id=3,
+                      candidate_identity="candidate:3", accepted_revision_id=42,
+                      configured_artifact_types=["updated_ucm", "weekly_report"],
+                      artifacts=[{"artifact_type": "updated_ucm", "content_sha256": "b" * 64},
+                                 {"artifact_type": "weekly_report", "content_sha256": "c" * 64}])
+    authorized = event(EventFamily.RELEASE_AUTHORIZATION, hour=3, candidate_id=3,
+                       candidate_identity="candidate:3", accepted_revision_id=42,
+                       package_identity="package:1", status="authorized")
+    samples = [
+        event(EventFamily.MEASUREMENT_SAMPLE, hour=4, sample_kind="packet_usefulness",
+              item_key="packet-a", necessary=True, actor="human:reader", evidence_reference="judgment:1"),
+        event(EventFamily.MEASUREMENT_SAMPLE, hour=4, sample_kind="child_usefulness",
+              delta_id=1, necessary=True, actor="human:reader", evidence_reference="judgment:2"),
+        event(EventFamily.MEASUREMENT_SAMPLE, hour=4, sample_kind="release_readiness",
+              candidate_id=3, client_ready=True, manual_repair_required=False,
+              actor="human:reader", evidence_reference="judgment:3"),
+    ]
+    invalid = [replace(s, payload={key: value for key, value in s.payload.items() if key != missing})
+               for s in samples]
+    base = [surface("packet-a", [1]), candidate, authorized]
+    report = derive_measurement([period()], [*base, *invalid])["periods"][0]
+    assert report["necessary_interrupting_packets"] == 0
+    assert report["unjudged_interrupting_packets"] == 1
+    assert report["children"][0]["necessary"] is None
+    assert report["client_ready_candidate_numerator"] == 0
+    assert report["releases"][0]["client_ready"] is None
+    assert set(report["sampling"]["invalid_observations"]) == {e.event_id for e in invalid}
+    valid = derive_measurement([period()], [*base, *samples])["periods"][0]
+    assert valid["necessary_interrupting_packets"] == 1
+    assert valid["client_ready_candidate_numerator"] == 1
+
+
+def portfolio_event(*, binding=BINDING, context=None):
+    from corridor.analytics import capture_events
+    from corridor.project_portfolio import NO_ACTION, PortfolioReading, ProjectStanding, emit_portfolio_reading
+
+    standing = ProjectStanding(project_id=1, slug="fixture", name="Fixture", state=NO_ACTION,
+                               landing="review", changes_to_review=0, follow_up_waiting=0,
+                               follow_up_overdue=0, follow_up_due=0, readiness_problems=0,
+                               accepted_revision_id=None, candidate_ready=False, preparing=False)
+    if context is not None:
+        standing = replace(standing, measurement_context=context)
+    reading = PortfolioReading(START + timedelta(hours=1), "human:reader", (standing,))
+    with capture_events() as captured:
+        emit_portfolio_reading(reading, binding=binding)
+    return captured.events[0]
+
+
+def portfolio_context():
+    return {"issue_profile_identity": "fixture-issue", "issue_profile_version": 1,
+            "issue_profile_sha256": "a" * 64, "template_identity": BINDING.template_identity,
+            "mapping_identity": BINDING.mapping_identity}
+
+
+def test_real_portfolio_shape_is_validated_before_a_quiet_positive_conclusion():
+    presented = portfolio_event()
+    assert "project_id" not in presented.payload
+    report = derive_measurement([period()], [presented])["periods"][0]
+    assert report["cohort_status"] == "insufficient_evidence"
+    assert report["portfolio"]["zero_click"] is None
+    changed = replace(presented, binding=replace(BINDING, code_revision="changed-code"))
+    with pytest.raises(ValueError, match="cohort change"):
+        derive_measurement([period()], [changed])
+    valid = portfolio_event(context=portfolio_context())
+    result = derive_measurement([period()], [valid])["periods"][0]
+    assert result["cohort_status"] == "bound"
+    assert result["portfolio"]["quiet_zero_click"] is True
+    changed_context = portfolio_event(context={**portfolio_context(), "issue_profile_version": 2})
+    with pytest.raises(ValueError, match="cohort change"):
+        derive_measurement([period()], [changed_context])

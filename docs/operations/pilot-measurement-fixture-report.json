@@ -1,6 +1,6 @@
 {
   "customer_findings": "insufficient_evidence",
-  "input_sha256": "ffe176f2350d34e91f1a2448706f96dcc146748d3133dd6e600cf5aca024e163",
+  "input_sha256": "4950a11e94965e206eb28156afd5e1340886b7fc9ad3a1cd9eab48f586d4c31c",
   "periods": [
     {
       "captured_source_arrivals": 1,
@@ -58,9 +58,13 @@
         "breakdown": [
           {
             "actual_cost_usd": "0.25",
+            "billing_event_ids": [
+              "fixture-044"
+            ],
             "entries": 1,
             "mode": "actual_call",
             "model": "fixture-model",
+            "native_receipts": [],
             "policy_version": "fixture-policy-v1",
             "prompt_version": "fixture-prompt-v1",
             "provider": "fixture-provider",
@@ -70,9 +74,13 @@
           },
           {
             "actual_cost_usd": "0.05",
+            "billing_event_ids": [
+              "fixture-045"
+            ],
             "entries": 1,
             "mode": "retry",
             "model": "fixture-model",
+            "native_receipts": [],
             "policy_version": "fixture-policy-v1",
             "prompt_version": "fixture-prompt-v1",
             "provider": "fixture-provider",
@@ -82,9 +90,13 @@
           },
           {
             "actual_cost_usd": "0.00",
+            "billing_event_ids": [
+              "fixture-046"
+            ],
             "entries": 1,
             "mode": "cache_reuse",
             "model": "fixture-model",
+            "native_receipts": [],
             "policy_version": "fixture-policy-v1",
             "prompt_version": "fixture-prompt-v1",
             "provider": "fixture-provider",
@@ -94,9 +106,13 @@
           },
           {
             "actual_cost_usd": "99.00",
+            "billing_event_ids": [
+              "fixture-047"
+            ],
             "entries": 1,
             "mode": "historical_experiment",
             "model": "fixture-model",
+            "native_receipts": [],
             "policy_version": "fixture-policy-v1",
             "prompt_version": "fixture-prompt-v1",
             "provider": "fixture-provider",
@@ -143,7 +159,7 @@
           "fixture-048"
         ],
         "presented_states": [
-          "nothing_needs_you"
+          "no_action"
         ],
         "project_open_event_ids": [],
         "quiet_zero_click": true,

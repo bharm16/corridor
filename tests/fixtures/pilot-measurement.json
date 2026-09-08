@@ -2341,15 +2341,18 @@
         "database_identity": "synthetic:customer-database"
       },
       "payload": {
-        "project_id": 1,
         "principal_subject": "fixture:coordinator",
-        "issue_profile_identity": "fixture-issue",
-        "issue_profile_version": 1,
-        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
         "projects": [
           {
             "project_id": 1,
-            "state": "nothing_needs_you"
+            "state": "no_action",
+            "measurement_context": {
+              "issue_profile_identity": "fixture-issue",
+              "issue_profile_version": 1,
+              "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "template_identity": "fixture-template:1",
+              "mapping_identity": "fixture-mapping:1"
+            }
           }
         ]
       },

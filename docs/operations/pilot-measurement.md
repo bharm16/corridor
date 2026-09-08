@@ -26,6 +26,8 @@ week is quiet and proves zero project clicks from a portfolio presentation and
 complete declared interaction observation; the third has 12 captured source
 arrivals and falls in the predeclared burst stratum. Every report explicitly
 leaves customer findings as `insufficient_evidence`.
+The checked-in [fixture summary](pilot-measurement-fixture-report.json) retains
+the input digest, independent denominators and observed limits.
 
 The tests also exercise the actual project Work page with ten Proposed
 Deltas. That page emits one packet presentation and ten child identities
@@ -33,6 +35,8 @@ before the review screen is opened. Explicit external source links pass
 through a project-authorized redirect that resolves the link from the existing
 packet reading. No URL supplied by a caller is accepted, and inline source
 presentation does not become an evidence click.
+GET, Save and refusal responses share the same presentation recorder, so a
+new packet first shown after Save is counted without another page opening.
 
 ## Inputs required before a measured week (#535)
 
@@ -72,6 +76,11 @@ the file's customer origin. Retained candidate/profile/configuration values
 take precedence when reading receipts. Unknown code/configuration values
 remain explicit `cohort_problems`; differing recorded material cohorts require
 separate periods instead of a blended result.
+Receipt corroboration requires the exact act identity, its appropriate instant
+and outcome. A later retry, refusal, shared coverage declaration or matching
+content digest cannot label an older receipt with a newer runtime binding.
+Portfolio presentations carry each project's issue-profile/template/mapping
+context; missing context leaves a quiet zero-click conclusion unavailable.
 
 Enable governed structured product-log collection for the whole declared
 window before setting `interaction_capture_complete`. Verify the connected
@@ -94,6 +103,9 @@ from coordinator review, record maintenance and preparation. Repair and
 reconstruction can name their packet or candidate. Sampling keeps packet
 usefulness, child usefulness, material changes, baseline fields and confirmed
 policy false writes separate; a case cannot be retrospectively relabeled.
+Every positive sampling numerator uses the same validated observation set;
+unattributed or invalid entries are retained as invalid, never counted as a
+positive packet, child or release judgment.
 
 Provider entries identify purpose, project-week, source class, provider/model,
 prompt/policy versions, exact usage receipt and actual billed USD amount.
@@ -102,6 +114,13 @@ modes. A replay of a stored answer does not become another actual call. Sub-cent
 costs are retained exactly. An extraction run with token counters but no
 reconciled provider receipt remains visible as unclassified/unpriced usage;
 token totals do not prove price, retries, cache origin or production purpose.
+Reconcile an actual bill by `usage_id: "extraction_run:<id>"`, or retain its
+provider call ID and add the explicit `extraction_run_id`. The reader joins
+that exact native usage identity, fills unknown billing fields and counts each
+usage once, retaining both evidence references. Contradictions with the stored
+model, source class or prompt/policy version are refused. An unlinked bill is
+not guessed into a run, and missing purpose remains unavailable; historical
+experiment usage remains separate from current provider cost.
 
 Export after the declared observation period has closed:
 

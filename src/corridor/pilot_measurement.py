@@ -13,7 +13,7 @@ establish customer savings or a pilot verdict.
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from hashlib import sha256
 import json
@@ -23,15 +23,11 @@ from decimal import Decimal, InvalidOperation
 import math
 
 from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily
+from corridor.measurement_collection import TIME_CATEGORIES, select_sampling_observations
+from corridor.project_portfolio import NO_ACTION
 
 
 REPORT_VERSION = "pilot-measurement-v1"
-TIME_CATEGORIES = (
-    "coordinator_review", "record_maintenance", "report_preparation",
-    "manual_repair", "manual_reconstruction", "operations_setup",
-    "operations_triage", "connector_maintenance", "operations_support",
-    "failure_recovery", "partner_baseline",
-)
 
 
 @dataclass(frozen=True)
@@ -160,7 +156,7 @@ def derive_measurement(
 
 def _period_report(period: MeasurementPeriod, events: list[AnalyticsEvent]) -> dict[str, Any]:
     observed = [e for e in events if _event_origin(e) == _period_origin(period)
-               and e.payload.get("project_id") == period.project_id
+               and _applies_to_project(e, period.project_id)
                and e.occurred_at < period.end]
     # In a verified DB export, a successful log emitted before a rolled-back
     # transaction cannot establish a decision, source, request or release.
@@ -168,6 +164,9 @@ def _period_report(period: MeasurementPeriod, events: list[AnalyticsEvent]) -> d
     history = [e for e in observed if not period.domain_receipts_complete
                or e.family not in DOMAIN_FAMILIES or e.payload.get("receipt")]
     relevant = [e for e in history if period.start <= e.occurred_at]
+    sample_selection = select_sampling_observations(history)
+    valid_samples = [e for e in sample_selection.valid if e.occurred_at >= period.start]
+    invalid_samples = [e for e in sample_selection.invalid if e.occurred_at >= period.start]
     problems = _cohort_problems(period, relevant)
     surfaced: dict[str, AnalyticsEvent] = {}
     for event in relevant:
@@ -201,11 +200,10 @@ def _period_report(period: MeasurementPeriod, events: list[AnalyticsEvent]) -> d
     stratum = ("unavailable" if not period.source_population_complete else
                "quiet" if captured_count <= period.quiet_max else
                "ordinary" if captured_count <= period.ordinary_max else "burst")
-    releases = _releases(period, relevant, history)
-    sampling = _sampling(period, relevant, children)
+    releases = _releases(period, relevant, history, sample_selection.valid)
+    sampling = _sampling(valid_samples, invalid_samples, children)
     for packet in packets:
-        judges = [e for e in relevant if e.family == EventFamily.MEASUREMENT_SAMPLE
-                  and e.payload.get("sample_kind") == "packet_usefulness"
+        judges = [e for e in valid_samples if e.payload.get("sample_kind") == "packet_usefulness"
                   and e.payload.get("item_key") == packet["item_key"]]
         packet["necessary"] = judges[0].payload.get("necessary") if judges else None
         packet["manual_reconstruction"] = _time_reading([
@@ -338,8 +336,19 @@ def _cohort_problems(period: MeasurementPeriod, events: list[AnalyticsEvent]) ->
         if event.payload.get("customer_binding_verified") is False:
             problems.add("customer association unavailable on the database receipts; requires customer routing evidence")
         actual = event.binding.as_dict()
-        for key in ("issue_profile_identity", "issue_profile_version", "issue_profile_sha256"):
-            actual[key] = event.payload.get(key) or actual[key]
+        for key in ("issue_profile_identity", "issue_profile_version", "issue_profile_sha256",
+                    "template_identity", "mapping_identity"):
+            if key in event.payload:
+                actual[key] = event.payload[key]
+        if event.family == EventFamily.PORTFOLIO_READING:
+            row = next(p for p in event.payload["projects"] if p["project_id"] == period.project_id)
+            context = row.get("measurement_context") or {}
+            # A process-wide issue profile/template cannot describe several
+            # projects. Missing project context remains missing even when the
+            # enclosing event happened to carry a populated global binding.
+            for key in ("issue_profile_identity", "issue_profile_version", "issue_profile_sha256",
+                        "template_identity", "mapping_identity"):
+                actual[key] = context.get(key)
         for key in ("source_configuration", "connector_configuration"):
             if event.payload.get("receipt") and event.payload.get(key):
                 for name, retained in event.payload[key].items():
@@ -365,6 +374,12 @@ def _observation(period: MeasurementPeriod, event: AnalyticsEvent) -> dict[str, 
 
 def _period_origin(period: MeasurementPeriod) -> tuple[str, str, str]:
     return period.customer_id, period.environment, period.database_identity
+
+
+def _applies_to_project(event: AnalyticsEvent, project_id: int) -> bool:
+    if event.family == EventFamily.PORTFOLIO_READING:
+        return any(p.get("project_id") == project_id for p in event.payload.get("projects", []))
+    return event.payload.get("project_id") == project_id
 
 
 def _event_origin(event: AnalyticsEvent) -> tuple[str, str, str]:
@@ -480,7 +495,7 @@ def _same_candidate(left: dict, right: dict) -> bool:
                for key in ("candidate_id", "candidate_identity"))
 
 
-def _releases(period, relevant, history) -> list[dict[str, Any]]:
+def _releases(period, relevant, history, valid_samples) -> list[dict[str, Any]]:
     candidates: dict[Any, AnalyticsEvent] = {}
     for event in relevant:
         if event.family != EventFamily.RELEASE_CANDIDATE_PREPARATION:
@@ -506,8 +521,8 @@ def _releases(period, relevant, history) -> list[dict[str, Any]]:
         authorization = authorizations[0] if authorizations else None
         context_matches = bool(authorization and p.get("accepted_revision_id") is not None
                                and authorization.payload.get("accepted_revision_id") == p["accepted_revision_id"])
-        readiness = [e for e in history if e.family == EventFamily.MEASUREMENT_SAMPLE
-                     and e.payload.get("sample_kind") == "release_readiness"
+        readiness = [e for e in valid_samples if e.payload.get("sample_kind") == "release_readiness"
+                     and e.occurred_at >= candidate.occurred_at
                      and _same_candidate(p, e.payload)]
         repairs = [e for e in history if (e.family == EventFamily.ARTIFACT_REPAIR
                    or (e.family == EventFamily.WORK_OBSERVATION
@@ -565,7 +580,7 @@ def _preparations(relevant, history) -> list[dict[str, Any]]:
 def _provider_cost(events) -> dict[str, Any]:
     modes = ("actual_call", "retry", "cache_reuse", "historical_experiment")
     usage: dict[Any, AnalyticsEvent] = {}
-    for event in events:
+    for event in _reconciled_provider_usage(events):
         if event.family == EventFamily.PROVIDER_USAGE:
             key = event.payload.get("usage_id", event.event_id)
             if key in usage and usage[key].payload != event.payload:
@@ -580,14 +595,18 @@ def _provider_cost(events) -> dict[str, Any]:
         key = tuple(p.get(name) for name in dimensions) + (p.get("mode"),)
         row = breakdown.setdefault(key, {**dict(zip(dimensions, key)), "mode": p.get("mode"),
                                          "actual_cost_usd": Decimal(0), "entries": 0,
-                                         "unavailable_entries": 0})
+                                         "unavailable_entries": 0, "native_receipts": [], "billing_event_ids": []})
         row["entries"] += 1
+        native = p.get("native_receipt", p.get("receipt"))
+        if native and native not in row["native_receipts"]:
+            row["native_receipts"].append(native)
+        row["billing_event_ids"].extend(p.get("billing_event_ids", [event.event_id] if not p.get("receipt") else []))
         try:
             amount = Decimal(str(p.get("actual_cost_usd")))
         except InvalidOperation:
             amount = Decimal("NaN")
-        valid = (all(p.get(name) for name in dimensions) and p.get("mode") in modes
-                 and p.get("evidence_reference") and amount.is_finite() and amount >= 0)
+        valid = (all(_known_usage_value(p.get(name)) for name in dimensions) and p.get("mode") in modes
+                 and _known_usage_value(p.get("evidence_reference")) and amount.is_finite() and amount >= 0)
         if not valid:
             missing.append(event.event_id)
             row["unavailable_entries"] += 1
@@ -607,25 +626,81 @@ def _provider_cost(events) -> dict[str, Any]:
             "breakdown": list(breakdown.values()), "status": "recorded" if usage and not missing else "unavailable"}
 
 
+def _known_usage_value(value) -> bool:
+    return (isinstance(value, str) and bool(value.strip())
+            and value.strip().lower() not in {"unavailable", "unknown", "unclassified_usage"})
+
+
+def _usage_run_id(event: AnalyticsEvent) -> int | None:
+    p = event.payload
+    explicit = p.get("extraction_run_id")
+    identity = str(p.get("usage_id", ""))
+    canonical = int(identity.removeprefix("extraction_run:")) if (
+        identity.startswith("extraction_run:") and identity.removeprefix("extraction_run:").isdigit()
+    ) else None
+    if explicit is not None and (type(explicit) is not int or explicit <= 0):
+        raise ValueError("extraction_run_id must name one retained native usage record")
+    if explicit is not None and canonical is not None and explicit != canonical:
+        raise ValueError("provider usage identity names conflicting extraction runs")
+    return explicit if explicit is not None else canonical
+
+
+def _reconciled_provider_usage(events) -> list[AnalyticsEvent]:
+    """Join billing to the native usage unit without repricing or duplicating it.
+
+    A billing receipt must name the exact extraction run (its canonical usage
+    identity or an explicit extraction_run_id). Similar timestamps, documents,
+    source classes or model names are never a join. The raw native receipt and
+    bill remain in observations; only this derived cost reading is combined.
+    """
+    usage = [e for e in events if e.family == EventFamily.PROVIDER_USAGE]
+    native = [e for e in usage if e.payload.get("receipt", {}).get("table") == "extraction_runs"]
+    by_usage_id: dict[Any, AnalyticsEvent] = {}
+    bill_ids: dict[Any, list[str]] = {}
+    for event in (e for e in usage if e not in native):
+        identity = event.payload.get("usage_id", event.event_id)
+        if identity in by_usage_id and by_usage_id[identity].payload != event.payload:
+            raise ValueError("conflicting billing observations for one usage identity")
+        by_usage_id.setdefault(identity, event)
+        bill_ids.setdefault(identity, []).append(event.event_id)
+    bills = list(by_usage_id.values())
+    combined, consumed = [], set()
+    for receipt in native:
+        run_id = _usage_run_id(receipt)
+        matching = [b for b in bills if run_id is not None and _usage_run_id(b) == run_id]
+        if not matching:
+            combined.append(receipt)
+            continue
+        for bill in matching:
+            original, observed = receipt.payload, bill.payload
+            for field in ("model", "source_class", "prompt_version", "policy_version", "provider", "purpose", "mode"):
+                if (_known_usage_value(original.get(field)) and _known_usage_value(observed.get(field))
+                        and original[field] != observed[field]):
+                    raise ValueError(f"provider billing contradicts retained {field}")
+            merged = dict(original)
+            referenced = _known_usage_value(observed.get("evidence_reference"))
+            for field in ("model", "source_class", "prompt_version", "policy_version", "provider", "purpose", "mode"):
+                if referenced and not _known_usage_value(merged.get(field)) and _known_usage_value(observed.get(field)):
+                    merged[field] = observed[field]
+            if referenced and merged.get("actual_cost_usd") is None:
+                merged["actual_cost_usd"] = observed.get("actual_cost_usd")
+            merged.update(usage_id=observed.get("usage_id", bill.event_id), extraction_run_id=run_id,
+                          evidence_reference=observed.get("evidence_reference"),
+                          native_receipt=original["receipt"],
+                          billing_event_ids=bill_ids[observed.get("usage_id", bill.event_id)])
+            combined.append(replace(bill, payload=merged))
+            consumed.add(bill.event_id)
+    return combined + [b for b in bills if b.event_id not in consumed]
+
+
 def _money(value: Decimal) -> str:
     # Actual sub-cent provider costs must not turn into a recorded zero.
     exponent = value.as_tuple().exponent
     return format(value, "f") if isinstance(exponent, int) and exponent < -2 else format(value, ".2f")
 
 
-def _sampling(period, events, children) -> dict[str, Any]:
-    samples_by_case: dict[tuple, AnalyticsEvent] = {}
-    for e in events:
-        if e.family != EventFamily.MEASUREMENT_SAMPLE:
-            continue
-        case = (e.payload.get("sample_kind"), e.payload.get("case_identity", e.payload.get("evidence_reference", e.event_id)))
-        if case in samples_by_case and samples_by_case[case].payload != e.payload:
-            raise ValueError("sampling observations cannot retrospectively relabel the same case")
-        samples_by_case.setdefault(case, e)
-    samples = list(samples_by_case.values())
-    invalid = [e.event_id for e in samples if not e.payload.get("actor") or not e.payload.get("evidence_reference")
-               or e.payload.get("sample_kind") == "material_change" and e.payload.get("actor") == e.payload.get("resolved_by")]
-    valid = [e for e in samples if e.event_id not in invalid]
+def _sampling(valid, invalid_samples, children) -> dict[str, Any]:
+    invalid = [e.event_id for e in invalid_samples]
     groups: dict[str, dict[str, Any]] = {}
     for event in valid:
         p = event.payload
@@ -675,11 +750,12 @@ def _portfolio(period, events) -> dict[str, Any]:
                 and period.start <= e.occurred_at < period.end]
     states = sorted({p.get("state", "unavailable") for e in presented for p in e.payload.get("projects", [])
                      if p.get("project_id") == period.project_id})
-    zero_click = not openings if presented and period.interaction_capture_complete else None
+    context_valid = not _cohort_problems(period, presented)
+    zero_click = not openings if presented and period.interaction_capture_complete and context_valid else None
     return {"presentation_event_ids": [e.event_id for e in presented],
             "project_open_event_ids": [e.event_id for e in openings],
             "presented_states": states, "zero_click": zero_click,
-            "quiet_zero_click": zero_click if states == ["nothing_needs_you"] else None,
+            "quiet_zero_click": zero_click if states == [NO_ACTION] else None,
             "observation_start": period.start.isoformat(), "observation_end": period.end.isoformat()}
 
 

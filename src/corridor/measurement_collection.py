@@ -9,7 +9,7 @@ Collection never writes the Project Record and never confers authorization.
 from __future__ import annotations
 
 from datetime import datetime
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from decimal import Decimal, InvalidOperation
 import math
 from typing import Any
@@ -19,7 +19,13 @@ import json
 from sqlalchemy import text
 
 from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily, default_binding, emit_event
-from corridor.pilot_measurement import TIME_CATEGORIES
+
+TIME_CATEGORIES = (
+    "coordinator_review", "record_maintenance", "report_preparation",
+    "manual_repair", "manual_reconstruction", "operations_setup",
+    "operations_triage", "connector_maintenance", "operations_support",
+    "failure_recovery", "partner_baseline",
+)
 
 
 SAMPLE_KINDS = frozenset({"packet_usefulness", "child_usefulness", "material_change",
@@ -81,6 +87,15 @@ def validate_observation(event: AnalyticsEvent) -> None:
             raise ValueError("sampling requires an actor and a known sample kind")
         if p.get("sample_kind") == "material_change" and p.get("actor") == p.get("resolved_by"):
             raise ValueError("material-change sampling requires a reviewer other than the resolver")
+        boolean_fields = {
+            "packet_usefulness": ("necessary",), "child_usefulness": ("necessary",),
+            "material_change": ("material", "confirmed_miss"),
+            "baseline_field": ("material", "populated", "correct"),
+            "false_write": ("material", "automatic"),
+            "release_readiness": ("client_ready", "manual_repair_required"),
+        }
+        if any(type(p.get(name)) is not bool for name in boolean_fields[p["sample_kind"]]):
+            raise ValueError("sampling judgments require explicit boolean observations")
     elif event.family == EventFamily.PROVIDER_USAGE:
         if p.get("mode") not in USAGE_MODES or not p.get("usage_id"):
             raise ValueError("provider usage requires an exact receipt identity and usage mode")
@@ -99,6 +114,34 @@ def validate_observation(event: AnalyticsEvent) -> None:
                 raise ValueError("actual cost must be a nonnegative finite decimal")
     else:
         raise ValueError("only explicit work, sampling, repair and provider observations may be imported")
+
+
+@dataclass(frozen=True)
+class SamplingObservations:
+    """The one validated selection every measurement numerator consumes."""
+
+    valid: tuple[AnalyticsEvent, ...]
+    invalid: tuple[AnalyticsEvent, ...]
+
+
+def select_sampling_observations(events) -> SamplingObservations:
+    """Validate once, retaining rejected evidence without letting it assert a result."""
+    by_case: dict[tuple, AnalyticsEvent] = {}
+    invalid = []
+    for event in events:
+        if event.family != EventFamily.MEASUREMENT_SAMPLE:
+            continue
+        try:
+            validate_observation(event)
+        except ValueError:
+            invalid.append(event)
+            continue
+        p = event.payload
+        case = (p["sample_kind"], p.get("case_identity", p["evidence_reference"]))
+        if case in by_case and by_case[case].payload != p:
+            raise ValueError("sampling observations cannot retrospectively relabel the same case")
+        by_case.setdefault(case, event)
+    return SamplingObservations(tuple(by_case.values()), tuple(invalid))
 
 
 def emit_presentation(

@@ -221,6 +221,7 @@ class ProjectStanding:
     accepted_revision_id: int | None
     candidate_ready: bool
     preparing: bool
+    measurement_context: dict[str, Any] | None = None
 
     @property
     def sentence(self) -> str:
@@ -402,6 +403,7 @@ def derive_standings(
                 formats=formats.get(project.id, {}),
             ),
             preparing=preparations[project.id].in_flight,
+            measurement_context=_measurement_context(inventories.get(project.id), formats.get(project.id, {})),
             today=today,
         )
         for project in projects
@@ -558,6 +560,7 @@ def _standing(
     candidate_ready: bool,
     preparing: bool,
     today,
+    measurement_context: dict[str, Any] | None = None,
 ) -> ProjectStanding:
     planned = {need.delta_id for need in needs}
     # The same set `ProjectWorkflow.changes_awaiting_decision` names: each
@@ -598,7 +601,20 @@ def _standing(
         accepted_revision_id=accepted_revision_id,
         candidate_ready=candidate_ready,
         preparing=preparing,
+        measurement_context=measurement_context,
     )
+
+
+def _measurement_context(inventory: IssueInventory | None, formats: Mapping[str, Any]) -> dict[str, Any]:
+    """The already-read project configuration, not a global portfolio default."""
+    template, mapping = formats.get("output_template"), formats.get("field_mapping")
+    return {
+        "issue_profile_identity": inventory.profile_identity if inventory else None,
+        "issue_profile_version": inventory.profile_version if inventory else None,
+        "issue_profile_sha256": inventory.content_sha256 if inventory else None,
+        "template_identity": f"{template.format_identity}:{template.format_version}" if template else None,
+        "mapping_identity": f"{mapping.format_identity}:{mapping.format_version}" if mapping else None,
+    }
 
 
 # --- the measurement events this reading owes the contract (#558) ----------
@@ -659,6 +675,7 @@ def emit_portfolio_reading(
                         "follow_up_due": row.follow_up_due,
                         "readiness_problems": row.readiness_problems,
                         "preparing": row.preparing,
+                        "measurement_context": row.measurement_context,
                     }
                     for row in reading.standings
                 ],
@@ -690,6 +707,7 @@ def emit_project_selection(
                 "project_id": standing.project_id,
                 "state": standing.state,
                 "landing": standing.landing,
+                **(standing.measurement_context or {}),
             },
             metric_labels={"surface": "portfolio", "state": standing.state},
         )
