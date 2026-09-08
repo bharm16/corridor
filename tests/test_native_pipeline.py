@@ -663,6 +663,14 @@ def test_no_automated_path_can_grant_itself_an_acceptance(session, project, matr
             assert session.scalar(text(
                 "select has_table_privilege(current_user, 'pipeline_acceptances', 'INSERT')")) is False
             session.execute(text("reset role"))
+        # And the relation itself refuses the raw write, not only the module.
+        with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
+            session.execute(text(f"set local role {role}"))
+            session.execute(text(
+                "insert into pipeline_acceptances (project_id, configuration_sha256, scope_sha256,"
+                " implementation_revision, actor, receipt_text, receipt_sha256)"
+                " values (1, 'a', 'b', 'c', 'local:impostor', '{}', 'd')"))
+        session.execute(text("reset role"))
     # No SECURITY DEFINER command exists that could append one on their behalf.
     definers = session.scalars(text(
         "select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
