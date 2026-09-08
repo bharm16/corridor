@@ -391,20 +391,35 @@ def apply(matrix, point):
     return (a * x + c * y + e, b * x + d * y + f)
 
 
-def test_the_replacement_rasterizer_is_off_by_default(tmp_path):
-    """#447 owns selection. Merging #735 changes no production default."""
+def test_the_replacement_rasterizer_is_off_by_default(tmp_path, monkeypatch):
+    """#447 owns selection. Merging #735 changes no production default.
 
+    And one setting is the whole mechanism: turned on, the same call renders
+    with the other engine, so what #447 has to do is exactly this and nothing
+    else.
+    """
+
+    pdf = geometry_pdf(tmp_path / "default.pdf", rotation=0)
     assert settings.pdfium_render_worker is False
     assert selected_rasterizer() == "pymupdf"
 
-    derivative = render_page_derivative(
-        pdf_path=geometry_pdf(tmp_path / "default.pdf", rotation=0),
+    default = render_page_derivative(
+        pdf_path=pdf,
+        page_number=1,
+        profile_name="review",
+        output_dir=tmp_path / "renders",
+    )
+    monkeypatch.setattr(settings, "pdfium_render_worker", True)
+    selected = render_page_derivative(
+        pdf_path=pdf,
         page_number=1,
         profile_name="review",
         output_dir=tmp_path / "renders",
     )
 
-    assert derivative.rasterizer == "pymupdf"
+    assert default.rasterizer == "pymupdf"
+    assert selected_rasterizer() == "pdfium"
+    assert selected.rasterizer == "pdfium"
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
