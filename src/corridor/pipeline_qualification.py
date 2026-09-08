@@ -425,7 +425,7 @@ def record_acceptance(
         "scope_sha256": scope.identity, "scope": scope.model_dump(mode="json"),
         "evidence": [item.model_dump(mode="json") for item in acceptance.evidence],
         "limits": list(acceptance.limits), "words": acceptance.words,
-        "acceptance_sha256": acceptance.identity, "actor": actor_subject,
+        "acceptance_document_sha256": acceptance.identity, "actor": actor_subject,
         "accepted_on": acceptance.accepted_on,
         "accepted_at": datetime.now(timezone.utc).isoformat(),
     }
