@@ -6,8 +6,12 @@ that record. It exists so that the deletion is made against a written
 statement of what could be undone and how, rather than against an assumption
 that someone would work it out afterwards.
 
-Nothing has been deleted at the time of writing. Every module, dependency,
-package and image layer described below is still present.
+This record was written before any deletion, which is what #741 required of
+it. It has since been completed with what the removal actually did; the
+sections below say which parts describe the before state and which the after.
+**What left, in one sentence: Tesseract is gone from the product entirely, and
+PyMuPDF is gone from everything except the legacy Matrix extraction path.** The
+"What did not leave" section at the end says why that path is a separate act.
 
 ## What the retirement removes
 
@@ -20,7 +24,8 @@ Two engines, in five places:
   the Python wrapper only shells out to it.
 - **Eighteen source files.** `ENGINE_ALLOWLIST` in `tests/test_architecture.py`
   is the exact list, with the engine each file uses. #741's first acceptance
-  criterion is that the list ends up empty.
+  criterion is that the list ends up empty. It ended at five, not zero; see
+  "What did not leave".
 - **CI setup.** `scripts/ci_environment.sh` installs the OCR engine beside the
   two `uv sync` calls.
 - **The runtime images and their sizing notes.**
@@ -45,6 +50,11 @@ each one stands, are recorded in
 | `tests/test_page_inventory.py` | PyMuPDF | 1 |
 | `tests/test_token_layers.py` | PyMuPDF | 1 |
 
+That is the before state. After the removal the list is five files:
+`src/corridor/geometry.py`, `src/corridor/extract_matrix.py`,
+`src/corridor/gold.py` and the two tests of the first two — all PyMuPDF, all
+one path, and no entry for Tesseract at all.
+
 ## The retirement point
 
 The retirement point is the last revision at which both engines are present,
@@ -66,10 +76,19 @@ identifiable, recorded from the current revision:
   in the database this checkout is configured against, no persisted citation
   is referenced by any retained decision or released artifact at all.
 
-**To be completed when the removal merges:** the removal commit and its
-parent, written into this section. Until that line is filled in, the
-deletions listed under "What the window gates" below have no recorded point
-to roll back to and must not proceed.
+**The removal, as it was made.** The last revision at which both engines are
+present, installed and exercised by the suite is `0933567` on
+`codex/741-retirement`, whose own parent is `79e7691` on `main` — the commit
+this branch is built on, and the point a revert returns to. The removal is the
+commits after it:
+
+| Commit | What it removed |
+|---|---|
+| `0772840` | The Tesseract engine and the incumbent PyMuPDF token adapter; the incumbent prose segmentation and its dereference; the three settings that chose between incumbent and replacement; the one-time prose-locator regression script |
+| `b4215a0` | The incumbent Page Inventory; the render worker's retained MuPDF rasteriser and its setting; the local engine from the cell-reading vocabulary; pytesseract, the render worker's PyMuPDF, both lockfile entries, the `tesseract-ocr` apt package and the CI OCR install |
+
+Reverting those two commits, in that order, restores the engines to the
+source, the locks and the Dockerfile exactly.
 
 ## What a rollback would consist of
 
@@ -185,28 +204,68 @@ CI and the images without waiting for anything. Four deletions waited for the
 window to close, because each one removes a path that a rollback would want,
 and the decision above closes it:
 
-- the old table geometry (`src/corridor/geometry.py`);
+- the old table geometry (`src/corridor/geometry.py`) — **not deleted**;
 - the old structure prompt path (`prompts/matrix_structure_v1.md`, `v2` and
   `v3`, reached through `STRUCTURE_PROMPT` in
   `src/corridor/extract_matrix.py`), replaced by `matrix_structure_ids_v1`
-  under #737;
+  under #737 — **not deleted**;
 - the Tesseract token adapter (the OCR half of `src/corridor/token_layers.py`
-  and `src/corridor/unreadable_cells.py`), replaced by #739;
-- the legacy extraction path, #460's scope.
+  and `src/corridor/unreadable_cells.py`), replaced by #739 — **deleted**;
+- the legacy extraction path, #460's scope — **not deleted**.
 
-`workers/render/legacy_pymupdf.py` belongs with them. It is the render
-worker's retained incumbent rasteriser, loaded only when a request asks for
-the measured rollback, so deleting it *is* closing part of the window rather
-than something to do inside it.
+`workers/render/legacy_pymupdf.py` belonged with them and is **deleted**. It
+was the render worker's retained incumbent rasteriser, loaded only when a
+request asked for the measured rollback, so deleting it was itself part of
+closing the window.
+
+## What did not leave, and why it is a separate act
+
+Three of the four gated deletions are one thing: the legacy Matrix extraction
+path. `geometry.page_tables` finds a page's tables through PyMuPDF and rebuilds
+each cell from its word boxes; `extract_matrix` opens the document to call it
+and maps the columns with `prompts/matrix_structure_v3.md`; `gold` reads the
+same geometry to author a gold set. It is what `make extract` runs, through
+`pipeline.extraction_route`, under the recorded prompt version
+`matrix_tiered_v4`.
+
+Deleting it is not an engine removal, and neither is quietly repointing it. The
+prompt version recorded on an Extracted Proposal says which reading produced
+its values. Reading the same pages through the replacement reader while leaving
+that version alone would make every retained proposal's lineage untrue —
+exactly the confusion the version exists to prevent — and would be a change of
+reading on the deployed path with no measurement behind it.
+
+The replacement is built and is a *different route with its own identity*:
+`native_matrix.py` and the reader's own `matrix_structure_ids_v1` (#737),
+reached today only through the shadow pipeline. What empties the last five
+allowlist entries is that route becoming the deployed one in
+`pipeline.extraction_route`, with its own recorded version, and the callers
+(`extract_project`, `product_proving_extraction`, `m8_acceptance_cli`) moving
+with it. That is #447's selection act, and it needs its own ticket.
+
+The superseded prompt files are a second, smaller reason those three lines
+stay. `prompts/matrix_structure_v1.md` and `v2.md` are not live code: they are
+the record of what produced Candidates that are still in the database
+(ADR-0003), retained for the same reason as the inert migration source bytes.
+Deleting them would be a loss of history rather than a retirement, so they
+stay whatever happens to `v3`.
+
+Nothing about that path uses Tesseract. **Tesseract left the product
+completely**: no module imports it, no source file names it, its distribution
+is out of both locks, its apt package is out of the Dockerfile and its install
+is out of CI.
 
 ## How to check this record is still true
 
 ```bash
 make image-engine-audit                       # what the built image contains
 make test-engine-absent MODE=imports          # which modules still reach an engine
+make test-engine-absent MODE=suite            # the suite with both engines withheld
 make retained-citation-inventory              # which persisted citations exist
 ```
 
-The first two exit non-zero until the removal lands. That is the point: they
-report a before state truthfully rather than describing the intended after
-state.
+They report what is true rather than what was intended, which is why the
+before-state receipts exit non-zero and are kept. After the removal the first
+three still report a PyMuPDF that is present, because the legacy Matrix
+extraction path still imports it — see "What did not leave". They report no
+Tesseract anywhere, which is the half that finished.
