@@ -20,16 +20,23 @@ append commands, which remain the only writers).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date
 from hashlib import sha256
 import hmac
+import re
 import secrets
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.fact_types import FACT_TYPE_CONTRACTS, FactTypeContract
+from corridor.fact_types import (
+    FACT_TYPE_CONTRACTS,
+    PDF_MARKED_RESOLUTION_TRANSFORMATION,
+    PDF_TEXT_TRANSFORMATION,
+    FactTypeContract,
+)
 from corridor.identity import normalize_party
 from corridor.models import ExternalOrg, SourceSegment
 
@@ -124,6 +131,8 @@ def materialize_segment_value(
 ) -> MaterializedValue:
     """Materialize one scalar Fact value from a segment's exact text."""
 
+    if segment.kind in {"pdf_cell", "pdf_span"}:
+        return materialize_pdf_segment_value(session, fact_type, segment)
     contract = _scalar_contract(fact_type)
     _certify(segment, fact_type, contract)
     value = validated_scalar_value(contract, segment.exact_text)
@@ -142,6 +151,181 @@ def materialize_segment_value(
         date_value=value if isinstance(value, date) else None,
         external_org_value_id=external_org_value_id,
     )
+
+
+def clean_pdf_source_text(exact_text: str) -> str:
+    """Replay the measured native listing's whitespace rule without a model import."""
+
+    return re.sub(r"\s+", " ", exact_text.replace("\n", " ")).strip()
+
+
+def materialize_pdf_segment_value(
+    session: Session, fact_type: str, segment: SourceSegment
+) -> MaterializedValue:
+    """Capture a PDF cell, or an organization span, through its named text rule.
+
+    Calendar dates retain the existing ISO-only contract. A seasonal or
+    month-only source phrase remains available to the proposal, but cannot
+    acquire invented date precision by passing through this materializer.
+    """
+
+    contract = _scalar_contract(fact_type)
+    _certify_pdf_segment(segment, fact_type, contract)
+    if contract.value_class == "date":
+        value = validated_scalar_value(contract, segment.exact_text)
+        transformation = contract.transformation
+    else:
+        value = clean_pdf_source_text(segment.exact_text)
+        if not value:
+            raise FactValidationError("PDF text Fact cannot be empty")
+        transformation = PDF_TEXT_TRANSFORMATION
+    return _sealed(
+        fact_type=fact_type,
+        transformation=transformation,
+        source_links=(("value_source", segment.id),),
+        text_value=value if isinstance(value, str) else None,
+        date_value=value if isinstance(value, date) else None,
+        external_org_value_id=(
+            exact_registered_external_org_id(session, value)
+            if fact_type == "external_org" and isinstance(value, str)
+            else None
+        ),
+    )
+
+
+def materialize_pdf_marked_resolution(
+    headers: Sequence[SourceSegment],
+    marks: Sequence[SourceSegment],
+    *,
+    preceding_header_page_no: int | None = None,
+) -> MaterializedValue:
+    """Read marked resolution headings from ordered, paired PDF cell evidence.
+
+    Only selected, nonempty mark cells are supplied: the native reading keeps
+    empty cells without inventing Source Segments for them. A spanning header
+    may supply several marked columns; it is retained once and replayed once
+    per selected mark. A carried header must name its preceding page, which
+    the resulting immutable value-source links preserve for later replay.
+    """
+
+    headers, marks = tuple(headers), tuple(marks)
+    _ordered_pdf_cells(headers, "headers")
+    _ordered_pdf_cells(marks, "marks")
+    if any(_pdf_scope(segment) != _pdf_scope(headers[0]) for segment in marks):
+        raise FactValidationError("PDF resolution support crosses its reading scope")
+    header_page, mark_page = headers[0].page_no, marks[0].page_no
+    if header_page == mark_page:
+        if preceding_header_page_no is not None:
+            raise FactValidationError("same-page PDF headers are not carried headers")
+        if headers[0].table_index != marks[0].table_index or any(
+            header.cell_row + header.row_span > marks[0].cell_row
+            for header in headers
+        ):
+            raise FactValidationError("PDF resolution header must precede its body row")
+    elif header_page >= mark_page or preceding_header_page_no != header_page:
+        raise FactValidationError("PDF resolution needs its declared preceding header page")
+
+    selected: list[str] = []
+    used_headers: set[int] = set()
+    for mark in marks:
+        matching = tuple(
+            header for header in headers
+            if header.cell_column <= mark.cell_column
+            and mark.cell_column + mark.column_span
+            <= header.cell_column + header.column_span
+        )
+        if len(matching) != 1:
+            raise FactValidationError("PDF resolution mark has no matching header column span")
+        header = matching[0]
+        selected.append(clean_pdf_source_text(header.exact_text))
+        used_headers.add(header.id)
+    if used_headers != {header.id for header in headers}:
+        raise FactValidationError("PDF resolution header has no corresponding selected mark")
+    return _sealed(
+        fact_type="resolution_strategy",
+        transformation=PDF_MARKED_RESOLUTION_TRANSFORMATION,
+        source_links=(
+            *(("value_source", header.id) for header in headers),
+            *(("context", mark.id) for mark in marks),
+        ),
+        text_value="; ".join(selected),
+    )
+
+
+def replay_pdf_materialized_value(
+    session: Session,
+    fact_type: str,
+    transformation: str,
+    value_segments: Sequence[SourceSegment],
+    context_segments: Sequence[SourceSegment],
+) -> MaterializedValue:
+    """Rebuild a PDF value after its ordered source links have been dereferenced."""
+
+    if transformation == PDF_MARKED_RESOLUTION_TRANSFORMATION:
+        if fact_type != "resolution_strategy":
+            raise FactValidationError("PDF marked resolution has the wrong Fact type")
+        header_page = value_segments[0].page_no if value_segments else None
+        mark_page = context_segments[0].page_no if context_segments else None
+        return materialize_pdf_marked_resolution(
+            value_segments,
+            context_segments,
+            preceding_header_page_no=header_page if header_page != mark_page else None,
+        )
+    if len(value_segments) != 1 or context_segments:
+        raise FactValidationError("PDF scalar Fact needs exactly one value source")
+    value = materialize_pdf_segment_value(session, fact_type, value_segments[0])
+    if value.transformation != transformation:
+        raise FactValidationError("PDF Fact transformation does not match its contract")
+    return value
+
+
+def _pdf_scope(segment: SourceSegment) -> tuple:
+    return (
+        segment.project_id, segment.document_id, segment.rendition_sha256,
+        segment.reading_sha256, segment.reader_identity,
+    )
+
+
+def _certify_pdf_segment(
+    segment: SourceSegment, fact_type: str, contract: FactTypeContract
+) -> None:
+    _certify(segment, fact_type, contract)
+    if segment.kind not in {"pdf_cell", "pdf_span"}:
+        raise FactValidationError("PDF materialization needs native PDF support")
+    if (
+        segment.project_id is None or segment.document_id is None
+        or not segment.rendition_sha256 or not segment.reading_sha256
+        or not segment.reader_identity or segment.page_no is None
+    ):
+        raise FactValidationError("PDF Fact support needs its complete reading scope")
+    if segment.kind == "pdf_cell" and (
+        segment.table_index is None or segment.cell_row is None
+        or segment.cell_column is None or segment.row_span is None
+        or segment.column_span is None or segment.table_index < 0
+        or segment.cell_row < 0 or segment.cell_column < 0
+        or segment.row_span < 1 or segment.column_span < 1
+    ):
+        raise FactValidationError("PDF Fact support needs its complete cell locator")
+
+
+def _ordered_pdf_cells(segments: tuple[SourceSegment, ...], role: str) -> None:
+    if not segments:
+        raise FactValidationError(f"PDF resolution needs nonempty {role}")
+    contract = FACT_TYPE_CONTRACTS["resolution_strategy"]
+    prior_end = -1
+    ids: set[int] = set()
+    for segment in segments:
+        _certify_pdf_segment(segment, "resolution_strategy", contract)
+        if _pdf_scope(segment) != _pdf_scope(segments[0]) or (
+            segment.page_no, segment.table_index, segment.cell_row
+        ) != (segments[0].page_no, segments[0].table_index, segments[0].cell_row):
+            raise FactValidationError(f"PDF resolution {role} cross their reading or row")
+        if segment.id in ids or segment.cell_column < prior_end:
+            raise FactValidationError(f"PDF resolution {role} need unique ordered columns")
+        if not clean_pdf_source_text(segment.exact_text):
+            raise FactValidationError(f"PDF resolution {role} cannot be empty")
+        ids.add(segment.id)
+        prior_end = segment.cell_column + segment.column_span
 
 
 def materialize_prose_wording(
@@ -247,6 +431,8 @@ def transform(name: str, exact_text: str) -> str | date:
 
     if name == "trim_cell_text_v1":
         return exact_text.strip()
+    if name == PDF_TEXT_TRANSFORMATION:
+        return clean_pdf_source_text(exact_text)
     if name == "exact_prose_span_v1":
         return exact_text
     if name == "iso_date_cell_v1":

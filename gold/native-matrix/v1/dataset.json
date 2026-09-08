@@ -1,0 +1,134 @@
+{
+  "schema_version": "corridor.native-matrix-reference.v1",
+  "purpose": "Offline replay of retained structure answers through the native matrix adapter; no production selection or new provider transmission.",
+  "historical_configuration": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "none",
+    "image_detail": "original",
+    "image_dpi": 110,
+    "native_engine": "tagged",
+    "native_dpi": 36,
+    "prompt_version": "matrix_structure_ids_v1",
+    "prompt_sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+    "schema_sha256": "d050e1f7e37f5aeee14e53000a211c818e8f3bcd59c35997a589122e782e7c33",
+    "semantics_sha256": "3e71909194ab3e97399dd068769eeaa34c3c225d2f8feaef75e10c1988b774a9"
+  },
+  "cases": [
+    {
+      "name": "semantics-9424-v2",
+      "cohort": "wsdot-9424",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9424-v2.manifest.json",
+      "manifest_sha256": "2a60062750405bc18369a3fcf5b3e699873d8c27913de7d5becdb2662d191af3",
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "pages": 11,
+      "expected_rows": 265,
+      "expected_reasons": {
+        "candidate_recorded": 162,
+        "insufficient_mapped_fields": 2,
+        "retired_row": 101
+      }
+    },
+    {
+      "name": "semantics-9540-comm",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-comm.manifest.json",
+      "manifest_sha256": "f745a4c2b4a11474f720f886d4eac8e347172e4127bb1cbe6432c4b16c9ef5f7",
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "pages": 3,
+      "expected_rows": 89,
+      "expected_reasons": {
+        "candidate_recorded": 86,
+        "missing_required_fields": 3
+      }
+    },
+    {
+      "name": "semantics-9540-gas",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-gas.manifest.json",
+      "manifest_sha256": "cd5c64475e6c4ed7cdd77596ac8a72708bd3be8e85bbd78f19ab783fab86b6ec",
+      "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "pages": 1,
+      "expected_rows": 15,
+      "expected_reasons": {
+        "candidate_recorded": 14,
+        "missing_required_fields": 1
+      }
+    },
+    {
+      "name": "semantics-9540-opl",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-opl.manifest.json",
+      "manifest_sha256": "6ff0a98f9546f9a3125a16da2a63ad944b2e034cc4e363fdae75617518da1b87",
+      "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "pages": 1,
+      "expected_rows": 2,
+      "expected_reasons": {
+        "candidate_recorded": 1,
+        "missing_required_fields": 1
+      }
+    },
+    {
+      "name": "semantics-9540-power",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-power.manifest.json",
+      "manifest_sha256": "4e4971144769aae917589b6db032937717138e241e29d486b364bf5765d19338",
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "pages": 2,
+      "expected_rows": 39,
+      "expected_reasons": {
+        "candidate_recorded": 37,
+        "missing_required_fields": 2
+      }
+    },
+    {
+      "name": "semantics-9540-sewer",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-sewer.manifest.json",
+      "manifest_sha256": "a386190b23254e9b55e24d1c3d2d344f45b8653e911072ab66ff6d32f0c933c2",
+      "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "pages": 1,
+      "expected_rows": 26,
+      "expected_reasons": {
+        "candidate_recorded": 25,
+        "missing_required_fields": 1
+      }
+    },
+    {
+      "name": "semantics-9540-water",
+      "cohort": "wsdot-9540",
+      "manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-water.manifest.json",
+      "manifest_sha256": "bccb7c0ab39fbd26774f5af0c3828754173d34fd9d427507e932e3438169c492",
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "pages": 1,
+      "expected_rows": 30,
+      "expected_reasons": {
+        "candidate_recorded": 29,
+        "missing_required_fields": 1
+      }
+    }
+  ],
+  "machine_references": {
+    "wsdot-9424": {
+      "path": "gold/wsdot-9424.machine.csv",
+      "sha256": "94720ed31bc66616479a5de0d2448774569c50b22cbdb4768d31090c1566a111",
+      "expected_rows": 162,
+      "scope": "Historical Counter matching of source_ref multiplicities only. The CSV does not establish scoped document/page/row occurrence identity. No independent field values; critical is not scored."
+    },
+    "wsdot-9540": {
+      "path": "gold/wsdot-9540.machine.csv",
+      "sha256": "97323bebdedcf3bd6db2d43be3c55cdaa0e662b9125b5835a52962e0e18b5bd9",
+      "expected_rows": 192,
+      "scope": "Historical Counter matching of source_ref multiplicities only. The CSV does not establish scoped document/page/row occurrence identity. No independent field values; critical is not scored.",
+      "holdout_status": "spent; retained-answer/reference replay only, not a new generalization score"
+    }
+  },
+  "limitations": [
+    "Retained answers are model outputs, not independent field gold.",
+    "Source-reference matching and exact retained-reading replay are separate measures.",
+    "Historical call/token counts belong to retained runs; this replay makes zero new provider calls.",
+    "Passing this replay does not select production; selection belongs to #447/#739.",
+    "Non-ISO matrix date phrases remain source-bound proposal fields and must refuse ISO-date Fact materialization.",
+    "WSDOT 9540 is spent; this replay grants no new generalization claim and changes no evaluation guard.",
+    "The frozen WSDOT 9424 sidecar has a different row population (97 retired); this native retained-reading population (101 retired) does not correct that sidecar."
+  ]
+}

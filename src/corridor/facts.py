@@ -24,6 +24,7 @@ from openpyxl.utils.cell import coordinate_from_string, column_index_from_string
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.candidates import propose, dedupe_hint
 from corridor.models import (
     Candidate,
     Dependency,
@@ -49,6 +50,10 @@ from corridor.materializer import (
     FactReplayMismatch,
     FactValidationError,
     MaterializedValue,
+    clean_pdf_source_text,
+    materialize_pdf_segment_value,
+    materialize_pdf_marked_resolution,
+    replay_pdf_materialized_value,
     materialize_document_reference,
     materialize_prose_wording,
     materialize_quoted_statement_wording,
@@ -57,6 +62,11 @@ from corridor.materializer import (
     transform,
     validated_scalar_value,
 )
+from corridor.native_matrix_bindings import (
+    NativeMatrixMapping, NativeFieldBinding, NativeRowBinding, READER_PATH, native_replay_index,
+)
+from corridor.reader_segments import NativeCellIndex, pdf_cell_id
+from corridor.token_layers import NativePdfReading, read_native_pdf
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.sheets import column_mapping
 from corridor.source_append import (
@@ -94,6 +104,161 @@ class StatementTimingFactValue:
     """One replayed set of a Recorded Verbal Statement's stated timings."""
 
     timings: tuple[tuple[str, StatementTiming], ...]
+
+
+@dataclass(frozen=True)
+class NativeFieldMaterialization:
+    """One source-bound field, including an explicit refusal to mint a Fact."""
+
+    row: NativeRowBinding
+    field: NativeFieldBinding
+    value: MaterializedValue | None
+    sources_json: str
+    outcome_json: str
+
+    @property
+    def sources(self) -> dict:
+        return json.loads(self.sources_json)
+
+    @property
+    def outcome(self) -> dict:
+        return json.loads(self.outcome_json)
+
+
+def materialize_native_matrix_fields(
+    session: Session, document: Document, mapping: NativeMatrixMapping,
+) -> tuple[NativeFieldMaterialization, ...]:
+    """Dereference once per scoped ID; seal values before writing any Fact."""
+    mapping.certify(document)
+    index = NativeCellIndex(document, mapping.native_reading)
+    selected: dict[str, SourceSegment] = {}
+    prepared = []
+    for row in mapping.rows:
+        for field in row.fields:
+            sources = {}
+            segments = {}
+            for role, references in (("value_source", field.value_sources), ("context", field.context_sources)):
+                sources[role], segments[role] = [], []
+                for reference in references:
+                    if reference.scoped_id not in selected:
+                        selected[reference.scoped_id] = reference.select(session, document, index)
+                    segment = selected[reference.scoped_id]
+                    segments[role].append(segment)
+                    sources[role].append({
+                        "segment_id": segment.id, "scoped_id": reference.scoped_id,
+                        "model_id": reference.model_id,
+                    })
+            value, status, reason = _materialize_native_field(session, row, field, segments)
+            outcome = {
+                "row_id": row.row_id, "local_row_id": row.local_row_id,
+                "page": row.page_no, "field": field.name,
+                "status": status, "reason": reason,
+                "value_source_ids": [segment.id for segment in segments["value_source"]],
+                "context_source_ids": [segment.id for segment in segments["context"]],
+            }
+            prepared.append(NativeFieldMaterialization(
+                row, field, value, json.dumps(sources, sort_keys=True), json.dumps(outcome, sort_keys=True),
+            ))
+    return tuple(prepared)
+
+
+def _materialize_native_field(session, row, field, segments):
+    if row.disposition != "extracted":
+        return None, "not_extracted", row.reason
+    try:
+        if field.context_sources:
+            headers, marks = segments["value_source"], segments["context"]
+            value = materialize_pdf_marked_resolution(
+                headers, marks,
+                preceding_header_page_no=(headers[0].page_no if headers[0].page_no < row.page_no else None),
+            )
+        else:
+            value = materialize_pdf_segment_value(session, field.name, segments["value_source"][0])
+    except FactValidationError:
+        if FACT_TYPE_CONTRACTS[field.name].value_class == "date":
+            return None, "refused", "non_iso_date"
+        raise
+    scalar = value.date_value.isoformat() if value.date_value is not None else value.text_value
+    if scalar != field.text:
+        if value.date_value is not None:
+            return None, "refused", "non_iso_date"
+        raise FactReplayMismatch("native proposal field differs from its materialized source")
+    return value, "materialized", "source_materialized"
+
+
+def append_native_matrix_facts(
+    session: Session, document: Document, run: ExtractionRun,
+    prepared: tuple[NativeFieldMaterialization, ...],
+) -> tuple[Fact, ...]:
+    """Append captured values only; proposal compatibility is the next phase."""
+    appended = []
+    for field in prepared:
+        if field.value is None:
+            continue
+        value = field.value
+        appended.append(append_fact(
+            session, project_id=document.project_id, document_id=document.id,
+            extraction_run_id=run.id, subject_kind="source_row",
+            subject_key=field.row.row_id, recorded_by=f"extractor:{run.prompt_version}",
+            content_sha256=_fact_digest(
+                run_identity={
+                    # Equal values under a later semantic mapping are a new
+                    # run's captured Facts. Content retry is resolved before
+                    # this phase; a Fact owned by an older run cannot support
+                    # the new run's Extracted Proposal.
+                    "extraction_run_id": run.id,
+                    "native_mapping_sha256": run.row_accounting_json["native_mapping"]["identity"],
+                    "document_id": document.id, "prompt_version": run.prompt_version,
+                    "schema_version": run.schema_version, "model": run.model,
+                    "extractor_config_sha256": run.extractor_config_sha256,
+                },
+                subject_kind="source_row", subject_key=field.row.row_id, value=value,
+            ),
+            value=value,
+        ))
+    return tuple(appended)
+
+
+def native_matrix_candidates(
+    document: Document, mapping: NativeMatrixMapping,
+    prepared: tuple[NativeFieldMaterialization, ...],
+) -> tuple[Candidate, ...]:
+    """Compatibility projection, constructed only after the source Facts append."""
+    by_row = {}
+    for field in prepared:
+        by_row.setdefault(field.row.row_id, []).append(field)
+    candidates = []
+    for row in mapping.rows:
+        if row.disposition != "extracted":
+            continue
+        fields = {field.field.name: field.field.text for field in by_row[row.row_id]}
+        candidate = propose(
+            document, kind="dependency", fields=fields, page_no=row.page_no,
+            quote="", quote_verified=False, whole_row=False,
+            confidence=row.confidence, prompt_version=mapping.config_record["prompt_version"],
+            model=mapping.config_record["model"], tier=READER_PATH,
+            dedupe=dedupe_hint(fields.get("external_org", ""), fields.get("utility_id", ""),
+                               fields.get("station_from", fields.get("location_start", ""))),
+            text_source="native_pdf_segments", unmapped=row.unmapped,
+        )
+        candidate.payload_json.update({
+            "native_row_id": row.row_id, "local_row_id": row.local_row_id,
+            "page": row.page_no,
+            "field_sources": {field.field.name: field.sources for field in by_row[row.row_id]},
+            "field_materialization": [field.outcome for field in by_row[row.row_id]],
+        })
+        # No invented row quotation is marked verified. Exact native locators
+        # travel explicitly; compatibility admission remains disabled.
+        candidate.payload_json["citations"][0].update({
+            "reading_sha256": mapping.native_reading.reading_sha256,
+            "table_index": row.table_index, "source_row": row.row,
+            "source_segment_ids": sorted({
+                source["segment_id"] for field in by_row[row.row_id]
+                for references in field.sources.values() for source in references
+            }),
+        })
+        candidates.append(candidate)
+    return tuple(candidates)
 
 
 def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
@@ -924,6 +1089,12 @@ def append_extracted_proposals(
         by_subject.setdefault(fact.subject_key, []).append(fact)
     candidates_by_subject = {}
     for candidate in candidates:
+        if candidate.payload_json.get("tier") == READER_PATH:
+            subject = candidate.payload_json.get("native_row_id")
+            if not isinstance(subject, str) or not subject:
+                raise FactValidationError("native proposal needs its scoped source row")
+            candidates_by_subject[subject] = candidate
+            continue
         if _is_statement_wording_candidate(candidate) and candidate.id is not None:
             candidates_by_subject[f"candidate:{candidate.id}"] = candidate
             continue
@@ -1033,6 +1204,8 @@ def proposal_input_snapshots(session: Session, run: ExtractionRun) -> list[dict]
             .order_by(ExtractedProposalFact.ordinal)
         ).all()
         fields = deepcopy(metadata.get("event_fields") or {})
+        if (metadata.get("payload_json") or {}).get("tier") == READER_PATH:
+            fields.update(_native_refused_proposal_fields(session, proposal, metadata))
         for link in links:
             fact = session.get(Fact, link.fact_id)
             if fact is None:
@@ -1101,6 +1274,11 @@ def _proposal_candidate_metadata(candidate: Candidate) -> dict:
         }
         for citation in (payload.get("citations") or [])
     ]
+    native_metadata = {
+        key: deepcopy(payload[key])
+        for key in ("native_row_id", "local_row_id", "page", "field_sources", "field_materialization")
+        if payload.get("tier") == READER_PATH and key in payload
+    }
     return {
         "source_pages": list(candidate.source_pages or []),
         "confidence": candidate.confidence,
@@ -1117,12 +1295,43 @@ def _proposal_candidate_metadata(candidate: Candidate) -> dict:
             "low_confidence_tokens": list(payload.get("low_confidence_tokens") or []),
             "tier": payload.get("tier"),
             "text_source": payload.get("text_source"),
+            **native_metadata,
         },
     }
 
 
+def _native_refused_proposal_fields(session, proposal, metadata) -> dict[str, str]:
+    """A declined date Fact does not erase the source-bound proposal wording."""
+    payload = metadata["payload_json"]
+    document = session.get_one(Document, proposal.document_id)
+    fields = {}
+    for outcome in payload["field_materialization"]:
+        if outcome["status"] != "refused":
+            continue
+        name = outcome["field"]
+        if (outcome["reason"] != "non_iso_date"
+                or FACT_TYPE_CONTRACTS[name].value_class != "date"):
+            raise FactValidationError("unknown native field materialization refusal")
+        sources = payload["field_sources"][name]
+        if len(sources["value_source"]) != 1 or sources["context"]:
+            raise FactValidationError("a refused date needs its exact source cell")
+        reference = sources["value_source"][0]
+        segment = session.get(SourceSegment, reference["segment_id"])
+        if (segment is None or segment.project_id != proposal.project_id
+                or segment.document_id != proposal.document_id or segment.kind != "pdf_cell"):
+            raise FactValidationError("a refused date source crosses its proposal")
+        scoped = pdf_cell_id(document, segment.reading_sha256, segment.page_no,
+                             segment.table_index, segment.cell_row, segment.cell_column)
+        if (scoped != reference["scoped_id"]
+                or scoped.rsplit(":c", 1)[0] != payload["native_row_id"]):
+            raise FactValidationError("a refused date source crosses its row")
+        fields[name] = clean_pdf_source_text(segment.exact_text)
+    return fields
+
+
 def replay_fact(
-    session: Session, document: Document, fact: Fact, path: Path | str
+    session: Session, document: Document, fact: Fact, path: Path | str,
+    *, native_reading: NativePdfReading | None = None,
 ) -> str | date | AppliesToFactValue | ClosureFactValue:
     """Replay one typed Fact from original bytes through its named transform."""
 
@@ -1137,6 +1346,9 @@ def replay_fact(
         contract = FACT_TYPE_CONTRACTS.get(fact.fact_type)
         if contract is None:
             raise FactValidationError(f"unknown Fact type {fact.fact_type!r}")
+        segments = tuple(session.get(SourceSegment, source.source_segment_id) for source in sources)
+        if any(segment is not None and segment.kind in {"pdf_cell", "pdf_span"} for segment in segments):
+            return _replay_native_fact(session, document, fact, sources, segments, path, native_reading)
         roles = {source.role for source in sources}
         if roles != contract.required_roles:
             raise FactValidationError("Fact support roles do not match its contract")
@@ -1195,6 +1407,41 @@ def replay_fact(
     if replayed != materialized:
         raise FactReplayMismatch("materialized Fact value does not reproduce")
     return replayed
+
+
+def _replay_native_fact(session, document, fact, sources, segments, path, reading):
+    if fact.document_id != document.id or fact.project_id != document.project_id:
+        raise FactValidationError("native Fact belongs to another Document")
+    if sha256(Path(path).read_bytes()).hexdigest() != document.sha256:
+        raise FactReplayMismatch("native Fact source bytes changed")
+    if not segments or any(segment is None for segment in segments):
+        raise FactValidationError("native Fact is missing its source")
+    if reading is None:
+        native = segments[0].reader_identity["native_layer"]
+        reading = read_native_pdf(
+            path, source_sha256=document.sha256,
+            engine=native["configuration"]["reader_engine"], dpi=native["dpi"],
+        )
+    if not isinstance(reading, NativePdfReading) or reading.rendition_sha256 != document.sha256:
+        raise FactValidationError("native Fact replay needs the same sealed reading")
+    expected = native_replay_index(reading)
+    grouped = {"value_source": [], "context": []}
+    for source, segment in zip(sources, segments, strict=True):
+        encoded = expected.get((segment.kind, segment.ordinal))
+        if (segment.project_id != fact.project_id or segment.document_id != fact.document_id
+                or encoded is None or any(getattr(segment, key) != value for key, value in json.loads(encoded).items())):
+            raise FactReplayMismatch("native Fact locator does not reproduce from its reading")
+        if source.role not in grouped or source.ordinal != len(grouped[source.role]) + 1:
+            raise FactValidationError("native Fact source roles or order differ from the replay contract")
+        grouped[source.role].append(segment)
+    materialized = replay_pdf_materialized_value(
+        session, fact.fact_type, fact.transformation,
+        grouped["value_source"], grouped["context"],
+    )
+    stored = fact.date_value if fact.date_value is not None else fact.text_value
+    if materialized.scalar != stored:
+        raise FactReplayMismatch("native Fact value does not reproduce from its ordered sources")
+    return materialized.scalar
 
 
 def replay_proposed_fact_value(

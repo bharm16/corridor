@@ -70,6 +70,8 @@ STRUCTURED_TEXT_FACT_TYPES = (
     "marked_resolution",
 )
 STRUCTURED_DATE_FACT_TYPES = ("committed_date", "action_due_date", "need_date")
+PDF_TEXT_TRANSFORMATION = "collapse_pdf_whitespace_v1"
+PDF_MARKED_RESOLUTION_TRANSFORMATION = "pdf_marked_resolution_v1"
 STRUCTURED_SATELLITE_FACT_TYPES = ("applies_to", "closure_result")
 SINGLE_VALUED_FACT_TYPES = (*STRUCTURED_TEXT_FACT_TYPES, *STRUCTURED_DATE_FACT_TYPES)
 EFFECTIVE_SINGLE_VALUE_FACT_TYPES = (*SINGLE_VALUED_FACT_TYPES, "closure_result")
@@ -86,7 +88,11 @@ FACT_TYPE_CONTRACTS = {
             value_class="external_org_wording" if name == "external_org" else "text",
             subject_kind="source_row",
             transformation="trim_cell_text_v1",
-            accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
+            accepted_segment_kinds=frozenset(
+                {"spreadsheet_cell", "pdf_cell", "pdf_span"}
+                if name == "external_org"
+                else {"spreadsheet_cell", "pdf_cell"}
+            ),
             automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
             required_roles=frozenset({"value_source"}),
             validation_rule=(
@@ -107,7 +113,7 @@ FACT_TYPE_CONTRACTS = {
             value_class="date",
             subject_kind="source_row",
             transformation="iso_date_cell_v1",
-            accepted_segment_kinds=frozenset({"spreadsheet_cell"}),
+            accepted_segment_kinds=frozenset({"spreadsheet_cell", "pdf_cell"}),
             automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
             required_roles=frozenset({"value_source"}),
             validation_rule="iso_calendar_date_replay_exact",

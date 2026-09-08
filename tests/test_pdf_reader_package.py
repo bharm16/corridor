@@ -114,6 +114,27 @@ def _imported_names(path: Path) -> set[str]:
 # import accounting, not production selection. A module leaves it only when
 # its imports leave; an unlisted importer always fails this guard.
 PRODUCTION_IMPORTERS = {
+    "src/corridor/extractor_lineage.py": (
+        "the explicitly named native matrix configuration binds the unchanged "
+        "measured prompt and strict schema; configuration capture never calls "
+        "the model or selects that challenger for production"
+    ),
+    "src/corridor/native_matrix.py": (
+        "the explicit native matrix challenger maps the unchanged measured "
+        "ID listing and schema against an injected client; its 110-dpi context "
+        "renderer runs in PdfiumExecutor, with no incumbent or OCR fallback"
+    ),
+    "src/corridor/native_matrix_bindings.py": (
+        "the pure native mapping boundary uses the reader's unchanged slim "
+        "page projection to bind local outside IDs to exact native spans; "
+        "no model client or PDFium entry occurs on this Fact path"
+    ),
+    "src/corridor/native_matrix_measurement.py": (
+        "explicit offline replay validates retained answers and images against "
+        "their manifests, runs the actual native adapter in a disposable "
+        "database and compares rows and source references; no transmission "
+        "or production selection is performed"
+    ),
     "src/corridor/m8_acceptance.py": (
         "the RID-index rows an acceptance capture binds its declarations to are "
         "PDFium glyph boxes clustered by baseline, under pdfium_entry in a "

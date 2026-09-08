@@ -43,6 +43,19 @@ _MATRIX_PROMPT_PATHS = (
 NATIVE_EXTRACTORS = frozenset({"sheet", "baseline", "key_date_table"})
 
 _POSTPROCESSOR_SOURCES = {
+    "native_matrix": (
+        "src/corridor/native_matrix.py",
+        "src/corridor/native_matrix_bindings.py",
+        "src/corridor/materializer.py",
+        "src/corridor/fact_types.py",
+        "src/corridor/facts.py",
+        "src/corridor/extraction_runs.py",
+        "src/corridor/source_append.py",
+        "src/corridor/row_accounting.py",
+        "src/corridor_pdf_reader/replacement/semantics.py",
+        "src/corridor_pdf_reader/replacement/pages.py",
+        "src/corridor_pdf_reader/replacement/vocabulary.py",
+    ),
     "matrix": (
         "src/corridor/extract_matrix.py",
         "src/corridor/pipeline.py",
@@ -328,6 +341,30 @@ def deployed_matrix_config(
     )
 
 
+def deployed_native_matrix_config(*, client: object) -> ExtractorConfig:
+    """Seal the explicit, measured ID-mapping challenger without selecting it."""
+    from corridor.native_matrix_bindings import MODEL_IMAGE_DPI, NATIVE_MATRIX_SCHEMA_VERSION
+    from corridor_pdf_reader.replacement.semantics import (
+        PROMPT_PATH, PROMPT_VERSION, STRUCTURE_SCHEMA,
+    )
+
+    controls = _model_request_controls(client, image_detail="original", logprobs=False)
+    if _model(client) != "gpt-5.6-luna" or controls["reasoning_effort"] != "none":
+        raise ValueError("native matrix challenger requires its measured model and reasoning configuration")
+    return injected_extractor_config(
+        extractor="native_matrix", prompt_version=PROMPT_VERSION,
+        model=_model(client), schema_version=NATIVE_MATRIX_SCHEMA_VERSION,
+        prompt_bytes=PROMPT_PATH.read_bytes(), schema=STRUCTURE_SCHEMA,
+        postprocessor_bytes=_read_sources(_REPO_ROOT, _POSTPROCESSOR_SOURCES["native_matrix"]),
+        request_controls={
+            **controls, "model_image_dpi": MODEL_IMAGE_DPI,
+            "native_reader_engine": "tagged", "native_reader_dpi": 36,
+            "selection": "explicit_challenger_only",
+        },
+        runtime=_runtime_receipt(("pypdfium2", "pypdf", "Pillow", "httpx")),
+    )
+
+
 def _deployed_config(
     *,
     extractor: str,
@@ -581,9 +618,9 @@ def _is_sha256(value: object) -> bool:
     )
 
 
-def _runtime_receipt() -> dict[str, Any]:
+def _runtime_receipt(distributions=("PyMuPDF", "httpx", "openpyxl")) -> dict[str, Any]:
     packages: dict[str, str] = {}
-    for distribution in ("PyMuPDF", "httpx", "openpyxl"):
+    for distribution in distributions:
         try:
             packages[distribution] = package_version(distribution)
         except PackageNotFoundError as exc:

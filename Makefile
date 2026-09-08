@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
+.PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
 
 TEST_WORKERS ?= 4
 
@@ -463,6 +463,20 @@ pdf-pairs-measure:
 #   make pdf-reader-gold-eval ARGS="--output out/pdf-reader/gold-v1 --include-holdout --holdout-actor <actor> --holdout-reason <reason>"
 pdf-reader-gold-eval:
 	uv run python -m corridor_pdf_reader.gold_evaluation $(ARGS)
+
+# Offline native matrix mapping regression (#737). Verifies the seven retained
+# answer manifests, all 20 measured 110-dpi images, source PDFs and machine CSVs;
+# replays their raw structures through the actual adapter, commits only in a
+# guarded disposable database, and compares every retained field/row decision
+# separately from historical source_ref multiplicity matching. WSDOT 9540 is
+# spent; this is not a new generalization score. No model/AWS calls or production
+# selection. The local PostgreSQL 16 admin URL provisions and drops a new DB;
+# the configured shared database is never migrated. Explicit experiment, not CI:
+#   make native-matrix-replay ARGS="--output <new-dir> --postgres-admin-url <local-admin-url>"
+# Or pass --postgres-admin-url-env CORRIDOR_MEASUREMENT_POSTGRES_URL.
+# Optional --results-root relocates the same digest-pinned retained answer sets.
+native-matrix-replay:
+	uv run python -m corridor.native_matrix_measurement $(ARGS)
 
 # The prose-locator audit (#733, clarified by #736): reconstruct historical
 # prose spans from registered corpus bytes and compare exact text with the
