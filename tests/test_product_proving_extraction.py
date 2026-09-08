@@ -94,7 +94,7 @@ def _record(
     sealed=True,
 ):
     extractor_name = extractor or (
-        "matrix" if document.doc_type == "matrix" else "minutes"
+        "native_matrix" if document.doc_type == "matrix" else "minutes"
     )
     if not sealed:
         return record_extraction_run(
@@ -107,11 +107,16 @@ def _record(
         )
     config = deployed_extractor_config(extractor_name, client=client)
     row_accounting_json = None
-    if extractor_name == "matrix" and outcome == "completed":
+    if extractor_name == "native_matrix" and outcome == "completed":
         row_accounting_json = RowAccounting(
             reader_version=config.prompt_version,
-            reader_path="page_geometry_and_transcription",
+            reader_path="native_matrix_cells",
         ).finish([]).row_accounting
+        row_accounting_json.update(
+            schema_version="native-matrix-row-accounting-v1",
+            native_mapping={"identity": "a" * 64, "reading_sha256": "b" * 64, "pages": []},
+            field_materialization=[],
+        )
     return record_extraction_run(
         session,
         document,
@@ -138,7 +143,7 @@ def _record(
 @pytest.mark.parametrize(
     ("doc_type", "implementation_name", "extractor_name"),
     (
-        ("matrix", "_extract_matrix_document", "matrix"),
+        ("matrix", "_extract_matrix_document", "native_matrix"),
         ("minutes", "_extract_minutes_document", "minutes"),
     ),
 )

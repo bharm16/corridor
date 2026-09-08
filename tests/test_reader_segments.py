@@ -200,10 +200,7 @@ def test_challenger_ingest_executes_for_existing_document_and_preserves_history(
         return original(self, *args, **kwargs)
 
     monkeypatch.setattr(PdfiumExecutor, "read_document", counted)
-    # Any incidental incumbent call makes this explicit replacement proof fail.
-    monkeypatch.setattr(
-        "pymupdf.open", lambda *a, **k: pytest.fail("incumbent PDF called")
-    )
+    # The retired engine is absent; no patch may import it just to prohibit it.
     monkeypatch.setattr(
         "corridor.ingest._extract_pages",
         lambda *a, **k: pytest.fail("incumbent ingest/OCR path called"),

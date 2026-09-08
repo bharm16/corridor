@@ -20,7 +20,7 @@ from sqlalchemy import select
 
 from corridor.pipeline_contracts import (
     MaintainerAcceptance, MeasuredEvidence, ObservationPlan, PipelineScope,
-    QualificationPolicy, canonical_text,
+    QualificationPolicy, canonical_text, content_digest,
 )
 from corridor.principals import HumanPrincipal
 
@@ -214,6 +214,8 @@ def _maintenance(args, session_factory) -> int:
 def main(argv=None, *, session_factory=None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
+    configuration = commands.add_parser("configuration", help="write the actual deployment configuration without extracting or selecting")
+    configuration.add_argument("--output", type=Path, required=True)
     shadow = commands.add_parser("shadow", help="historical retained-answer full-chain replay; disposable database only")
     shadow.add_argument("--output", type=Path, required=True)
     shadow.add_argument("--postgres-admin-url-env", required=True)
@@ -249,10 +251,25 @@ def main(argv=None, *, session_factory=None) -> int:
     predecessor.add_argument("--expected-selection", type=int)
     predecessor.add_argument("--initial", action="store_true")
     selection.add_argument("--reason", required=True)
-    selection.add_argument("--disable", action="store_true", help="append explicit rollback to incumbent routing")
+    selection.add_argument("--disable", action="store_true", help="disable extraction for this selection; there is no legacy fallback")
     for command in (policy, repeated, quality, gate, acceptance, selection):
         command.add_argument("--actor", required=True)
     args = parser.parse_args(argv)
+    if args.command == "configuration":
+        from corridor.config import settings
+        from corridor.native_matrix_runtime import configured_native_matrix_runtime
+        from corridor.native_pipeline import native_pipeline_configuration
+
+        runtime = configured_native_matrix_runtime(settings)
+        try:
+            value = native_pipeline_configuration(runtime.client, runtime.plan)
+            _write_new(args.output, value)
+            print(canonical_text({"configuration_sha256": content_digest(value),
+                                  "implementation_revision": value["code_revision"],
+                                  "path": str(args.output)}))
+        finally:
+            runtime.close()
+        return 0
     return _shadow(args) if args.command == "shadow" else _maintenance(args, session_factory)
 
 

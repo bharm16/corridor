@@ -305,7 +305,7 @@ def test_measured_request_and_scoped_values_account_for_every_detected_body_row(
     assert (controls["reasoning_effort"], controls["image_detail"],
             controls["model_image_dpi"], controls["native_reader_engine"],
             controls["native_reader_dpi"], controls["selection"]) == (
-        "none", "original", 110, "tagged", 36, "explicit_challenger_only",
+        "none", "original", 110, "tagged", 36, "explicit_selection_required",
     )
     page = mapping.pages[0]
     assert page["structure"] == _answer()

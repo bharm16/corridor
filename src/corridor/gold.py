@@ -2,7 +2,7 @@
 
 The diagnostic path still emits a blank worksheet for projects that obtain
 independent review elsewhere. The automated path reads the printed grid with
-no model and no extractor column mapping, stamps the shared PyMuPDF blind spot,
+no model and no extractor column mapping, stamps the shared native-reader blind spot,
 and writes a semi-independent machine-reference ceiling plus its exact scope
 manifest. It is not human gold and cannot prove semantic completeness.
 
@@ -18,7 +18,6 @@ import json
 from dataclasses import dataclass
 from pathlib import Path
 
-import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -33,7 +32,8 @@ from corridor.eval import (
 from corridor.reference_methods import (
     LEGACY_METHOD, NATIVE_METHOD, SPENT_SOURCE_HASHES, is_digest, reference_method,
 )
-from corridor.geometry import page_tables, row_quote
+from corridor.geometry import row_quote
+from corridor.token_layers import read_native_pdf
 from corridor.models import Candidate, DocPage, Document, Project
 from corridor.storage import stored_file
 from corridor.verify import normalize
@@ -140,58 +140,68 @@ def prepare(session: Session, project_id: int) -> Preparation:
     unread: list[UnreadRow] = []
     contested: list[UnreadRow] = []
 
-    with pymupdf.open(Path(path)) as pdf:
-        for page_no, page in enumerate(pdf, start=1):
-            tables = page_tables(page)
-            if not tables:
+    reading = read_native_pdf(path, source_sha256=document.sha256)
+    for page in reading.pages:
+        page_no = page["number"]
+        tables = []
+        for table in page["tables"]["value"]:
+            cells = table["structured_cells"]
+            if not cells:
                 continue
-            grid = max(tables, key=len)
-            page_quotes = [q for q in quotes.get(page_no, []) if q]
+            grid = [[""] * (1 + max(cell["column"] for cell in cells))
+                    for _ in range(1 + max(cell["row"] for cell in cells))]
+            for cell in cells:
+                grid[cell["row"]][cell["column"]] = cell["text"]
+            tables.append(grid)
+        if not tables:
+            continue
+        grid = max(tables, key=len)
+        page_quotes = [q for q in quotes.get(page_no, []) if q]
 
-            rows = [(raw, normalize(row_quote(raw))) for raw in grid]
-            matched = [
-                any(q in text for q in page_quotes) if text else False
-                for _, text in rows
-            ]
-            first = matched.index(True) if True in matched else len(rows)
-            headings = _headings(grid, first)
+        rows = [(raw, normalize(row_quote(raw))) for raw in grid]
+        matched = [
+            any(q in text for q in page_quotes) if text else False
+            for _, text in rows
+        ]
+        first = matched.index(True) if True in matched else len(rows)
+        headings = _headings(grid, first)
 
-            found = 0
-            for index, ((raw, text), is_matched) in enumerate(zip(rows, matched)):
-                if not text:
-                    continue
-                cells = tuple(
-                    (i, (cell or "").strip())
-                    for i, cell in enumerate(raw)
-                    if (cell or "").strip()
-                )
-                if is_matched:
-                    found += 1
-                    if _retirement(cells):
-                        # The row disagrees with itself: extracted, and
-                        # carrying a phrase that may retire it. Only a
-                        # human can say which reading is right (#128).
-                        contested.append(
-                            UnreadRow(page_no, cells, headings, "extracted, and retired?")
-                        )
-                    continue
-                unread.append(
-                    UnreadRow(
-                        page_no,
-                        cells,
-                        headings,
-                        _classify(cells),
-                        above_body=index < first,
+        found = 0
+        for index, ((raw, text), is_matched) in enumerate(zip(rows, matched)):
+            if not text:
+                continue
+            cells = tuple(
+                (i, (cell or "").strip())
+                for i, cell in enumerate(raw)
+                if (cell or "").strip()
+            )
+            if is_matched:
+                found += 1
+                if _retirement(cells):
+                    # The row disagrees with itself: extracted, and
+                    # carrying a phrase that may retire it. Only a
+                    # human can say which reading is right (#128).
+                    contested.append(
+                        UnreadRow(page_no, cells, headings, "extracted, and retired?")
                     )
-                )
-
-            tallies.append(
-                PageTally(
-                    page_no=page_no,
-                    extracted=found,
-                    unread=sum(1 for r in unread if r.page_no == page_no),
+                continue
+            unread.append(
+                UnreadRow(
+                    page_no,
+                    cells,
+                    headings,
+                    _classify(cells),
+                    above_body=index < first,
                 )
             )
+
+        tallies.append(
+            PageTally(
+                page_no=page_no,
+                extracted=found,
+                unread=sum(1 for r in unread if r.page_no == page_no),
+            )
+        )
 
     return Preparation(
         project=project.slug,
@@ -289,7 +299,7 @@ def render(prep: Preparation) -> str:
         "",
         "Rows are matched by quote containment, which borrows no column",
         "mapping from the extractor. But this enumeration **shares",
-        "PyMuPDF's table detection** with the extractor, so a region that",
+        "the paired-rendition reader's table reconstruction** with the extractor, so a region that",
         "library drops is missing from both readings and cannot appear",
         "below. Only an eye on the rendered page image closes that hole,",
         "which is what the checklist at the end is for.",
@@ -596,7 +606,7 @@ def main(argv: list[str]) -> int:
             try:
                 gold = author_machine_gold(
                     session, project.id, directory=args.directory,
-                    method=args.method or LEGACY_METHOD.name, method_version=args.method_version,
+                    method=args.method or NATIVE_METHOD.name, method_version=args.method_version,
                 )
             except (SpentHoldout, ValueError, LookupError) as exc:
                 print(str(exc), file=sys.stderr)
@@ -656,40 +666,6 @@ def main(argv: list[str]) -> int:
 # (`is_critical`) that already encode ADR-0009, so the labelling rule and
 # the Ledger's derivation stay one sentence even here.
 
-# The band this authoring refuses to run without: the spanning group cell
-# both WSDOT contracts print above their marked resolution columns.
-#
-# It anchored on `509 relocation needed` until the M7 cold run, and that
-# refused on the holdout — correctly, and for the wrong reason. 9540 is
-# the same Appendix U, but names its columns `RELOCATION` / `PROTECTION IN
-# PLACE` / `ABANDON/ DEACTIVATE/ REMOVE` where 9424 names them after its
-# own route number. Anchoring on the family's group header instead of one
-# contract's column is both more general and more honest about what this
-# authoring actually requires: a marked resolution group, whatever the
-# marks are called.
-_ANCHOR = "recommended resolution"
-
-# The identity columns, both contracts' spellings. The M7 cold run turned
-# this into a rule rather than a list: **only the structure of this form is
-# stable across contracts — every name varies.** 9424 prints `Owner`,
-# `ID Conflict`, and names its marks after its route number; 9540 prints
-# `UTILITY OWNER`, `UTILITY ID`, and names its marks after the work. So
-# the anchor is the group band, the marks are read through a vocabulary,
-# and these are enumerated per contract rather than guessed at.
-# How deep a header can sit on a page. The band, a title row, and the
-# headings — nothing in this corpus goes deeper, and a "header" found
-# further down is a data row that happens to read like one.
-_HEADER_SEARCH_DEPTH = 6
-
-_OWNER_HEADINGS = ("owner", "utility owner")
-_ID_HEADINGS = ("conflict id", "id conflict", "utility id")
-_NOTES_HEADINGS = ("notes",)
-
-
-class LayoutAnchorMissing(LookupError):
-    """No page carries the anchored header this authoring is written for."""
-
-
 @dataclass(frozen=True)
 class MachineGoldRow:
     source_ref: str
@@ -727,7 +703,7 @@ class MachineGold:
 
 def author_machine_gold(
     session: Session, project_id: int, *, directory: Path = GOLD_DIR,
-    method: str = MACHINE_REFERENCE_METHOD, method_version: str = MACHINE_REFERENCE_METHOD_VERSION,
+    method: str = NATIVE_METHOD.name, method_version: str = NATIVE_METHOD.version,
 ) -> MachineGold:
     """A gold set from the independent grid reading (#81 as amended).
 
@@ -737,9 +713,6 @@ def author_machine_gold(
     heading goes through the same vocabulary the Ledger uses — one
     sentence, both sides.
     """
-    from corridor.adjudicate import WSDOT_APPENDIX_U
-    from corridor.models import is_critical
-
     project = session.get(Project, project_id)
     if project is None:
         raise LookupError(f"no project {project_id}")
@@ -756,163 +729,9 @@ def author_machine_gold(
         project.slug, directory=directory, method=method, method_version=method_version,
         document_sha256s=tuple(document.sha256 for document in documents),
     )
-    if contract == NATIVE_METHOD:
-        return _author_native_documents(project, documents)
-
-    rows: list[MachineGoldRow] = []
-    retired = empty_slots = 0
-    anchored = False
-    images: dict[tuple[str, int], str | None] = {}
-
-    # Every matrix in the project, not the first. 9424 published one
-    # document and 9540 publishes six — one per utility kind — so a
-    # `.first()` here authored a denominator covering a fourteenth of the
-    # project and would have scored the extractor against it. The M7 cold
-    # run found that; no fixture could, because every fixture had one.
-    for document in documents:
-        path = stored_file(document)
-        if path is None:
-            raise LookupError(f"no stored file for {document.filename}")
-        for page in session.scalars(
-            select(DocPage).where(DocPage.document_id == document.id)
-        ):
-            images[(document.filename, page.page_no)] = page.image_path
-
-        with pymupdf.open(Path(path)) as pdf:
-            grids = {}
-            for page_no, page in enumerate(pdf, start=1):
-                tables = page_tables(page)
-                if tables:
-                    grids[page_no] = max(tables, key=len)
-
-            # The band anchors the **document**, not each page: 9540's
-            # Power listing prints it on page 1 and its continuation page
-            # reprints only the column headings. Requiring it per page
-            # dropped that page whole — ten conflicts absent from the
-            # denominator, which is a gold set that does not cover its own
-            # document. Requiring it nowhere would accept any form that
-            # happened to use these words, so it is required once.
-            if not any(
-                _norm(c) == _ANCHOR for grid in grids.values() for row in grid for c in row
-            ):
-                continue
-
-            for page_no, grid in sorted(grids.items()):
-                # Each page finds its own header by the resolution
-                # headings it prints; a continuation page prints them too.
-                header_index = next(
-                    (
-                        i
-                        for i in range(min(len(grid), _HEADER_SEARCH_DEPTH))
-                        if any(WSDOT_APPENDIX_U.read(c or "") for c in grid[i])
-                    ),
-                    None,
-                )
-                if header_index is None:
-                    continue
-                anchored = True
-                headings = [_norm(c) for c in grid[header_index]]
-
-                owner_col = _column(headings, _OWNER_HEADINGS)
-                id_col = _column(headings, _ID_HEADINGS)
-                notes_col = _column(headings, _NOTES_HEADINGS)
-                # Every column whose heading the vocabulary can read is a
-                # resolution mark column; the heading's canonical strategy
-                # is what a mark under it asserts.
-                mark_cols = {
-                    index: WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
-                    for index in range(len(headings))
-                    if WSDOT_APPENDIX_U.read(grid[header_index][index] or "")
-                }
-
-                for raw in grid[header_index + 1 :]:
-                    owner = (
-                        (raw[owner_col] or "").strip()
-                        if owner_col is not None and owner_col < len(raw)
-                        else ""
-                    )
-                    ref = (
-                        (raw[id_col] or "").strip()
-                        if id_col is not None and id_col < len(raw)
-                        else ""
-                    )
-                    notes = (
-                        (raw[notes_col] or "").strip()
-                        if notes_col is not None and notes_col < len(raw)
-                        else ""
-                    )
-
-                    if not owner and not ref:
-                        continue  # furniture, or a wholly empty line
-                    if not owner:
-                        # An id and no facility: retired numbering when the
-                        # phrase says so, an empty slot when nothing does.
-                        # Neither names a facility; neither is counted
-                        # (ADR-0012).
-                        if is_retired_row({"utility_id": ref, "notes": notes}):
-                            retired += 1
-                        else:
-                            empty_slots += 1
-                        continue
-
-                    strategies = {
-                        strategy
-                        for index, strategy in mark_cols.items()
-                        if index < len(raw) and (raw[index] or "").strip()
-                    }
-                    sides = {is_critical(s) for s in strategies}
-                    critical = (
-                        ("yes" if sides == {True} else "no")
-                        if len(sides) == 1
-                        else ""  # unsettled or unmarked: out of the denominator
-                    )
-                    rows.append(
-                        MachineGoldRow(
-                            source_ref=ref, page=page_no, critical=critical
-                        )
-                    )
-
-    if not anchored:
-        raise LayoutAnchorMissing(
-            f"no page of {documents[0].filename} prints the anchored band "
-            f"({_ANCHOR!r}) above headings this vocabulary can read. This "
-            "authoring is written for the WSDOT Appendix U form; a "
-            "different layout is a human decision, not a fallback."
-        )
-
-    return MachineGold(
-        project=project.slug,
-        document=", ".join(d.filename for d in documents),
-        rows=tuple(rows),
-        retired=retired,
-        empty_slots=empty_slots,
-        page_images=tuple(
-            MachineGoldPageImage(
-                filename=filename,
-                page_no=page_no,
-                image_path=path,
-            )
-            for (filename, page_no), path in sorted(images.items())
-        ),
-        documents=tuple(
-            MachineGoldDocument(
-                sha256=document.sha256,
-                filename=document.filename,
-            )
-            for document in documents
-        ),
-    )
-
-
-def _norm(cell) -> str:
-    return " ".join(str(cell or "").split()).casefold()
-
-
-def _column(headings: list[str], wanted: tuple[str, ...]) -> int | None:
-    for index, heading in enumerate(headings):
-        if heading in wanted:
-            return index
-    return None
+    if contract != NATIVE_METHOD:
+        raise ValueError("legacy matrix reference authoring is retired; use native-pdf-cell-grid for new scopes; archived CSVs remain readable")
+    return _author_native_documents(project, documents)
 
 
 def gold_csv(gold: MachineGold) -> str:

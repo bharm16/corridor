@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 from importlib.metadata import version
 import json
+import os
 from pathlib import Path
 import platform
 import resource
@@ -41,6 +42,7 @@ from corridor.token_layers import read_native_pdf
 ROOT = Path(__file__).resolve().parents[2]
 CHAIN_SOURCES = (
     "src/corridor/native_pipeline.py", "src/corridor/pipeline_contracts.py",
+    "src/corridor/pipeline.py", "src/corridor/native_matrix_runtime.py",
     "src/corridor/pipeline_comparison.py", "src/corridor/pipeline_qualification.py",
     "src/corridor/native_matrix.py", "src/corridor/native_matrix_bindings.py",
     "src/corridor/extractor_lineage.py", "src/corridor/extraction_runs.py",
@@ -57,9 +59,11 @@ CHAIN_SOURCES = (
 
 def native_pipeline_configuration(client: object, plan: ObservationPlan) -> dict:
     """Actual code/dependency/request identities, independent of output values."""
-    revision = subprocess.run(
+    revision = os.environ.get("CORRIDOR_CODE_REVISION") or subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=True,
     ).stdout.strip()
+    if len(revision) != 40 or any(character not in "0123456789abcdef" for character in revision):
+        raise ValueError("native pipeline requires the exact build commit identity")
     return {
         "schema": "native-pipeline-configuration-v1", "code_revision": revision,
         "source_sha256s": {name: sha256((ROOT / name).read_bytes()).hexdigest() for name in CHAIN_SOURCES},
@@ -72,7 +76,7 @@ def native_pipeline_configuration(client: object, plan: ObservationPlan) -> dict
         "model_context": {"operation": "render_native_matrix_context", "dpi": 110},
         "geometry_profile": "table_cv", "rasterizer": "pdfium",
         "extractor": asdict(deployed_native_matrix_config(client=client)),
-        "eligibility": "explicit_challenger_only", "qualification_policy_sha256": plan.qualification_policy_sha256,
+        "eligibility": "explicit_selection_required", "qualification_policy_sha256": plan.qualification_policy_sha256,
         "provider": {"name": "openai-responses", "posture_sha256": plan.provider_posture_sha256},
         "textract": {"used": False, "reason": "OCR and structural assistance are excluded from this scope"},
     }
@@ -438,7 +442,7 @@ def run_selected_native_matrix(
     plan: ObservationPlan, source_path: Path | str, output_dir: Path | str,
     document_label: str, idempotency_key: str | None = None,
 ) -> PipelineShadowResult:
-    """Future explicit routing, guarded by actual deployed configuration bytes.
+    """Production routing, guarded by actual deployed configuration bytes.
 
     This does not make a captured Fact effective. The separate selection
     relation chooses this source capture chain; accepted changes retain their

@@ -36,13 +36,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
-from corridor.extraction_runs import append_source_facts, record_extraction_run
-from corridor.facts import carries_source_facts
-from corridor.extractor_lineage import (
-    token_usage_delta,
-    usage_snapshot,
-    zero_token_usage,
-)
+from corridor.extractor_lineage import usage_snapshot
 from corridor.extract_matrix import (
     ExtractionFailed,
     PROMPT_VERSION,
@@ -55,11 +49,11 @@ from corridor.models import (
     Document,
     DocumentQuarantine,
     ExtractionRun,
+    PipelineObservation,
     Project,
 )
-from corridor.pipeline import ExtractionRoute, extraction_route
+from corridor.pipeline import ExtractionRoute, extraction_attempt, record_routed_run
 from corridor.row_accounting import RowAccountingFailure
-from corridor.storage import stored_file
 
 # An extractor reads one Document and returns the Candidates it produced,
 # already added to the session. It raises `NoMatrixFound` when it cannot
@@ -179,10 +173,36 @@ def extract_project(
         route = select_route(document)
         usage_before = usage_snapshot(route.usage_client)
         effective_prompt_version = route.effective_prompt_version
+        try:
+            if route.validate is not None:
+                route.validate(session, document)
+        except ExtractionFailed as exc:
+            run = record_routed_run(
+                session, document, route, usage_before, candidate_count=0,
+                page_errors=1, outcome="failed", model=route.model, error_detail=str(exc),
+            )
+            if commit:
+                session.commit()
+            outcomes.append(Outcome(document.id, document.filename, "failed",
+                effective_prompt_version=effective_prompt_version, detail=str(exc),
+                extraction_run_id=run.id))
+            continue
         done = done_by_version.get(effective_prompt_version)
         if done is None:
             done = already_extracted(session, project.id, effective_prompt_version)
             done_by_version[effective_prompt_version] = done
+
+        if route.pipeline_configuration_sha256 is not None:
+            # A same-prompt run from another code/configuration is not this
+            # selected reading. This also handles completed zero-row captures.
+            done = set(session.scalars(
+                select(ExtractionRun.document_id).join(PipelineObservation,
+                    PipelineObservation.extraction_run_id == ExtractionRun.id).where(
+                    ExtractionRun.document_id == document.id,
+                    ExtractionRun.outcome == "completed",
+                    PipelineObservation.configuration_sha256 == route.pipeline_configuration_sha256,
+                )
+            ))
 
         if document.id in done and not redo:
             # A skipped document reports the tiers it was read at, not
@@ -204,7 +224,7 @@ def extract_project(
 
         if document.parse_status != "parsed":
             detail = f"ingest parse_status is {document.parse_status!r}"
-            run = _record_routed_run(
+            run = record_routed_run(
                 session,
                 document,
                 route,
@@ -233,9 +253,9 @@ def extract_project(
             # A savepoint, so a document that raises partway through leaves
             # no half-extracted Candidates behind — which is what the skip
             # on the next run depends on being impossible.
-            with session.begin_nested():
+            with extraction_attempt(session):
                 candidates = route.extract(session, document)
-                run = _record_routed_run(
+                run = record_routed_run(
                     session,
                     document,
                     route,
@@ -243,14 +263,14 @@ def extract_project(
                     candidate_count=len(candidates),
                     page_errors=0,
                     outcome="completed",
-                    candidates=tuple(candidates),
+                    candidates=candidates,
                     model=_run_model(candidates, route.model),
                     row_accounting_json=getattr(
                         candidates, "row_accounting", None
                     ),
                 )
         except RowAccountingFailure as exc:
-            run = _record_routed_run(
+            run = record_routed_run(
                 session,
                 document,
                 route,
@@ -276,7 +296,7 @@ def extract_project(
             )
             continue
         except SequencingSemanticsDetected as exc:
-            run = _record_routed_run(
+            run = record_routed_run(
                 session,
                 document,
                 route,
@@ -305,7 +325,7 @@ def extract_project(
             )
             continue
         except NoMatrixFound as exc:
-            run = _record_routed_run(
+            run = record_routed_run(
                 session,
                 document,
                 route,
@@ -330,7 +350,7 @@ def extract_project(
             )
             continue
         except ExtractionFailed as exc:
-            run = _record_routed_run(
+            run = record_routed_run(
                 session,
                 document,
                 route,
@@ -355,7 +375,7 @@ def extract_project(
             )
             continue
         except Exception as exc:
-            _record_routed_run(
+            record_routed_run(
                 session,
                 document,
                 route,
@@ -409,56 +429,6 @@ def _run_model(
     if configured_model is not None and models and models != {configured_model}:
         raise ValueError("Candidate model does not match the configured extraction model")
     return configured_model or next(iter(models), None)
-
-
-def _record_routed_run(
-    session: Session,
-    document: Document,
-    route: ExtractionRoute,
-    usage_before: dict[str, int] | None,
-    **values,
-) -> ExtractionRun:
-    """Persist the exact route seal and its per-document usage delta."""
-
-    if route.extractor_config is None:
-        # Explicit injected test routes created before configuration receipts
-        # remain available through the route seam. Deployed route selection
-        # always carries a seal.
-        token_usage = None
-    elif route.usage_client is None and route.extractor_config.model is None:
-        token_usage = zero_token_usage(document.id)
-    else:
-        token_usage = token_usage_delta(
-            usage_before,
-            usage_snapshot(route.usage_client),
-            document_ids=[document.id],
-        )
-    command = (
-        append_source_facts
-        if values.get("outcome", "completed") == "completed"
-        and carries_source_facts(tuple(values.get("candidates", ())))
-        else record_extraction_run
-    )
-    result = command(
-        session,
-        document,
-        **(
-            {
-                "idempotency_key": None,
-                "source_path": getattr(document, "_stored_path", None)
-                or stored_file(document),
-            }
-            if command is append_source_facts
-            else {}
-        ),
-        prompt_version=route.effective_prompt_version,
-        schema_version=route.schema_version,
-        extractor_config=route.extractor_config,
-        token_usage=token_usage,
-        allow_unsealed_legacy=route.allow_unsealed_legacy,
-        **values,
-    )
-    return result.run if command is append_source_facts else result
 
 
 def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> str:
@@ -544,7 +514,7 @@ def main(argv: list[str]) -> int:
     """`make extract ARGS="<slug> [--redo]"`"""
     from corridor.admission import load_and_report
     from corridor.db import WorkerSession as SessionFactory
-    from corridor.llm import OpenAIClient
+    from corridor.pipeline import production_extraction_routes
 
     args = [a for a in argv if not a.startswith("-")]
     flags = {a for a in argv if a.startswith("-")}
@@ -589,12 +559,7 @@ def main(argv: list[str]) -> int:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
-        # One client for the run, so retry, backoff and usage accounting are
-        # shared rather than reset per document.
-        client = OpenAIClient()
-        print(f"model {client.model}", flush=True)
-
-        try:
+        with production_extraction_routes() as select_route:
             outcomes = extract_project(
                 session,
                 project,
@@ -602,28 +567,25 @@ def main(argv: list[str]) -> int:
                 # a spreadsheet, as a printout of one, or as both, and
                 # which reader runs is the document's property rather than
                 # this command's (ADR-0005).
-                select_route=lambda document: extraction_route(document, client=client),
+                select_route=select_route,
                 redo="--redo" in flags,
                 document_registry_id=document_registry_id,
                 document_sha256=document_sha256,
             )
-        finally:
-            client.close()
-
         print(render(project, PROMPT_VERSION, outcomes))
         print(load_and_report(session, project))
-
-        # Cached and reasoning are broken out because neither is recoverable
-        # from the totals afterwards, and both move the bill: cached input
-        # bills at a tenth, reasoning bills as output. A run that quietly
-        # reasoned is a run whose cost nobody can explain.
-        usage = client.usage
-        print(
-            f"tokens: {usage.prompt_tokens:,} in "
-            f"({usage.cached_tokens:,} cached) / "
-            f"{usage.completion_tokens:,} out "
-            f"({usage.reasoning_tokens:,} reasoning)"
-        )
+        # The sealed runs own the actual clients' usage, including native
+        # provider calls. Skipped documents incur no new usage in this pass.
+        runs = [session.get(ExtractionRun, outcome.extraction_run_id)
+                for outcome in outcomes if outcome.extraction_run_id is not None]
+        receipts = [run.token_usage_json if run is not None else None for run in runs]
+        if all(receipt and receipt.get("measurement") == "exact" for receipt in receipts):
+            totals = {name: sum(receipt[name] for receipt in receipts)
+                      for name in ("prompt_tokens", "cached_tokens", "completion_tokens", "reasoning_tokens")}
+            print(f"tokens: {totals['prompt_tokens']:,} in ({totals['cached_tokens']:,} cached) / "
+                  f"{totals['completion_tokens']:,} out ({totals['reasoning_tokens']:,} reasoning)")
+        else:
+            print("token usage is not fully measured; see the individual Extraction Run receipts")
 
     return 1 if any(o.status in {"failed", "unreadable"} for o in outcomes) else 0
 

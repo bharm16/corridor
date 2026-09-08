@@ -1,0 +1,25 @@
+{
+  "basis": "Immutable legacy prompt bytes retained for historical lineage; no deployed reader loads these files.",
+  "files": [
+    {
+      "original_path": "prompts/matrix_v1.md",
+      "retained_path": "artifacts/pdf-engine-retirement/legacy-prompts/matrix_v1.md",
+      "sha256": "519801fe5e519d8c40e9489738497c463261fb489653caa01710760801aa381c"
+    },
+    {
+      "original_path": "prompts/matrix_structure_v1.md",
+      "retained_path": "artifacts/pdf-engine-retirement/legacy-prompts/matrix_structure_v1.md",
+      "sha256": "dd16fe9d680e1190f06482556f6bad38866836ce02c7b14dbdfca0f62ee1ba19"
+    },
+    {
+      "original_path": "prompts/matrix_structure_v2.md",
+      "retained_path": "artifacts/pdf-engine-retirement/legacy-prompts/matrix_structure_v2.md",
+      "sha256": "ef7a388db433094f1b0c1ee028bdfed385d6c387bafe4cd771c4ab0141077e40"
+    },
+    {
+      "original_path": "prompts/matrix_structure_v3.md",
+      "retained_path": "artifacts/pdf-engine-retirement/legacy-prompts/matrix_structure_v3.md",
+      "sha256": "97f7f552a81b90359a18a93e0356e433a8c6657ae29d561ef9f46cc4b83254ed"
+    }
+  ]
+}

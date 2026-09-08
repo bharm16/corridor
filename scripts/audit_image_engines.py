@@ -129,6 +129,21 @@ if manifest_path.exists():
     notices["installed_in_image"] = installed
 report["notices"] = notices
 report["path"] = os.environ.get("PATH", "")
+# The selected production route must be constructible in the image without a
+# checkout, a credential, or a provider request. This also checks that its
+# render profiles and prompt/schema sources actually accompany deployment.
+try:
+    from corridor.native_pipeline import RecordedPipelineClient, native_pipeline_configuration
+    from corridor.native_provider_boundary import POSTURE
+    from corridor.pipeline_contracts import ObservationPlan, content_digest
+    configuration = native_pipeline_configuration(RecordedPipelineClient([]), ObservationPlan(
+        mode="fresh_provider", origin_sha256="0" * 64, source_permission="public",
+        provider_posture_sha256=POSTURE.digest, description="Image runtime import and configuration smoke test",
+    ))
+    report["native_matrix_runtime"] = {"configuration_sha256": content_digest(configuration),
+                                       "code_revision": configuration["code_revision"]}
+except Exception as exc:
+    report["native_matrix_runtime"] = {"error": f"{type(exc).__name__}: {exc}"}
 print(json.dumps(report))
 '''
 
@@ -192,6 +207,8 @@ def probe(tag: str) -> dict[str, object]:
 
 def findings(report: dict[str, object]) -> list[str]:
     problems: list[str] = []
+    if report.get("native_matrix_runtime", {}).get("error"):
+        problems.append(f"native Matrix runtime cannot configure in the built image: {report['native_matrix_runtime']['error']}")
     for label, entry in report["environments"].items():  # type: ignore[union-attr]
         if entry.get("error"):
             problems.append(f"{label}: {entry['error']}")

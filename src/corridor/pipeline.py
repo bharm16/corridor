@@ -6,13 +6,14 @@ single path onward is a human keystroke in `corridor.adjudicate`.
 
 from __future__ import annotations
 
-from copy import deepcopy
 import json
 from collections.abc import Callable
+from contextlib import contextmanager, ExitStack
 from dataclasses import dataclass
 from datetime import date
 from pathlib import Path
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -22,20 +23,23 @@ from corridor.facts import carries_source_facts
 from corridor.extractor_lineage import (
     ExtractorConfig,
     deployed_extractor_config,
-    deployed_matrix_config,
+    deployed_native_matrix_config,
     token_usage_delta,
     usage_snapshot,
     zero_token_usage,
 )
-from corridor.extract_matrix import ExtractionFailed
+from corridor.extraction_errors import ExtractionFailed, NativeObservationFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
+from corridor.config import settings
+from corridor.native_matrix_runtime import NativeMatrixRuntime, configured_native_matrix_runtime
 from corridor.models import (
     Candidate,
     DocPage,
     Document,
     DocumentRenditionDerivation,
     ExtractionRun,
+    Project,
 )
 from corridor.row_accounting import RowAccountingFailure
 from corridor.storage import stored_file
@@ -65,6 +69,9 @@ class ExtractionRoute:
     # Only explicit synthetic/historical adapters may opt into null lineage.
     # Deployed route selection never sets this.
     allow_unsealed_legacy: bool = False
+    # Native selection must also be valid before a completed run can resume.
+    validate: Callable[[Session, Document], None] | None = None
+    pipeline_configuration_sha256: str | None = None
 
 
 def ingest_manifest(
@@ -295,7 +302,36 @@ def _register_complete_supersession_set(
     register_supersessions(session, declarations, project_id=project_id)
 
 
-def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
+@contextmanager
+def extraction_attempt(session: Session):
+    """Roll back partial reads, while retaining a native terminal refusal.
+
+    Only this narrow failure is already complete: the native runner rolled
+    back partial source writes and persisted its observation/artifacts. Raise
+    it after releasing the savepoint so the caller can record the failed
+    attempt. Unexpected errors and successful-result validation still roll back.
+    """
+    failure = None
+    with session.begin_nested():
+        try:
+            yield
+        except NativeObservationFailed as exc:
+            failure = exc
+    if failure is not None:
+        raise failure
+
+
+class CapturedCandidates(list[Candidate]):
+    """Candidates with the native pipeline's already sealed source run."""
+
+    def __init__(self, candidates, run: ExtractionRun):
+        super().__init__(candidates)
+        self.run = run
+
+
+def extraction_route(
+    document: Document, *, client=None, native_runtime: NativeMatrixRuntime | None = None,
+) -> ExtractionRoute:
     """Choose the reader for one document and expose its effective version.
 
     Resume and evaluation key off the document attempt rather than the
@@ -326,7 +362,7 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
             usage_client=body_client,
         )
 
-    path = stored_file(document)
+    path = getattr(document, "_stored_path", None) or stored_file(document)
     if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
         from corridor.extract_sheet import (
             PROMPT_VERSION as SHEET_PROMPT_VERSION,
@@ -341,49 +377,127 @@ def extraction_route(document: Document, *, client=None) -> ExtractionRoute:
             extractor_config=deployed_extractor_config("sheet", client=None),
         )
 
-    from corridor.extract_matrix import (
-        PROMPT_VERSION as MATRIX_PROMPT_VERSION,
-        SCHEMA_VERSION as MATRIX_SCHEMA_VERSION,
-        STRUCTURE_PROMPT,
-        STRUCTURE_SCHEMA,
-        TRANSCRIBE_PROMPT,
-        TRANSCRIBE_SCHEMA,
-        extract_document as extract_matrix,
+    from corridor.native_pipeline import (
+        RecordedPipelineClient, native_pipeline_configuration, run_selected_native_matrix,
     )
-    from corridor.llm import OpenAIClient
+    from corridor.native_provider_boundary import AuthorizedNativeMapper, POSTURE
+    from corridor.pipeline_contracts import ObservationPlan, content_digest
+    from corridor.pipeline_qualification import PipelineQualificationRefused, selected_pipeline_configuration
 
-    matrix_client = client or OpenAIClient()
-    structure_system = STRUCTURE_PROMPT.read_text()
-    transcribe_system = TRANSCRIBE_PROMPT.read_text()
-    structure_schema = deepcopy(STRUCTURE_SCHEMA)
-    transcribe_schema = deepcopy(TRANSCRIBE_SCHEMA)
-    extractor_config = deployed_matrix_config(
-        client=matrix_client,
-        structure_system=structure_system,
-        transcribe_system=transcribe_system,
-        structure_schema=structure_schema,
-        transcribe_schema=transcribe_schema,
+    runtime = native_runtime
+    runtime_error = None
+    if runtime is None:
+        try:
+            runtime = configured_native_matrix_runtime(settings)
+        except (ValueError, TypeError, KeyError, OSError, RuntimeError) as exc:
+            runtime_error = str(exc)
+    # A refusal still names the reader and schema that would have run. This
+    # placeholder only seals request controls; it is never used to extract.
+    matrix_client = runtime.client if runtime else RecordedPipelineClient([])
+    plan = runtime.plan if runtime else ObservationPlan(
+        mode="fresh_provider", origin_sha256="0" * 64,
+        source_permission="public", provider_posture_sha256=POSTURE.digest,
+        description="Native matrix route awaiting its configured provider boundary",
     )
+    deployment = runtime.deployment if runtime else settings.environment
+    extractor_config = deployed_native_matrix_config(client=matrix_client)
+    configuration_sha256 = content_digest(native_pipeline_configuration(matrix_client, plan))
+    requested_config_error = None
+    if client is not None:
+        try:
+            if deployed_native_matrix_config(client=client) != extractor_config:
+                requested_config_error = "requested Matrix client differs from the selected native request configuration"
+        except ValueError as exc:
+            requested_config_error = str(exc)
 
-    def extract(session: Session, document: Document) -> list[Candidate]:
-        return extract_matrix(
-            session,
-            document,
-            client=matrix_client,
-            structure_system=structure_system,
-            transcribe_system=transcribe_system,
-            structure_schema=structure_schema,
-            transcribe_schema=transcribe_schema,
-        )
+    def validate(session: Session, doc: Document) -> None:
+        try:
+            selected_pipeline_configuration(
+                session, doc, deployment=deployment, configuration_sha256=configuration_sha256,
+            )
+        except PipelineQualificationRefused as exc:
+            raise ExtractionFailed(f"native matrix selection refused for deployment {deployment!r}: {exc}") from exc
+
+    def extract(session: Session, doc: Document) -> list[Candidate]:
+        try:
+            # Also runs for a missing provider record: name a missing or stale
+            # selection before any rendering, source reading or outbound call.
+            validate(session, doc)
+            if requested_config_error:
+                raise ExtractionFailed(requested_config_error)
+            if runtime is None:
+                raise ExtractionFailed(runtime_error or "native matrix runtime is not configured")
+            if isinstance(matrix_client, AuthorizedNativeMapper):
+                project = session.get_one(Project, doc.project_id)
+                if matrix_client.request.project != project.slug:
+                    raise ExtractionFailed("native matrix provider boundary does not cover this Document's project")
+            source_path = getattr(doc, "_stored_path", None) or stored_file(doc)
+            if source_path is None:
+                raise ExtractionFailed("native matrix source file is unavailable")
+            attempt = uuid4().hex
+            # One key belongs to one extraction attempt; --redo creates a new
+            # immutable run rather than replacing previous runs or candidates.
+            result = run_selected_native_matrix(
+                session, doc, deployment=deployment, client=matrix_client, plan=plan,
+                source_path=source_path, output_dir=runtime.output_dir / attempt,
+                document_label=doc.filename, idempotency_key=f"matrix-route:{doc.id}:{attempt}",
+            )
+            if result.extraction is None:
+                outcome = json.loads(result.observation.receipt_text)["outcome"]
+                raise NativeObservationFailed(
+                    f"native matrix {outcome['disposition']} at {outcome.get('stage')}: "
+                    f"{outcome.get('reason') or outcome.get('type') or 'no source capture'}",
+                    observation_id=result.observation.id,
+                )
+            doc.extraction_tiers = {"native_matrix_cells": len(result.extraction.mapping.pages)}
+            doc.header_disagreements = 0
+            return CapturedCandidates(result.extraction.candidates, result.extraction.run)
+        except PipelineQualificationRefused as exc:
+            raise ExtractionFailed(f"native matrix selection refused for deployment {deployment!r}: {exc}") from exc
+        except (ValueError, OSError) as exc:
+            raise ExtractionFailed(f"native matrix processing refused: {exc}") from exc
+        finally:
+            if native_runtime is None and runtime is not None:
+                runtime.close()
 
     return ExtractionRoute(
-        effective_prompt_version=MATRIX_PROMPT_VERSION,
-        schema_version=MATRIX_SCHEMA_VERSION,
-        extract=extract,
-        model=getattr(matrix_client, "model", None),
-        extractor_config=extractor_config,
-        usage_client=matrix_client,
+        effective_prompt_version=extractor_config.prompt_version,
+        schema_version=extractor_config.schema_version,
+        extract=extract, model=extractor_config.model,
+        extractor_config=extractor_config, usage_client=matrix_client,
+        validate=validate, pipeline_configuration_sha256=configuration_sha256,
     )
+
+
+@contextmanager
+def production_extraction_routes():
+    """Own the prose client lazily; Matrix authorization belongs to its route."""
+    from corridor.llm import OpenAIClient
+
+    with ExitStack() as resources:
+        prose_client = None
+        matrix_runtime = None
+
+        def select_route(document: Document) -> ExtractionRoute:
+            nonlocal prose_client, matrix_runtime
+            if document.doc_type == "email" and prose_client is None:
+                prose_client = OpenAIClient()
+                resources.callback(prose_client.close)
+            if (document.doc_type == "matrix" and matrix_runtime is None
+                    and Path(document.filename).suffix.lower() not in SPREADSHEET_SUFFIXES):
+                try:
+                    matrix_runtime = configured_native_matrix_runtime(settings)
+                except (ValueError, TypeError, KeyError, OSError, RuntimeError):
+                    # The route turns absent/malformed configuration into the
+                    # document's failed attempt rather than aborting the pass.
+                    pass
+                else:
+                    resources.callback(matrix_runtime.close)
+            return extraction_route(document,
+                client=prose_client if document.doc_type == "email" else None,
+                native_runtime=matrix_runtime)
+
+        yield select_route
 
 
 def extract_any(
@@ -404,9 +518,9 @@ def extract_any(
     route = extraction_route(document, client=client)
     usage_before = usage_snapshot(route.usage_client)
     try:
-        with session.begin_nested():
+        with extraction_attempt(session):
             candidates = route.extract(session, document)
-            _record_route_run(
+            record_routed_run(
                 session,
                 document,
                 route,
@@ -414,12 +528,12 @@ def extract_any(
                 candidate_count=len(candidates),
                 page_errors=0,
                 outcome="completed",
-                candidates=tuple(candidates),
+                candidates=candidates,
                 model=_run_model(candidates, route.model),
                 row_accounting_json=getattr(candidates, "row_accounting", None),
             )
     except RowAccountingFailure as exc:
-        _record_route_run(
+        record_routed_run(
             session,
             document,
             route,
@@ -433,7 +547,7 @@ def extract_any(
         )
         raise
     except NoMatrixFound as exc:
-        _record_route_run(
+        record_routed_run(
             session,
             document,
             route,
@@ -446,7 +560,7 @@ def extract_any(
         )
         raise
     except ExtractionFailed as exc:
-        _record_route_run(
+        record_routed_run(
             session,
             document,
             route,
@@ -459,7 +573,7 @@ def extract_any(
         )
         raise
     except Exception as exc:
-        _record_route_run(
+        record_routed_run(
             session,
             document,
             route,
@@ -485,16 +599,26 @@ def _run_model(candidates: list[Candidate], configured_model: str | None) -> str
     return configured_model or next(iter(observed), None)
 
 
-def _record_route_run(
+def record_routed_run(
     session: Session,
     document: Document,
     route: ExtractionRoute,
     usage_before: dict[str, int] | None,
     **values,
 ) -> ExtractionRun:
-    if route.extractor_config is None:
+    captured = values.get("candidates")
+    if isinstance(captured, CapturedCandidates):
+        run = captured.run
+        if (run.document_id != document.id or run.outcome != "completed"
+                or run.prompt_version != route.effective_prompt_version
+                or run.schema_version != route.schema_version
+                or run.candidate_count != len(captured)
+                or run.extractor_config_sha256 != route.extractor_config.config_sha256):
+            raise ValueError("native source run does not match its extraction route")
+        return run
+    if route.extractor_config is None and not route.allow_unsealed_legacy:
         raise ValueError("a deployed extraction route must carry its configuration")
-    token_usage = (
+    token_usage = None if route.extractor_config is None else (
         zero_token_usage(document.id)
         if route.usage_client is None and route.extractor_config.model is None
         else token_usage_delta(
@@ -525,6 +649,7 @@ def _record_route_run(
         schema_version=route.schema_version,
         extractor_config=route.extractor_config,
         token_usage=token_usage,
+        allow_unsealed_legacy=route.allow_unsealed_legacy,
         **values,
     )
     return result.run if command is append_source_facts else result
@@ -570,9 +695,10 @@ def ingest_and_extract(
         retrieved_at=retrieved_at,
         doc_date=doc_date,
     )
+    document._stored_path = Path(path)
     if document.parse_status != "parsed":
         route = extraction_route(document, client=client)
-        _record_route_run(
+        record_routed_run(
             session,
             document,
             route,

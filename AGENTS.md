@@ -36,6 +36,11 @@ local exceptions. Routine implementation, intermediate commits, reviews,
 documentation, and pre-push reassurance are not reasons to run a local broad
 suite. GitHub CI is the automatic broad gate.
 
+An explicitly requested engine-retirement acceptance uses `make
+test-engine-absent MODE=suite`. Its dedicated pytest flag admits only the
+prepared environment after rechecking both environments for engine absence
+(#766). It does not add a general-purpose broad-test diagnostic reason.
+
 Use non-overlapping gates appropriate to the changed behavior
 ([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md),
 as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md),

@@ -673,8 +673,17 @@ def _record_exact_extraction(
 ) -> ExtractionRun:
     """Record one targeted completed attempt with independently pinned schema."""
 
-    with session.begin_nested():
-        candidates = tuple(extract(session, document))
+    from corridor.pipeline import CapturedCandidates, extraction_attempt
+
+    with extraction_attempt(session):
+        candidates = extract(session, document)
+        if isinstance(candidates, CapturedCandidates):
+            run = candidates.run
+            if (run.document_id != document.id or run.prompt_version != prompt_version
+                    or run.schema_version != schema_version or run.model != model
+                    or run.outcome != "completed"):
+                raise AcceptanceError("captured native run differs from the pinned production reading")
+            return run
         return record_extraction_run(
             session,
             document,

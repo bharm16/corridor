@@ -633,35 +633,9 @@ def test_the_render_worker_has_no_database_or_storage_dependency():
 ENGINE_SCAN_ROOTS = ("src/corridor", "workers/render", "tests", "scripts")
 PYMUPDF_PACKAGES = frozenset({"fitz", "pymupdf"})
 TESSERACT_PACKAGES = frozenset({"pytesseract"})
-ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
-    # What #741 did not remove, and why. Tesseract is gone from the product:
-    # no module imports it, no source file names it, the distribution and the
-    # apt package are out of the image and out of CI. PyMuPDF is gone from
-    # ingest, the token layers, the Source Segments, the Page Inventory and the
-    # render worker. What is left is one path.
-    #
-    # The legacy Matrix extraction path reads a page's table geometry through
-    # PyMuPDF: `geometry.page_tables` finds the tables and rebuilds each cell
-    # from word boxes, `extract_matrix` opens the document to call it, and
-    # `gold` reads the same geometry to author a gold set. That path is what
-    # `make extract` runs today, under the recorded prompt version
-    # `matrix_tiered_v4` and the prompt `prompts/matrix_structure_v3.md`.
-    #
-    # Removing it is not an engine removal. Reading the same pages through the
-    # replacement reader under the same recorded prompt version would make
-    # every retained Extracted Proposal's lineage untrue -- the version says
-    # which reading produced a value, and this would silently change the
-    # reading. The replacement is built and is a different route with its own
-    # identity: `native_matrix.py` and the reader's `matrix_structure_ids_v1`
-    # (#737), reached today only through the shadow pipeline. Emptying these
-    # last lines is that route becoming the deployed one in
-    # `pipeline.extraction_route`, which is #447's act and its own ticket.
-    ("src/corridor/extract_matrix.py", ("pymupdf",)),
-    ("src/corridor/geometry.py", ("pymupdf",)),
-    ("src/corridor/gold.py", ("pymupdf",)),
-    ("tests/test_extract_matrix.py", ("pymupdf",)),
-    ("tests/test_geometry.py", ("pymupdf",)),
-)
+# #766 removed the last legacy Matrix consumers. The empty guard remains
+# permanent so a future import or subprocess cannot reintroduce an engine.
+ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
 def _engines_used(nodes: tuple[ast.AST, ...]) -> frozenset[str]:

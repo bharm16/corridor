@@ -16,6 +16,7 @@ import fcntl
 import os
 from pathlib import Path
 import re
+import runpy
 import subprocess
 import sys
 from tempfile import TemporaryDirectory
@@ -81,6 +82,17 @@ def _focused_keyword(keyword: str) -> bool:
 def _require_local_broad_reason(config) -> None:
     """Refuse accidental full local execution before collection or DB setup."""
     options = getattr(config, "option", None)
+    if getattr(options, "engine_absent_proof", False):
+        # #766 explicitly requires the complete suite after proving both
+        # engines absent. This dedicated acceptance is not a routine broad
+        # run: the flag alone cannot waive the default-environment guard.
+        proof = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/engine_absent_suite.py"))
+        root = proof["REPO_ROOT"]
+        if Path(sys.prefix).resolve() != (root / proof["ENVIRONMENT_NAME"]).resolve():
+            raise pytest.UsageError("engine-absent proof requires its prepared isolated environment")
+        for project in (root, root / "workers/render"):
+            proof["assert_absent"](proof["probe_absence"](dict(os.environ), project), str(project))
+        return
     if getattr(options, "collectonly", False) or os.environ.get("GITHUB_ACTIONS") == "true":
         return
     if os.environ.get(LOCAL_BROAD_REASON_ENV) in LOCAL_BROAD_REASONS:
@@ -217,6 +229,11 @@ def _protect_migration_identity_source(config) -> None:
 
     event.listen(Engine, "do_connect", read_only_source)
     config._corridor_migration_identity_guard = read_only_source
+
+
+def pytest_addoption(parser) -> None:
+    parser.addoption("--engine-absent-proof", action="store_true", default=False,
+                     help="complete retirement acceptance in the verified engine-absent environment")
 
 
 def pytest_configure(config) -> None:

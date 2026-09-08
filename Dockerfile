@@ -66,6 +66,9 @@ RUN uv sync --locked --no-install-project --no-dev \
 # root, so the tree has to keep its shape.
 COPY src/ ./src/
 COPY workers/ ./workers/
+COPY prompts/ ./prompts/
+COPY gold/pdf/v1/render-profiles.json gold/pdf/v1/render-profile-measurement.json ./gold/pdf/v1/
+COPY docs/operations/openai-responses-provider-posture.md ./docs/operations/
 COPY scripts/container_entrypoint.py ./scripts/
 COPY alembic.ini ./
 RUN uv sync --locked --no-dev
@@ -89,6 +92,7 @@ USER corridor
 # The commit this image was built from, so a retried release can prove an
 # existing tag is the same image rather than pushing over it.
 ARG GIT_REVISION=""
+ENV CORRIDOR_CODE_REVISION="$GIT_REVISION"
 LABEL org.opencontainers.image.revision="$GIT_REVISION"
 LABEL org.opencontainers.image.source="https://github.com/bharm16/corridor"
 

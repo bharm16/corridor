@@ -612,41 +612,6 @@ def test_the_router_sends_a_workbook_to_the_native_reader(
     assert all(c.payload_json["tier"] == TIER_NATIVE for c in candidates)
 
 
-def test_the_router_sends_a_pdf_to_the_page_extractor(session, project, monkeypatch):
-    """And the page path is untouched — it still gets its client."""
-    from corridor import pipeline
-
-    document = Document(
-        project_id=project.id, sha256="c" * 64, filename="ucm.pdf",
-        doc_type="matrix", parse_status="parsed", pages=1,
-    )
-    session.add(document)
-    session.flush()
-
-    seen = {}
-    monkeypatch.setattr(pipeline, "stored_file", lambda d: Path("x.pdf"))
-    def extract_pdf(session, target, client=None, **_runtime):
-        seen["client"] = client
-        accounting = RowAccounting(
-            reader_version="matrix_tiered_v4",
-            reader_path="page_geometry_and_transcription",
-        )
-        return accounting.finish([])
-
-    monkeypatch.setattr("corridor.extract_matrix.extract_document", extract_pdf)
-
-    class Client:
-        model = "gpt-sheet-route-test"
-        effort = "none"
-        flex = False
-        base_url = "https://provider.example/v1"
-
-    client = Client()
-    pipeline.extract_any(session, document, client=client)
-
-    assert seen["client"] is client
-
-
 def test_a_retired_row_is_excluded_by_rule_not_luck(session, project, tmp_path):
     """ADR-0012 on the spreadsheet path: a row whose only content is an
     identifier plus a retirement phrase is the form's bookkeeping, and a

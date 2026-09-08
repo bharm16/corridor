@@ -114,6 +114,15 @@ class Settings(BaseSettings):
         default="development", validation_alias="CORRIDOR_ENVIRONMENT"
     )
 
+    # Explicit native Matrix authorization/request inputs; a missing record
+    # refuses extraction. Selection remains a separate maintenance command.
+    native_matrix_runtime_file: str = Field(
+        default="", validation_alias="CORRIDOR_NATIVE_MATRIX_RUNTIME_FILE"
+    )
+    native_matrix_output_dir: str = Field(
+        default="out/native-matrix", validation_alias="CORRIDOR_NATIVE_MATRIX_OUTPUT_DIR"
+    )
+
     # There were three settings here until #741: whether native page text and
     # the native Token Layer, the Page Inventory and routing decision, and the
     # reading of scanned pages came from the replacement rather than from the

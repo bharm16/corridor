@@ -9,12 +9,14 @@ Two method contracts are supported:
 
 | Method | Version | Authoring input | Output name |
 |---|---|---|---|
-| `pymupdf-table-grid` | `1` | Original PDF grid, existing deterministic WSDOT rules | `<project>.machine.csv` |
+| `pymupdf-table-grid` | `1` | Archived references only; authoring retired by #766 | `<project>.machine.csv` |
 | `native-pdf-cell-grid` | `1` | Fresh registered PDF bytes and typed native cell values, independent deterministic WSDOT recipe | `<project>.native-pdf-cell-grid-v1.machine.csv` |
 
 Every CSV has an adjacent `.machine.md` sidecar and `.machine.scope.json`
-manifest. The legacy default and filenames remain unchanged. Unknown methods
-or versions refuse; a filename alone does not establish a method.
+manifest. Archived filenames and method identities remain unchanged. New
+authoring defaults to `native-pdf-cell-grid`; explicitly requesting the retired
+method refuses. Unknown methods or versions refuse; a filename alone does not
+establish a method.
 
 The native recipe reads every registered matrix document in the project,
 ordered by content digest. It uses `tagged` at 36 dpi and the existing WSDOT

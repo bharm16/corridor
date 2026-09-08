@@ -1,0 +1,83 @@
+{
+  "basis": "Public WSDOT 9540 gas listing and its retained structure answer. Test transport replay only; not a fresh provider observation or independent accuracy measurement.",
+  "source": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27.pdf",
+  "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+  "retained_manifest": "src/corridor_pdf_reader/receipts/semantics/semantics-9540-gas.manifest.json",
+  "retained_manifest_sha256": "cd5c64475e6c4ed7cdd77596ac8a72708bd3be8e85bbd78f19ab783fab86b6ec",
+  "system_sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+  "schema_sha256": "d050e1f7e37f5aeee14e53000a211c818e8f3bcd59c35997a589122e782e7c33",
+  "user": "Page 1 of 94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27.pdf.\nIDs: t<table>r<row>c<column> names a table cell; o<k> names a string outside every table.\nTables found on this page, cells as read from the page:\n\nTable 0 \u2014 16 columns, 20 rows (rows 0\u201315 shown):\n  row 0: [6] SR 167 / I-5 to SR 509 / New Expressway\n  row 1: [8] Utility Listing Matrix\n  row 2: [8] Natural Gas\n  row 3: [7] RECOMMENDED RESOLUTION\n  row 4: [1] UTILITY OWNER | [2] UTILITY ID | [3] FACILITY TYPE | [4] LOCATION | [5] COMPOSITE UTILITY CU SHEET | [6] ALIGNMENT NAME | [7] RELOCATION | [9] PROTECTION IN PLACE | [10] ABANDON/ DEACTIVATE/ REMOVE | [11] FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER | [13] UTILITY TYPE (PUBLIC, PRIVATE TYPE 1, PRIVATE TYPE 2) | [14] AGREEMENT STATUS | [15] NOTES\n  row 5: [1] Puget Sound Energy - Gas | [2] PSEN-G-1001 | [3] Gas Line - 12\" High Pressure | [4] Gas Line - 12\" High Pressure : east side of Alexander Ave | [5] 1 | [6] Alexander Ave | [9] X | [11] EP | [12] 30474C | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 6: [1] Puget Sound Energy - Gas | [2] PSEN-G-1002 | [3] Gas Line - 8\" High Pressure | [4] Gas Line - 8\" High Pressure : south side of SB509 with relief valve vault and stack pipe | [5] 1 and 2 | [6] SB509 | [9] X | [11] EP | [12] 30474C | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area. Gas relief valve vault and stack pipe retired per Franchise amendment 1. (SE corner SB509 & Alexander). See pothole data (12/17/2019) Each Utility relocated by the Project shall be placed in a location that is Forward Compatible. Refer to Appendix M for Future Channelization Plans.\n  row 7: [1] Puget Sound Energy - Gas | [2] PSEN-G-1003 | [3] Gas Line - 4\" High Pressure (retired) | [4] RETIRED Gas Line - 4\" High Pressure | [5] 1 | [6] SB509 | [9] X | [11] EP | [12] 30474C, Amend 1 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 8: [1] Puget Sound Energy - Gas | [2] PSEN-G-1004 | [3] Gas Line - 8\" High Pressure | [4] South side North Frontage Road (SR 509) | [5] 2 | [6] SR509 | [7] X | [11] EP | [12] 30474C | [13] Type 1 | [14] N/A | [15] PSE to relocate 8\" HP gas main. See pothole data (12/17/2019). Design- Builder to coordinate with utility.\n  row 9: [1] Puget Sound Energy - Gas | [2] PSEN-G-1005 | [3] Gas Line - 4\" | [4] East side 54th Ave E | [5] 3 | [6] 54TH | [9] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 10: [1] Puget Sound Energy - Gas | [2] PSEN-G-1006 | [3] Gas Line - 2\" | [4] North side 8th St E | [5] 3 | [6] 509-S | [9] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 11: [1] Puget Sound Energy - Gas | [2] PSEN-G-1007 | [3] Gas Line - 16\" High Pressure | [4] 54th Ave E | [5] 3 | [6] 54TH | [9] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 12: [1] Puget Sound Energy - Gas | [2] PSEN-G-1008 | [3] Gas Line - 2\" | [4] West side 53rd Ave E | [5] 3 | [6] 509-S | [9] X | [10] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] PSE to remove or abandon utility within Limited Access RW. Retain and protect utility in construction area.\n  row 13: [1] Puget Sound Energy - Gas | [2] PSEN-G-1010 | [3] Gas Line - 2\" | [4] 12th St E | [5] 4 and 10 | [6] 509-S | [7] X | [11] EF | [12] Pierce County (annexed to City of Fife) | [13] Type 1 | [14] N/A | [15] PSE to relocate approximately 100' of 2\" gas line at Hylebos Creek bridge (12th Street E). See pothole data (12/20/2019). Design-Builder to coordinate with utility.\n  row 14: [1] Puget Sound Energy - Gas | [2] PSEN-G-1011 | [3] Gas Line - 16\" High Pressure | [4] 12th St E / 62nd Ave E | [5] 4 and 10 | [6] 12TH | [9] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  row 15: [1] Puget Sound Energy - Gas | [2] PSEN-G-1013 | [3] Gas Line - 2\" | [4] 70th Ave E, north of 20th St E | [5] 5 | [6] Ex 70th | [9] X | [11] EF | [12] Fife Ordinance 2001 | [13] Type 1 | [14] N/A | [15] Retain and protect utility in construction area.\n  ... 4 more rows",
+  "image_sha256": "9c7cc25e930c5b24c827d5c4984f898e5554a31d4ee71ad862403e2f7e4c1dfe",
+  "answer": {
+    "is_utility_matrix": true,
+    "matrix_table": 0,
+    "header_row": 4,
+    "columns": [
+      {
+        "index": 1,
+        "canonical_field": "external_org"
+      },
+      {
+        "index": 2,
+        "canonical_field": "utility_id"
+      },
+      {
+        "index": 3,
+        "canonical_field": "utility_type"
+      },
+      {
+        "index": 4,
+        "canonical_field": "location_start"
+      },
+      {
+        "index": 5,
+        "canonical_field": null
+      },
+      {
+        "index": 6,
+        "canonical_field": "alignment"
+      },
+      {
+        "index": 7,
+        "canonical_field": "resolution_strategy"
+      },
+      {
+        "index": 8,
+        "canonical_field": "resolution_strategy"
+      },
+      {
+        "index": 9,
+        "canonical_field": "resolution_strategy"
+      },
+      {
+        "index": 10,
+        "canonical_field": "resolution_strategy"
+      },
+      {
+        "index": 11,
+        "canonical_field": null
+      },
+      {
+        "index": 12,
+        "canonical_field": null
+      },
+      {
+        "index": 13,
+        "canonical_field": "utility_function"
+      },
+      {
+        "index": 14,
+        "canonical_field": null
+      },
+      {
+        "index": 15,
+        "canonical_field": "notes"
+      }
+    ],
+    "page_attributes": {
+      "external_org": null
+    },
+    "mapping_confidence": 0.99
+  },
+  "expected_candidates": 14
+}

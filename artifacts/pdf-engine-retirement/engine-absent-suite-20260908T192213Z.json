@@ -1,0 +1,95 @@
+{
+  "absence": {
+    "render_worker_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor/workers/render/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor/workers/render/.venv-engine-absent/lib/python3.12/site-packages"
+    },
+    "test_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor/.venv-engine-absent/lib/python3.12/site-packages"
+    }
+  },
+  "forbidden_executables": [
+    "tesseract"
+  ],
+  "forbidden_imports": [
+    "pymupdf",
+    "fitz",
+    "pytesseract"
+  ],
+  "mode": "suite",
+  "native_library_path": "/opt/homebrew/lib",
+  "passed": true,
+  "path_entries_removed": [
+    "/opt/homebrew/bin"
+  ],
+  "prepare": [
+    {
+      "command": "/opt/homebrew/bin/uv sync --locked --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Resolved 82 packages in 7ms",
+        "Audited 77 packages in 21ms"
+      ]
+    },
+    {
+      "command": "/opt/homebrew/bin/uv sync --project workers/render --frozen --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Audited 4 packages in 1ms"
+      ]
+    }
+  ],
+  "recorded_at": "2026-09-08T19:14:04.373168+00:00",
+  "result": {
+    "command": "/opt/homebrew/bin/uv run --no-sync pytest --engine-absent-proof -n 4 --dist worksteal --continue-on-collection-errors --junitxml=/Users/bryceharmon/Desktop/corridor/out/test-results/engine-absent.xml",
+    "junit_counts": {
+      "errors": 0,
+      "failures": 0,
+      "skipped": 6,
+      "tests": 5502
+    },
+    "lifecycle": {
+      "child_exit_code": 0,
+      "diagnostic_reason": null,
+      "elapsed_seconds": 488.661,
+      "exit_code": 0,
+      "finished_at": "2026-09-08T19:22:13.072091+00:00",
+      "outcome": "exited",
+      "pid": 31983,
+      "runner_pid": 31973,
+      "schema_version": 1,
+      "started_at": "2026-09-08T19:14:04.411971+00:00",
+      "status": "completed",
+      "suite": "engine-absent",
+      "timeout_seconds": 600.0
+    },
+    "returncode": 0
+  },
+  "revision": "57bf8805c870e056eb183540ee8bdcfeda62d408",
+  "schema_version": "corridor.engine-absent-suite.v1",
+  "withheld_distributions": [
+    "pymupdf",
+    "pytesseract"
+  ]
+}

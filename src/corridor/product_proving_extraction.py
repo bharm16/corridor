@@ -52,7 +52,7 @@ def extract_product_proving_document(
 ) -> int:
     """Run and return one current sealed Extraction Run for ``document``.
 
-    Only Matrix v3 and Minutes v5 Documents are in the proving contract.  The
+    Only the selected native Matrix reader and Minutes v5 Documents are in the proving contract.  The
     operation refuses a missing, widened, failed, legacy-unsealed, or
     configuration-stale attempt.  It does not commit and it does not change an
     Active Run.
@@ -128,7 +128,7 @@ def _require_exact_document(session: Session, document: Document) -> Document:
 
 def _implementation(doc_type: str) -> tuple[_ExtractionImplementation, str]:
     if doc_type == "matrix":
-        return _extract_matrix_document, "matrix"
+        return _extract_matrix_document, "native_matrix"
     if doc_type == "minutes":
         return _extract_minutes_document, "minutes"
     raise ProductProvingExtractionError(
@@ -157,10 +157,10 @@ def _extract_matrix_document(
             route.effective_prompt_version != extract_matrix.PROMPT_VERSION
             or route.schema_version != extract_matrix.SCHEMA_VERSION
             or config is None
-            or config.config_json.get("extractor") != "matrix"
+            or config.config_json.get("extractor") != "native_matrix"
         ):
             raise ProductProvingExtractionError(
-                "Document does not select the current sealed Matrix v3 route"
+                "Document does not select the current selected native Matrix route"
             )
         return route
 
