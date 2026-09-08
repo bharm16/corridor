@@ -38,6 +38,7 @@ on:
           # deployed locally, once, under the MFA-protected bootstrap
           # identity. A workflow cannot bootstrap its own credential.
           - CorridorNetwork
+          - CorridorControlPlane
           - CorridorData
           - CorridorApplication
       image_tag:
@@ -75,6 +76,10 @@ jobs:
       CERTIFICATE_ARN: ${{ vars.CORRIDOR_CERTIFICATE_ARN }}
       PUBLIC_HOSTNAME: ${{ vars.CORRIDOR_PUBLIC_HOSTNAME }}
       SIGN_IN_SENDER: ${{ vars.CORRIDOR_SIGN_IN_SENDER }}
+      CUSTOMER_ID: ${{ vars.CORRIDOR_CUSTOMER_ID }}
+      CUSTOMER_ENVIRONMENT_ID: ${{ vars.CORRIDOR_CUSTOMER_ENVIRONMENT_ID }}
+      DEPLOYMENT_ID: ${{ vars.CORRIDOR_DEPLOYMENT_ID }}
+      DATA_CLASS: ${{ vars.CORRIDOR_DEPLOYMENT_DATA_CLASS }}
     # Bound to the environment because the role's trust condition requires it.
     # The subject is `repo:...:environment:nonproduction`, and a job with no
     # environment presents a ref-scoped subject instead, so AWS would refuse
@@ -104,7 +109,11 @@ jobs:
             --context "corridor:certificateArn=$CERTIFICATE_ARN" \
             --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
             --context "corridor:signInSender=$SIGN_IN_SENDER" \
-            --context "corridor:imageTag=$IMAGE_TAG"
+            --context "corridor:imageTag=$IMAGE_TAG" \
+            --context "corridor:customerId=$CUSTOMER_ID" \
+            --context "corridor:customerEnvironmentId=$CUSTOMER_ENVIRONMENT_ID" \
+            --context "corridor:deploymentId=$DEPLOYMENT_ID" \
+            --context "corridor:dataClass=$DATA_CLASS"
       # --- credentials from here on; nothing installs or resolves ---------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
@@ -118,7 +127,11 @@ jobs:
             --context "corridor:certificateArn=$CERTIFICATE_ARN" \
             --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
             --context "corridor:signInSender=$SIGN_IN_SENDER" \
-            --context "corridor:imageTag=$IMAGE_TAG"
+            --context "corridor:imageTag=$IMAGE_TAG" \
+            --context "corridor:customerId=$CUSTOMER_ID" \
+            --context "corridor:customerEnvironmentId=$CUSTOMER_ENVIRONMENT_ID" \
+            --context "corridor:deploymentId=$DEPLOYMENT_ID" \
+            --context "corridor:dataClass=$DATA_CLASS"
 
   deploy:
     # main only, decided before the job starts rather than in its first shell
@@ -135,6 +148,10 @@ jobs:
       CERTIFICATE_ARN: ${{ vars.CORRIDOR_CERTIFICATE_ARN }}
       PUBLIC_HOSTNAME: ${{ vars.CORRIDOR_PUBLIC_HOSTNAME }}
       SIGN_IN_SENDER: ${{ vars.CORRIDOR_SIGN_IN_SENDER }}
+      CUSTOMER_ID: ${{ vars.CORRIDOR_CUSTOMER_ID }}
+      CUSTOMER_ENVIRONMENT_ID: ${{ vars.CORRIDOR_CUSTOMER_ENVIRONMENT_ID }}
+      DEPLOYMENT_ID: ${{ vars.CORRIDOR_DEPLOYMENT_ID }}
+      DATA_CLASS: ${{ vars.CORRIDOR_DEPLOYMENT_DATA_CLASS }}
     environment: nonproduction
     permissions:
       contents: read
@@ -160,7 +177,11 @@ jobs:
             --context "corridor:certificateArn=$CERTIFICATE_ARN" \
             --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
             --context "corridor:signInSender=$SIGN_IN_SENDER" \
-            --context "corridor:imageTag=$IMAGE_TAG"
+            --context "corridor:imageTag=$IMAGE_TAG" \
+            --context "corridor:customerId=$CUSTOMER_ID" \
+            --context "corridor:customerEnvironmentId=$CUSTOMER_ENVIRONMENT_ID" \
+            --context "corridor:deploymentId=$DEPLOYMENT_ID" \
+            --context "corridor:dataClass=$DATA_CLASS"
       # --- credentials from here on; nothing installs or resolves ---------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
         with:
@@ -175,6 +196,10 @@ jobs:
             --context "corridor:publicHostname=$PUBLIC_HOSTNAME" \
             --context "corridor:signInSender=$SIGN_IN_SENDER" \
             --context "corridor:imageTag=$IMAGE_TAG" \
+            --context "corridor:customerId=$CUSTOMER_ID" \
+            --context "corridor:customerEnvironmentId=$CUSTOMER_ENVIRONMENT_ID" \
+            --context "corridor:deploymentId=$DEPLOYMENT_ID" \
+            --context "corridor:dataClass=$DATA_CLASS" \
             --require-approval never \
             --outputs-file outputs.json
       - name: Record what was deployed

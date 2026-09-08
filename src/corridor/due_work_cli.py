@@ -13,6 +13,7 @@ import json
 import signal
 from threading import Event
 import time
+from uuid import uuid4
 
 from sqlalchemy import select
 
@@ -295,8 +296,11 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--owner", required=True)
     status = commands.add_parser("status")
     status.add_argument("--project-slug")
+    commands.add_parser("health")
     supervise = commands.add_parser("supervise")
-    supervise.add_argument("--owner", required=True)
+    supervise.add_argument(
+        "--owner", help="Explicit runtime owner; otherwise a unique process identity is generated"
+    )
     supervise.add_argument("--poll-seconds", type=float, required=True)
     return parser
 
@@ -308,6 +312,7 @@ def main(
     clock=None,
     stop_requested=None,
     wait=time.sleep,
+    store=None,
 ) -> int:
     configure_logging(role=ROLE_WORKER)
     try:
@@ -317,6 +322,26 @@ def main(
     if session_factory is None:
         from corridor.db import WorkerSession as session_factory
     clock = clock or SystemClock()
+
+    if args.command == "health":
+        from corridor.object_storage import content_store
+        from corridor.operational_health import runtime_report
+
+        try:
+            with session_factory() as session:
+                report = runtime_report(
+                    session, now=clock.now(),
+                    store=content_store() if store is None else store,
+                    role=ROLE_WORKER,
+                )
+            print(json.dumps(report.as_dict(), sort_keys=True, separators=(",", ":")))
+            return 0 if report.healthy else 1
+        except Exception:
+            # Health is an operations surface: driver errors can contain
+            # connection credentials and must never escape into ECS output.
+            print(json.dumps({"status": "degraded", "role": ROLE_WORKER,
+                              "reason": "worker_health_unavailable"}))
+            return 1
 
     try:
         declaration_builder = getattr(args, "declaration_builder", None)
@@ -390,6 +415,7 @@ def main(
                     **due_work_status(session, project_id=project_id),
                 }
         else:
+            owner = args.owner or f"runtime:{uuid4().hex}"
             if stop_requested is None:
                 shutdown = Event()
 
@@ -402,12 +428,12 @@ def main(
             cycles = supervise_due_work(
                 session_factory,
                 clock=clock,
-                owner=args.owner,
+                owner=owner,
                 stop_requested=stop_requested,
                 wait=wait,
                 poll_seconds=args.poll_seconds,
             )
-            payload = {"command": args.command, "completed_cycles": cycles}
+            payload = {"command": args.command, "completed_cycles": cycles, "owner": owner}
     except (DueWorkRefusal, ValueError) as exc:
         print(str(exc), file=__import__("sys").stderr)
         return 1

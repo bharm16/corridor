@@ -33,6 +33,20 @@ check:
 	uv run python -m compileall -q src/corridor
 	uv run pytest tests/test_architecture.py tests/test_source_scan_support.py infra/tests/test_workflow_ordering.py -q
 
+# Bounded infrastructure assertions in their own locked environment (no AWS calls).
+# Install once with `uv sync --project infra --frozen` before this target.
+# ARGS may name one synthesized-template acceptance seam.
+.PHONY: test-infra
+test-infra:
+	cd infra && uv run --frozen python -m pytest $(if $(strip $(ARGS)),$(ARGS),tests) -q
+
+# Configure synthetic deployment databases with the migration credential.
+# Runtime roles never receive owner/operations credentials; new routes stay disabled.
+# Example: make deployment-bootstrap ARGS=configure
+.PHONY: deployment-bootstrap
+deployment-bootstrap:
+	uv run python -m corridor.deployment_bootstrap $(ARGS)
+
 # Tight loop for the exact seam; PostgreSQL starts only on a database connection.
 # Example: make test-focused ARGS="tests/test_work_list.py::test_name"
 test-focused:

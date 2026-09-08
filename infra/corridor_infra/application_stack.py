@@ -8,13 +8,11 @@ entry points in the same package. Nothing in the repository has a separate
 build context, so two repositories would publish the same bytes twice and add
 the risk that web and batch drift onto different revisions.
 
-One service, not two. There is no long-running worker in the repository today:
-no `make worker` target, no queue-consumer loop, and `worker_database_url` is
-read only in `src/corridor/db.py` to build a session factory. The worker is a
-*database capability* used by on-demand commands. Modelling it as an always-on
-Fargate service would deploy an idle container with no entry point to run, so
-it is a task definition that is started when needed. #489's replica-safe
-worker leases are the prerequisite for turning this into a service.
+The web service and the Due Work supervisor run separately. The supervisor
+uses the existing Batch task's database capability, durable claims, deadlines,
+and recovery receipts. Its process generates a fresh runtime owner identity;
+replicas never share a claim owner. Both services start at zero until the
+release workflow has migrated and bound them to the same image digest.
 
 Roles are separated because they have genuinely different authority:
 
@@ -29,6 +27,8 @@ The application task roles are deliberately not granted logs:PutLogEvents. The
 awslogs driver delivers container output using the *execution* role; the
 application does not call CloudWatch itself.
 """
+
+import re
 
 from aws_cdk import (
     Annotations,
@@ -73,8 +73,17 @@ class CorridorApplicationStack(Stack):
         artifact_bucket: s3.Bucket,
         web_db_secret: secretsmanager.Secret,
         worker_db_secret: secretsmanager.Secret,
+        control_database: rds.DatabaseInstance,
+        control_operations_secret: secretsmanager.Secret,
+        control_resolver_secret: secretsmanager.Secret,
+        customer_routing_secret: secretsmanager.Secret,
+        customer_id: str,
+        customer_environment_id: str,
+        deployment_id: str,
+        data_class: str,
         image_tag: str,
         web_desired_count: int,
+        worker_desired_count: int = 0,
         certificate_arn: str = "",
         public_hostname: str = "",
         sign_in_sender: str = "",
@@ -107,6 +116,16 @@ class CorridorApplicationStack(Stack):
 
         db_admin_secret = database.secret
         assert db_admin_secret is not None, "RDS generated credential is required"
+        control_owner_secret = control_database.secret
+        assert control_owner_secret is not None, "control-plane owner credential is required"
+        if data_class != "synthetic":
+            raise ValueError("corridor:dataClass must explicitly be synthetic for #489")
+        for name, value in (
+            ("customerId", customer_id), ("customerEnvironmentId", customer_environment_id),
+            ("deploymentId", deployment_id),
+        ):
+            if not value or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", value):
+                raise ValueError(f"corridor:{name} must be an explicit stable identifier")
 
         if not image_tag or image_tag == "bootstrap":
             raise ValueError(
@@ -157,6 +176,19 @@ class CorridorApplicationStack(Stack):
             "CORRIDOR_DB_HOST": database.db_instance_endpoint_address,
             "CORRIDOR_DB_PORT": database.db_instance_endpoint_port,
             "CORRIDOR_DB_NAME": "corridor",
+            "CORRIDOR_CONTROL_DB_HOST": control_database.db_instance_endpoint_address,
+            "CORRIDOR_CONTROL_DB_PORT": control_database.db_instance_endpoint_port,
+            "CORRIDOR_CONTROL_DB_NAME": "corridor_control",
+            "CORRIDOR_CUSTOMER_ID": customer_id,
+            "CORRIDOR_CUSTOMER_ENVIRONMENT_ID": customer_environment_id,
+            "CORRIDOR_DEPLOYMENT_ID": deployment_id,
+            "CORRIDOR_DEPLOYMENT_DATA_CLASS": data_class,
+        }
+        resolver_secrets = {
+            f"CORRIDOR_CONTROL_RESOLVER_DB_{field.upper()}": ecs.Secret.from_secrets_manager(
+                control_resolver_secret, field,
+            )
+            for field in ("username", "password")
         }
 
         # --- web ---------------------------------------------------------
@@ -167,8 +199,12 @@ class CorridorApplicationStack(Stack):
             image=image,
             environment=common_env,
             secrets={
+                **resolver_secrets,
                 "CORRIDOR_WEB_DB_PASSWORD": ecs.Secret.from_secrets_manager(
                     web_db_secret, "password"
+                ),
+                "CORRIDOR_CUSTOMER_ROUTING_KEY": ecs.Secret.from_secrets_manager(
+                    customer_routing_secret,
                 ),
             },
             command=[
@@ -190,6 +226,19 @@ class CorridorApplicationStack(Stack):
                 CORRIDOR_VPC_CIDR,
             ],
             port=CORRIDOR_APP_PORT,
+            # ECS release proof requires container health as well as the ALB
+            # target check. Without this ECS reports UNKNOWN even when HTTP
+            # is reachable, so the exact-task verification cannot pass.
+            health_check=ecs.HealthCheck(
+                command=[
+                    "CMD", "curl", "--fail", "--silent", "--show-error",
+                    f"http://127.0.0.1:{CORRIDOR_APP_PORT}/readyz",
+                ],
+                interval=Duration.seconds(30),
+                timeout=Duration.seconds(15),
+                retries=3,
+                start_period=Duration.seconds(60),
+            ),
         )
         # Read and write, never delete. grant_read_write includes
         # s3:DeleteObject*, which would let a compromised internet-facing
@@ -259,7 +308,7 @@ class CorridorApplicationStack(Stack):
             enable_execute_command=False,
         )
 
-        # --- batch (the "worker" capability, started on demand) ----------
+        # --- worker (retain the existing Batch task and role identities) --
         batch_task, batch_role, batch_exec = self._task(
             "Batch",
             cpu=1024,
@@ -267,20 +316,83 @@ class CorridorApplicationStack(Stack):
             image=image,
             environment=common_env,
             secrets={
+                **resolver_secrets,
                 "CORRIDOR_WORKER_DB_PASSWORD": ecs.Secret.from_secrets_manager(
                     worker_db_secret, "password"
                 )
             },
-            # 1 vCPU / 2 GB: this container runs PyMuPDF and shells out to
-            # the OpenCV render subprocess, and it is billed only while a task
-            # is actually running. Reduce it once CloudWatch shows real usage.
-            # Overridden per RunTask; carry-forward is the routine one.
-            command=["python", "-m", "corridor.automatic_carry_forward_cli"],
+            # The same supervisor consumes preparation requests and scheduled
+            # Due Work. A task definition alone would never start either.
+            command=[
+                "python", "-m", "corridor.due_work_cli", "supervise",
+                "--poll-seconds=5",
+            ],
+            health_check=ecs.HealthCheck(
+                # ECS execs health commands with the task definition's env,
+                # not PID 1's composed URL. Reuse the credential-scrubbing
+                # entrypoint so this probe also connects as corridor_worker.
+                command=[
+                    "CMD", "python", "/opt/corridor/scripts/container_entrypoint.py",
+                    "python", "-m", "corridor.due_work_cli", "health",
+                ],
+                interval=Duration.seconds(30),
+                timeout=Duration.seconds(15),
+                retries=3,
+                start_period=Duration.seconds(60),
+            ),
+            stop_timeout=Duration.seconds(120),
         )
         # The retention capability. This is the identity that runs Corridor's
         # deletion policy, so it is the one that may delete.
         artifact_bucket.grant_read_write(batch_role)
         artifact_bucket.grant_delete(batch_role)
+
+        self.worker_service = ecs.FargateService(
+            self,
+            "WorkerService",
+            cluster=cluster,
+            task_definition=batch_task,
+            desired_count=worker_desired_count,
+            assign_public_ip=True,
+            vpc_subnets=ec2.SubnetSelection(subnet_type=ec2.SubnetType.PUBLIC),
+            security_groups=[batch_security_group],
+            circuit_breaker=ecs.DeploymentCircuitBreaker(rollback=True),
+            min_healthy_percent=100,
+            max_healthy_percent=200,
+            enable_execute_command=False,
+        )
+        cloudwatch.Alarm(
+            self,
+            "WorkerMissingTasksAlarm",
+            metric=cloudwatch.MathExpression(
+                expression="FILL(desired, 0) - FILL(running, 0)",
+                using_metrics={
+                    key: cloudwatch.Metric(
+                        namespace="ECS/ContainerInsights",
+                        metric_name=metric_name,
+                        dimensions_map={
+                            "ClusterName": cluster.cluster_name,
+                            "ServiceName": self.worker_service.service_name,
+                        },
+                        statistic="Average",
+                        period=Duration.minutes(1),
+                    )
+                    for key, metric_name in (
+                        ("desired", "DesiredTaskCount"),
+                        ("running", "RunningTaskCount"),
+                    )
+                },
+                period=Duration.minutes(1),
+            ),
+            threshold=1,
+            evaluation_periods=3,
+            comparison_operator=cloudwatch.ComparisonOperator.GREATER_THAN_OR_EQUAL_TO_THRESHOLD,
+            treat_missing_data=cloudwatch.TreatMissingData.NOT_BREACHING,
+            alarm_description=(
+                "Corridor has fewer running Due Work supervisors than requested. "
+                "Inspect ECS task health and retained Due Work receipts."
+            ),
+        )
 
         # --- migration ---------------------------------------------------
         migration_task, migration_role, migration_exec = self._task(
@@ -290,6 +402,16 @@ class CorridorApplicationStack(Stack):
             image=image,
             environment=common_env,
             secrets={
+                **resolver_secrets,
+                **{
+                    f"CORRIDOR_CONTROL_{capability}_DB_{field.upper()}":
+                        ecs.Secret.from_secrets_manager(secret, field)
+                    for capability, secret in (
+                        ("OWNER", control_owner_secret),
+                        ("OPERATIONS", control_operations_secret),
+                    )
+                    for field in ("username", "password")
+                },
                 # Discrete fields, not the whole JSON document.
                 "CORRIDOR_DB_ADMIN_USERNAME": ecs.Secret.from_secrets_manager(
                     db_admin_secret, "username"
@@ -313,7 +435,7 @@ class CorridorApplicationStack(Stack):
                     worker_db_secret, "password"
                 ),
             },
-            command=["alembic", "upgrade", "head"],
+            command=["python", "-m", "corridor.deployment_bootstrap", "configure"],
         )
         # No explicit grant: attaching the admin credential to the migration
         # task definition grants it to *that* task's execution role alone.
@@ -350,10 +472,8 @@ class CorridorApplicationStack(Stack):
             targets=[self.web_service],
             deregistration_delay=Duration.seconds(30),
             health_check=elbv2.HealthCheck(
-                # /readyz, not /health: /health is the aggregate operational
-                # answer and returns 503 on a stale worker heartbeat. This
-                # environment runs no resident worker, so /health would
-                # deregister a web task that is serving perfectly well.
+                # Worker trouble belongs in the operational health report;
+                # it must not make the coordinator UI unreachable too.
                 path="/readyz",
                 healthy_http_codes="200",
                 interval=Duration.seconds(30),
@@ -391,6 +511,12 @@ class CorridorApplicationStack(Stack):
                 "can serve traffic. Issue an ACM certificate and pass it "
                 f"through the protected GitHub environment; got "
                 f"webDesiredCount={web_desired_count} with no certificate."
+            )
+
+        if web_desired_count > 0 and worker_desired_count == 0:
+            raise ValueError(
+                "corridor:workerDesiredCount must be positive while web serves "
+                "traffic; preparation requests require the Due Work supervisor."
             )
 
         if certificate_arn:
@@ -447,6 +573,7 @@ class CorridorApplicationStack(Stack):
         CfnOutput(self, "ClusterName", value=cluster.cluster_name)
         CfnOutput(self, "ClusterArn", value=cluster.cluster_arn)
         CfnOutput(self, "WebServiceName", value=self.web_service.service_name)
+        CfnOutput(self, "WorkerServiceName", value=self.worker_service.service_name)
         CfnOutput(
             self, "WebTaskDefinitionArn", value=web_task.task_definition_arn
         )
@@ -486,6 +613,8 @@ class CorridorApplicationStack(Stack):
         secrets: dict,
         command: list,
         port: int | None = None,
+        health_check: ecs.HealthCheck | None = None,
+        stop_timeout: Duration | None = None,
     ):
         execution_role = iam.Role(
             self,
@@ -529,6 +658,8 @@ class CorridorApplicationStack(Stack):
             # this. It refuses to start without it.
             environment={**environment, "CORRIDOR_TASK_ROLE": name.lower()},
             secrets=secrets,
+            health_check=health_check,
+            stop_timeout=stop_timeout,
             logging=ecs.LogDrivers.aws_logs(
                 stream_prefix=name.lower(),
                 log_group=logs.LogGroup(

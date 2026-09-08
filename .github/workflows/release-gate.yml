@@ -122,7 +122,11 @@ jobs:
             --context corridor:certificateArn=arn:aws:acm:us-east-2:810100779593:certificate/00000000-0000-0000-0000-000000000000 \
             --context corridor:imageTag=${{ github.sha }} \
             --context corridor:publicHostname=pilot.example.com \
-            --context corridor:signInSender=no-reply@example.com
+            --context corridor:signInSender=no-reply@example.com \
+            --context corridor:customerId=synthetic-a \
+            --context corridor:customerEnvironmentId=synthetic-a-nonproduction \
+            --context corridor:deploymentId=corridor-nonproduction \
+            --context corridor:dataClass=synthetic
 
       - name: Match infrastructure results against the classifier
         if: ${{ always() }}

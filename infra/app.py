@@ -7,6 +7,7 @@ Stack order is a dependency order, not a preference:
                         locally, so that everything after it is recorded and
                         so GitHub has an identity to deploy with.
     Network             the VPC and every security-group edge.
+    ControlPlane        independent registry, custody database and credentials.
     Data                database, artifact bucket, credentials. Stateful.
     Application         registry, cluster, tasks, load balancer. Disposable.
 
@@ -19,6 +20,7 @@ from cdk_nag import AwsSolutionsChecks
 
 from corridor_infra.account_foundation_stack import CorridorAccountFoundationStack
 from corridor_infra.application_stack import CorridorApplicationStack
+from corridor_infra.control_plane_stack import CorridorControlPlaneStack
 from corridor_infra.data_stack import CorridorDataStack
 from corridor_infra.network_stack import CorridorNetworkStack
 
@@ -41,6 +43,11 @@ foundation = CorridorAccountFoundationStack(
 
 network = CorridorNetworkStack(app, "CorridorNetwork", env=env)
 
+control_plane = CorridorControlPlaneStack(
+    app, "CorridorControlPlane", env=env, vpc=network.vpc,
+    database_security_group=network.control_db_sg,
+)
+
 data = CorridorDataStack(
     app,
     "CorridorData",
@@ -62,8 +69,17 @@ CorridorApplicationStack(
     artifact_bucket=data.artifact_bucket,
     web_db_secret=data.web_db_secret,
     worker_db_secret=data.worker_db_secret,
+    control_database=control_plane.database,
+    control_operations_secret=control_plane.operations_secret,
+    control_resolver_secret=control_plane.resolver_secret,
+    customer_routing_secret=data.customer_routing_secret,
+    customer_id=ctx("customerId", ""),
+    customer_environment_id=ctx("customerEnvironmentId", ""),
+    deployment_id=ctx("deploymentId", ""),
+    data_class=ctx("dataClass", ""),
     image_tag=ctx("imageTag", ""),
     web_desired_count=int(app.node.try_get_context("corridor:webDesiredCount") or 0),
+    worker_desired_count=int(app.node.try_get_context("corridor:workerDesiredCount") or 0),
     certificate_arn=ctx("certificateArn", ""),
     public_hostname=ctx("publicHostname", ""),
     sign_in_sender=ctx("signInSender", ""),

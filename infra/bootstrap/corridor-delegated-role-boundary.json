@@ -24,6 +24,7 @@
         "ecs:ListTasks",
         "ecs:RegisterTaskDefinition",
         "ecs:RunTask",
+        "ecs:StopTask",
         "ecs:TagResource",
         "ecs:UpdateService",
         "logs:CreateLogGroup",

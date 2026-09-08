@@ -12,6 +12,7 @@ ordering is easy to break with an innocuous-looking edit.
 from __future__ import annotations
 
 import pathlib
+import subprocess
 
 import pytest
 import yaml
@@ -108,6 +109,10 @@ def test_both_dispatch_jobs_pass_every_required_context():
         "corridor:publicHostname",
         "corridor:signInSender",
         "corridor:imageTag",
+        "corridor:customerId",
+        "corridor:customerEnvironmentId",
+        "corridor:deploymentId",
+        "corridor:dataClass",
     )
     for job_name in ("diff", "deploy"):
         job = _jobs("infra-deploy.yml")[job_name]
@@ -210,3 +215,88 @@ def test_the_runbook_names_the_setting_the_ref_guard_cannot_enforce():
     assert "Required reviewers" in runbook
     # And it must say why the in-repo guard is not enough.
     assert "defence in depth" in runbook or "defense in depth" in runbook
+
+
+@pytest.mark.parametrize(
+    ("web", "worker", "allowed"),
+    [("0", "0", True), ("0", "1", True), ("1", "1", True), ("1", "0", False)],
+)
+def test_release_refuses_web_without_a_worker_before_authenticating(web, worker, allowed):
+    """The deployed UI must have a supervisor to execute its preparation work."""
+    steps = _jobs("app-release.yml")["release"]["steps"]
+    counts_at = next(index for index, step in enumerate(steps) if step.get("id") == "counts")
+    credential_at = next(
+        index for index, step in enumerate(steps)
+        if CREDENTIAL_ACTION in str(step.get("uses", ""))
+    )
+    assert counts_at < credential_at
+    result = subprocess.run(
+        ["bash", "-e", "-c", steps[counts_at]["run"]],
+        env={"WEB_DESIRED_COUNT": web, "WORKER_DESIRED_COUNT": worker},
+        capture_output=True, text=True, check=False,
+    )
+    assert (result.returncode == 0) is allowed
+
+
+def test_release_drain_migration_and_both_rollout_proofs_are_ordered_and_fail_closed():
+    """Migration cannot race an old worker; web starts only after worker proof."""
+    steps = _jobs("app-release.yml")["release"]["steps"]
+    required = ("drain", "migration", "start_worker", "verify_worker", "start_web", "verify_web")
+    ordered = [(index, step) for index, step in enumerate(steps) if step.get("id") in required]
+    assert tuple(step["id"] for _, step in ordered) == required
+    by_id = {step["id"]: step for _, step in ordered}
+    for _, step in ordered:
+        assert "if" not in step, "release safety steps must run only after preceding success"
+        assert not step.get("continue-on-error"), step["id"]
+
+    drain = by_id["drain"]["run"]
+    assert "scripts/verify_ecs_release.py drain" in drain
+    for argument in (
+        '--web-service "$WEB_SERVICE"', '--worker-service "$WORKER_SERVICE"',
+        '--worker-task-definition "$BASE_BATCH_TD"',
+    ):
+        assert argument in drain
+    assert '--task-definition "$MIGRATION_TD"' in by_id["migration"]["run"]
+    assert '"corridor.deployment_bootstrap", "configure"' in by_id["migration"]["run"]
+    assert 'os.environ["WORKER_DESIRED_COUNT"] != "0"' in by_id["migration"]["run"]
+    assert 'command.append("--require-enabled")' in by_id["migration"]["run"]
+    for role, task_definition in (("worker", "BATCH_TD"), ("web", "WEB_TD")):
+        start = by_id[f"start_{role}"]["run"]
+        verify = by_id[f"verify_{role}"]["run"]
+        assert f'--service "${role.upper()}_SERVICE"' in start
+        assert f'--task-definition "${task_definition}"' in start
+        assert f'--desired-count "${role.upper()}_DESIRED_COUNT"' in start
+        assert "scripts/verify_ecs_release.py verify" in verify
+        assert f'--service "${role.upper()}_SERVICE"' in verify
+        assert f'--task-definition "${task_definition}"' in verify
+        assert '--digest "$IMAGE_DIGEST"' in verify
+
+
+def test_a_release_failure_after_drain_keeps_both_services_stopped_for_recovery():
+    steps = _jobs("app-release.yml")["release"]["steps"]
+    recovery = next(
+        step for step in steps
+        if "failure()" in str(step.get("if", ""))
+        and "scripts/verify_ecs_release.py drain" in str(step.get("run", ""))
+    )
+    assert "steps.drain.outcome" in recovery["if"]
+    assert '--web-service "$WEB_SERVICE"' in recovery["run"]
+    assert '--worker-service "$WORKER_SERVICE"' in recovery["run"]
+    assert "Do not restart an old task revision" in recovery["run"]
+    assert not recovery.get("continue-on-error")
+
+
+@pytest.mark.parametrize("missing", ["CUSTOMER_ID", "CUSTOMER_ENVIRONMENT_ID", "DEPLOYMENT_ID", "DATA_CLASS"])
+def test_deployment_configuration_requires_an_explicit_synthetic_binding(missing):
+    env = {
+        "CERTIFICATE_ARN": "arn:aws:acm:us-east-2:111111111111:certificate/00000000-0000-0000-0000-000000000000",
+        "PUBLIC_HOSTNAME": "pilot.example.com", "SIGN_IN_SENDER": "signin@example.com",
+        "CUSTOMER_ID": "synthetic-a", "CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
+        "DEPLOYMENT_ID": "corridor-nonproduction", "DATA_CLASS": "synthetic",
+    }
+    script = WORKFLOWS.parent / "scripts" / "validate-deployment-config.sh"
+    accepted = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    assert accepted.returncode == 0, accepted.stdout
+    env.pop(missing)
+    refused = subprocess.run(["bash", str(script)], env=env, capture_output=True, text=True, check=False)
+    assert refused.returncode != 0

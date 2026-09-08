@@ -291,9 +291,8 @@ def serving_report(
     web process can answer: judging readiness on it would deregister a web task
     that is serving perfectly well because a batch schedule went unattended,
     taking the coordinator UI down for a reason the UI has nothing to do with.
-    That is not hypothetical here -- the deployed environment runs no resident
-    worker, so an enabled schedule with nothing to claim it goes stale by
-    design.
+    During worker failure or recovery, the coordinator still needs that UI
+    to inspect pending work and retained refusal or failure receipts.
 
     `runtime_report` keeps the aggregate answer, worker heartbeat included, and
     remains what /health serves and what alerting reads.

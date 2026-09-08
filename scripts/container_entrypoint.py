@@ -1,4 +1,4 @@
-"""Compose one database URL for one task role, then exec the real command.
+"""Compose scoped customer and control-plane URLs, then exec the real command.
 
 The task definition cannot build a database URL. A password exists there only
 as a secret reference, and the RDS-managed credential is a JSON document rather
@@ -26,6 +26,7 @@ server and so does not stop an interception.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from urllib.parse import quote
 
@@ -48,6 +49,15 @@ ROLES: dict[str, tuple[str | None, str, str]] = {
     "web": ("corridor_web", "CORRIDOR_WEB_DB_PASSWORD", "WEB_DATABASE_URL"),
     "batch": ("corridor_worker", "CORRIDOR_WORKER_DB_PASSWORD", "WORKER_DATABASE_URL"),
 }
+
+CONTROL_ROLES = {
+    "owner": "CONTROL_PLANE_DATABASE_URL",
+    "operations": "CONTROL_PLANE_OPERATIONS_DATABASE_URL",
+    "resolver": "CONTROL_PLANE_RESOLVER_DATABASE_URL",
+}
+IDENTITY_INPUTS = (
+    "CORRIDOR_CUSTOMER_ID", "CORRIDOR_CUSTOMER_ENVIRONMENT_ID", "CORRIDOR_DEPLOYMENT_ID",
+)
 
 # The migration creates the two runtime logins and reads their passwords to set
 # them, so it is the one role that legitimately holds all three credentials.
@@ -81,6 +91,27 @@ def compose_url(env: dict[str, str], role: str) -> str:
     port = _require(env, "CORRIDOR_DB_PORT")
     name = _require(env, "CORRIDOR_DB_NAME")
 
+    return _database_url(env, login, password, host, port, name)
+
+
+def compose_control_url(env: dict[str, str], capability: str) -> str:
+    """Use only that control-plane login, with the same verified RDS TLS."""
+
+    if capability not in CONTROL_ROLES:
+        raise EntrypointError("unknown control-plane capability")
+    prefix = f"CORRIDOR_CONTROL_{capability.upper()}_DB"
+    return _database_url(
+        env, _require(env, f"{prefix}_USERNAME"), _require(env, f"{prefix}_PASSWORD"),
+        _require(env, "CORRIDOR_CONTROL_DB_HOST"),
+        _require(env, "CORRIDOR_CONTROL_DB_PORT"),
+        _require(env, "CORRIDOR_CONTROL_DB_NAME"),
+    )
+
+
+def _database_url(
+    env: dict[str, str], login: str, password: str, host: str, port: str, name: str
+) -> str:
+
     # quote() with an empty safe set: every reserved character is escaped, so a
     # password containing @ : / ? # cannot redirect the connection.
     userinfo = f"{quote(login, safe='')}:{quote(password, safe='')}"
@@ -111,13 +142,18 @@ def compose_url(env: dict[str, str], role: str) -> str:
 def prepare_environment(env: dict[str, str], role: str) -> dict[str, str]:
     """Return the environment the real command should run with.
 
-    Exactly one URL variable is set, and the raw passwords this role no longer
-    needs are dropped, so a crash dump or a subprocess that inherits the
-    environment carries fewer secrets than it otherwise would. The render
-    subprocess in particular inherits whatever is left.
+    Runtime receives exactly one customer capability and the control-plane
+    resolver. Migration may bootstrap both databases. Its explicit operations
+    mode receives only the operations URL, for the existing control-plane CLI.
+    Raw passwords and inherited URLs for other capabilities are removed.
     """
 
     prepared = dict(env)
+    if role not in ROLES:
+        raise EntrypointError(f"CORRIDOR_TASK_ROLE must be one of {sorted(ROLES)}")
+    mode = env.get("CORRIDOR_MIGRATION_MODE", "configure")
+    if mode not in {"configure", "operations"} or (role != "migration" and mode != "configure"):
+        raise EntrypointError("only the migration task may select operations mode")
 
     # Clear all three first. Setting one without removing the others would let
     # an inherited or injected DATABASE_URL survive into a runtime container,
@@ -125,14 +161,41 @@ def prepare_environment(env: dict[str, str], role: str) -> dict[str, str]:
     # empty -- which would reconnect web or batch as the schema owner.
     for _, _, name in ROLES.values():
         prepared.pop(name, None)
+    for name in CONTROL_ROLES.values():
+        prepared.pop(name, None)
 
     _, _, url_var = ROLES[role]
-    prepared[url_var] = compose_url(env, role)
+    if mode != "operations":
+        prepared[url_var] = compose_url(env, role)
 
-    keep = KEEP_FOR_MIGRATION if role == "migration" else frozenset()
+    control_configured = any(
+        key.startswith("CORRIDOR_CONTROL_") and value for key, value in env.items()
+    ) or any(env.get(key) for key in (*IDENTITY_INPUTS, *CONTROL_ROLES.values()))
+    deployed = env.get("CORRIDOR_ENVIRONMENT", "development") not in LOCAL_ENVIRONMENTS
+    if control_configured or deployed or mode == "operations":
+        for name in IDENTITY_INPUTS:
+            if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.:/-]{0,127}", _require(env, name)):
+                raise EntrypointError(f"{name} must be a stable bounded identifier")
+        capabilities = (
+            ("operations",) if mode == "operations"
+            else tuple(CONTROL_ROLES) if role == "migration"
+            else ("resolver",)
+        )
+        for capability in capabilities:
+            prepared[CONTROL_ROLES[capability]] = compose_control_url(env, capability)
+        if role == "web" and len(_require(env, "CORRIDOR_CUSTOMER_ROUTING_KEY").encode()) < 32:
+            raise EntrypointError("CORRIDOR_CUSTOMER_ROUTING_KEY needs at least 32 bytes")
+
+    keep = KEEP_FOR_MIGRATION if role == "migration" and mode == "configure" else frozenset()
     for _, password_var, _ in ROLES.values():
         if password_var in prepared and password_var not in keep:
             del prepared[password_var]
+    for capability in CONTROL_ROLES:
+        for suffix in ("USERNAME", "PASSWORD"):
+            prepared.pop(f"CORRIDOR_CONTROL_{capability.upper()}_DB_{suffix}", None)
+    prepared.pop("CORRIDOR_DB_ADMIN_USERNAME", None)
+    if role != "web":
+        prepared.pop("CORRIDOR_CUSTOMER_ROUTING_KEY", None)
     prepared["CORRIDOR_TASK_ROLE"] = role
     return prepared
 

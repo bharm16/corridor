@@ -1,4 +1,4 @@
-# Application release: push a tested image, migrate, then serve it.
+# Application release: push a tested image, migrate, then run worker and web.
 #
 # Separate from infra-nonproduction.yml because it is separate work with a
 # separate identity. This workflow never deploys a stack; it registers new task
@@ -9,8 +9,8 @@
 # while reporting success. Every release therefore registers new revisions bound
 # to the image digest and runs those.
 #
-# The web service is drained before the migration. Leaving it up would let the
-# old image keep serving while the migration changes the schema underneath it.
+# Both services and older managed worker tasks stop before the migration.
+# Leaving either up lets the old image use a schema that is changing under it.
 # That makes this a maintenance-window release, which is the right trade for a
 # synthetic environment with no availability requirement.
 #
@@ -32,6 +32,12 @@ on:
         default: "0"
         type: choice
         options: ["0", "1"]
+      worker_desired_count:
+        description: Supervisor tasks to run after migration; required when web runs
+        required: true
+        default: "0"
+        type: choice
+        options: ["0", "1"]
 
 permissions:
   contents: read
@@ -47,6 +53,7 @@ env:
   CLUSTER: corridor-nonprod
   COMMIT_SHA: ${{ inputs.commit_sha }}
   WEB_DESIRED_COUNT: ${{ inputs.web_desired_count }}
+  WORKER_DESIRED_COUNT: ${{ inputs.worker_desired_count }}
 
 jobs:
   release:
@@ -67,6 +74,14 @@ jobs:
             echo "::error::commit_sha must be a full 40-character SHA"
             exit 1
           fi
+
+      - name: Require a worker whenever the web service runs
+        id: counts
+        run: |
+          case "$WEB_DESIRED_COUNT:$WORKER_DESIRED_COUNT" in
+            0:0|0:1|1:1) ;;
+            *) echo "::error::web and worker counts must be 0 or 1, and web requires a worker"; exit 1 ;;
+          esac
 
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -89,8 +104,10 @@ jobs:
           uv sync --locked
           uv run python -c "import boto3; print('boto3', boto3.__version__)"
 
-      - name: Validate the release helper against its own tests
-        run: uv run pytest tests/test_register_ecs_release_task_definitions.py -q
+      - name: Validate the release helpers against their own tests
+        run: >-
+          uv run pytest tests/test_register_ecs_release_task_definitions.py
+          tests/test_verify_ecs_release.py -q
 
       # --- credentials from here on ---------------------------------------
       - uses: aws-actions/configure-aws-credentials@ff717079ee2060e4bcee96c4779b553acc87447c
@@ -109,6 +126,7 @@ jobs:
           wanted = {
               "RepositoryUri": "REPOSITORY_URI",
               "WebServiceName": "WEB_SERVICE",
+              "WorkerServiceName": "WORKER_SERVICE",
               "TaskSubnetIds": "TASK_SUBNETS",
               "MigrationSecurityGroupId": "MIGRATION_SG",
               "MigrationTaskDefinitionArn": "BASE_MIGRATION_TD",
@@ -180,25 +198,39 @@ jobs:
           PY
           cat released.json
 
-      # The old image must stop serving before the schema moves under it.
-      - name: Drain the web service
+      # Zero desired counts alone do not prove that a container has stopped.
+      # Include older ad hoc Batch tasks and wait for actual STOPPED status.
+      - name: Drain web and worker before changing the schema
+        id: drain
         run: |
-          PREVIOUS=$(aws ecs describe-services --cluster "$CLUSTER" \
-            --services "$WEB_SERVICE" --query 'services[0].desiredCount' --output text)
-          echo "PREVIOUS_DESIRED=$PREVIOUS" >> "$GITHUB_ENV"
-          if [ "$PREVIOUS" != "0" ]; then
-            aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
-              --desired-count 0 >/dev/null
-            aws ecs wait services-stable --cluster "$CLUSTER" --services "$WEB_SERVICE"
-          fi
-          echo "web drained (was $PREVIOUS)"
+          uv run python scripts/verify_ecs_release.py drain \
+            --cluster "$CLUSTER" \
+            --web-service "$WEB_SERVICE" \
+            --worker-service "$WORKER_SERVICE" \
+            --worker-task-definition "$BASE_BATCH_TD" > drained.json
+          cat drained.json
+          uv run python - <<'PY' >> "$GITHUB_ENV"
+          import json, os
+          previous = json.load(open("drained.json"))["previous_desired_counts"]
+          print(f"PREVIOUS_WEB_DESIRED={previous[os.environ['WEB_SERVICE']]}")
+          print(f"PREVIOUS_WORKER_DESIRED={previous[os.environ['WORKER_SERVICE']]}")
+          PY
 
       - name: Run the migration and require it to succeed
+        id: migration
         run: |
+          uv run python - <<'PY' > migration-overrides.json
+          import json, os
+          command = ["python", "-m", "corridor.deployment_bootstrap", "configure"]
+          if os.environ["WORKER_DESIRED_COUNT"] != "0":
+              command.append("--require-enabled")
+          print(json.dumps({"containerOverrides": [{"name": "MigrationContainer", "command": command}]}))
+          PY
           aws ecs run-task \
             --cluster "$CLUSTER" \
             --task-definition "$MIGRATION_TD" \
             --launch-type FARGATE \
+            --overrides file://migration-overrides.json \
             --network-configuration "awsvpcConfiguration={subnets=[$TASK_SUBNETS],securityGroups=[$MIGRATION_SG],assignPublicIp=ENABLED}" \
             --output json > run-task.json
 
@@ -214,23 +246,55 @@ jobs:
           print(tasks[0]["taskArn"])
           PY
           )
+          export MIGRATION_TASK_ARN="$TASK_ARN"
           echo "MIGRATION_TASK_ARN=$TASK_ARN" >> "$GITHUB_ENV"
 
           aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
           aws ecs describe-tasks --cluster "$CLUSTER" --tasks "$TASK_ARN" \
             --output json > stopped.json
           uv run python - <<'PY'
-          import json, sys
-          task = json.load(open("stopped.json"))["tasks"][0]
+          import json, os, sys
+          response = json.load(open("stopped.json"))
+          tasks = response.get("tasks") or []
+          if response.get("failures") or len(tasks) != 1:
+              sys.exit("could not describe the migration task")
+          task = tasks[0]
+          if (
+              task.get("taskArn") != os.environ["MIGRATION_TASK_ARN"]
+              or task.get("taskDefinitionArn") != os.environ["MIGRATION_TD"]
+              or task.get("lastStatus") != "STOPPED"
+          ):
+              sys.exit("the released migration task has not proved it stopped")
           reason = task.get("stoppedReason", "")
-          codes = {c["name"]: c.get("exitCode") for c in task["containers"]}
+          codes = {c["name"]: c.get("exitCode") for c in task.get("containers", [])}
           print(f"stoppedReason={reason} exitCodes={codes}")
           bad = {n: c for n, c in codes.items() if c != 0}
-          if bad:
+          if not codes or bad:
               sys.exit(f"migration containers did not exit 0: {bad} ({reason})")
           PY
 
+      # The existing Batch identity runs the resident supervisor. Prove it is
+      # healthy on the released image before allowing web to accept requests.
+      - name: Start the worker on the released Batch revision
+        id: start_worker
+        run: |
+          aws ecs update-service --cluster "$CLUSTER" --service "$WORKER_SERVICE" \
+            --task-definition "$BATCH_TD" \
+            --desired-count "$WORKER_DESIRED_COUNT" >/dev/null
+          aws ecs wait services-stable --cluster "$CLUSTER" --services "$WORKER_SERVICE"
+
+      - name: Require the released worker revision, health, and digest
+        id: verify_worker
+        run: |
+          uv run python scripts/verify_ecs_release.py verify \
+            --cluster "$CLUSTER" --service "$WORKER_SERVICE" \
+            --task-definition "$BATCH_TD" \
+            --repository-uri "$REPOSITORY_URI" --digest "$IMAGE_DIGEST" \
+            --desired-count "$WORKER_DESIRED_COUNT" > worker-release.json
+          cat worker-release.json
+
       - name: Point the web service at the released revision
+        id: start_web
         run: |
           aws ecs update-service --cluster "$CLUSTER" --service "$WEB_SERVICE" \
             --task-definition "$WEB_TD" \
@@ -245,77 +309,15 @@ jobs:
       # the old image, which is perfectly healthy. Without this the workflow
       # records this commit as released while every running task is the
       # previous one.
-      - name: Require that the release is what is actually running
+      - name: Require the released web revision, health, and digest
+        id: verify_web
         run: |
-          aws ecs describe-services --cluster "$CLUSTER" --services "$WEB_SERVICE" \
-            --output json > service.json
-          uv run python - <<'PY'
-          import json, os, sys
-
-          service = json.load(open("service.json"))["services"][0]
-          expected = os.environ["WEB_TD"]
-          desired = int(os.environ["WEB_DESIRED_COUNT"])
-
-          active = service.get("taskDefinition")
-          if active != expected:
-              sys.exit(
-                  f"the service is running {active}, not {expected}: the "
-                  "deployment was rolled back"
-              )
-
-          primary = [
-              deployment
-              for deployment in service.get("deployments", [])
-              if deployment.get("status") == "PRIMARY"
-          ]
-          if not primary:
-              sys.exit("no PRIMARY deployment on the service")
-          deployment = primary[0]
-          if deployment.get("taskDefinition") != expected:
-              sys.exit(
-                  f"the primary deployment is {deployment.get('taskDefinition')}, "
-                  f"not {expected}"
-              )
-          if deployment.get("rolloutState") not in (None, "COMPLETED"):
-              sys.exit(
-                  "rolloutState is "
-                  f"{deployment.get('rolloutState')}: "
-                  f"{deployment.get('rolloutStateReason')}"
-              )
-          running = deployment.get("runningCount", 0)
-          if running != desired:
-              sys.exit(f"{running} tasks running, expected {desired}")
-          print(f"released: {expected} with {running} running")
-          PY
-
-      - name: Require that the running tasks carry the released digest
-        if: inputs.web_desired_count != '0'
-        run: |
-          aws ecs list-tasks --cluster "$CLUSTER" --service-name "$WEB_SERVICE" \
-            --desired-status RUNNING --output json > tasks.json
-          TASK_ARNS=$(uv run python -c "
-          import json
-          print(' '.join(json.load(open('tasks.json'))['taskArns']))
-          ")
-          [ -n "$TASK_ARNS" ] || { echo "::error::no running tasks"; exit 1; }
-          # shellcheck disable=SC2086
-          aws ecs describe-tasks --cluster "$CLUSTER" --tasks $TASK_ARNS \
-            --output json > running.json
-          uv run python - <<'PY'
-          import json, os, sys
-
-          digest = os.environ["IMAGE_DIGEST"]
-          tasks = json.load(open("running.json"))["tasks"]
-          wrong = [
-              container.get("imageDigest")
-              for task in tasks
-              for container in task.get("containers", [])
-              if container.get("imageDigest") not in (None, digest)
-          ]
-          if wrong:
-              sys.exit(f"running tasks carry {set(wrong)}, expected {digest}")
-          print(f"{len(tasks)} running task(s) on {digest}")
-          PY
+          uv run python scripts/verify_ecs_release.py verify \
+            --cluster "$CLUSTER" --service "$WEB_SERVICE" \
+            --task-definition "$WEB_TD" \
+            --repository-uri "$REPOSITORY_URI" --digest "$IMAGE_DIGEST" \
+            --desired-count "$WEB_DESIRED_COUNT" > web-release.json
+          cat web-release.json
 
       # Through the certificate's own hostname. The load balancer's generated
       # name is not covered by the certificate, so curl would fail hostname
@@ -330,6 +332,24 @@ jobs:
           curl -fsS "$APPLICATION_URL/livez"
           curl -fsS "$APPLICATION_URL/readyz"
 
+      - name: Keep both services stopped after a failed release
+        if: failure() && (steps.drain.outcome == 'success' || steps.drain.outcome == 'failure')
+        run: |
+          {
+            echo "### Release recovery required"
+            echo
+            echo "The release failed after drain began. Both services must remain at zero until recovery is reviewed."
+            echo "Inspect the migration task and CloudWatch logs, resolve the failure, then rerun app-release with the intended commit and both desired counts."
+            echo "Do not restart an old task revision against a schema that may have changed; follow docs/deployment/nonproduction-aws.md."
+            echo "The following drain must succeed before shutdown is confirmed."
+          } >> "$GITHUB_STEP_SUMMARY"
+          uv run python scripts/verify_ecs_release.py drain \
+            --cluster "$CLUSTER" \
+            --web-service "$WEB_SERVICE" \
+            --worker-service "$WORKER_SERVICE" \
+            --worker-task-definition "$BASE_BATCH_TD"
+          echo "Confirmed: web, worker, and managed Batch tasks are stopped." >> "$GITHUB_STEP_SUMMARY"
+
       - name: Record what was released
         if: always()
         run: |
@@ -341,7 +361,12 @@ jobs:
             echo "- web task definition: \`${WEB_TD:-not registered}\`"
             echo "- migration task definition: \`${MIGRATION_TD:-not registered}\`"
             echo "- batch task definition: \`${BATCH_TD:-not registered}\`"
+            echo "- worker service: \`${WORKER_SERVICE:-unknown}\`"
             echo "- migration task: \`${MIGRATION_TASK_ARN:-not run}\`"
             echo "- url: \`${APPLICATION_URL:-unknown}\`"
-            echo "- web desired count: \`$WEB_DESIRED_COUNT\` (was \`${PREVIOUS_DESIRED:-unknown}\`)"
+            echo "- requested web count: \`$WEB_DESIRED_COUNT\` (was \`${PREVIOUS_WEB_DESIRED:-unknown}\`)"
+            echo "- requested worker count: \`$WORKER_DESIRED_COUNT\` (was \`${PREVIOUS_WORKER_DESIRED:-unknown}\`)"
+            echo "- migration outcome: \`${{ steps.migration.outcome }}\`"
+            echo "- worker verification: \`${{ steps.verify_worker.outcome }}\`"
+            echo "- web verification: \`${{ steps.verify_web.outcome }}\`"
           } >> "$GITHUB_STEP_SUMMARY"

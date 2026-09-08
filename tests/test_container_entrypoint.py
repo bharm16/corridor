@@ -198,3 +198,96 @@ def test_a_preexisting_url_for_another_role_is_removed():
         assert present == {expected}, f"{role} ended with {present}"
         assert "evil" not in prepared[expected]
         assert "stale" not in prepared[expected]
+
+
+CONTROL = {
+    "CORRIDOR_ENVIRONMENT": "nonproduction",
+    "CORRIDOR_CONTROL_DB_HOST": "control.abc123.us-east-2.rds.amazonaws.com",
+    "CORRIDOR_CONTROL_DB_PORT": "5432",
+    "CORRIDOR_CONTROL_DB_NAME": "corridor_control",
+    "CORRIDOR_CONTROL_OWNER_DB_USERNAME": "corridor_control_owner",
+    "CORRIDOR_CONTROL_OWNER_DB_PASSWORD": "control-owner-secret",
+    "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME": "corridor_control_operator",
+    "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD": "operations-secret",
+    "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME": "corridor_control_runtime",
+    "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD": "resolver-secret",
+    "CORRIDOR_CUSTOMER_ID": "synthetic-a",
+    "CORRIDOR_CUSTOMER_ENVIRONMENT_ID": "synthetic-nonproduction",
+    "CORRIDOR_DEPLOYMENT_ID": "corridor-nonproduction",
+    "CORRIDOR_CUSTOMER_ROUTING_KEY": "k" * 64,
+}
+
+
+@pytest.mark.parametrize("role,customer_url", [("web", "WEB_DATABASE_URL"), ("batch", "WORKER_DATABASE_URL")])
+def test_deployed_runtime_receives_only_its_customer_login_and_control_resolver(role, customer_url):
+    contaminated = {
+        **BASE, **CONTROL,
+        "DATABASE_URL": "owner-url",
+        "CONTROL_PLANE_DATABASE_URL": "control-owner-url",
+        "CONTROL_PLANE_OPERATIONS_DATABASE_URL": "operations-url",
+        "CONTROL_PLANE_RESOLVER_DATABASE_URL": "stale-resolver-url",
+    }
+
+    prepared = entrypoint.prepare_environment(contaminated, role)
+
+    assert {key for key in prepared if key.endswith("DATABASE_URL")} == {
+        customer_url, "CONTROL_PLANE_RESOLVER_DATABASE_URL",
+    }
+    resolver = prepared["CONTROL_PLANE_RESOLVER_DATABASE_URL"]
+    assert resolver.startswith("postgresql+psycopg://corridor_control_runtime:resolver-secret@control.")
+    assert "sslmode=verify-full" in resolver
+    assert not any(key.endswith("_PASSWORD") for key in prepared)
+    assert ("CORRIDOR_CUSTOMER_ROUTING_KEY" in prepared) is (role == "web")
+
+
+def test_migration_operations_mode_exposes_only_the_control_plane_operations_capability():
+    prepared = entrypoint.prepare_environment(
+        {**BASE, **CONTROL, "CORRIDOR_MIGRATION_MODE": "operations"}, "migration",
+    )
+
+    assert {key for key in prepared if key.endswith("DATABASE_URL")} == {
+        "CONTROL_PLANE_OPERATIONS_DATABASE_URL",
+    }
+    assert "corridor_control_operator:operations-secret@control." in prepared["CONTROL_PLANE_OPERATIONS_DATABASE_URL"]
+    assert not any(key.endswith("_PASSWORD") for key in prepared)
+    assert "CORRIDOR_CUSTOMER_ROUTING_KEY" not in prepared
+
+
+def test_configure_migration_has_both_owners_and_the_two_scoped_control_plane_logins():
+    prepared = entrypoint.prepare_environment({**BASE, **CONTROL}, "migration")
+
+    assert {key for key in prepared if key.endswith("DATABASE_URL")} == {
+        "DATABASE_URL", "CONTROL_PLANE_DATABASE_URL",
+        "CONTROL_PLANE_OPERATIONS_DATABASE_URL", "CONTROL_PLANE_RESOLVER_DATABASE_URL",
+    }
+    assert {key for key in prepared if key.endswith("_PASSWORD")} == {
+        "CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_WORKER_DB_PASSWORD",
+    }
+
+
+@pytest.mark.parametrize("missing", [
+    "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+    "CORRIDOR_CUSTOMER_ID", "CORRIDOR_CUSTOMER_ENVIRONMENT_ID", "CORRIDOR_DEPLOYMENT_ID",
+])
+def test_deployed_runtime_refuses_incomplete_control_plane_configuration(missing):
+    values = {**BASE, **CONTROL}
+    del values[missing]
+
+    with pytest.raises(entrypoint.EntrypointError, match=missing):
+        entrypoint.prepare_environment(values, "web")
+
+
+def test_only_web_can_keep_a_sufficient_customer_signing_key():
+    with pytest.raises(entrypoint.EntrypointError, match="at least 32 bytes"):
+        entrypoint.prepare_environment({**BASE, **CONTROL, "CORRIDOR_CUSTOMER_ROUTING_KEY": "short"}, "web")
+    with pytest.raises(entrypoint.EntrypointError, match="only the migration task"):
+        entrypoint.prepare_environment({**BASE, **CONTROL, "CORRIDOR_MIGRATION_MODE": "operations"}, "web")
+
+
+def test_control_plane_urls_encode_passwords_and_cannot_lower_deployed_tls():
+    values = {**BASE, **CONTROL, "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD": "p@ss/word?#"}
+    url = entrypoint.compose_control_url(values, "resolver")
+    assert "p%40ss%2Fword%3F%23@control." in url
+    assert url.count("@") == 1
+    with pytest.raises(entrypoint.EntrypointError, match="does not verify"):
+        entrypoint.compose_control_url({**values, "CORRIDOR_DB_SSLMODE": "require"}, "resolver")

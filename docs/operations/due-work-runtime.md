@@ -18,10 +18,20 @@ using the exact Makefile example. Missing or unsupported cadence, timezone,
 missed-run, retention, retry, lease, deadline, concurrency, model, notification,
 scope, or version data is refused before the job is enabled.
 
-Run `make due-work ARGS="supervise --owner=runtime:<worker-id>
---poll-seconds=5"` in a process separate from the web server. `tick`,
+Run `make due-work ARGS="supervise --poll-seconds=5"` in a process separate
+from the web server. Each invocation generates a distinct runtime owner;
+`--owner=runtime:<worker-id>` remains available for an explicitly named
+operator process. Never give two live processes the same owner. `tick`,
 `run-once`, `recover`, and `status` expose the same stored interfaces for bounded
 operations and diagnosis.
+
+`make due-work ARGS=health` checks the worker database, object storage, and
+the existing durable heartbeat reading, and exits nonzero when degraded. It
+does not add heartbeat rows or customer decisions. The ECS worker service
+invokes the same command through the image entrypoint, because ECS health
+checks receive the task definition's environment rather than the URL PID 1
+composed. Its 120-second shutdown allowance lets the supervisor stop claiming
+work; any unfinished lease follows the existing recovery contract.
 
 Connected TxDOT document discovery uses `txdot-rid-box-v1`. Its declaration
 names the official RID page and one exact visible link such as `Utilities`.
