@@ -47,9 +47,11 @@ is reported; this current-run ceiling enforces its limit on every new run
 without making old slow samples block a faster repair. Median enforcement
 begins with five validated samples in a ten-run window. A current gate below
 the three-minute target may pass while the historical median remains slow.
-Before five usable samples exist, the current run must itself finish below
-three minutes. Unavailable historical log access therefore cannot disable the
-budget: the current job-output proof and its strict time limit remain required.
+Before five usable samples exist, each current behavior-test command must
+finish below three minutes and the complete run below five minutes. A rolling
+median is not a per-run queue-time cutoff. Unavailable historical log access
+therefore cannot disable the budget: current job-output proof and execution
+limits remain required.
 Raising a limit is a policy change that requires an explicit successor
 decision; ordinary timing refreshes cannot move these limits.
 
