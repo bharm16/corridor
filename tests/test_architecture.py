@@ -609,13 +609,13 @@ def test_the_render_worker_has_no_database_or_storage_dependency():
     storage backend."""
 
     worker = REPO_ROOT / "workers" / "render"
-    tree = ast.parse((worker / "render_worker.py").read_text(encoding="utf-8"))
     imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
+    for module in sorted(worker.glob("*.py")):
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
     forbidden = {"corridor", "sqlalchemy", "psycopg", "boto3", "botocore"}
 
     assert imported & forbidden == set()
@@ -654,7 +654,11 @@ ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tests/test_render_retention.py", ("tesseract",)),
     ("tests/test_token_layers.py", ("pymupdf", "tesseract")),
     ("tests/test_unreadable_cells.py", ("tesseract",)),
-    ("workers/render/render_worker.py", ("pymupdf",)),
+    # The render worker itself left this list at #735: it rasterises with
+    # PDFium, and the MuPDF path it replaced is retained whole in one module,
+    # loaded only when a request asks for the measured rollback. #741 deletes
+    # that module rather than untangling an engine from the worker.
+    ("workers/render/legacy_pymupdf.py", ("pymupdf",)),
 )
 
 

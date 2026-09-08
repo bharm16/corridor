@@ -53,6 +53,17 @@ class Settings(BaseSettings):
     # the rest of the pipeline reads (`corridor.ingest`).
     corpus_images: str = "out/page-images"
 
+    # Which rasterizer the isolated render worker uses (#735). Off is MuPDF,
+    # the measured path every existing derivative was rendered with; on is
+    # PDFium, the engine ADR-0094 decided on. It is off here because a merged
+    # implementation is not a selection: #447 owns that act, and turning this
+    # on is the one configuration change it makes. A PDFium render is a new
+    # derivative identity beside the MuPDF one, never an overwrite (ADR-0072),
+    # so a deployment can be turned back without losing what it rendered.
+    pdfium_render_worker: bool = Field(
+        default=False, validation_alias="CORRIDOR_PDFIUM_RENDER_WORKER"
+    )
+
     # The one server-owned mailbox address and webhook credential for #372.
     # Empty credential is intentionally non-operational: a deployment must
     # explicitly configure the sender-authentication boundary before mail can

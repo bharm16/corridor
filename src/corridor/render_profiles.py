@@ -5,6 +5,12 @@ review, OCR, model vision, and table geometry. This module exposes four versione
 purposes selected by a checked-in gold measurement. OpenCV stays behind the
 worker process and lockfile; the core only validates immutable requests and
 derivative manifests.
+
+Which rasterizer the worker runs is decided here too (#735). It is one
+deployment setting, off, and the request carries the answer to the worker;
+the manifest records the engine that ran and the derivative identity carries
+it, so PDFium renders accumulate beside the MuPDF renders already retained
+rather than replacing them.
 """
 
 from __future__ import annotations
@@ -23,6 +29,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.config import settings
 from corridor.models import Document, PageRenderDerivative
 from corridor.object_storage import content_store
 from corridor.retention import artifact_key, register_processing_artifact
@@ -34,6 +41,28 @@ DEFAULT_MEASUREMENT_PATH = (
     ROOT / "gold" / "pdf" / "v1" / "render-profile-measurement.json"
 )
 DEFAULT_WORKER_PROJECT = ROOT / "workers" / "render"
+
+# The two rasterizers the worker can run (#735). The legacy engine is the one
+# every derivative recorded before #735 was rendered with; the replacement is
+# the engine ADR-0094 decided on.
+LEGACY_RASTERIZER = "pymupdf"
+REPLACEMENT_RASTERIZER = "pdfium"
+RASTERIZERS = (LEGACY_RASTERIZER, REPLACEMENT_RASTERIZER)
+
+
+def selected_rasterizer() -> str:
+    """The engine this deployment renders with, as configured.
+
+    One setting, defaulting to off, is the whole selection mechanism: #447
+    owns the act of turning it on, and no merged implementation changes it.
+    The worker cannot read it - `worker_environment` scrubs every `CORRIDOR_`
+    variable - so the choice travels in the request, where the manifest
+    records which engine actually ran.
+    """
+
+    return (
+        REPLACEMENT_RASTERIZER if settings.pdfium_render_worker else LEGACY_RASTERIZER
+    )
 
 
 class RenderModel(BaseModel):
@@ -130,7 +159,8 @@ class RegenerableSource(RenderModel):
 
 
 class RenderDerivative(RenderModel):
-    schema_version: Literal["corridor.render-derivative.v1"]
+    schema_version: Literal["corridor.render-derivative.v2"]
+    rasterizer: Literal["pymupdf", "pdfium"]
     profile_name: str
     profile_id: str
     dpi: int
@@ -237,6 +267,7 @@ def render_page_derivative(
     output_dir: Path | str,
     clip_page_box: PageBox | None = None,
     worker_project: Path | str = DEFAULT_WORKER_PROJECT,
+    rasterizer: str | None = None,
 ) -> RenderDerivative:
     return render_page_derivatives(
         pdf_path=pdf_path,
@@ -245,6 +276,7 @@ def render_page_derivative(
         output_dir=output_dir,
         clip_page_box=clip_page_box,
         worker_project=worker_project,
+        rasterizer=rasterizer,
     )[0]
 
 
@@ -256,6 +288,7 @@ def render_page_derivatives(
     output_dir: Path | str,
     clip_page_box: PageBox | None = None,
     worker_project: Path | str = DEFAULT_WORKER_PROJECT,
+    rasterizer: str | None = None,
 ) -> list[RenderDerivative]:
     """Render several profiles of one page in a single worker process.
 
@@ -269,6 +302,9 @@ def render_page_derivatives(
 
     if not profile_names:
         raise ValueError("render requires at least one profile")
+    engine = rasterizer or selected_rasterizer()
+    if engine not in RASTERIZERS:
+        raise ValueError(f"unknown rasterizer {engine!r}")
     bundle = load_render_profile_bundle()
     profiles = []
     for profile_name in profile_names:
@@ -291,6 +327,7 @@ def render_page_derivatives(
             "pdf_path": str(Path(pdf_path).resolve()),
             "page_number": page_number,
             "profile": profile.model_dump(mode="json"),
+            "rasterizer": engine,
             "output_dir": str(output.resolve()),
             "clip_page_box": (
                 clip_page_box.model_dump(mode="json") if clip_page_box else None
@@ -358,6 +395,16 @@ def worker_environment(environment: dict[str, str] | None = None) -> dict[str, s
 
 
 def _derivative_key(document_id: int, derivative: RenderDerivative) -> str:
+    """The identity a derivative is retained under, engine included.
+
+    The rasterizer joins it only when it is not the legacy engine, which keeps
+    every derivative written before #735 addressable at the identity it was
+    written under. A PDFium render of a page MuPDF has already rendered is a
+    new identity beside the old row, never an overwrite of it: two rasterizers
+    produce different pixels for the same page, and ADR-0072 keeps a
+    regenerable intermediary's manifest honest about which reading it holds.
+    """
+
     identity = {
         "document_id": document_id,
         "page_number": derivative.regenerable_from.page_number,
@@ -368,6 +415,8 @@ def _derivative_key(document_id: int, derivative: RenderDerivative) -> str:
             else None
         ),
     }
+    if derivative.rasterizer != LEGACY_RASTERIZER:
+        identity["rasterizer"] = derivative.rasterizer
     return hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -445,7 +494,15 @@ def regenerate_render_derivative(
     pdf_path: Path | str,
     output_dir: Path | str,
 ) -> RenderDerivative:
-    """Rebuild one derivative only from its pinned source, page, profile, and clip."""
+    """Rebuild one derivative only from its pinned source, page, profile, clip
+    and rasterizer.
+
+    The engine comes from the retained manifest, not from what this deployment
+    currently selects: a derivative regenerated with the other rasterizer would
+    be different pixels under the same identity, which is the one thing
+    regeneration must never produce. A manifest written before #735 names no
+    engine and is MuPDF's.
+    """
 
     source = Path(pdf_path)
     if hashlib.sha256(source.read_bytes()).hexdigest() != stored.source_sha256:
@@ -458,6 +515,7 @@ def regenerate_render_derivative(
         profile_name=stored.profile_name,
         output_dir=output_dir,
         clip_page_box=clip,
+        rasterizer=stored.manifest_json.get("rasterizer", LEGACY_RASTERIZER),
     )
     if derivative.profile_id != stored.profile_id:
         raise ValueError("retained render profile is no longer available")

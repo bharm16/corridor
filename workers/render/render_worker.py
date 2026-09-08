@@ -4,6 +4,29 @@ The core application used one Pillow/PyMuPDF image for review, OCR, and table
 work. This process owns engine dependencies and emits one identified derivative
 plus a complete affine manifest. It has no database access and cannot mutate the
 source PDF or any reviewer rendition.
+
+Two rasterizers reach the same manifest (#735). PDFium, through pypdfium2, is
+the replacement ADR-0094 decided on; `legacy_pymupdf` is the measured path it
+replaces, imported only when a request asks for it, so this module depends on
+no MuPDF. Which one runs is the caller's decision, carried in the request,
+never read from this process's environment: `render_profiles.worker_environment`
+scrubs every `CORRIDOR_` variable before the subprocess starts, so a setting
+could not reach here even if it were consulted. Nothing about a merged
+implementation selects it for production; #447 owns that act.
+
+**Why PDFium needs no further isolation here.** `corridor_pdf_reader.execution`
+holds the rule that PDFium is unsafe to call from more than one thread of a
+process, and offers two mechanisms: `pdfium_entry()`, an in-process guard for a
+caller that shares its process with other threads, and `PdfiumExecutor`, which
+runs a call in a spawned process. This worker is already the second mechanism.
+The core starts one short-lived process per render request, hands it a request
+file, and reads back a manifest file; the process never threads, renders its
+requests one after another, and exits. Wrapping a spawned process in another
+spawned process would buy nothing, and a lock inside a single-threaded process
+guards against a caller that cannot exist. The worker is a separate uv project
+and cannot import the reader package in any case - `tests/test_pdf_reader_package.py`
+requires that it does not - so the contract is honoured by construction and
+stated here rather than imported.
 """
 
 from __future__ import annotations
@@ -17,10 +40,13 @@ from pathlib import Path
 import cv2
 import numpy as np
 from PIL import Image, __version__ as pillow_version
-import pymupdf
+import pypdfium2
+
+from raster import SCALE, RasterPage, fixed_box, flip_box
 
 
-SCALE = 1_000
+LEGACY_RASTERIZER = "pymupdf"
+REPLACEMENT_RASTERIZER = "pdfium"
 
 
 def multiply(left, right):
@@ -55,16 +81,6 @@ def apply(matrix, point):
     a, b, c, d, e, f = matrix
     x, y = point
     return (a * x + c * y + e, b * x + d * y + f)
-
-
-def fixed_box(rect):
-    value = pymupdf.Rect(rect)
-    return {
-        "x0": round(value.x0 * SCALE),
-        "y0": round(value.y0 * SCALE),
-        "x1": round(value.x1 * SCALE),
-        "y1": round(value.y1 * SCALE),
-    }
 
 
 def box_width(box):
@@ -173,20 +189,88 @@ def preprocess(image, operations):
     return processed
 
 
+def rasterise_pdfium(source_path, page_number, dpi):
+    """Render one page's displayed area with PDFium, with its declared boxes.
+
+    PDFium renders what a viewer shows: the crop box, with /Rotate applied, so
+    the pixels arrive in the same frame MuPDF's do and the shared chain below
+    fits both. The boxes it reports are the file's own, y upwards and in any
+    corner order, so they are normalized and the crop box is flipped into
+    Corridor's top-left frame here. `get_cropbox()` falls back to the media box
+    when the page declares none, which is what a reader displays and what MuPDF
+    reports for such a page.
+
+    The boxes are then checked against the size PDFium says it is rendering,
+    because PDFium's box accessors do not inherit /MediaBox or /CropBox from a
+    parent node of the page tree while its renderer resolves them properly. No
+    corpus page disagrees, and a page that did would otherwise produce a
+    manifest whose affine chain quietly described a different rectangle from
+    the one in the PNG. It fails the render instead.
+    """
+
+    document = pypdfium2.PdfDocument(source_path)
+    try:
+        page = document[page_number - 1]
+        media_box = fixed_box(*page.get_mediabox())
+        crop_box = fixed_box(*page.get_cropbox())
+        rotation = int(page.get_rotation())
+        displayed = page.get_size()
+        image = page.render(scale=dpi / 72).to_pil().convert("RGB").copy()
+        page.close()
+    finally:
+        document.close()
+    width, height = box_width(crop_box), box_height(crop_box)
+    if rotation in {90, 270}:
+        width, height = height, width
+    if abs(round(displayed[0] * SCALE) - width) > 1 or (
+        abs(round(displayed[1] * SCALE) - height) > 1
+    ):
+        raise ValueError(
+            "the page boxes PDFium reports are not the page it renders; the "
+            "file may inherit /MediaBox or /CropBox from the page tree"
+        )
+    return RasterPage(
+        media_box=media_box,
+        crop_box=flip_box(crop_box, media_box["y1"]),
+        page_origin_y=crop_box["y1"],
+        rotation=rotation,
+        image=image,
+    )
+
+
+def rasterise(rasterizer, source_path, page_number, dpi):
+    """The requested engine's page, and the versions it was produced with."""
+
+    if rasterizer == REPLACEMENT_RASTERIZER:
+        return rasterise_pdfium(source_path, page_number, dpi), {
+            "pypdfium2": pypdfium2.version.PYPDFIUM_INFO.version,
+            "pdfium": pypdfium2.version.PDFIUM_INFO.version,
+        }
+    if rasterizer == LEGACY_RASTERIZER:
+        import legacy_pymupdf
+
+        return (
+            legacy_pymupdf.rasterise(source_path, page_number, dpi),
+            legacy_pymupdf.library_versions(),
+        )
+    raise ValueError(f"unknown rasterizer {rasterizer!r}")
+
+
 def render(request):
     source_path = Path(request["pdf_path"])
     source_bytes = source_path.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     profile = request["profile"]
+    rasterizer = request["rasterizer"]
     output_dir = Path(request["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
-    with pymupdf.open(source_path) as document:
-        page = document[int(request["page_number"]) - 1]
-        media_box = fixed_box(page.mediabox)
-        crop_box = fixed_box(page.cropbox)
-        rotation = int(page.rotation)
-        pixmap = page.get_pixmap(dpi=int(profile["dpi"]), alpha=False)
-        image = Image.frombytes("RGB", (pixmap.width, pixmap.height), pixmap.samples)
+    page, engine_versions = rasterise(
+        rasterizer, source_path, int(request["page_number"]), int(profile["dpi"])
+    )
+    media_box = page.media_box
+    crop_box = page.crop_box
+    rotation = page.rotation
+    image = page.image
 
     clip_box = request.get("clip_page_box")
     rotated_width = box_height(crop_box) if rotation in {90, 270} else box_width(crop_box)
@@ -210,13 +294,18 @@ def render(request):
     image = image.crop(pixel_crop)
     array = np.asarray(image)
 
+    # Page space is the crop box's top-left corner with y downwards, so the
+    # flip constant is the crop box's *top* edge in PDF user space. That is
+    # `page_origin_y`, not `crop_box["y1"]`: the two agree on every page whose
+    # media box starts at y = 0, and differ by `media_box["y0"]` on the pages
+    # that do not (`legacy_pymupdf`).
     pdf_to_page = (
         1.0,
         0.0,
         0.0,
         -1.0,
         -float(crop_box["x0"]),
-        float(crop_box["y1"]),
+        float(page.page_origin_y),
     )
     rotate = rotation_matrix(rotation, box_width(crop_box), box_height(crop_box))
     page_to_clip = (
@@ -229,7 +318,11 @@ def render(request):
     )
     clip_to_raster = (scale, 0.0, 0.0, scale, 0.0, 0.0)
     transforms = [
-        transform_step("pdf_user_to_page", pdf_to_page),
+        transform_step(
+            "pdf_user_to_page",
+            pdf_to_page,
+            parameters={"page_origin_y": page.page_origin_y},
+        ),
         transform_step("page_rotation", rotate, parameters={"degrees": rotation}),
         transform_step("page_to_clip", page_to_clip, parameters={"box": clip_box}),
         transform_step("clip_to_raster", clip_to_raster, parameters={"dpi": profile["dpi"]}),
@@ -242,12 +335,15 @@ def render(request):
         )
     operations = tuple(profile.get("preprocessing", ()))
     array = preprocess(array, operations)
+    # The engine joins the artifact name only when it is not the legacy one,
+    # by the same rule `render_profiles._derivative_key` applies to the
+    # derivative identity: a PDFium render lands beside the MuPDF render of the
+    # same page and profile, and no file an earlier render wrote moves.
+    identity = {"profile_id": profile["profile_id"], "clip": clip_box}
+    if rasterizer != LEGACY_RASTERIZER:
+        identity["rasterizer"] = rasterizer
     suffix = hashlib.sha256(
-        json.dumps(
-            {"profile_id": profile["profile_id"], "clip": clip_box},
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
+        json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:12]
     artifact_path = output_dir / (
         f"{source_sha256}-p{int(request['page_number']):04d}-"
@@ -272,7 +368,8 @@ def render(request):
         math.dist(point, apply(reverse, apply(composed, point))) for point in points
     )
     return {
-        "schema_version": "corridor.render-derivative.v1",
+        "schema_version": "corridor.render-derivative.v2",
+        "rasterizer": rasterizer,
         "profile_name": profile["name"],
         "profile_id": profile["profile_id"],
         "dpi": profile["dpi"],
@@ -304,7 +401,7 @@ def render(request):
         "max_round_trip_error": round_trip_error,
         "measured_tolerance": 0.001,
         "library_versions": {
-            "pymupdf": pymupdf.VersionBind,
+            **engine_versions,
             "opencv": cv2.__version__,
             "pillow": pillow_version,
             "numpy": np.__version__,
@@ -316,7 +413,7 @@ def render(request):
 def main(argv=None):
     """Render every requested derivative in this one process.
 
-    Importing OpenCV, Pillow, PyMuPDF and NumPy costs about 0.27s, which is
+    Importing OpenCV, Pillow, the rasterizer and NumPy costs about 0.27s, which is
     roughly 70% of what rendering one ordinary page costs. Ingest wants three
     profiles of the same page, so the request carries a list and the caller
     pays that import once instead of three times (#548). A one-element list is

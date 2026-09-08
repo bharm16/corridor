@@ -43,11 +43,21 @@ bounded cell crops. OpenCV is absent from the application lock and lives only in
 `workers/render/uv.lock`.
 
 Every derivative manifest records its source digest, page, profile identity,
-library versions, parameters, artifact digest, Class B retention label, and the
-forward/inverse affine chain from PDF user space through page rotation, clip,
-raster scale, and any deskew. The source bytes plus that manifest are sufficient
-to regenerate the artifact; reviewer pixels are never overwritten by a
-preprocessed derivative.
+rasterizer, library versions, parameters, artifact digest, Class B retention
+label, and the forward/inverse affine chain from PDF user space through page
+rotation, clip, raster scale, and any deskew. The source bytes plus that
+manifest are sufficient to regenerate the artifact; reviewer pixels are never
+overwritten by a preprocessed derivative.
+
+The profiles are the same under either rasterizer. #735 put PDFium beside
+MuPDF in the worker (ADR-0094); the DPI selection, the preprocessing and the
+gold measurement above are untouched by it, because the engine decides how the
+page is turned into pixels and nothing about which pixels are asked for. The
+engine is a deployment setting that is off, the manifest names the engine that
+ran, and a PDFium derivative is a new identity beside the MuPDF one rather
+than a replacement of it. `artifacts/render-rasterizer-comparison/` holds what
+the two engines produce on the corpus, with the tolerances that comparison
+declared.
 
 ## Frozen paired-rendition reader baseline (#731)
 
