@@ -43,7 +43,7 @@ from corridor.baseline_adoption import (
     effective_baseline_formats,
     register_baseline_format,
 )
-from corridor.delta_resolution import ChildDecisionRequest, resolve_delta
+from corridor.delta_resolution import ChildDecisionRequest, RecordEffect, resolve_delta
 from corridor.due_work import (
     HANDLER_RELEASE_PREPARATION,
     HANDLER_REPORT_PREPARATION,
@@ -54,6 +54,8 @@ from corridor.models import (
     BaselineFormatObject,
     DueWorkOccurrence,
     DueWorkReceipt,
+    Project,
+    ProjectRecordRevision,
     ReleaseCandidate,
     ReleasePackage,
     ReleasePreparationAttempt,
@@ -81,8 +83,11 @@ from corridor.release_preparation_supervisor import (
     retained_output_template,
 )
 from corridor.release_preparation_worker import run_preparation_request
+from corridor.release_authorization import retrieve_released_artifact
 
 import test_issue_path_end_to_end as issue_path
+from packet_review_support import Rendition, configure_issue, subject, support
+from test_release_candidate import CHASE, SUMMARY, UCM_RENDERER, WEEKLY
 
 # #536's end-to-end module already owns an adopted project, a coordinator, a
 # designated releaser, the app on this test's own migrated database, and the
@@ -749,6 +754,190 @@ def _packages(factory, adopted: Adopted) -> list[ReleasePackage]:
                 .order_by(ReleasePackage.id)
             ).all()
         )
+
+
+def _accept_station(factory, adopted, row, before, after, *, at):
+    """Accept a supported value on one actual adopted workbook row."""
+
+    with factory() as writing:
+        project = writing.get_one(Project, adopted.project_id)
+        revision = writing.scalar(
+            select(func.max(ProjectRecordRevision.id)).where(
+                ProjectRecordRevision.project_id == adopted.project_id
+            )
+        )
+        source = Rendition(writing, project, f"station-{row}-{after}.xlsx")
+        fact, segment = source.capture(
+            fact_type="station_from", value=after, subject_key=subject(row)
+        )
+        assessment = support(writing, project, fact, segment)
+        (delta,) = create_proposed_delta_group(
+            writing,
+            project_id=adopted.project_id,
+            source_family="ucm-workbook",
+            source_revision=source.document.sha256,
+            deltas=[
+                ProposedDeltaValues(
+                    change_type="modify",
+                    target=ExistingSubjectTarget(
+                        subject_identity=subject(row), field="station_from"
+                    ),
+                    accepted_value=before,
+                    proposed_value=after,
+                    accepted_baseline_revision=f"revision:{revision}",
+                )
+            ],
+        )
+        outcome = resolve_delta(
+            writing,
+            ChildDecisionRequest(
+                project_id=adopted.project_id,
+                delta_id=int(delta.id),
+                action="accept",
+                principal=COORDINATOR,
+                idempotency_key=f"accept:{delta.id}",
+                decided_at=at,
+                observed_accepted_revision_id=revision,
+                record_effects=(RecordEffect(fact_id=fact.id),),
+                support_assessment_ids=(assessment.id,),
+            ),
+        )
+        assert outcome.status == "resolved", outcome.refusal
+        writing.commit()
+
+
+def _released_text(factory, package, artifact_type, store):
+    with factory() as reading:
+        return retrieve_released_artifact(
+            reading, package, artifact_type, store=store
+        ).decode("utf-8")
+
+
+def test_released_content_keeps_changes_since_the_authorized_issue(
+    factory, adopted, client, store
+):
+    """Skipped issues must not consume changes in either released artifact.
+
+    A is authorized, B is prepared but never authorized, an internal weekly
+    reading closes, another value is accepted, and C is prepared and authorized.
+    C's final weekly receipt counts one acceptance; its external issue owes the
+    reader all three since A. The retained bytes, not the stored floors, are
+    the verdict.
+    """
+
+    with factory() as setup:
+        configure_issue(
+            setup,
+            setup.get_one(Project, adopted.project_id),
+            principal=COORDINATOR,
+            effective_from=issue_path.FEBRUARY,
+            ucm=UCM_RENDERER,
+            artifacts=(SUMMARY, WEEKLY, CHASE),
+        )
+        setup.commit()
+
+    _accept_station(
+        factory, adopted, 3, "1149+00", "1149+10", at=FIRST_DECISIONS_AT
+    )
+    _enable(factory, adopted)
+    _take_weekly_reading(factory)
+    first = _prepare(factory, client, adopted, at=WORKER_AT)
+    assert first.handler_result["outcome"] == "prepared", first.handler_result
+    _authorize(client, adopted)
+    (package_a,) = _packages(factory, adopted)
+    first_bytes = {
+        kind: _released_text(factory, package_a, kind, store)
+        for kind in ("accepted_change_summary", "weekly_coordination_report")
+    }
+    assert "no earlier approved issue to compare" in first_bytes["accepted_change_summary"]
+    assert "no earlier approved issue to compare" in first_bytes["weekly_coordination_report"]
+    assert "accepted as the source stated" not in first_bytes["weekly_coordination_report"]
+
+    _accept_station(
+        factory, adopted, 3, "1149+10", "1149+20", at=SECOND_DECISIONS_AT
+    )
+    _accept_station(
+        factory, adopted, 4, "1160+00", "1160+30", at=SECOND_DECISIONS_AT
+    )
+    _weekly_reading(factory, LATER_READING_AT)
+    unapproved = _prepare(factory, client, adopted, at=SECOND_WORKER_AT)
+    assert unapproved.handler_result["outcome"] == "prepared", (
+        unapproved.handler_result
+    )
+    assert len(_packages(factory, adopted)) == 1
+
+    internal = _weekly_reading(factory, THIRD_READING_AT)
+    assert internal["resolved_accepted"] == 0
+    _accept_station(
+        factory, adopted, 3, "1149+20", "1149+50",
+        at=THIRD_READING_AT + timedelta(hours=1),
+    )
+    # A current accepted revision needs its own retained preparation reading.
+    # This one counts only the last acceptance in the internal weekly window.
+    final_at = THIRD_READING_AT + timedelta(weeks=1)
+    newest = _weekly_reading(factory, final_at)
+    assert newest["resolved_accepted"] == 1
+    third = _prepare(factory, client, adopted, at=final_at + timedelta(minutes=5))
+    assert third.handler_result["outcome"] == "prepared", third.handler_result
+    _authorize(client, adopted)
+    package_a_again, package_c = _packages(factory, adopted)
+    assert package_c.previous_package_id == package_a.id
+    assert package_c.candidate_id != unapproved.handler_result["candidate_id"]
+
+    summary = _released_text(factory, package_c, "accepted_change_summary", store)
+    assert "3 changes were accepted" in summary
+    for before, after in (
+        ("1149+10", "1149+20"),
+        ("1160+00", "1160+30"),
+        ("1149+20", "1149+50"),
+    ):
+        assert f"showed {before}; it now shows {after}" in summary
+    assert "showed 1149+00; it now shows 1149+10" not in summary
+    report = _released_text(factory, package_c, "weekly_coordination_report", store)
+    assert "3 proposed changes accepted as the source stated them" in report
+    assert "Since the last approved issue" in report
+    assert "Since the last weekly reading" not in report
+
+    # Neither receipt nor released bytes can be rewritten to make the windows
+    # agree. The weekly result remains one acceptance; A remains its old issue.
+    bound = _reading_for(factory, int(third.handler_result["request_id"]))
+    with factory() as reading:
+        receipt = reading.get_one(DueWorkReceipt, int(bound.receipt_id))
+        assert receipt.handler_result_json == newest
+        request = reading.get_one(ReleasePreparationRequest, int(bound.request_id))
+        frozen = resolve_preparation_inputs(
+            reading, request, reading=bound, store=store
+        )
+        assert frozen.preparation["resolved_accepted"] == 3
+        assert frozen.preparation["proposed_new"] == 3
+
+    # A later accepted value and weekly close arm the replay check: both new
+    # watermarks exceed C's ceilings, while C must still render its three.
+    _accept_station(
+        factory, adopted, 4, "1160+30", "1160+90",
+        at=final_at + timedelta(days=1),
+    )
+    later_at = final_at + timedelta(weeks=1)
+    later = _weekly_reading(factory, later_at)
+    assert later["through_delta_id"] > bound.through_delta_id
+    assert later["through_disposition_id"] > bound.through_disposition_id
+    with factory() as reading:
+        request = reading.get_one(ReleasePreparationRequest, int(bound.request_id))
+        replay_bound = bind_report_preparation_reading(
+            reading, request=request, bound_at=later_at
+        )
+        replay = resolve_preparation_inputs(
+            reading, request, reading=replay_bound, store=store
+        )
+        assert replay_bound.id == bound.id
+        assert replay.preparation == frozen.preparation
+        assert reading.get_one(
+            DueWorkReceipt, int(bound.receipt_id)
+        ).handler_result_json == newest
+    assert _released_text(factory, package_c, "accepted_change_summary", store) == summary
+    assert _released_text(factory, package_c, "weekly_coordination_report", store) == report
+    for kind, original in first_bytes.items():
+        assert _released_text(factory, package_a_again, kind, store) == original
 
 
 def test_the_second_issue_measures_from_the_first_authorized_package(

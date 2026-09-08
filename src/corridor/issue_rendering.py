@@ -30,6 +30,10 @@ the divergence #488 removed, so the preparation reading is a required input:
 its ``accepted_revision_id`` **is** the frozen revision, and binding verifies
 that pinned identifier exists for this project rather than asking the database
 again which revision is newest.
+For external issues the supervisor replaces only the lifecycle counts with
+the request's frozen authorized-package window (#709); the weekly receipt's
+revision and open/deferred standing stay fixed. The comparison floors join the
+reading identity so the two windows cannot name the same rendered reading.
 
 **Why the comparison window is a revision watermark and not a date.**  ADR-0086
 fixes the baseline at the last approved package, so the change summary covers
@@ -125,6 +129,7 @@ from corridor.models import (
 )
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.presentation import accepted_record_exception_name, field_label
+from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
 from corridor.review_packet_reading import is_stale
 from corridor.support_assessments import FactProposition, current_support_assessments
 
@@ -1023,6 +1028,13 @@ def _reading_identity(**parts: Any) -> str:
             int(parts["preparation"].get("through_disposition_id") or 0),
         ],
     }
+    preparation = parts["preparation"]
+    if preparation.get("comparison_baseline") == AUTHORIZED_PACKAGE_COMPARISON:
+        payload["comparison_window"] = {
+            "baseline": AUTHORIZED_PACKAGE_COMPARISON,
+            "prior_delta_floor": int(preparation["prior_delta_floor"]),
+            "prior_disposition_floor": int(preparation["prior_disposition_floor"]),
+        }
     return sha256(
         json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
@@ -1405,6 +1417,23 @@ def read_weekly_report(
             lines.extend(_follow_up_lines(reading))
         elif section.key == SECTION_PENDING_COORDINATION:
             lines.extend(_pending_lines(reading))
+    count_inputs = (
+        int(reading.preparation.get("through_delta_id") or 0),
+        int(reading.preparation.get("through_disposition_id") or 0),
+    )
+    count_description = (
+        f"every proposed change up to number {count_inputs[0]} and "
+        f"every decision up to number {count_inputs[1]}"
+    )
+    if reading.preparation.get("comparison_baseline") == AUTHORIZED_PACKAGE_COMPARISON:
+        delta_floor = int(reading.preparation["prior_delta_floor"])
+        disposition_floor = int(reading.preparation["prior_disposition_floor"])
+        count_inputs = (delta_floor, disposition_floor, *count_inputs)
+        count_description += (
+            f", counting new proposals after number {delta_floor} and "
+            f"decisions after number {disposition_floor}; waiting work is "
+            "the standing retained for this issue"
+        )
     return WeeklyReportReading(
         bound=reading,
         lines=tuple(lines),
@@ -1418,16 +1447,8 @@ def read_weekly_report(
             value_class=DERIVATION,
             rule_identity=WEEKLY_REPORT_RULE,
             rule_version=WEEKLY_REPORT_RULE_VERSION,
-            input_record_ids=(
-                int(reading.preparation.get("through_delta_id") or 0),
-                int(reading.preparation.get("through_disposition_id") or 0),
-            ),
-            input_description=(
-                "every proposed change up to number "
-                f"{int(reading.preparation.get('through_delta_id') or 0)} and "
-                "every decision up to number "
-                f"{int(reading.preparation.get('through_disposition_id') or 0)}"
-            ),
+            input_record_ids=count_inputs,
+            input_description=count_description,
             evaluated_as_of=reading.cutoff_date,
         ),
     )
@@ -2095,9 +2116,16 @@ def _open_work_paragraph(reading: WeeklyReportReading) -> str:
             "value the project record already held"
         )
     sentences = []
-    if decided:
+    external_window = (
+        reading.bound.preparation.get("comparison_baseline")
+        == AUTHORIZED_PACKAGE_COMPARISON
+    )
+    if external_window and reading.bound.previous_issue is None:
+        sentences.append("There is no earlier approved issue to compare with.")
+    elif decided:
+        baseline = "approved issue" if external_window else "weekly reading"
         sentences.append(
-            "Since the last weekly reading, " + _join(decided) + "."
+            f"Since the last {baseline}, " + _join(decided) + "."
         )
     actionable = reading.open_actionable
     deferred = reading.open_deferred
