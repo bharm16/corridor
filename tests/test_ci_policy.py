@@ -8,6 +8,7 @@ never reports; a job skipped by an `if` reports `skipped`, which the
 against what `scripts/classify_ci_change.py` asked for (ADR-0093, #697).
 """
 
+import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -150,6 +151,82 @@ def test_check_runs_unconditionally_and_without_waiting_for_the_classifier():
     )
 
 
+def test_cdk_runs_only_for_infrastructure_inputs_inside_the_independent_check_job():
+    definition = _job("check")
+    assert "if" not in definition and "needs" not in definition
+    steps = definition["steps"]
+    checkout = next(step for step in steps if step.get("uses", "").startswith("actions/checkout"))
+    assert checkout["with"]["fetch-depth"] == "0"
+    classify = next(step for step in steps if step.get("id") == "infrastructure")
+    assert classify["run"] == (
+        'python3 scripts/classify_ci_change.py --base "$BASE_SHA" --head "$HEAD_SHA"'
+    )
+    assert classify["env"] == {
+        "BASE_SHA": "${{ github.event.pull_request.base.sha }}",
+        "HEAD_SHA": "${{ github.event.pull_request.head.sha }}",
+    }
+    infra_ids = {"infra_node", "infra_install", "infra_assertions", "infra_synth"}
+    infra_steps = [step for step in steps if step.get("id") in infra_ids]
+    assert {step["id"] for step in infra_steps} == infra_ids
+    assert all(
+        step["if"] == "${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}"
+        and "continue-on-error" not in step
+        for step in infra_steps
+    )
+    assert all(steps.index(classify) < steps.index(step) for step in infra_steps)
+    assertions = next(step for step in infra_steps if step["id"] == "infra_assertions")
+    assert assertions["run"] == (
+        "uv run python -m pytest tests --ignore=tests/test_workflow_ordering.py -q"
+    )
+    # The runbook and workflow assertions stay in the unconditional source
+    # check, and are excluded from the optional CDK project to run once.
+    assert "infra/tests/test_workflow_ordering.py" in _make_recipe("check")
+    for step in steps:
+        if step.get("working-directory") == "infra" or "setup-node" in step.get("uses", ""):
+            assert step.get("id") in infra_ids
+
+
+def _infrastructure_summary_step() -> dict:
+    return next(
+        step for step in _job("check")["steps"]
+        if step.get("name") == "Match infrastructure results against the classifier"
+    )
+
+
+@pytest.mark.parametrize("required, result", [("true", "success"), ("false", "skipped")])
+def test_infrastructure_result_matching_accepts_only_the_classified_shape(required, result):
+    step = _infrastructure_summary_step()
+    assert step["if"] == "${{ always() }}"
+    assert step["env"] == {
+        "INFRASTRUCTURE_REQUIRED": "${{ steps.infrastructure.outputs.infrastructure_required }}",
+        "NODE_RESULT": "${{ steps.infra_node.outcome }}",
+        "INSTALL_RESULT": "${{ steps.infra_install.outcome }}",
+        "ASSERTIONS_RESULT": "${{ steps.infra_assertions.outcome }}",
+        "SYNTH_RESULT": "${{ steps.infra_synth.outcome }}",
+    }
+    assert "${{" not in step["run"]
+    completed = subprocess.run(
+        ["bash", "-c", step["run"]], capture_output=True, text=True,
+        env={"PATH": os.environ["PATH"], "INFRASTRUCTURE_REQUIRED": required,
+             **{name: result for name in ("NODE_RESULT", "INSTALL_RESULT", "ASSERTIONS_RESULT", "SYNTH_RESULT")}},
+    )
+    assert completed.returncode == 0, completed.stdout + completed.stderr
+
+
+@pytest.mark.parametrize("required, result", [
+    ("true", "skipped"), ("true", "failure"), ("true", "cancelled"),
+    ("false", "success"), ("", "skipped"), ("maybe", "skipped"),
+])
+def test_infrastructure_result_matching_fails_closed(required, result):
+    completed = subprocess.run(
+        ["bash", "-c", _infrastructure_summary_step()["run"]],
+        capture_output=True, text=True,
+        env={"PATH": os.environ["PATH"], "INFRASTRUCTURE_REQUIRED": required,
+             **{name: result for name in ("NODE_RESULT", "INSTALL_RESULT", "ASSERTIONS_RESULT", "SYNTH_RESULT")}},
+    )
+    assert completed.returncode != 0
+
+
 def test_the_expensive_jobs_are_skipped_by_a_condition_not_by_a_path_filter():
     """The difference the whole design rests on.
 
@@ -186,7 +263,9 @@ def test_the_classifier_is_the_in_repository_script_reading_full_history():
     # The SHAs arrive through env, never interpolated into the shell body.
     assert "${{" not in step["run"]
     assert set(step["env"]) == {"BASE_SHA", "HEAD_SHA"}
-    assert set(classify["outputs"]) == {"behavior_required", "migration_required"}
+    assert set(classify["outputs"]) == {
+        "behavior_required", "migration_required", "timing_weights"
+    }
 
 
 def test_the_added_jobs_download_no_packages():
@@ -360,27 +439,135 @@ def test_each_gate_asks_for_the_shard_count_its_matrix_runs():
         )
 
 
-def test_the_parallel_gates_rebalance_instead_of_pinning_a_file_to_one_worker():
-    """`--dist loadfile` made one file the suite's floor (#548).
+def _make_recipe(target: str) -> str:
+    return (ROOT / "Makefile").read_text().split(f"\n{target}:\n", 1)[1].split(
+        "\n\n", 1
+    )[0]
 
-    tests/test_facts was 42.7% of the non-slow suite, and loadfile puts a
-    whole file on one worker, so that file alone set a ~306s wall clock no
-    worker count could beat. Rebalancing cut the same suite from 351.9s to
-    134.9s. The focused and migration gates stay on loadfile: they run on one
-    worker, where the mode is irrelevant.
-    """
 
-    makefile = (ROOT / "Makefile").read_text()
-    parallel = [
-        line
-        for line in makefile.splitlines()
-        if "pytest -n $(TEST_WORKERS)" in line
-    ]
-
-    assert parallel, "expected the parallel gates to be defined in the Makefile"
-    assert all("--dist worksteal" in line for line in parallel), (
-        "a parallel gate reverted to loadfile: " + "; ".join(parallel)
+def test_each_gate_uses_the_scheduler_appropriate_to_its_fixture_cost():
+    """Ordinary tests rebalance; slow module fixtures are built only once."""
+    for target in ("test", "test-full", "test-timing"):
+        assert "--dist worksteal" in _make_recipe(target)
+    for target in ("test-slow", "test-slow-timing"):
+        assert "--dist loadfile" in _make_recipe(target)
+    for target, suite in (("test-shard", "pytest"), ("test-slow-shard", "slow")):
+        recipe = _make_recipe(target)
+        assert "scripts/run_test_gate.py" in recipe
+        assert f"--suite {suite}" in recipe
+        assert "--shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)" in recipe
+    assert (
+        "scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 2"
+        in _make_recipe("test-migrations")
     )
+
+
+def test_ci_worker_count_matches_the_private_runner_capacity():
+    workflow = _workflow(GATE)
+    assert workflow["env"]["TEST_WORKERS"] == "2"
+    for name in ("pytest", "slow", "migration"):
+        assert "TEST_WORKERS" not in _job(name).get("env", {})
+    assert _job("full-suite", "full-suite.yml")["env"]["TEST_WORKERS"] == "2"
+
+
+def test_check_owns_its_source_checks_once_in_the_required_gate():
+    """The same checks must not execute in check and a behavior shard."""
+    path = ROOT / "scripts" / "run_test_gate.py"
+    spec = importlib.util.spec_from_file_location("ci_policy_run_test_gate", path)
+    assert spec is not None and spec.loader is not None
+    module = importlib.util.module_from_spec(spec)
+    previous_path = sys.path[:]
+    sys.path.insert(0, str(ROOT / "scripts"))
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.path[:] = previous_path
+        del sys.modules[spec.name]
+    expected = {"tests/test_architecture.py", "tests/test_source_scan_support.py"}
+    assert set(module.CHECK_OWNED_FILES) == expected
+    recipe = _make_recipe("check")
+    commands = [line.strip() for line in recipe.splitlines() if "pytest " in line]
+    assert len(commands) == 1
+    assert set(commands[0].split()[3:-1]) == expected | {
+        "infra/tests/test_workflow_ordering.py"
+    }
+    assert commands[0].endswith(" -q")
+
+
+def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_command():
+    """Metadata transport must not fail a completed test job or alter its partition."""
+    commands = {
+        "pytest": "make test-shard SHARDS=5 SHARD=${{ matrix.shard }}",
+        "slow": "make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}",
+        "migration": "make test-migrations",
+    }
+    for suite, command in commands.items():
+        job = _job(suite)
+        assert job["env"]["CORRIDOR_CI_WEIGHTS"] == (
+            "${{ needs.classify.outputs.timing_weights }}"
+        )
+        assert job["steps"][-1] == {"id": "measure", "run": command}
+    for job in _workflow(GATE)["jobs"].values():
+        assert all(
+            "actions/upload-artifact" not in step.get("uses", "")
+            and "actions/download-artifact" not in step.get("uses", "")
+            for step in job["steps"]
+        ), "artifact transport can fail after tests already passed"
+
+
+def test_every_matrix_shard_has_a_unique_receipt_output_read_by_the_summary():
+    """Each matrix child writes its own key; the summary receives all keys."""
+    summary = _job("release-gate")["steps"][-1]
+    seen = set()
+    for suite in ("pytest", "slow", "migration"):
+        job = _job(suite)
+        count = 1 if suite == "migration" else _shard_count(suite)
+        slots = {f"{suite}_{number}" for number in range(1, count + 1)}
+        assert not seen.intersection(slots)
+        seen.update(slots)
+        assert job["outputs"] == {
+            slot: "${{ steps.measure.outputs." + slot + " }}" for slot in slots
+        }
+        assert len([step for step in job["steps"] if step.get("id") == "measure"]) == 1
+        assert summary["env"][f"CORRIDOR_{suite.upper()}_RECEIPTS"] == (
+            "${{ toJSON(needs." + suite + ".outputs) }}"
+        )
+
+
+def test_the_classifier_shares_one_validated_timing_output():
+    job = _job("classify")
+    steps = job["steps"]
+    prepare = next(step for step in steps if step.get("id") == "timing")
+    assert prepare["if"] == "${{ steps.classify.outputs.behavior_required == 'true' }}"
+    assert prepare["run"] == "python3 scripts/ci_feedback.py prepare"
+    assert prepare["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert job["outputs"]["timing_weights"] == "${{ steps.timing.outputs.timing_weights }}"
+    classifier = next(step for step in steps if step.get("id") == "classify")
+    assert steps.index(classifier) < steps.index(prepare)
+    assert _workflow(GATE)["permissions"] == {"actions": "read", "contents": "read"}
+
+
+def test_budget_enforcement_extends_the_fail_closed_summary():
+    steps = _job("release-gate")["steps"]
+    assert steps[0] == _summary_step()
+    assert len(steps) == 3
+    checkout, finish = steps[1:]
+    assert checkout["uses"].startswith("actions/checkout")
+    assert checkout["if"] == finish["if"] == (
+        "${{ success() && needs.classify.outputs.behavior_required == 'true' }}"
+    )
+    assert finish["env"] == {
+        "GH_TOKEN": "${{ github.token }}",
+        "CORRIDOR_PYTEST_RECEIPTS": "${{ toJSON(needs.pytest.outputs) }}",
+        "CORRIDOR_SLOW_RECEIPTS": "${{ toJSON(needs.slow.outputs) }}",
+        "CORRIDOR_MIGRATION_RECEIPTS": "${{ toJSON(needs.migration.outputs) }}",
+        "PYTEST_SHARDS": str(_shard_count("pytest")),
+        "SLOW_SHARDS": str(_shard_count("slow")),
+        "MIGRATION_REQUIRED": "${{ needs.classify.outputs.migration_required }}",
+    }
+    assert finish["run"] == "python3 scripts/ci_feedback.py finish"
+    assert "continue-on-error" not in finish
 
 
 def test_pr_workflows_cancel_obsolete_revisions():

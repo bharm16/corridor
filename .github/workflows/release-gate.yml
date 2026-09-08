@@ -25,6 +25,15 @@ name: release-gate
 on:
   pull_request:
 
+permissions:
+  actions: read
+  contents: read
+
+# Standard private Linux runners have two cores. More xdist workers contend
+# with PostgreSQL and render processes instead of adding CPU capacity.
+env:
+  TEST_WORKERS: "2"
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
@@ -39,6 +48,7 @@ jobs:
     outputs:
       behavior_required: ${{ steps.classify.outputs.behavior_required }}
       migration_required: ${{ steps.classify.outputs.migration_required }}
+      timing_weights: ${{ steps.timing.outputs.timing_weights }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -50,7 +60,12 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/classify_ci_change.py --base "$BASE_SHA" --head "$HEAD_SHA"
-
+      - name: Read previous validated timing reports
+        id: timing
+        if: ${{ steps.classify.outputs.behavior_required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_feedback.py prepare
   check:
     # Runs on every pull request, unconditionally and without waiting for the
     # classifier: `make check` owns the ADR lifecycle, amendment-graph and
@@ -59,11 +74,20 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
       - run: uv sync --locked
       - run: make check
+      # A local standard-library classification keeps source checks independent
+      # of the classify job and avoids CDK setup on unrelated or docs-only PRs.
+      - id: infrastructure
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/classify_ci_change.py --base "$BASE_SHA" --head "$HEAD_SHA"
       # The infrastructure project rides in this job rather than taking one of
       # its own. Every gate job that installs packages is a concurrent
       # download, and eleven is the measured ceiling for this account -- ten
@@ -72,17 +96,25 @@ jobs:
       # twelfth and thirteenth download. The image build, which is the
       # expensive half, runs in the scheduled suite.
       - uses: actions/setup-node@v4
+        id: infra_node
+        if: ${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}
         with:
           node-version: "22"
       - name: Install the locked infrastructure toolchain
+        id: infra_install
+        if: ${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}
         working-directory: infra
         run: |
           uv sync --frozen
           npm ci
       - name: Infrastructure assertions
+        id: infra_assertions
+        if: ${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}
         working-directory: infra
-        run: uv run python -m pytest tests -q
+        run: uv run python -m pytest tests --ignore=tests/test_workflow_ordering.py -q
       - name: Synth (strict, with cdk-nag)
+        id: infra_synth
+        if: ${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}
         working-directory: infra
         run: |
           export PATH="$PWD/.venv/bin:$PATH"
@@ -92,10 +124,34 @@ jobs:
             --context corridor:publicHostname=pilot.example.com \
             --context corridor:signInSender=no-reply@example.com
 
+      - name: Match infrastructure results against the classifier
+        if: ${{ always() }}
+        env:
+          INFRASTRUCTURE_REQUIRED: ${{ steps.infrastructure.outputs.infrastructure_required }}
+          NODE_RESULT: ${{ steps.infra_node.outcome }}
+          INSTALL_RESULT: ${{ steps.infra_install.outcome }}
+          ASSERTIONS_RESULT: ${{ steps.infra_assertions.outcome }}
+          SYNTH_RESULT: ${{ steps.infra_synth.outcome }}
+        run: |
+          set -uo pipefail
+          case "$INFRASTRUCTURE_REQUIRED" in
+            true) expected=success ;;
+            false) expected=skipped ;;
+            *) echo '::error::infrastructure classification is absent or invalid'; exit 1 ;;
+          esac
+          failed=0
+          for result in "$NODE_RESULT" "$INSTALL_RESULT" "$ASSERTIONS_RESULT" "$SYNTH_RESULT"; do
+            if [ "$result" != "$expected" ]; then
+              printf '::error::infrastructure step is %s; expected %s\n' "${result:-<absent>}" "$expected"
+              failed=1
+            fi
+          done
+          exit "$failed"
+
   pytest:
-    # Sharded across runners: the job is CPU-bound on one four-core runner,
-    # so the only remaining lever is more actual CPU (#548). Every test file
-    # lands in exactly one shard, which scripts/test_shard.py proves.
+    # Every file lands in exactly one shard. Each private runner has two
+    # cores and uses two xdist workers; the ordinary suite uses worksteal.
+    # scripts/test_shard.py proves the exact cover (ADR-0096).
     # Five, not six. Six put twelve jobs on this account at once, saturated
     # its package downloads, and two jobs stalled for minutes inside pytest.
     # Runner count is bounded by what the account will serve concurrently,
@@ -103,6 +159,12 @@ jobs:
     # time and measured.
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    outputs:
+      pytest_1: ${{ steps.measure.outputs.pytest_1 }}
+      pytest_2: ${{ steps.measure.outputs.pytest_2 }}
+      pytest_3: ${{ steps.measure.outputs.pytest_3 }}
+      pytest_4: ${{ steps.measure.outputs.pytest_4 }}
+      pytest_5: ${{ steps.measure.outputs.pytest_5 }}
     strategy:
       fail-fast: false
       matrix:
@@ -111,6 +173,7 @@ jobs:
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_CI_WEIGHTS: ${{ needs.classify.outputs.timing_weights }}
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
       # The legacy accepted tables are written only by this login, and only
       # outside a customer environment (#492).
@@ -127,12 +190,18 @@ jobs:
       # concurrently with the two uv syncs; it carries the measurements and
       # the reason each piece is still there (#595).
       - run: scripts/ci_environment.sh
-      - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
-
+      - id: measure
+        run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
   slow:
-    # Sharded for the same reason as pytest (#548).
+    # Keep each module on one worker: loadfile avoids repeating its expensive
+    # acceptance fixtures across processes. Full coverage is unchanged.
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    outputs:
+      slow_1: ${{ steps.measure.outputs.slow_1 }}
+      slow_2: ${{ steps.measure.outputs.slow_2 }}
+      slow_3: ${{ steps.measure.outputs.slow_3 }}
+      slow_4: ${{ steps.measure.outputs.slow_4 }}
     strategy:
       fail-fast: false
       matrix:
@@ -141,6 +210,7 @@ jobs:
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_CI_WEIGHTS: ${{ needs.classify.outputs.timing_weights }}
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
       # The legacy accepted tables are written only by this login, and only
       # outside a customer environment (#492).
@@ -152,17 +222,20 @@ jobs:
           enable-cache: true
       # See the pytest job: the same setup, for the same measured reason.
       - run: scripts/ci_environment.sh
-      - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}
-
+      - id: measure
+        run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}
   migration:
     # The migration-adjacent path set the retired `migration-test.yml`
     # trigger carried, now asked of the classifier instead.
     needs: classify
     if: ${{ needs.classify.outputs.migration_required == 'true' }}
+    outputs:
+      migration_1: ${{ steps.measure.outputs.migration_1 }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
+      CORRIDOR_CI_WEIGHTS: ${{ needs.classify.outputs.timing_weights }}
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
       CORRIDOR_LEGACY_DEV_LOGIN: "1"
     steps:
@@ -173,8 +246,8 @@ jobs:
       # The same setup the behavior gates run, for the same measured reason
       # (#595).
       - run: scripts/ci_environment.sh
-      - run: make test-migrations
-
+      - id: measure
+        run: make test-migrations
   release-gate:
     # The required context. It fails closed: every job result is matched
     # against exactly what the classifier asked for, never against
@@ -242,3 +315,16 @@ jobs:
             exit 1
           fi
           printf 'release gate satisfied\n'
+      - uses: actions/checkout@v4
+        if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
+      - name: Enforce the measured feedback budget
+        if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CORRIDOR_PYTEST_RECEIPTS: ${{ toJSON(needs.pytest.outputs) }}
+          CORRIDOR_SLOW_RECEIPTS: ${{ toJSON(needs.slow.outputs) }}
+          CORRIDOR_MIGRATION_RECEIPTS: ${{ toJSON(needs.migration.outputs) }}
+          PYTEST_SHARDS: "5"
+          SLOW_SHARDS: "4"
+          MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}
+        run: python3 scripts/ci_feedback.py finish

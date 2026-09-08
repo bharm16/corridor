@@ -1,0 +1,20 @@
+{
+  "digests": {
+    "tests/durations-slow.json": "25ffaa05e491536fbfec29e42220ab6d881e0dcb58a09b1a149139bef7c99b6b",
+    "tests/durations.json": "31e6d9b739e33f937f04590510a962c2754e353cbadc35fb188bb77fd04d128b"
+  },
+  "files": 269,
+  "run_url": "https://github.com/bharm16/corridor/actions/runs/34257502898",
+  "source": "Complete successful test commands; the reporting job failed while retrieving logs. Only actual test timings supply these one-time bootstrap weights.",
+  "suites": {
+    "pytest": {
+      "executed_tests": 5434,
+      "file_seconds": 1185.96
+    },
+    "slow": {
+      "executed_tests": 64,
+      "file_seconds": 350.759
+    }
+  },
+  "tested_sha": "dfb44c320ac10b180fde91469a697a0d134a23ee"
+}

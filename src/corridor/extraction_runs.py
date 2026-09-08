@@ -48,6 +48,8 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.reader_replay import replay_native_segments
+from corridor.reader_segments import NATIVE_KINDS
 from corridor.project_lock import lock_project
 from corridor.record_inclusion import request_record_inclusion
 from corridor.revision_reconciliation_request import request_revision_reconciliation
@@ -56,8 +58,10 @@ from corridor.source_append import append_source_fact_receipt
 from corridor.source_segments import (
     append_ingested_source_segments,
     dereference_source_segment,
+    spreadsheet_replay,
 )
 from corridor.prose_spans import prose_segment_filter
+from corridor.token_layers import NativePdfReading, read_native_pdf
 
 
 class SourceFactAppendConflict(ValueError):
@@ -211,6 +215,7 @@ def append_source_facts(
     row_accounting_json: dict | None = None,
     allow_unsealed_legacy: bool = False,
     source_path: str | Path | None = None,
+    native_reading: NativePdfReading | None = None,
     fail_after_stage: str | None = None,
 ) -> SourceFactAppendResult:
     """Atomically validate and append one rendition's run, segments, and Facts."""
@@ -295,7 +300,14 @@ def append_source_facts(
     if fail_after_stage not in allowed_stages:
         raise ValueError("unknown source Fact append failure stage")
     with session.begin_nested():
-        append_ingested_source_segments(session, document, source_path)
+        # The append operation owns this reading through source validation.
+        # Previously append captured it internally and scalar replay launched
+        # another full isolated reading for every native segment it wrote.
+        if native_reading is None and Path(source_path).suffix.lower() == ".pdf":
+            native_reading = read_native_pdf(source_path, source_sha256=document.sha256)
+        append_ingested_source_segments(
+            session, document, source_path, native_reading=native_reading
+        )
         session.flush()
         segments = tuple(
             session.scalars(
@@ -311,7 +323,35 @@ def append_source_facts(
                 raise ValueError("source segment crosses project scope")
             if sha256(segment.exact_text.encode()).hexdigest() != segment.content_sha256:
                 raise ValueError("source segment digest is invalid")
-            dereference_source_segment(document, segment, source_path)
+        if segments and all(segment.kind == "spreadsheet_cell" for segment in segments):
+            # Validate the whole immutable workbook snapshot before any Fact
+            # can be appended; a changed source refuses this nested transaction.
+            with spreadsheet_replay(document, source_path) as replay_cell:
+                for segment in segments:
+                    replay_cell(segment)
+        else:
+            native_segments = tuple(segment for segment in segments if segment.kind in NATIVE_KINDS)
+            if native_reading is not None:
+                # A rendition can retain another explicitly captured configuration.
+                # Reuse this operation's reading for its own locators; historical
+                # configurations still replay through their recorded reader.
+                captured_segments = tuple(
+                    segment for segment in native_segments
+                    if segment.reading_sha256 == native_reading.reading_sha256
+                    and segment.reader_identity == native_reading.identity
+                )
+                replay_native_segments(
+                    document, captured_segments, source_path, native_reading=native_reading
+                )
+                captured_ids = {segment.id for segment in captured_segments}
+                native_segments = tuple(
+                    segment for segment in native_segments if segment.id not in captured_ids
+                )
+            if native_segments:
+                replay_native_segments(document, native_segments, source_path)
+            for segment in segments:
+                if segment.kind not in NATIVE_KINDS:
+                    dereference_source_segment(document, segment, source_path)
         _fail_after(fail_after_stage, "segments")
         run = _record_extraction_run(
             session,

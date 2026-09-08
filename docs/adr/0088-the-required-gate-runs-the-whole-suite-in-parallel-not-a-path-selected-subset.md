@@ -6,6 +6,7 @@ amends:
   - ADR-0087
 amended_by:
   - ADR-0093
+  - ADR-0096
 ---
 
 # The required gate runs the whole suite in parallel, not a path-selected subset

@@ -18,11 +18,14 @@ from sqlalchemy.exc import DBAPIError, IntegrityError
 from corridor.db import Session, engine
 from corridor.config import settings
 from corridor.ingest import ingest_document
-from corridor.models import Project, SourceSegment
+from corridor.models import Document, Project, SourceSegment
 from corridor.prose_spans import is_prose_segment
 from corridor.source_segments import (
+    SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
+    SourceSegmentLocatorMismatch,
     dereference_source_segment,
+    spreadsheet_replay,
 )
 
 from pdf_fixture_support import PdfFixture
@@ -332,6 +335,104 @@ def test_replay_refuses_bytes_other_than_the_registered_workbook(
 
     with pytest.raises(ValueError, match="registered Document digest"):
         dereference_source_segment(document, segment, other)
+
+
+@pytest.fixture
+def spreadsheet_replay_source(workbook):
+    document = Document(id=1, project_id=1, sha256=sha256(workbook.read_bytes()).hexdigest())
+    segment = SourceSegment(
+        document_id=1, project_id=1, kind="spreadsheet_cell",
+        sheet_name="Summary", cell_range="B1", exact_text="IH 45",
+        content_sha256=sha256(b"IH 45").hexdigest(), ordinal=1,
+    )
+    return document, segment
+
+
+def test_spreadsheet_replay_decodes_once_and_expires(
+    workbook, spreadsheet_replay_source, monkeypatch,
+):
+    import corridor.source_segments as source_segments
+
+    document, segment = spreadsheet_replay_source
+    original_load = source_segments.load_workbook
+    opens = []
+
+    def counted_load(source, **options):
+        opens.append(options)
+        assert source.getvalue() == workbook.read_bytes()
+        return original_load(source, **options)
+
+    monkeypatch.setattr(source_segments, "load_workbook", counted_load)
+    with spreadsheet_replay(document, workbook) as replay:
+        assert [replay(segment) for _ in range(25)] == ["IH 45"] * 25
+    assert opens == [{"data_only": True, "read_only": False}]
+    with pytest.raises(SourceSegmentLocatorMismatch, match="closed"):
+        replay(segment)
+
+
+def test_spreadsheet_replay_refuses_changed_bytes_before_decoding(
+    workbook, spreadsheet_replay_source, monkeypatch,
+):
+    import corridor.source_segments as source_segments
+
+    document, _ = spreadsheet_replay_source
+    workbook.write_bytes(workbook.read_bytes() + b"changed")
+
+    def forbidden_decode(*args, **kwargs):
+        pytest.fail("changed source bytes must be refused before workbook decoding")
+
+    monkeypatch.setattr(source_segments, "load_workbook", forbidden_decode)
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        with spreadsheet_replay(document, workbook):
+            pytest.fail("changed source bytes must never enter replay")
+
+
+def test_spreadsheet_replay_refuses_changes_during_and_between_operations(
+    workbook, spreadsheet_replay_source,
+):
+    document, segment = spreadsheet_replay_source
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        with spreadsheet_replay(document, workbook) as replay:
+            assert replay(segment) == "IH 45"
+            workbook.write_bytes(workbook.read_bytes() + b"changed")
+            # The operation reads its already-verified snapshot, then refuses
+            # the complete batch on exit because its source changed underneath it.
+            assert replay(segment) == "IH 45"
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        with spreadsheet_replay(document, workbook):
+            pytest.fail("a new operation must revalidate the source at the same path")
+
+
+def test_spreadsheet_replay_refuses_changed_document_identity_on_exit(
+    workbook, spreadsheet_replay_source,
+):
+    document, segment = spreadsheet_replay_source
+    with pytest.raises(SourceSegmentLocatorMismatch, match="Document identity changed"):
+        with spreadsheet_replay(document, workbook) as replay:
+            assert replay(segment) == "IH 45"
+            document.sha256 = "0" * 64
+
+
+@pytest.mark.parametrize("changes,error,reason", [
+    ({"document_id": 2}, SourceSegmentLocatorMismatch, "supplied Document"),
+    ({"project_id": 2}, SourceSegmentLocatorMismatch, "supplied Document"),
+    ({"kind": "prose_span"}, SourceSegmentLocatorMismatch, "cell segment"),
+    ({"content_sha256": "0" * 64}, SourceSegmentDigestMismatch, "stored segment digest"),
+    ({"sheet_name": None}, SourceSegmentLocatorMismatch, "incomplete"),
+    ({"cell_range": "A0"}, SourceSegmentLocatorMismatch, "invalid spreadsheet cell"),
+    ({"cell_range": "A1"}, SourceSegmentLocatorMismatch, "does not recover"),
+    ({"sheet_name": "Absent"}, SourceSegmentLocatorMismatch, "does not exist"),
+    ({"cell_range": "B2"}, SourceSegmentLocatorMismatch, "does not exist"),
+])
+def test_spreadsheet_replay_keeps_each_segment_integrity_check(
+    workbook, spreadsheet_replay_source, changes, error, reason,
+):
+    document, segment = spreadsheet_replay_source
+    for name, value in changes.items():
+        setattr(segment, name, value)
+    with spreadsheet_replay(document, workbook) as replay:
+        with pytest.raises(error, match=reason):
+            replay(segment)
 
 
 def test_database_refuses_overlapping_spreadsheet_cell_locators(

@@ -3,23 +3,30 @@
 Ordinary tests keep defining their own rollback-scoped ``session`` fixtures.
 This harness only changes which migrated database each xdist worker reaches, so
 schema rehearsals and fixed fixture identities cannot deadlock across workers.
-Serial pytest runs continue to use the configured development database.
+Provisioning starts at the first real connection to a worker database; pure
+tests never contact PostgreSQL, even when xdist is enabled. Serial pytest
+runs continue to use the configured development database.
 """
 
 from __future__ import annotations
 
+import ast
+from dataclasses import dataclass, field
+import fcntl
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
+from threading import Lock
 import time
 from uuid import uuid4
 
 from dotenv import dotenv_values
 import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.engine import URL, make_url
+from sqlalchemy import create_engine, event, text
+from sqlalchemy.engine import Engine, URL, make_url
 from sqlalchemy.pool import NullPool
 
 
@@ -36,31 +43,205 @@ _DATABASE_NAME = re.compile(
     r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_(gw[0-9]+|tmpl)$"
 )
 TEMPLATE_ENV = "CORRIDOR_PYTEST_TEMPLATE"
+COORDINATION_ENV = "CORRIDOR_PYTEST_COORDINATION"
+LOCAL_BROAD_REASON_ENV = "CORRIDOR_LOCAL_BROAD_REASON"
+LOCAL_BROAD_REASONS = frozenset({"failure-reproduction", "performance-investigation"})
+
+
+def _focused_keyword(keyword: str) -> bool:
+    """Every OR branch must contain a specific positive keyword constraint."""
+    # Pytest keywords can contain punctuation that is not a Python identifier.
+    # Give each atom a temporary name, then inspect only the Boolean structure.
+    # Negation alone, or `test or specific`, still selects essentially everything.
+    atoms = {}
+    tokens = []
+    for token in re.findall(r"\(|\)|[^\s()]+", keyword):
+        if token in {"(", ")", "and", "or", "not"}:
+            tokens.append(token)
+        else:
+            name = f"atom_{len(atoms)}"
+            atoms[name] = token not in {"test", "test_", "tests", "py", ".py", "."}
+            tokens.append(name)
+    try:
+        expression = ast.parse(" ".join(tokens), mode="eval")
+    except SyntaxError:
+        return False
+
+    def constrained(node):
+        if isinstance(node, ast.Name):
+            return atoms[node.id]
+        if isinstance(node, ast.BoolOp):
+            values = [constrained(value) for value in node.values]
+            return any(values) if isinstance(node.op, ast.And) else all(values)
+        return False
+
+    return constrained(expression.body)
+
+
+def _require_local_broad_reason(config) -> None:
+    """Refuse accidental full local execution before collection or DB setup."""
+    options = getattr(config, "option", None)
+    if getattr(options, "collectonly", False) or os.environ.get("GITHUB_ACTIONS") == "true":
+        return
+    if os.environ.get(LOCAL_BROAD_REASON_ENV) in LOCAL_BROAD_REASONS:
+        return
+    if _focused_keyword(getattr(options, "keyword", "") or ""):
+        return
+    invocation = getattr(config, "invocation_params", None)
+    invocation_dir = Path(getattr(invocation, "dir", Path.cwd()))
+    test_root = (ROOT / "tests").resolve()
+    # Missing/default args are conservative; mock configurations must explicitly
+    # name their focused files just as an actual bounded invocation does.
+    arguments = getattr(config, "args", None) or [str(test_root)]
+    paths = {
+        (invocation_dir / str(argument)).resolve()
+        for argument in arguments if "::" not in str(argument)
+    }
+    selects_directory = any(path == test_root or path in test_root.parents for path in paths)
+    all_files = {path.resolve() for path in test_root.glob("test_*.py")}
+    selects_all_files = bool(all_files) and all_files <= paths
+    if selects_directory or selects_all_files:
+        raise pytest.UsageError(
+            "Broad local tests require a concrete diagnostic reason. "
+            "Use make test-focused ARGS='tests/test_file.py::test_name'; "
+            "required CI owns the complete release proof. For an actual diagnostic, "
+            "set CORRIDOR_LOCAL_BROAD_REASON=failure-reproduction or "
+            "CORRIDOR_LOCAL_BROAD_REASON=performance-investigation."
+        )
+
+
+@dataclass
+class LazyWorkerDatabase:
+    """Provision only the named worker database, on its first DBAPI connection."""
+
+    admin_url: URL
+    database_name: str
+    template: str = ""
+    coordination: Path | None = None
+    provisioned: bool = False
+    cleanup_needed: bool = False
+    failed: bool = False
+    _provision_lock: Lock = field(default_factory=Lock, repr=False)
+
+    def on_connect(self, dialect, connection_record, args, parameters) -> None:
+        # Admin queries and runtime_database's independent scratch databases
+        # must never recurse into the default worker's provisioning path.
+        if dialect.name == "postgresql" and parameters.get("dbname") == self.database_name:
+            self.ensure_provisioned()
+
+    def ensure_provisioned(self) -> None:
+        with self._provision_lock:
+            if self.provisioned:
+                return
+            if self.failed:
+                raise RuntimeError("parallel test worker database provisioning previously failed")
+            try:
+                if self.coordination is None:
+                    self._provision()
+                    return
+                # Share one template across processes. Readiness is published
+                # only after migration succeeds, while the file lock is held.
+                with (self.coordination / "database.lock").open("a+b") as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX)
+                    try:
+                        self._provision()
+                    finally:
+                        fcntl.flock(lock, fcntl.LOCK_UN)
+            except BaseException:
+                self.failed = True
+                raise
+
+    def _provision(self) -> None:
+        parsed = _validated_admin_url(
+            self.admin_url.render_as_string(hide_password=False)
+        )
+        if self.coordination is not None:
+            (self.coordination / "database-started").touch()
+            ready = self.coordination / "template-ready"
+            failed = self.coordination / "template-failed"
+            if failed.exists():
+                raise RuntimeError("parallel test template provisioning failed in another worker")
+            if not ready.exists():
+                reap_abandoned_worker_databases(parsed)
+                try:
+                    _create_database(parsed, self.template)
+                    _migrate_database(parsed.set(database=self.template))
+                except BaseException:
+                    # A broken migration must not be attempted again by every
+                    # remaining test or by the other workers in this run.
+                    failed.touch()
+                    _drop_databases(parsed, (self.template,))
+                    raise
+                ready.touch()
+        self.cleanup_needed = True
+        if self.template:
+            _clone_database(parsed, self.template, self.database_name)
+        else:
+            # A worker configured without a shared controller template still
+            # gets the same isolated database and real migration contract.
+            _create_database(parsed, self.database_name)
+            try:
+                _migrate_database(parsed.set(database=self.database_name))
+            except BaseException:
+                _drop_databases(parsed, (self.database_name,))
+                self.cleanup_needed = False
+                raise
+        self.provisioned = True
+
+
+def _migration_cases_own_their_databases(config) -> bool:
+    if getattr(getattr(config, "option", None), "markexpr", "") != "migration":
+        return False
+    arguments = getattr(config, "args", ())
+    owner = ROOT / "tests/test_migration_baseline.py"
+    return bool(arguments) and all(
+        Path(str(argument).split("::", 1)[0]).resolve() == owner
+        for argument in arguments
+    )
+
+
+def _protect_migration_identity_source(config) -> None:
+    """Reuse the real source identity for migration checks, read-only.
+
+    Every case in the migration contract provisions its own target database.
+    Giving its source-identity lookup an additional empty worker database
+    rebuilt the same head just to compare identities. Keep the actual source
+    URL and prevent accidental writes to it instead.
+    """
+    source = _local_postgres_url(_configured_database_url())
+
+    def read_only_source(dialect, connection_record, args, parameters):
+        if dialect.name == "postgresql" and parameters.get("dbname") == source.database:
+            options = parameters.get("options", os.environ.get("PGOPTIONS", ""))
+            parameters["options"] = options + " -c default_transaction_read_only=on"
+
+    event.listen(Engine, "do_connect", read_only_source)
+    config._corridor_migration_identity_guard = read_only_source
 
 
 def pytest_configure(config) -> None:
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
     if worker_id is None:
+        _require_local_broad_reason(config)
+    # These short-lived transactional test connections pay compilation cost
+    # without an analytical workload to amortize it. This is a client setting,
+    # not a change to the developer's PostgreSQL server or production runtime.
+    os.environ.setdefault("PGOPTIONS", "-c jit=off")
+    if _migration_cases_own_their_databases(config):
+        _protect_migration_identity_source(config)
+        return
+    if worker_id is None:
         if _xdist_is_enabled(config):
-            parsed = _validated_admin_url(_configured_database_url())
-            reap_abandoned_worker_databases(parsed)
+            # Capture the original URL before any worker rewrites DATABASE_URL.
+            # No connection, version query, orphan scan or DDL belongs here.
+            source_url = _configured_database_url()
             run_id = new_worker_run_id()
+            coordination = TemporaryDirectory(prefix=f"corridor-pytest-{run_id}-")
+            config._corridor_pytest_controller = (source_url, run_id, coordination)
             os.environ[RUN_ID_ENV] = run_id
-            config._corridor_pytest_run_id = run_id
-            # Migrate once for the whole run. Every worker used to run the
-            # full chain against its own fresh database, so an ordinary
-            # change replayed it once per worker per job; cloning a migrated
-            # template does that work once and removes the concurrent
-            # cluster-role DDL those parallel migrations were racing on
-            # (#548, #545).
-            template = f"{DATABASE_PREFIX}{run_id}_tmpl"
-            _create_database(parsed, template)
-            try:
-                _migrate_database(parsed.set(database=template))
-            except BaseException:
-                _drop_databases(parsed, (template,))
-                raise
-            os.environ[TEMPLATE_ENV] = template
+            os.environ[SOURCE_DATABASE_URL_ENV] = source_url
+            os.environ[TEMPLATE_ENV] = f"{DATABASE_PREFIX}{run_id}_tmpl"
+            os.environ[COORDINATION_ENV] = coordination.name
         return
 
     run_id = os.environ.get(RUN_ID_ENV, "")
@@ -70,49 +251,57 @@ def pytest_configure(config) -> None:
     if _DATABASE_NAME.fullmatch(database_name) is None:
         raise RuntimeError("parallel test database name is outside the guarded namespace")
 
-    admin_url = _configured_database_url()
-    parsed = _validated_admin_url(admin_url)
-    os.environ[SOURCE_DATABASE_URL_ENV] = parsed.render_as_string(
+    source_url = os.environ.get(SOURCE_DATABASE_URL_ENV) or _configured_database_url()
+    parsed = _local_postgres_url(source_url)
+    template = os.environ.get(TEMPLATE_ENV, "")
+    if template and template != f"{DATABASE_PREFIX}{run_id}_tmpl":
+        raise RuntimeError("parallel test template belongs to a different run")
+    coordination_name = os.environ.get(COORDINATION_ENV)
+    coordination = Path(coordination_name) if coordination_name else None
+    if coordination is not None and (not template or not coordination.is_dir()):
+        raise RuntimeError("parallel test template coordination is malformed")
+
+    os.environ[SOURCE_DATABASE_URL_ENV] = source_url
+    os.environ["DATABASE_URL"] = parsed.set(database=database_name).render_as_string(
         hide_password=False
     )
-    template = os.environ.get(TEMPLATE_ENV, "")
-    if template and _DATABASE_NAME.fullmatch(template):
-        _clone_database(parsed, template, database_name)
-    else:
-        # No template: a single-worker run, or a controller that could not
-        # build one. Fall back to migrating this database directly.
-        _create_database(parsed, database_name)
-        worker_url = parsed.set(database=database_name)
-        os.environ["DATABASE_URL"] = worker_url.render_as_string(
-            hide_password=False
-        )
-        try:
-            _migrate_database(worker_url)
-        except BaseException:
-            _drop_databases(parsed, (database_name,))
-            raise
-    worker_url = parsed.set(database=database_name)
-    os.environ["DATABASE_URL"] = worker_url.render_as_string(hide_password=False)
-    config._corridor_pytest_database = (parsed, database_name)
+    state = LazyWorkerDatabase(parsed, database_name, template, coordination)
+    config._corridor_pytest_database = state
+    # SQLAlchemy's dialect event runs immediately before DBAPI.connect and
+    # reaches engines constructed later by both owner and capability sessions.
+    event.listen(Engine, "do_connect", state.on_connect)
 
 
 def pytest_unconfigure(config) -> None:
-    worker_database = getattr(config, "_corridor_pytest_database", None)
-    if worker_database is not None:
-        parsed, database_name = worker_database
-        corridor_db = sys.modules.get("corridor.db")
-        if corridor_db is not None:
-            corridor_db.engine.dispose()
-        _drop_databases(parsed, (database_name,))
+    identity_guard = getattr(config, "_corridor_migration_identity_guard", None)
+    if identity_guard is not None:
+        event.remove(Engine, "do_connect", identity_guard)
+        return
+    state = getattr(config, "_corridor_pytest_database", None)
+    if state is not None:
+        event.remove(Engine, "do_connect", state.on_connect)
+        if state.cleanup_needed:
+            corridor_db = sys.modules.get("corridor.db")
+            if corridor_db is not None:
+                for name in ("engine", "web_engine", "worker_engine"):
+                    getattr(corridor_db, name).dispose()
+            _drop_databases(state.admin_url, (state.database_name,))
         return
 
-    run_id = getattr(config, "_corridor_pytest_run_id", None)
-    if run_id is None:
+    controller = getattr(config, "_corridor_pytest_controller", None)
+    if controller is None:
         return
-    parsed = _validated_admin_url(_configured_database_url())
-    _drop_databases(parsed, _run_database_names(parsed, run_id))
-    os.environ.pop(RUN_ID_ENV, None)
-    os.environ.pop(TEMPLATE_ENV, None)
+    source_url, run_id, coordination = controller
+    try:
+        # Pure suites never create this marker and must not query PostgreSQL
+        # merely because the pytest controller is shutting down.
+        if (Path(coordination.name) / "database-started").exists():
+            parsed = _validated_admin_url(source_url)
+            _drop_databases(parsed, _run_database_names(parsed, run_id))
+    finally:
+        coordination.cleanup()
+        for name in (RUN_ID_ENV, TEMPLATE_ENV, COORDINATION_ENV, SOURCE_DATABASE_URL_ENV):
+            os.environ.pop(name, None)
 
 
 @pytest.fixture(autouse=True)
@@ -175,12 +364,17 @@ def _configured_database_url() -> str:
     )
 
 
-def _validated_admin_url(database_url: str) -> URL:
+def _local_postgres_url(database_url: str) -> URL:
     parsed = make_url(database_url)
     if parsed.get_backend_name() != "postgresql":
         raise RuntimeError("parallel tests require PostgreSQL")
     if parsed.host not in {None, "localhost", "127.0.0.1", "::1"}:
         raise RuntimeError("parallel tests require local PostgreSQL")
+    return parsed
+
+
+def _validated_admin_url(database_url: str) -> URL:
+    parsed = _local_postgres_url(database_url)
     engine = create_engine(
         parsed,
         isolation_level="AUTOCOMMIT",

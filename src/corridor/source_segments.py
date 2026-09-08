@@ -27,8 +27,11 @@ and the registered bytes from their own digests and opens no page.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
+from io import BytesIO
 from pathlib import Path
 import re
 
@@ -210,6 +213,72 @@ def dereference_source_segment(
     return recovered
 
 
+@contextmanager
+def spreadsheet_replay(
+    document: Document, path: Path | str,
+) -> Iterator[Callable[[SourceSegment], str]]:
+    """Own one workbook decode for an atomic batch of source replays.
+
+    The reader consumes the exact bytes whose digest was checked, never a
+    cached path. Eager decoding avoids reparsing worksheet XML for each cell.
+    Before successful exit, check that the original source still has that same
+    digest. Callers must finish the context before returning any batch result.
+    The replay callable expires when the context closes.
+    """
+
+    original = Path(path)
+    if original.suffix.lower() not in SPREADSHEET_SUFFIXES:
+        raise SourceSegmentLocatorMismatch("spreadsheet replay requires workbook bytes")
+    identity = (document.id, document.project_id, document.sha256)
+    source_bytes = original.read_bytes()
+    if sha256(source_bytes).hexdigest() != identity[2]:
+        raise SourceDocumentDigestMismatch(
+            "source bytes do not match the registered Document digest"
+        )
+    workbook = load_workbook(BytesIO(source_bytes), data_only=True, read_only=False)
+    active = True
+
+    def replay(segment: SourceSegment) -> str:
+        if not active:
+            raise SourceSegmentLocatorMismatch("spreadsheet replay is closed")
+        if ((document.id, document.project_id, document.sha256) != identity
+                or segment.document_id != identity[0]
+                or segment.project_id != identity[1]):
+            raise SourceSegmentLocatorMismatch(
+                "source segment does not belong to the supplied Document"
+            )
+        if segment.kind != "spreadsheet_cell":
+            raise SourceSegmentLocatorMismatch("spreadsheet replay requires a cell segment")
+        if _text_digest(segment.exact_text) != segment.content_sha256:
+            raise SourceSegmentDigestMismatch("stored segment digest does not match its text")
+        if segment.sheet_name is None or segment.cell_range is None:
+            raise SourceSegmentLocatorMismatch("spreadsheet segment locator is incomplete")
+        recovered = _spreadsheet_cell_value(
+            workbook, sheet_name=segment.sheet_name, cell_range=segment.cell_range,
+        )
+        if recovered != segment.exact_text:
+            raise SourceSegmentLocatorMismatch(
+                "source segment locator does not recover its stored text"
+            )
+        if _text_digest(recovered) != segment.content_sha256:
+            raise SourceSegmentDigestMismatch(
+                "dereferenced segment digest does not match its stored digest"
+            )
+        return recovered
+
+    try:
+        yield replay
+        if (document.id, document.project_id, document.sha256) != identity:
+            raise SourceSegmentLocatorMismatch("spreadsheet replay Document identity changed")
+        if sha256(original.read_bytes()).hexdigest() != identity[2]:
+            raise SourceDocumentDigestMismatch(
+                "source bytes do not match the registered Document digest"
+            )
+    finally:
+        active = False
+        workbook.close()
+
+
 def recorded_verbal_statement_segment(
     *,
     project_id: int,
@@ -276,24 +345,30 @@ def _require_registered_bytes(document: Document, path: Path) -> None:
 def _dereference_spreadsheet_cell(
     path: Path, *, sheet_name: str, cell_range: str
 ) -> str:
+    workbook = load_workbook(path, data_only=True, read_only=True)
+    try:
+        return _spreadsheet_cell_value(
+            workbook, sheet_name=sheet_name, cell_range=cell_range,
+        )
+    finally:
+        workbook.close()
+
+
+def _spreadsheet_cell_value(workbook, *, sheet_name: str, cell_range: str) -> str:
     if re.fullmatch(r"[A-Z]+[1-9][0-9]*", cell_range) is None:
         raise SourceSegmentLocatorMismatch(
             f"invalid spreadsheet cell locator {cell_range!r}"
         )
-    workbook = load_workbook(path, data_only=True, read_only=True)
-    try:
-        if sheet_name not in workbook.sheetnames:
-            raise SourceSegmentLocatorMismatch(
-                f"spreadsheet locator does not exist: {sheet_name}!{cell_range}"
-            )
-        value = workbook[sheet_name][cell_range].value
-        if value is None:
-            raise SourceSegmentLocatorMismatch(
-                f"spreadsheet locator does not exist: {sheet_name}!{cell_range}"
-            )
-        return _exact_cell_text(value)
-    finally:
-        workbook.close()
+    if sheet_name not in workbook.sheetnames:
+        raise SourceSegmentLocatorMismatch(
+            f"spreadsheet locator does not exist: {sheet_name}!{cell_range}"
+        )
+    value = workbook[sheet_name][cell_range].value
+    if value is None:
+        raise SourceSegmentLocatorMismatch(
+            f"spreadsheet locator does not exist: {sheet_name}!{cell_range}"
+        )
+    return _exact_cell_text(value)
 
 
 def _exact_cell_text(value: object) -> str:

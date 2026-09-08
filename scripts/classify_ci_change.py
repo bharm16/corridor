@@ -9,13 +9,16 @@ the expensive gates cannot be selected by trigger-level `paths` /
 skip produces a `skipped` result the summary job can inspect through
 ``needs.<job>.result``.
 
-Two answers come out of here, and the summary job checks the jobs against
-both of them rather than accepting `success or skipped`:
+The summary checks behavior and migration answers against the job results.
+The independent check job uses the infrastructure answer for its CDK steps;
+both checks match exact outcomes rather than accepting `success or skipped`:
 
 ``behavior_required``
     the sharded `pytest` and `slow` gates must run.
 ``migration_required``
     the `migration` gate must run.
+``infrastructure_required``
+    the check job must install and validate the separate CDK project.
 
 **Documentation is a narrow allowlist, not a `**.md` wildcard.** The
 predecessor filter ignored every Markdown file, and Corridor loads executable
@@ -33,7 +36,7 @@ therefore still reads as a behavior change, rather than making the executable
 path vanish from the classification.
 
 **An empty or unreadable diff is a failure, not a docs-only answer.** The
-whole gate hangs off these two booleans; guessing `false` for them on a diff
+gate decisions hang off these booleans; guessing `false` for them on a diff
 that could not be read is exactly the silent green this classifier exists to
 prevent.
 
@@ -86,6 +89,33 @@ MIGRATION_PATHS: tuple[str, ...] = (
 )
 
 
+# The CDK project imports only infra modules. Its assertions also read runtime
+# setting names and Docker/deployment configuration. Container and release
+# entrypoints and their locked build inputs complete that boundary. Ordinary
+# application behavior remains in the full behavior suites, not the CDK job.
+# The deployment runbook's pure assertions run in make check, without CDK.
+INFRASTRUCTURE_PATHS: tuple[str, ...] = (
+    "infra/**",
+    ".github/workflows/**",
+    ".github/scripts/**",
+    "src/corridor/config.py",
+    "scripts/container_entrypoint.py",
+    "scripts/register_ecs_release_task_definitions.py",
+    "scripts/classify_ci_change.py",
+    "tests/test_classify_ci_change.py",
+    "tests/test_ci_policy.py",
+    "Dockerfile",
+    ".dockerignore",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "uv.lock",
+    "workers/render/pyproject.toml",
+    "workers/render/uv.lock",
+    "alembic.ini",
+    "Makefile",
+)
+
+
 class ClassificationError(RuntimeError):
     """The change could not be classified, so no gate may be skipped."""
 
@@ -94,12 +124,14 @@ class ClassificationError(RuntimeError):
 class Classification:
     behavior_required: bool
     migration_required: bool
+    infrastructure_required: bool
     paths: tuple[str, ...]
 
     def as_outputs(self) -> str:
         return (
             f"behavior_required={str(self.behavior_required).lower()}\n"
             f"migration_required={str(self.migration_required).lower()}\n"
+            f"infrastructure_required={str(self.infrastructure_required).lower()}\n"
         )
 
 
@@ -133,6 +165,9 @@ def _compile(pattern: str) -> re.Pattern[str]:
 
 DOCUMENTATION_MATCHERS = tuple(_compile(pattern) for pattern in DOCUMENTATION_PATHS)
 MIGRATION_MATCHERS = tuple(_compile(pattern) for pattern in MIGRATION_PATHS)
+INFRASTRUCTURE_MATCHERS = tuple(
+    _compile(pattern) for pattern in INFRASTRUCTURE_PATHS
+)
 
 
 def is_documentation(path: str) -> bool:
@@ -141,6 +176,10 @@ def is_documentation(path: str) -> bool:
 
 def is_migration_adjacent(path: str) -> bool:
     return any(matcher.match(path) for matcher in MIGRATION_MATCHERS)
+
+
+def is_infrastructure_adjacent(path: str) -> bool:
+    return any(matcher.match(path) for matcher in INFRASTRUCTURE_MATCHERS)
 
 
 def classify(paths: object) -> Classification:
@@ -158,6 +197,9 @@ def classify(paths: object) -> Classification:
     return Classification(
         behavior_required=any(not is_documentation(path) for path in ordered),
         migration_required=any(is_migration_adjacent(path) for path in ordered),
+        infrastructure_required=any(
+            is_infrastructure_adjacent(path) for path in ordered
+        ),
         paths=ordered,
     )
 
@@ -237,6 +279,8 @@ def main(argv: list[str] | None = None) -> int:
             marks.append("behavior")
         if is_migration_adjacent(path):
             marks.append("migration")
+        if is_infrastructure_adjacent(path):
+            marks.append("infrastructure")
         print(f"  {path} -> {', '.join(marks) or 'documentation'}", file=sys.stderr)
 
     outputs = classification.as_outputs()

@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "window": 10,
+  "minimum_samples": 5,
+  "median_seconds": 180,
+  "p90_seconds": 300,
+  "migration_seconds": 45
+}

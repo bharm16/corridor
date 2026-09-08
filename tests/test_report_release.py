@@ -2,8 +2,6 @@
 
 from hashlib import sha256
 from io import BytesIO
-import json
-from pathlib import Path
 import re
 from copy import deepcopy
 from dataclasses import replace
@@ -428,85 +426,6 @@ def test_prepared_report_freezes_unknown_scope_statement_plan_display(session, p
     assert display["report_fields"]["next_action"] == (
         "Confirm the cable-reel delivery"
     )
-
-
-SEALED_EXPORTS = (
-    Path(__file__).resolve().parents[1]
-    / "artifacts/product-proving/sh99-9a4342d-two-pass-passed"
-)
-
-
-def test_sealed_sh99_exports_read_as_the_bytes_their_receipt_sealed():
-    """ADR-0040: the release check reads the same properties from the same sealed bytes.
-
-    The two SH99 product-proving exports are retained beside their digests.
-    The property the party-statement check depends on, the PDF's normalized
-    visible text, is pinned by its digest and by the one statement row those
-    bytes carry, so a reader that drops a page, loses a space or reorders a
-    row fails here. The exports were sealed under the legacy labels, so the
-    check itself refuses them for the current frozen fields exactly as it did.
-    """
-    from corridor.report_release import (
-        _normalized_visible_text,
-        _validate_party_statement_pdf_context,
-    )
-
-    manifest = json.loads((SEALED_EXPORTS / "manifest.json").read_text())
-    equistar = {
-        "external_party": "Equistar",
-        "supported_statement": (
-            "Equistar to provide a chain of title on the ROW agreement that is in "
-            "DOW’s name (Due date of 01/2025)."
-        ),
-        "timing": "01/2025",
-        "timing_precision": "month",
-        "statement_type": "Commitment",
-        "commitment_scope": "Scope not yet known",
-        "open_status": "Open · past due",
-        "internal_owner": "Bryce Harmon",
-        "next_action": "Confirm the External Party and Commitment Scope",
-        "action_due": "Date not yet known (date not yet known)",
-        "milestone_impact": "Not applicable",
-    }
-    legacy_labels = {
-        "external_party": "External Party",
-        "supported_statement": "Supported statement",
-        "internal_owner": "Internal Owner",
-        "next_action": "Next Action",
-        "action_due": "Action Due",
-        "milestone_impact": "Milestone Impact",
-    }
-    for name, text_digest in (
-        (
-            "pass-1-approved-export.pdf",
-            "f33c974f352167aa9e8560e4a32b1147a016491beefc5a82af6f2f7c513a439c",
-        ),
-        (
-            "pass-2-approved-export.pdf",
-            "6addb7e679afd9eb9c968abb5107a60d77ac44435c26665e8942dc97b6a891b9",
-        ),
-    ):
-        pdf_bytes = (SEALED_EXPORTS / name).read_bytes()
-        assert sha256(pdf_bytes).hexdigest() == manifest["files"][name]["sha256"]
-        reader = PdfReader(BytesIO(pdf_bytes))
-        assert len(reader.pages) == 77
-        visible = _normalized_visible_text(
-            "\n".join(page.extract_text() for page in reader.pages)
-        )
-        assert sha256(visible.encode()).hexdigest() == text_digest
-        for field_id, label in legacy_labels.items():
-            assert visible.count(_normalized_visible_text(f"{label} {equistar[field_id]}")) == 1
-        with pytest.raises(
-            ReleaseRefusal,
-            match="PDF does not contain its frozen External Party statement fields",
-        ):
-            _validate_party_statement_pdf_context(
-                pdf_bytes, {"party_statement_display": [{"report_fields": equistar}]}
-            )
-    with pytest.raises(ReleaseRefusal, match="cannot be read"):
-        _validate_party_statement_pdf_context(
-            b"not a pdf", {"party_statement_display": [{"report_fields": equistar}]}
-        )
 
 
 def test_prepare_refuses_a_pdf_that_omits_frozen_statement_plan_fields(

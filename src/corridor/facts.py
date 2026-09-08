@@ -12,6 +12,7 @@ compared with what its cell materializes and is never itself written.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterable
 from copy import deepcopy
 from dataclasses import dataclass
 from datetime import date
@@ -79,6 +80,7 @@ from corridor.source_segments import (
     append_source_segment,
     dereference_source_segment,
     replay_recorded_verbal_statement,
+    spreadsheet_replay,
 )
 from corridor.statement_values import StatementTiming
 from corridor.prose_spans import PROSE_SEGMENT_KINDS, is_prose_segment, prose_segment_filter
@@ -1334,6 +1336,36 @@ def replay_fact(
 ) -> str | date | AppliesToFactValue | ClosureFactValue:
     """Replay one typed Fact from original bytes through its named transform."""
 
+    return _replay_fact(session, document, fact, path, native_reading=native_reading)
+
+
+def replay_spreadsheet_facts(
+    session: Session, document: Document, facts: Iterable[Fact], path: Path | str,
+) -> tuple[str | date | AppliesToFactValue | ClosureFactValue, ...]:
+    """Replay a whole workbook batch or refuse it, with one source decode.
+
+    Each Fact retains the single-replay support, locator, digest, and typed-value
+    checks. The source context must close successfully before any result leaves
+    this operation, including when a later Fact or changed source is refused.
+    """
+
+    batch = tuple(facts)
+    if any(fact.document_id != document.id or fact.project_id != document.project_id
+           for fact in batch):
+        raise FactValidationError("Fact belongs to another Document")
+    with spreadsheet_replay(document, path) as replay_cell:
+        result = tuple(
+            _replay_fact(session, document, fact, path, replay_cell=replay_cell)
+            for fact in batch
+        )
+    return result
+
+
+def _replay_fact(
+    session: Session, document: Document, fact: Fact, path: Path | str,
+    *, native_reading: NativePdfReading | None = None,
+    replay_cell: Callable[[SourceSegment], str] | None = None,
+) -> str | date | AppliesToFactValue | ClosureFactValue:
     with session.no_autoflush:
         sources = tuple(
             session.scalars(
@@ -1346,6 +1378,10 @@ def replay_fact(
         if contract is None:
             raise FactValidationError(f"unknown Fact type {fact.fact_type!r}")
         segments = tuple(session.get(SourceSegment, source.source_segment_id) for source in sources)
+        if replay_cell is not None and any(
+            segment is not None and segment.kind != "spreadsheet_cell" for segment in segments
+        ):
+            raise FactValidationError("spreadsheet Fact replay needs cell sources")
         # The native replay below is the matrix mapping's: value and context
         # cells of one sealed reading, in the order that mapping produced them
         # (#737, #758). A statement Fact is a different contract with a
@@ -1372,7 +1408,8 @@ def replay_fact(
         raise FactValidationError("Fact source belongs to another rendition")
     if segment.kind not in contract.accepted_segment_kinds:
         raise FactValidationError("Fact source kind does not match its contract")
-    exact = dereference_source_segment(document, segment, path)
+    exact = (replay_cell(segment) if replay_cell is not None
+             else dereference_source_segment(document, segment, path))
     if fact.fact_type == "applies_to":
         expected_ids = _resolve_applies_to_dependencies(
             session, fact.project_id, exact
@@ -1404,7 +1441,10 @@ def replay_fact(
             governing_segment = session.get(SourceSegment, source_segment_id)
             if governing_segment is None or governing_segment.document_id != document.id:
                 raise FactValidationError("closure governing source crosses rendition")
-            dereference_source_segment(document, governing_segment, path)
+            if replay_cell is not None:
+                replay_cell(governing_segment)
+            else:
+                dereference_source_segment(document, governing_segment, path)
         if result.closure_kind == "source_marked_resolved" and not exact.strip():
             raise FactReplayMismatch("source closure mark is empty")
         return ClosureFactValue(

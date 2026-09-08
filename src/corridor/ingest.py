@@ -64,7 +64,8 @@ from corridor.models import (
 from corridor.page_inventory import (
     PageInventory,
     PageRoutingDecision,
-    read_reader_page_inventories,
+    read_page_facts,
+    reader_page_inventories,
     route_reader_page,
 )
 from corridor.render_profiles import (
@@ -90,6 +91,7 @@ from corridor.token_layers import (
     persist_token_layer,
     read_native_token_layers,
 )
+from corridor_pdf_reader.execution import MEASURED_DPI, MEASURED_ENGINE, PdfiumExecutor
 
 # Suffixes read as a workbook rather than a page image. `.xlsm` alongside
 # `.xlsx` because TxDOT's own form ships macros in some revisions and the
@@ -551,6 +553,25 @@ def _extract_sheets(path: Path) -> list[ExtractedPage]:
     ]
 
 
+class _NativeInventoryRead:
+    """The native reader's executor hook, retaining its paired inventory facts.
+
+    Both adapters already read the same measured configuration. The existing
+    isolated page-facts command returns that exact reader result plus image
+    and path facts, so it can supply both projections without a second decode.
+    The real executor retains all process, timeout, and memory protections.
+    """
+
+    def __init__(self):
+        self.facts = None
+
+    def read_document(self, source, *, engine, dpi):
+        if engine != MEASURED_ENGINE or dpi != MEASURED_DPI:
+            raise ValueError("paired inventory requires the measured native reader configuration")
+        self.facts = PdfiumExecutor().run(read_page_facts, Path(source))
+        return self.facts
+
+
 def _extract_pages(
     path: Path, images_dir: Path, source_sha256: str, *, project: str
 ) -> list[ExtractedPage]:
@@ -570,15 +591,16 @@ def _extract_pages(
     # here fails the document attempt like any other engine failure.
     from corridor.reader_segments import read_native_pdf
 
-    native_reading = read_native_pdf(path, source_sha256=source_sha256)
+    paired_read = _NativeInventoryRead()
+    native_reading = read_native_pdf(
+        path, source_sha256=source_sha256, executor=paired_read
+    )
     reader_layers = {
         layer.page_no: layer for layer in native_reading.token_layers
     }
-    # The inventory's own isolated read of the same document. It stayed a
-    # second read when the two adapters could be rolled back separately;
-    # collapsing them into one is worth doing on its own evidence, not as a
-    # side effect of this removal.
-    reader_inventories: dict[int, PageInventory] = read_reader_page_inventories(path)
+    # Native text and inventory are projections of one authenticated reading;
+    # the page-facts command adds inventory geometry without decoding again.
+    reader_inventories = reader_page_inventories(paired_read.facts)
 
     if not reader_inventories:
         raise ValueError(f"{path.name}: no pages")

@@ -1,4 +1,11 @@
-"""Permanent database baseline and supported-upgrade contract."""
+"""Permanent database baseline and supported-upgrade contract.
+
+The fresh-schema proof builds from an empty database. Supported-transition
+cases clone one genuinely migrated predecessor template per process, seed
+their own historical rows, and execute every tested upgrade or downgrade on
+that independent clone. Rebuilding the same predecessor for each case adds
+setup cost without adding another transition proof.
+"""
 
 from __future__ import annotations
 
@@ -150,6 +157,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_fresh_",
+        reuse_migrated_template=False,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
             hide_password=False
@@ -201,6 +209,7 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_transition_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         assert database.migration_head == SUPPORTED_HEAD
@@ -1174,6 +1183,7 @@ def test_the_recorded_verbal_backfill_reconciles_one_to_one(tmp_path):
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_verbal_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -1339,6 +1349,7 @@ def test_the_recorded_verbal_backfill_refuses_an_unreconcilable_fact(tmp_path):
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_verbal_bad_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -1489,6 +1500,7 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_dedup_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -1626,6 +1638,7 @@ def test_the_deduplication_transition_refuses_a_fact_with_no_identity():
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_dedup_bad_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         with database.session_factory.begin() as session:
@@ -1726,6 +1739,7 @@ def test_the_delivery_family_transition_refuses_a_downgrade_that_would_lose_a_pu
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_delivery_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         upgraded = _alembic(database_url, "upgrade", "head")
@@ -1867,6 +1881,7 @@ def test_the_stored_mapping_revision_refuses_a_downgrade_that_would_lose_it():
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_mapping_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         upgraded = _alembic(database_url, "upgrade", "head")
@@ -1987,6 +2002,7 @@ def test_the_report_revision_binding_refuses_a_downgrade_that_would_lose_it():
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_binding_",
         migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
         database_url = configured.set(database=database.name)
         upgraded = _alembic(database_url, "upgrade", "head")
