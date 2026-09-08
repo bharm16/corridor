@@ -14,7 +14,7 @@ from corridor.config import Settings
 from corridor.models import (
     ActiveExtractionRun, Dependency, Fact, FactDisposition, PipelineComparison,
     PipelineObservation, PipelineQualification, PipelineSelection, ProcessingArtifact,
-    RecordInclusionRequest, RevisionReconciliationRequest,
+    Project, RecordInclusionRequest, RevisionReconciliationRequest,
 )
 from corridor.native_pipeline import (
     RecordedPipelineClient, register_pipeline_configuration, run_native_matrix_shadow,
@@ -33,6 +33,61 @@ from test_native_matrix import _document, matrix_source, project, session
 
 
 ACTOR = HumanPrincipal("local:pipeline-test-maintainer")
+
+PROTECTED_MODELS = (
+    ActiveExtractionRun, Dependency, FactDisposition, PipelineSelection,
+    RecordInclusionRequest, RevisionReconciliationRequest,
+)
+
+
+def _protected_rows(session):
+    """Read every protected row and column, without project or ORM-cache filtering."""
+    return {
+        model.__tablename__: deepcopy([
+            dict(row) for row in session.execute(
+                select(*model.__table__.c).order_by(*model.__table__.primary_key.columns)
+            ).mappings()
+        ])
+        for model in PROTECTED_MODELS
+    }
+
+
+def _assert_protected_rows_unchanged(session, before, *, new_selection_ids=()):
+    after = _protected_rows(session)
+    selections = after["pipeline_selections"]
+    allowed = set(new_selection_ids)
+    assert len(allowed) == len(new_selection_ids)
+    assert allowed.isdisjoint(row["id"] for row in before["pipeline_selections"])
+    assert {row["id"] for row in selections if row["id"] in allowed} == allowed
+    # Only the explicit calls' returned selections may be new. Every old
+    # selection and all protected state, including other projects, stays exact.
+    after["pipeline_selections"] = [row for row in selections if row["id"] not in allowed]
+    for table, rows in before.items():
+        assert after[table] == rows, f"{table} changed outside the explicit selection append"
+
+
+@pytest.fixture
+def preexisting_pipeline_state(session, project, matrix_source, tmp_path):
+    unrelated = Project(slug=f"native-pipeline-unrelated-{project.id}",
+                        name="Unrelated pending reconciliation", is_synthetic=True)
+    session.add(unrelated)
+    session.flush()
+    request = RecordInclusionRequest(
+        project_id=unrelated.id, dirty_seq=7, reconciled_seq=3,
+        last_reason="Existing work from another producer",
+        requested_at=datetime(2026, 8, 2, 10, tzinfo=timezone.utc),
+        reconciled_at=datetime(2026, 8, 1, 10, tzinfo=timezone.utc),
+    )
+    session.add(request)
+    session.flush()
+    selection_directory = tmp_path / "unrelated-selection"
+    selection_directory.mkdir()
+    gate = _qualify(session, _gate_fixture(session, unrelated, matrix_source, selection_directory))
+    selection = select_qualified_pipeline(
+        session, gate.id, actor=ACTOR, reason="Earlier unrelated synthetic selection",
+        expected_selection_id=None,
+    )
+    return request, selection
 
 
 def _plan(mode="synthetic", *, source=None):
@@ -57,13 +112,15 @@ def _client(source):
     } for index, page in enumerate(source.reading.pages)])
 
 
-def test_actual_native_pipeline_renders_maps_and_appends_without_selection(session, project, matrix_source, tmp_path):
+def test_actual_native_pipeline_renders_maps_and_appends_without_selection(session, project, matrix_source, tmp_path, preexisting_pipeline_state):
     document = _document(session, project, matrix_source)
     scope = _scope(matrix_source)
+    protected_before = _protected_rows(session)
     first = run_native_matrix_shadow(
         session, document, source_path=matrix_source.path, scope=scope, client=_client(matrix_source),
         plan=_plan(source=matrix_source), output_dir=tmp_path / "first", document_label=matrix_source.path.name,
     )
+    _assert_protected_rows_unchanged(session, protected_before)
     record = pipeline_receipt(first.observation)
     assert record["disposition"] == "completed", record["output"]
     assert first.extraction is not None
@@ -86,6 +143,7 @@ def test_actual_native_pipeline_renders_maps_and_appends_without_selection(sessi
         session, document, source_path=matrix_source.path, scope=scope, client=_client(matrix_source),
         plan=_plan(source=matrix_source), output_dir=tmp_path / "second", document_label=matrix_source.path.name,
     )
+    _assert_protected_rows_unchanged(session, protected_before)
     assert second.extraction.run.id == first.extraction.run.id
     repeated = record_repeatability(session, first.observation.id, second.observation.id, actor=ACTOR)
     assert pipeline_receipt(repeated)["passed"]
@@ -94,9 +152,9 @@ def test_actual_native_pipeline_renders_maps_and_appends_without_selection(sessi
     assert "predeclared_metric_policy" in pipeline_receipt(gate)["missing"]
     with pytest.raises(PipelineQualificationRefused, match="not complete"):
         select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Must refuse", expected_selection_id=None)
+    _assert_protected_rows_unchanged(session, protected_before)
     load_project(session, project.id)
-    for model in (ActiveExtractionRun, Dependency, FactDisposition, PipelineSelection, RecordInclusionRequest, RevisionReconciliationRequest):
-        assert session.scalar(select(func.count()).select_from(model)) == 0
+    _assert_protected_rows_unchanged(session, protected_before)
     settings = Settings()
     assert not settings.native_reader_token_layer and not settings.pdfium_render_worker and not settings.reader_page_inventory
 
@@ -196,12 +254,15 @@ def _qualify(session, fixture):
         repeatability_ids=[repeated.id], quality_ids=[quality.id], evidence=evidence, actor=ACTOR)
 
 
-def test_synthetic_gate_selection_disable_restore_and_stale_actor_have_no_record_side_effects(session, project, matrix_source, tmp_path):
+def test_synthetic_gate_selection_disable_restore_and_stale_actor_have_no_record_side_effects(session, project, matrix_source, tmp_path, preexisting_pipeline_state):
     fixture = _gate_fixture(session, project, matrix_source, tmp_path)
+    protected_before = _protected_rows(session)
     document, scope, *_ = fixture
     gate = _qualify(session, fixture)
     assert gate.status == "passed"
     first = select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Explicit synthetic fixture selection", expected_selection_id=None)
+    _assert_protected_rows_unchanged(session, protected_before, new_selection_ids=(first.id,))
+    protected_after_first = _protected_rows(session)
     assert selected_pipeline_configuration(session, document, deployment=scope.deployment, configuration_sha256=gate.configuration_sha256) == scope
     with pytest.raises(PipelineQualificationRefused, match="predecessor"):
         select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Stale act", expected_selection_id=None)
@@ -210,13 +271,15 @@ def test_synthetic_gate_selection_disable_restore_and_stale_actor_have_no_record
     with pytest.raises(PipelineQualificationRefused, match="exact source"):
         selected_pipeline_configuration(session, document, deployment=scope.deployment, configuration_sha256="e" * 64)
     disabled = select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Explicit rollback to intact incumbent routing", expected_selection_id=first.id, enabled=False)
+    _assert_protected_rows_unchanged(session, protected_after_first, new_selection_ids=(disabled.id,))
+    protected_after_disable = _protected_rows(session)
     with pytest.raises(PipelineQualificationRefused, match="no enabled"):
         selected_pipeline_configuration(session, document, deployment=scope.deployment, configuration_sha256=gate.configuration_sha256)
     restored = select_qualified_pipeline(session, gate.id, actor=ACTOR, reason="Restore earlier qualified configuration", expected_selection_id=disabled.id)
     assert restored.configuration_sha256 == first.configuration_sha256
-    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == 3
-    for model in (ActiveExtractionRun, Dependency, FactDisposition, RecordInclusionRequest, RevisionReconciliationRequest):
-        assert session.scalar(select(func.count()).select_from(model)) == 0
+    _assert_protected_rows_unchanged(session, protected_after_disable, new_selection_ids=(restored.id,))
+    _assert_protected_rows_unchanged(session, protected_before,
+                                     new_selection_ids=(first.id, disabled.id, restored.id))
 
 
 def test_replay_and_unbound_or_estimated_cost_cannot_pass_production_gate(session, project, matrix_source, tmp_path):
