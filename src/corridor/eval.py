@@ -34,7 +34,7 @@ from corridor.experimental_database import (
     experimental_session,
     require_experimental_database,
 )
-from corridor.extraction_runs import (
+from corridor.extraction_run_queries import (
     completed_document_ids,
     completion_predicate,
     is_completed_run,
@@ -47,16 +47,17 @@ from corridor.measurement_cases import (
     score_measurement_cases,
 )
 from corridor.verify import unverified_fields
+from corridor.reference_methods import (
+    LEGACY_METHOD, NATIVE_METHOD, SCOPE_SCHEMA, SPENT_SOURCE_HASHES,
+    reference_method, validate_native_authoring,
+)
 
 REQUIRED_COLUMNS = ("source_ref",)
-MACHINE_REFERENCE_SCOPE_SCHEMA = "corridor.machine-reference-scope.v2"
-MACHINE_REFERENCE_METHOD = "pymupdf-table-grid"
-MACHINE_REFERENCE_METHOD_VERSION = "1"
-MACHINE_REFERENCE_LIMITATIONS = (
-    "Semi-independent ceiling: the machine reference and extractor share "
-    "PyMuPDF table detection, so a region omitted by that library is invisible "
-    "to both.",
-)
+# Public legacy aliases remain stable for historical callers and fixtures.
+MACHINE_REFERENCE_SCOPE_SCHEMA = SCOPE_SCHEMA
+MACHINE_REFERENCE_METHOD = LEGACY_METHOD.name
+MACHINE_REFERENCE_METHOD_VERSION = LEGACY_METHOD.version
+MACHINE_REFERENCE_LIMITATIONS = LEGACY_METHOD.limitations
 SPENT_MEASUREMENT_ARTIFACTS = {
     "wsdot-9540": "out/eval-wsdot-9540-matrix_tiered_v3.json",
 }
@@ -851,13 +852,16 @@ class ArtifactCollision(Exception):
     """An immutable measurement artifact already occupies this identity."""
 
 
-def assert_measurement_not_spent(slug: str) -> None:
+def assert_measurement_not_spent(
+    slug: str, *, document_sha256s: tuple[str, ...] = (),
+) -> None:
     """Protect one-shot holdouts from accidental regeneration or rescoring."""
     historical = SPENT_MEASUREMENT_ARTIFACTS.get(slug)
-    if historical is not None:
+    if historical is not None or SPENT_SOURCE_HASHES.intersection(document_sha256s):
         raise NothingToMeasure(
             f"{slug} is a spent holdout; preserve its historical measurement "
-            f"at {historical} and do not regenerate or rescore it"
+            f"at {historical or SPENT_MEASUREMENT_ARTIFACTS['wsdot-9540']} "
+            "and do not regenerate or rescore it"
         )
 
 
@@ -913,6 +917,7 @@ class ReferenceScope:
     method: str | None = None
     method_version: str | None = None
     manifest_provenance: dict[str, str] | None = None
+    native_authoring: dict | None = None
 
     @property
     def document_ids(self) -> tuple[int, ...]:
@@ -923,7 +928,7 @@ class ReferenceScope:
         return tuple(document.sha256 for document in self.documents)
 
     def as_dict(self) -> dict:
-        return {
+        scope = {
             "kind": self.kind,
             "source": self.source,
             "sha256": self.sha256,
@@ -935,6 +940,9 @@ class ReferenceScope:
             "document_sha256s": list(self.document_sha256s),
             "limitations": list(self.limitations),
         }
+        if self.native_authoring is not None:
+            scope["native_authoring"] = self.native_authoring
+        return scope
 
 
 def verified_machine_reference_scope(
@@ -966,13 +974,10 @@ def verified_machine_reference_scope(
             "machine-reference scope manifest project does not match "
             f"{project_slug!r}"
         )
-    if (
-        payload.get("method") != MACHINE_REFERENCE_METHOD
-        or payload.get("method_version") != MACHINE_REFERENCE_METHOD_VERSION
-    ):
-        raise NothingToMeasure(
-            "machine-reference scope manifest has unsupported method/version"
-        )
+    try:
+        contract = reference_method(payload.get("method"), payload.get("method_version"))
+    except ValueError as exc:
+        raise NothingToMeasure(str(exc)) from exc
 
     actual_reference_sha256 = hashlib.sha256(reference_bytes).hexdigest()
     if payload.get("reference_sha256") != actual_reference_sha256:
@@ -1034,7 +1039,7 @@ def verified_machine_reference_scope(
     limitations = (
         tuple(raw_limitations) if isinstance(raw_limitations, list) else ()
     )
-    if limitations != MACHINE_REFERENCE_LIMITATIONS:
+    if limitations != contract.limitations:
         raise NothingToMeasure(
             "machine-reference scope manifest limitations are missing or changed"
         )
@@ -1066,6 +1071,14 @@ def verified_machine_reference_scope(
     manifest_provenance = {
         str(key): str(value) for key, value in sorted(raw_provenance.items())
     }
+    native_authoring = None
+    if contract == NATIVE_METHOD:
+        try:
+            native_authoring = validate_native_authoring(payload.get("native_authoring"), manifest_hashes)
+        except ValueError as exc:
+            raise NothingToMeasure(str(exc)) from exc
+    elif "native_authoring" in payload:
+        raise NothingToMeasure("legacy reference cannot be relabeled with native authoring provenance")
     return ReferenceScope(
         kind="machine_reference",
         source=str(reference_path),
@@ -1076,9 +1089,10 @@ def verified_machine_reference_scope(
         ),
         limitations=limitations,
         manifest_source=str(path),
-        method=MACHINE_REFERENCE_METHOD,
-        method_version=MACHINE_REFERENCE_METHOD_VERSION,
+        method=contract.name,
+        method_version=contract.version,
         manifest_provenance=manifest_provenance,
+        native_authoring=native_authoring,
     )
 
 
@@ -1187,6 +1201,9 @@ def measure(
             + ", ".join(str(run_id) for run_id in wrong_project)
             + f" does not belong to project {slug!r}"
         )
+    assert_measurement_not_spent(
+        slug, document_sha256s=tuple(document.sha256 for document in documents_by_id.values()),
+    )
     non_matrix = [
         run.id
         for run in selected_runs
@@ -1351,7 +1368,7 @@ def measure(
         extraction_run_ids=set(selected_run_ids),
     )
     result.reference_label = (
-        "machine reference — semi-independent ceiling"
+        f"machine reference — semi-independent ceiling ({reference_scope.method} v{reference_scope.method_version})"
         if reference_scope.kind == "machine_reference"
         else "reference"
     )
