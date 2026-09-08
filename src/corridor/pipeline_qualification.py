@@ -1,5 +1,11 @@
 """Persist independent pipeline measurements and explicit scoped selection.
 
+Selection stands on one of two bases (ADR-0095): a qualification that passed,
+or a maintainer who recorded his acceptance on named evidence with named
+limits. The two are written, stored and read back separately and never read
+alike; an incomplete or failed gate stays incomplete or failed in its own
+receipt whatever else is recorded beside it.
+
 Completed challenger runs are deliberately ineligible for legacy declaration.
 This boundary adds a separate maintenance act after a concrete measured gate;
 it never invokes declaration, admission, reconciliation or accepted-value
@@ -20,11 +26,12 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from corridor.models import (
-    Document, PipelineComparison, PipelineConfiguration, PipelineObservation,
-    PipelineQualification, PipelineQualificationPolicy, PipelineSelection, Project,
+    Document, PipelineAcceptance, PipelineComparison, PipelineConfiguration,
+    PipelineObservation, PipelineQualification, PipelineQualificationPolicy,
+    PipelineSelection, Project,
 )
 from corridor.pipeline_comparison import compare_pipeline_outputs
-from corridor.pipeline_contracts import MeasuredEvidence, PipelineScope, QualificationPolicy, canonical_text, content_digest
+from corridor.pipeline_contracts import MaintainerAcceptance, MeasuredEvidence, PipelineScope, QualificationPolicy, canonical_text, content_digest
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.retention import register_processing_artifact
 
@@ -71,7 +78,7 @@ def pipeline_receipt(row) -> dict:
             or record["configuration_sha256"] != row.configuration_sha256
             or record["scope_sha256"] != row.scope_sha256):
         raise PipelineQualificationRefused("pipeline receipt bytes or scope binding differ")
-    if isinstance(row, (PipelineObservation, PipelineQualification, PipelineSelection)):
+    if isinstance(row, (PipelineObservation, PipelineQualification, PipelineAcceptance, PipelineSelection)):
         try:
             scope = PipelineScope.model_validate(record["scope"])
         except (KeyError, ValueError) as exc:
@@ -86,6 +93,27 @@ def pipeline_receipt(row) -> dict:
                        for name in ("missing", "failed"))
                 or (row.status == "passed" and (record["missing"] or record["failed"]))):
             raise PipelineQualificationRefused("pipeline gate requires typed missing/failed evidence lists and its exact status")
+    if isinstance(row, PipelineAcceptance):
+        # ADR-0095. The two bases must never read alike, so an acceptance may
+        # not carry a gate's vocabulary, and every field the decision requires
+        # is read back from the bytes rather than trusted from the writer.
+        if (record.get("schema") != "pipeline-acceptance-v1"
+                or record.get("basis") != "maintainer_acceptance"
+                or {"status", "missing", "failed"} & set(record)):
+            raise PipelineQualificationRefused("a maintainer acceptance is never recorded as a qualification gate")
+        if (record.get("actor") != row.actor
+                or record.get("implementation_revision") != row.implementation_revision
+                or not str(record.get("words", "")).strip()
+                or not str(record.get("decision", "")).strip()
+                or not str(record.get("accepted_at", "")).strip()
+                or not isinstance(record.get("limits"), list) or not record["limits"]
+                or any(not isinstance(value, str) or not value.strip() for value in record["limits"])
+                or not isinstance(record.get("evidence"), list) or not record["evidence"]
+                or any(not isinstance(item, dict)
+                       or any(not str(item.get(name, "")).strip() for name in ("name", "reference", "summary"))
+                       for item in record["evidence"])):
+            raise PipelineQualificationRefused(
+                "a maintainer acceptance needs its attributable principal, its own words, named reachable evidence and stated limits")
     if isinstance(row, PipelineComparison) and (record.get("kind") != row.kind or type(record.get("passed")) is not bool):
         raise PipelineQualificationRefused("pipeline comparison kind or result is malformed")
     return record
@@ -361,36 +389,103 @@ def record_qualification(
     }, status=status)
 
 
+def record_acceptance(
+    session: Session, acceptance: MaintainerAcceptance, *, project_id: int,
+    scope: PipelineScope, actor: HumanPrincipal,
+) -> PipelineAcceptance:
+    """Record ADR-0095's selection basis: the maintainer accepting the evidence.
+
+    This writes no gate and touches none. An incomplete or failed qualification
+    stays exactly that in its own receipt, as the historical measurement it is.
+    Only the maintainer's own principal reaches here: the typed human-principal
+    seam and the database maintenance capability are both required, and no
+    runtime login holds an insert grant on the relation, so no worker, web
+    request or other automated path can grant itself one.
+    """
+    actor_subject = _maintainer(session, actor)
+    acceptance = MaintainerAcceptance.model_validate(acceptance.model_dump())
+    if acceptance.scope_sha256 != scope.identity:
+        raise PipelineQualificationRefused("acceptance is not bound to the exact scope it covers")
+    configuration = session.get(PipelineConfiguration, acceptance.configuration_sha256)
+    if (configuration is None
+            or sha256(configuration.configuration_text.encode()).hexdigest() != acceptance.configuration_sha256):
+        raise PipelineQualificationRefused("acceptance needs the exact registered configuration bytes it accepts")
+    # The configuration digest already covers the chain's code revision, so a
+    # disagreement between the two means one of them names a different build.
+    declared = json.loads(configuration.configuration_text).get("code_revision")
+    if declared is not None and declared != acceptance.implementation_revision:
+        raise PipelineQualificationRefused("acceptance names a different implementation revision than the configuration it accepts")
+    if scope.purpose == "synthetic_validation" and not session.get_one(Project, project_id).is_synthetic:
+        raise PipelineQualificationRefused("a synthetic scope cannot be accepted for a real project")
+    record = {
+        "schema": "pipeline-acceptance-v1", "basis": "maintainer_acceptance",
+        "decision": acceptance.decision, "project_id": project_id,
+        "configuration_sha256": acceptance.configuration_sha256,
+        "implementation_revision": acceptance.implementation_revision,
+        "scope_sha256": scope.identity, "scope": scope.model_dump(mode="json"),
+        "evidence": [item.model_dump(mode="json") for item in acceptance.evidence],
+        "limits": list(acceptance.limits), "words": acceptance.words,
+        "acceptance_document_sha256": acceptance.identity, "actor": actor_subject,
+        "accepted_on": acceptance.accepted_on,
+        "accepted_at": datetime.now(timezone.utc).isoformat(),
+    }
+    return _append(session, PipelineAcceptance, record,
+                   implementation_revision=acceptance.implementation_revision, actor=actor_subject)
+
+
 def select_qualified_pipeline(
-    session: Session, qualification_id: int, *, actor: HumanPrincipal, reason: str,
-    expected_selection_id: int | None, enabled: bool = True,
+    session: Session, qualification_id: int | None = None, *, acceptance_id: int | None = None,
+    actor: HumanPrincipal, reason: str, expected_selection_id: int | None, enabled: bool = True,
 ) -> PipelineSelection:
-    """Append a maintainer selection or disable/restore it without record writes."""
+    """Append a maintainer selection or disable/restore it without record writes.
+
+    ADR-0095 makes a recorded acceptance a selection basis in its own right,
+    beside a passing gate; selection may proceed on either, and on exactly one.
+    The gate's own refusal is untouched: an incomplete or failed qualification
+    still cannot be selected, and is not relabelled by an acceptance existing.
+    The receipt names the basis it stands on, so the two never read alike.
+    """
     actor_subject = _maintainer(session, actor)
     if not isinstance(reason, str) or not reason.strip() or type(enabled) is not bool:
         raise PipelineQualificationRefused("selection needs an explicit reason and enabled state")
-    qualification = session.get_one(PipelineQualification, qualification_id)
-    gate = pipeline_receipt(qualification)
-    if qualification.status != "passed" or gate["status"] != "passed" or gate["missing"] or gate["failed"]:
-        raise PipelineQualificationRefused("pipeline qualification is not complete and passing")
-    scope = PipelineScope.model_validate(gate["scope"])
-    session.execute(select(Project.id).where(Project.id == qualification.project_id).with_for_update())
+    if (qualification_id is None) == (acceptance_id is None):
+        raise PipelineQualificationRefused(
+            "selection stands on exactly one basis: a passing qualification or a recorded maintainer acceptance")
+    if qualification_id is not None:
+        basis_row: PipelineQualification | PipelineAcceptance = session.get_one(PipelineQualification, qualification_id)
+        gate = pipeline_receipt(basis_row)
+        if basis_row.status != "passed" or gate["status"] != "passed" or gate["missing"] or gate["failed"]:
+            raise PipelineQualificationRefused("pipeline qualification is not complete and passing")
+        basis_record = gate
+        identity = {"basis": "qualification", "qualification_id": basis_row.id,
+                    "qualification_sha256": basis_row.receipt_sha256,
+                    "acceptance_id": None, "acceptance_sha256": None}
+        columns: dict = {"qualification_id": basis_row.id, "acceptance_id": None}
+    else:
+        basis_row = session.get_one(PipelineAcceptance, acceptance_id)
+        basis_record = pipeline_receipt(basis_row)
+        identity = {"basis": "maintainer_acceptance", "acceptance_id": basis_row.id,
+                    "acceptance_sha256": basis_row.receipt_sha256,
+                    "qualification_id": None, "qualification_sha256": None}
+        columns = {"qualification_id": None, "acceptance_id": basis_row.id}
+    scope = PipelineScope.model_validate(basis_record["scope"])
+    session.execute(select(Project.id).where(Project.id == basis_row.project_id).with_for_update())
     current = session.scalar(select(PipelineSelection).where(
-        PipelineSelection.project_id == qualification.project_id, PipelineSelection.deployment == scope.deployment,
+        PipelineSelection.project_id == basis_row.project_id, PipelineSelection.deployment == scope.deployment,
     ).order_by(PipelineSelection.id.desc()).limit(1))
     if (current.id if current else None) != expected_selection_id:
         raise PipelineQualificationRefused("pipeline selection predecessor changed")
     record = {
-        "schema": "pipeline-selection-v1", "project_id": qualification.project_id,
-        "configuration_sha256": qualification.configuration_sha256, "scope_sha256": scope.identity,
-        "qualification_id": qualification.id, "qualification_sha256": qualification.receipt_sha256,
+        "schema": "pipeline-selection-v1", "project_id": basis_row.project_id,
+        "configuration_sha256": basis_row.configuration_sha256, "scope_sha256": scope.identity,
+        **identity,
         "scope": scope.model_dump(mode="json"), "previous_selection_id": expected_selection_id,
         "actor": actor_subject, "reason": reason, "enabled": enabled,
         "selected_at": datetime.now(timezone.utc).isoformat(),
     }
     return _append(session, PipelineSelection, record, deployment=scope.deployment,
-                   qualification_id=qualification.id, previous_selection_id=expected_selection_id,
-                   actor=actor_subject, reason=reason, enabled=enabled)
+                   previous_selection_id=expected_selection_id, actor=actor_subject,
+                   reason=reason, enabled=enabled, **columns)
 
 
 def selected_pipeline_configuration(
@@ -404,12 +499,29 @@ def selected_pipeline_configuration(
     if selection is None or not selection.enabled:
         raise PipelineQualificationRefused("no enabled qualified pipeline selection for this deployment")
     record = pipeline_receipt(selection)
-    gate_row = session.get_one(PipelineQualification, selection.qualification_id)
-    gate = pipeline_receipt(gate_row)
+    # The readback refuses on either basis exactly as the selection command
+    # does: a gate that is not passing, or an acceptance that is not the one
+    # this selection names. What an acceptance settles is whether the
+    # configuration is good enough, never who may run it, on what, or what it
+    # may write, so every other check below is unchanged (ADR-0095).
+    basis = record.get("basis")
+    if basis == "qualification" and selection.qualification_id is not None and selection.acceptance_id is None:
+        basis_row: PipelineQualification | PipelineAcceptance = session.get_one(PipelineQualification, selection.qualification_id)
+        basis_record = pipeline_receipt(basis_row)
+        if (basis_row.status != "passed" or basis_record["status"] != "passed"
+                or basis_row.receipt_sha256 != record["qualification_sha256"]):
+            raise PipelineQualificationRefused("selected pipeline stands on a gate that is not complete and passing")
+    elif basis == "maintainer_acceptance" and selection.acceptance_id is not None and selection.qualification_id is None:
+        basis_row = session.get_one(PipelineAcceptance, selection.acceptance_id)
+        basis_record = pipeline_receipt(basis_row)
+        if basis_row.receipt_sha256 != record["acceptance_sha256"]:
+            raise PipelineQualificationRefused("selected pipeline stands on a different acceptance than the one it names")
+    else:
+        raise PipelineQualificationRefused("selected pipeline does not name exactly one recorded basis")
     scope = PipelineScope.model_validate(record["scope"])
-    if (gate_row.status != "passed" or gate["status"] != "passed"
-            or record["scope"] != gate["scope"] or gate_row.scope_sha256 != selection.scope_sha256
-            or gate_row.receipt_sha256 != record["qualification_sha256"]
+    if (record["scope"] != basis_record["scope"] or basis_row.scope_sha256 != selection.scope_sha256
+            or basis_row.project_id != selection.project_id
+            or basis_row.configuration_sha256 != selection.configuration_sha256
             or selection.configuration_sha256 != configuration_sha256
             or document.sha256 not in scope.source_sha256s or document.doc_type != "matrix"
             or (scope.purpose == "synthetic_validation" and not session.get_one(Project, document.project_id).is_synthetic)):

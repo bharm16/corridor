@@ -485,9 +485,14 @@ native-matrix-replay:
 	uv run python -m corridor.native_matrix_measurement $(ARGS)
 
 # Explicit pipeline maintenance. `shadow` uses only the seven historical
-# retained-answer cases and a new disposable database. `select` is a separate
-# human maintenance act; no measurement invokes it or changes a default.
+# retained-answer cases and a new disposable database. `accept` records the
+# maintainer's own acceptance as a selection basis (ADR-0095); it is not a gate
+# result and selects nothing. `select` is a separate human maintenance act on
+# exactly one basis, a passing `gate` or a recorded `accept`; no measurement
+# invokes it and none of these changes a default.
 # Example: make pipeline-qualification ARGS="shadow --output <new-dir> --postgres-admin-url-env <name> --actor local:<human>"
+# Example: make pipeline-qualification ARGS="accept --acceptance docs/operations/native-matrix-maintainer-acceptance.json --project <slug> --configuration <run>/configuration.json --actor local:<human>"
+# Example: make pipeline-qualification ARGS="select --acceptance <id> --initial --actor local:<human> --reason '<why>'"
 .PHONY: pipeline-qualification
 pipeline-qualification:
 	uv run python scripts/pipeline_qualification.py $(ARGS)

@@ -4,6 +4,8 @@ domain: extraction
 scope: current product
 amends:
   - ADR-0006
+amended_by:
+  - ADR-0095
 migration: the reader package (#729), independent fixtures (#730), frozen measurement (#731), disabled adapters (#732 to #735), coherent prose and cell segmentation (#736), semantic mapping (#737), reference integration (#738) and remaining-call-site migration (#740) are implemented; qualification and selection (#447 and #739), provider-posture acceptance (#732) and final retirement (#741) remain. `ENGINE_ALLOWLIST` in `tests/test_architecture.py` still records retained incumbent imports.
 ---
 

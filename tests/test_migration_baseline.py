@@ -61,7 +61,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "fa8539c9b94eed745f879ab24909820331b7537ff83d3c537c625835b593450e"
+    "4ec5e6779c9c18350506ea9d910634b3ed143e34dc6abada532bcf39af9b7ea6"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -246,10 +246,12 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
-            for table in ("pipeline_observations", "pipeline_comparisons", "pipeline_qualifications", "pipeline_selections"):
+            for table in ("pipeline_observations", "pipeline_comparisons", "pipeline_qualifications",
+                          "pipeline_acceptances", "pipeline_selections"):
                 assert session.scalar(text(f"select count(*) from public.{table}")) == 0
             for role in ("corridor_web", "corridor_worker", "corridor_source_append"):
-                for table in ("pipeline_qualification_policies", "pipeline_comparisons", "pipeline_qualifications", "pipeline_selections"):
+                for table in ("pipeline_qualification_policies", "pipeline_comparisons", "pipeline_qualifications",
+                              "pipeline_acceptances", "pipeline_selections"):
                     assert session.scalar(text("select has_table_privilege(:role, :table, 'INSERT')"),
                                           {"role": role, "table": table}) is False
 

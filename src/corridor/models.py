@@ -4564,21 +4564,43 @@ class PipelineQualification(PipelineReceiptMixin, Base):
     status: Mapped[str] = mapped_column(String(24))
 
 
+class PipelineAcceptance(PipelineReceiptMixin, Base):
+    """ADR-0095's recorded maintainer acceptance, a selection basis of its own.
+
+    It is never a gate result and carries no status: an incomplete or failed
+    qualification stays exactly that in its own receipt. Only the maintainer's
+    own principal may append here, and no runtime login holds an insert grant.
+    """
+
+    __tablename__ = "pipeline_acceptances"
+    implementation_revision: Mapped[str] = mapped_column(String(40))
+    actor: Mapped[str] = mapped_column(Text)
+
+
 class PipelineSelection(PipelineReceiptMixin, Base):
     """One maintainer's append-only routing selection, with a CAS predecessor.
 
-    This relation does not declare an Active Extraction Run, reconcile an old
-    cohort or write accepted values. Restoring an older qualified configuration
-    appends another selection; its original observations remain intact.
+    Its basis is exactly one of a passing qualification or a recorded
+    acceptance (ADR-0095); the two never read alike. This relation does not
+    declare an Active Extraction Run, reconcile an old cohort or write accepted
+    values. Restoring an older configuration appends another selection; its
+    original observations remain intact.
     """
 
     __tablename__ = "pipeline_selections"
-    __table_args__ = (UniqueConstraint(
-        "project_id", "deployment", "previous_selection_id",
-        name="uq_pipeline_selections_successor", postgresql_nulls_not_distinct=True,
-    ),)
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "deployment", "previous_selection_id",
+            name="uq_pipeline_selections_successor", postgresql_nulls_not_distinct=True,
+        ),
+        CheckConstraint(
+            "(qualification_id is null) <> (acceptance_id is null)",
+            name="ck_pipeline_selections_one_basis",
+        ),
+    )
     deployment: Mapped[str] = mapped_column(Text)
-    qualification_id: Mapped[int] = mapped_column(ForeignKey("pipeline_qualifications.id"))
+    qualification_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline_qualifications.id"))
+    acceptance_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline_acceptances.id"))
     previous_selection_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline_selections.id"))
     actor: Mapped[str] = mapped_column(Text)
     reason: Mapped[str] = mapped_column(Text)

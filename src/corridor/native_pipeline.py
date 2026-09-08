@@ -30,6 +30,7 @@ from corridor.extractor_lineage import deployed_native_matrix_config
 from corridor.models import Document, PipelineConfiguration, PipelineObservation, PipelineQualificationPolicy, Project
 from corridor.native_matrix import NativeMatrixExtraction, extract_native_matrix, render_native_matrix_context
 from corridor.native_matrix_bindings import NativeMatrixRefused
+from corridor.native_provider_boundary import POSTURE, AuthorizedNativeMapper, CustomerAuthorization, ExperimentScope
 from corridor.page_inventory import read_reader_page_inventories, route_reader_page
 from corridor.pipeline_contracts import ObservationPlan, PipelineScope, canonical_text, content_digest
 from corridor.render_profiles import crop_routed_region, load_render_profile_bundle, render_page_derivative
@@ -169,6 +170,35 @@ class _ObservedClient:
                 observation["provider_receipt"] = receipt
 
 
+def require_authorized_boundary(client: object, plan: ObservationPlan, scope: PipelineScope) -> AuthorizedNativeMapper:
+    """A fresh observation runs only through a boundary that covers this exact run.
+
+    The old flat refusal is not deleted: it is now conditional on the boundary
+    failing to cover the run. Everything the boundary was opened with — its
+    posture, its authorization record, its request configuration, its budget
+    and its source allowlist — is in `origin_sha256`, so a plan cannot name one
+    authorization and execute under another, and a scope cannot quietly widen
+    past the digests the record actually authorizes.
+    """
+    if type(client) is not AuthorizedNativeMapper:
+        raise ValueError("a fresh provider observation requires a verified outbound authorization boundary; a mode label is not one")
+    reasons = []
+    if plan.origin_sha256 != client.origin_sha256:
+        reasons.append("plan origin differs from the boundary it was opened with")
+    if plan.provider_posture_sha256 != client.posture.digest or client.posture.digest != POSTURE.digest:
+        reasons.append("plan does not name the recorded provider posture bytes")
+    if client.source_sha256s != set(scope.source_sha256s):
+        reasons.append("boundary source allowlist differs from the declared scope")
+    expected_permission = "customer" if isinstance(client.record, CustomerAuthorization) else ("synthetic" if scope.purpose == "synthetic_validation" else "public")
+    if plan.source_permission != expected_permission:
+        reasons.append("plan source permission differs from the authorization record kind")
+    if isinstance(client.record, ExperimentScope) and plan.customer_authorization_sha256 is not None:
+        reasons.append("an experiment scope cannot carry a customer authorization")
+    if reasons:
+        raise ValueError("fresh transport requires a verified outbound authorization boundary: " + "; ".join(reasons))
+    return client
+
+
 @dataclass(frozen=True)
 class PipelineShadowResult:
     observation: PipelineObservation
@@ -205,9 +235,11 @@ def _run_native_matrix_shadow(
     from corridor.pipeline_comparison import canonical_native_output
 
     path = Path(source_path)
-    if plan.mode == "fresh_provider" or plan.source_permission == "customer":
-        raise ValueError("fresh/customer transport requires a verified outbound authorization boundary; digest strings are not approval")
-    if type(client) is not RecordedPipelineClient or plan.origin_sha256 != client.origin_sha256:
+    if plan.mode == "fresh_provider":
+        require_authorized_boundary(client, plan, scope)
+    elif plan.source_permission == "customer":
+        raise ValueError("customer material requires a verified outbound authorization boundary; digest strings are not approval")
+    elif type(client) is not RecordedPipelineClient or plan.origin_sha256 != client.origin_sha256:
         raise ValueError("offline execution requires the sealed recorded client and its exact request/answer origin digest")
     if document.sha256 not in scope.source_sha256s or sha256(path.read_bytes()).hexdigest() != document.sha256:
         raise ValueError("shadow source is outside its exact declared scope or has changed bytes")
@@ -315,6 +347,9 @@ def _run_native_matrix_shadow(
     artifacts.append(_artifact(session, document, raw_path, "pipeline_model_observations", sha256(raw_bytes).hexdigest()))
     # Elapsed time and request/answer identity are separate: rerunning the same
     # retained inputs should not compare a duration or a new provider ID.
+    provider_costs = client.cost_receipt() if type(client) is AuthorizedNativeMapper else None
+    if provider_costs is not None:
+        chain["provider"] = provider_costs
     chain["model_observations"] = [{
         "request_sha256": content_digest(call["request"]), "response_sha256": call.get("response_sha256"),
         "mode": call["mode"], "origin_sha256": plan.origin_sha256,
@@ -330,8 +365,19 @@ def _run_native_matrix_shadow(
         "client_calls": len(observer.observations),
         "outbound_attempts": sum(call.get("provider_receipt", {}).get("transport_attempts", 0) for call in observer.observations),
         "observed_new_provider_cost_usd": 0.0 if plan.mode != "fresh_provider" else None,
+        "provider_calls": provider_costs["counts"]["calls"] if provider_costs else 0,
+        "provider_retries": provider_costs["counts"]["retries"] if provider_costs else 0,
+        "provider_failed_attempts": provider_costs["counts"]["failed_attempts"] if provider_costs else 0,
+        "provider_refusals": provider_costs["counts"]["refusals"] if provider_costs else 0,
+        "provider_tokens": provider_costs["tokens"] if provider_costs else
+            {"input": 0, "output": 0, "cached_input": 0, "total": 0},
+        "processing_cost_tokens": provider_costs["tokens"]["total"] if provider_costs else 0,
         "processing_cost_usd": None, "handling_minutes": None, "validated_customer_roi": None,
-        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "cost_limit": ("Measured processing cost is compute time plus the provider tokens above. "
+                       "No list price for this model is recorded, so dollars, deployed total cost "
+                       "and human handling burden remain unmeasured."
+                       if plan.mode == "fresh_provider" else
+                       "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured."),
         "rows": len(rows), "facts": len(canonical.get("facts", [])),
         "declared_pages": document.pages, "inventoried_pages": len(chain.get("inventories", {})),
         "mapped_pages": len(canonical["pages"]),

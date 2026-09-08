@@ -10235,7 +10235,7 @@ create or replace function public.append_source_segments(
 
 PIPELINE_TABLES = (
     "pipeline_qualification_policies", "pipeline_configurations", "pipeline_observations", "pipeline_comparisons",
-    "pipeline_qualifications", "pipeline_selections",
+    "pipeline_qualifications", "pipeline_acceptances", "pipeline_selections",
 )
 
 PIPELINE_SCHEMA = """
@@ -10270,7 +10270,7 @@ begin
        or body ->> 'scope_sha256' is distinct from new.scope_sha256 then
         raise exception 'pipeline receipt identity or binding differs' using errcode='23514';
     end if;
-    if tg_table_name in ('pipeline_observations', 'pipeline_qualifications', 'pipeline_selections') then
+    if tg_table_name in ('pipeline_observations', 'pipeline_qualifications', 'pipeline_acceptances', 'pipeline_selections') then
         scope_text := body ->> 'scope_text';
         if scope_text is null
            or encode(sha256(convert_to(scope_text, 'UTF8')), 'hex') is distinct from new.scope_sha256
@@ -10290,6 +10290,37 @@ begin
            or (new.status = 'passed' and (body -> 'missing' is distinct from '[]'::jsonb
                                         or body -> 'failed' is distinct from '[]'::jsonb)) then
             raise exception 'passing pipeline gate cannot omit or retain unmet evidence' using errcode='23514';
+        end if;
+    elsif tg_table_name = 'pipeline_acceptances' then
+        -- ADR-0095. An acceptance is a different claim from a gate, so it may
+        -- not wear a gate's clothes: no status, no missing, no failed. What it
+        -- must carry instead is the maintainer, his words, the evidence he
+        -- read and the limits that evidence does not establish.
+        if body ->> 'schema' is distinct from 'pipeline-acceptance-v1'
+           or body ->> 'basis' is distinct from 'maintainer_acceptance'
+           or body ?| array['status', 'missing', 'failed'] then
+            raise exception 'a maintainer acceptance is never recorded as a qualification gate' using errcode='23514';
+        end if;
+        if body ->> 'implementation_revision' is distinct from new.implementation_revision
+           or new.implementation_revision !~ '^[0-9a-f]{40}$'
+           or body ->> 'actor' is distinct from new.actor
+           or new.actor !~ '^[a-z][a-z0-9._-]{1,31}:[^[:space:]]+$'
+           or lower(substring(new.actor from position(':' in new.actor) + 1)) in ('agent', 'demo', 'extractor', 'reviewer', 'system')
+           or length(trim(coalesce(body ->> 'words', ''))) = 0
+           or length(trim(coalesce(body ->> 'decision', ''))) = 0
+           or coalesce(body ->> 'accepted_at', '') !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T'
+           or jsonb_typeof(body -> 'evidence') is distinct from 'array'
+           or jsonb_array_length(body -> 'evidence') = 0
+           or jsonb_typeof(body -> 'limits') is distinct from 'array'
+           or jsonb_array_length(body -> 'limits') = 0
+           or exists (select 1 from jsonb_array_elements(body -> 'limits') member
+                      where jsonb_typeof(member) <> 'string' or length(trim(member #>> '{}')) = 0)
+           or exists (select 1 from jsonb_array_elements(body -> 'evidence') member
+                      where jsonb_typeof(member) <> 'object'
+                         or length(trim(coalesce(member ->> 'name', ''))) = 0
+                         or length(trim(coalesce(member ->> 'reference', ''))) = 0
+                         or length(trim(coalesce(member ->> 'summary', ''))) = 0) then
+            raise exception 'a maintainer acceptance needs its attributable principal, its own words, named reachable evidence and stated limits' using errcode='23514';
         end if;
     elsif tg_table_name = 'pipeline_comparisons' then
         if body ->> 'kind' is distinct from new.kind
@@ -10320,8 +10351,14 @@ PIPELINE_SELECTION_GUARD = """
 create function public.validate_pipeline_selection() returns trigger language plpgsql as $$
 declare
     qualification public.pipeline_qualifications;
+    acceptance public.pipeline_acceptances;
     previous bigint;
     body jsonb := new.receipt_text::jsonb;
+    basis text := body ->> 'basis';
+    basis_scope jsonb;
+    basis_project bigint;
+    basis_configuration text;
+    basis_scope_sha256 text;
 begin
     -- The project lock protects even direct maintenance INSERTs. The expected
     -- predecessor is a compare-and-swap, not a last-writer-wins update.
@@ -10332,27 +10369,58 @@ begin
     if previous is distinct from new.previous_selection_id then
         raise exception 'pipeline selection predecessor changed' using errcode='40001';
     end if;
-    select * into qualification from public.pipeline_qualifications where id = new.qualification_id;
-    if qualification.id is null or qualification.status is distinct from 'passed'
-       or qualification.receipt_text::jsonb ->> 'status' is distinct from 'passed'
-       or qualification.receipt_text::jsonb -> 'missing' is distinct from '[]'::jsonb
-       or qualification.receipt_text::jsonb -> 'failed' is distinct from '[]'::jsonb
-       or qualification.project_id is distinct from new.project_id
-       or qualification.configuration_sha256 is distinct from new.configuration_sha256
-       or qualification.scope_sha256 is distinct from new.scope_sha256
-       or qualification.receipt_text::jsonb #>> '{scope,deployment}' is distinct from new.deployment
-       or body -> 'scope' is distinct from qualification.receipt_text::jsonb -> 'scope'
-       or body ->> 'qualification_sha256' is distinct from qualification.receipt_sha256
-       or (body ?& array['previous_selection_id', 'actor', 'reason', 'enabled', 'qualification_id']) is not true
+    -- ADR-0095: a passing gate or a recorded acceptance, never both and never
+    -- neither, and the receipt says which so the two never read alike.
+    if (new.qualification_id is null) = (new.acceptance_id is null) then
+        raise exception 'a pipeline selection stands on exactly one basis' using errcode='23514';
+    end if;
+    if new.qualification_id is not null then
+        select * into qualification from public.pipeline_qualifications where id = new.qualification_id;
+        if qualification.id is null or qualification.status is distinct from 'passed'
+           or qualification.receipt_text::jsonb ->> 'status' is distinct from 'passed'
+           or qualification.receipt_text::jsonb -> 'missing' is distinct from '[]'::jsonb
+           or qualification.receipt_text::jsonb -> 'failed' is distinct from '[]'::jsonb
+           or basis is distinct from 'qualification'
+           or (body ?& array['qualification_id', 'qualification_sha256']) is not true
+           or body ->> 'qualification_sha256' is distinct from qualification.receipt_sha256
+           or (body ->> 'qualification_id')::bigint is distinct from new.qualification_id
+           or body ->> 'acceptance_id' is not null then
+            raise exception 'pipeline selection needs its exact complete and passing gate' using errcode='23514';
+        end if;
+        basis_scope := qualification.receipt_text::jsonb -> 'scope';
+        basis_project := qualification.project_id;
+        basis_configuration := qualification.configuration_sha256;
+        basis_scope_sha256 := qualification.scope_sha256;
+    else
+        select * into acceptance from public.pipeline_acceptances where id = new.acceptance_id;
+        if acceptance.id is null
+           or basis is distinct from 'maintainer_acceptance'
+           or acceptance.receipt_text::jsonb ->> 'basis' is distinct from 'maintainer_acceptance'
+           or (body ?& array['acceptance_id', 'acceptance_sha256']) is not true
+           or body ->> 'acceptance_sha256' is distinct from acceptance.receipt_sha256
+           or (body ->> 'acceptance_id')::bigint is distinct from new.acceptance_id
+           or body ->> 'qualification_id' is not null then
+            raise exception 'pipeline selection needs its exact recorded maintainer acceptance' using errcode='23514';
+        end if;
+        basis_scope := acceptance.receipt_text::jsonb -> 'scope';
+        basis_project := acceptance.project_id;
+        basis_configuration := acceptance.configuration_sha256;
+        basis_scope_sha256 := acceptance.scope_sha256;
+    end if;
+    if basis_project is distinct from new.project_id
+       or basis_configuration is distinct from new.configuration_sha256
+       or basis_scope_sha256 is distinct from new.scope_sha256
+       or basis_scope #>> '{deployment}' is distinct from new.deployment
+       or body -> 'scope' is distinct from basis_scope
+       or (body ?& array['previous_selection_id', 'actor', 'reason', 'enabled', 'basis']) is not true
        or new.actor !~ '^[a-z][a-z0-9._-]{1,31}:[^[:space:]]+$'
        or lower(substring(new.actor from position(':' in new.actor) + 1)) in ('agent', 'demo', 'extractor', 'reviewer', 'system')
        or length(trim(new.reason)) = 0
        or body ->> 'actor' is distinct from new.actor
        or body ->> 'reason' is distinct from new.reason
        or (body ->> 'enabled')::boolean is distinct from new.enabled
-       or (body ->> 'qualification_id')::bigint is distinct from new.qualification_id
        or (body ->> 'previous_selection_id')::bigint is distinct from new.previous_selection_id then
-        raise exception 'pipeline selection needs its exact qualified scope and human act' using errcode='23514';
+        raise exception 'pipeline selection needs its exact qualified or accepted scope and human act' using errcode='23514';
     end if;
     return new;
 end $$;
@@ -10369,10 +10437,14 @@ def _create_pipeline_qualification_schema() -> None:
         "pipeline_observations": "document_id bigint not null references documents(id), extraction_run_id bigint references extraction_runs(id),",
         "pipeline_comparisons": "kind varchar(24) not null check (kind in ('repeatability', 'quality')),",
         "pipeline_qualifications": "status varchar(24) not null check (status in ('passed', 'failed', 'incomplete')),",
+        "pipeline_acceptances": "implementation_revision varchar(40) not null, actor text not null,",
         "pipeline_selections": (
-            "deployment text not null, qualification_id bigint not null references pipeline_qualifications(id), "
+            "deployment text not null, qualification_id bigint references pipeline_qualifications(id), "
+            "acceptance_id bigint references pipeline_acceptances(id), "
             "previous_selection_id bigint references pipeline_selections(id), "
             "actor text not null, reason text not null, enabled boolean not null, "
+            "constraint ck_pipeline_selections_one_basis check "
+            "((qualification_id is null) <> (acceptance_id is null)), "
             "constraint uq_pipeline_selections_successor unique nulls not distinct "
             "(project_id, deployment, previous_selection_id),"
         ),
@@ -10403,8 +10475,10 @@ def _create_pipeline_qualification_schema() -> None:
         if table not in ("pipeline_configurations", "pipeline_qualification_policies"):
             op.execute(f"revoke all on sequence public.{table}_id_seq from {RUNTIME_LOGINS}")
     # Ordinary capture may register its actual configuration and observation.
-    # Comparisons/gates/selection are maintenance tooling; runtime logins have
-    # no write grant and no SECURITY DEFINER command that manufactures one.
+    # Comparisons, gates, acceptances and selection are maintenance tooling;
+    # runtime logins have no write grant and no SECURITY DEFINER command that
+    # manufactures one. An acceptance is the maintainer's act (ADR-0095), so no
+    # worker, web request or other automated path can grant itself one here.
     for table in ("pipeline_configurations", "pipeline_observations"):
         op.execute(f"grant insert on public.{table} to {RUNTIME_LOGINS}")
     op.execute(f"grant usage on sequence public.pipeline_observations_id_seq to {RUNTIME_LOGINS}")

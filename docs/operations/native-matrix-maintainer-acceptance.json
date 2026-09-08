@@ -1,0 +1,64 @@
+{
+  "note": "ADR-0095's acceptance document, prepared for the maintainer's own act. Everything the decision requires is already stated here except the two run-bound identities: fill acceptance.configuration_sha256 from the configuration.json the shadow run wrote, and acceptance.implementation_revision from the code revision that configuration names. acceptance.scope_sha256 is already the SHA-256 over the canonical JSON of the scope below; edit the scope and it must be recomputed, because the accept command recomputes it and refuses a mismatch. Recording this is not a passing gate and is not a selection: `accept` records it, `select --acceptance <id>` acts on it.",
+  "acceptance": {
+    "decision": "ADR-0095",
+    "configuration_sha256": "fill from the shadow run's configuration.json digest",
+    "implementation_revision": "fill from that configuration's code_revision",
+    "scope_sha256": "0dac9d2ab77b8deebb4dfd4386198310ec1d47ed6e22aa892679186a741b8c5d",
+    "accepted_on": "2026-09-08",
+    "words": "I'm done with the pdf replacement shit. It works.",
+    "evidence": [
+      {
+        "name": "paired-rendition exact gate",
+        "reference": "docs/adr/0094-pdf-facts-come-from-the-paired-rendition-reader-scanned-pages-from-textract-and-pymupdf-and-tesseract-leave-the-product.md",
+        "summary": "The reader passes the exact paired-rendition gate on 262 of 263 development pairs and 70 of 70 holdout pairs, reproduced inside Corridor."
+      },
+      {
+        "name": "cell-ID semantics tier against the WSDOT machine references",
+        "reference": "gold/native-matrix/v1/dataset.json",
+        "summary": "The semantics tier matched 162 of 162 and 192 of 192 rows against the WSDOT 9424 and 9540 machine references."
+      },
+      {
+        "name": "integrated retained-answer replay",
+        "reference": "docs/operations/native-pipeline-qualification-evidence-2026-09-08.md",
+        "summary": "The integrated replay reproduces all 466 required rows and 2,466 Source Facts across seven Documents, twice, with identical canonical output."
+      },
+      {
+        "name": "the maintainer's own adjudication of the one disagreement",
+        "reference": "gold/native-matrix/v1/adjudications.json",
+        "summary": "On four WSDOT 9540 listings the incumbent undercounted a merged header spanning two columns; the maintainer adjudicated against the page and the replacement is right."
+      },
+      {
+        "name": "recorded component regressions",
+        "reference": "artifacts/pipeline-qualification/",
+        "summary": "Routing, rendering geometry, native text and page inventory each carry their own recorded regression against the incumbent."
+      }
+    ],
+    "limits": [
+      "This does not establish independent full-field accuracy: the references share a reader (ADR-0023), so they cannot label fields, physical occurrences, dispositions, refusals and diagnostics independently of the reading being measured.",
+      "The 5.1% of registered prose locators that cannot be rebound under the new reading remain exactly what they were measured to be; nothing here migrates a historical citation.",
+      "No fresh-model qualification campaign, independently authored Reference Dataset or further comparative accuracy measurement was performed, and this acceptance is not a claim that any of them would have passed.",
+      "Total deployed processing cost, dollar cost and human handling burden remain unmeasured.",
+      "Native Minutes, scanned and mixed-OCR classes are outside this scope and are refused by it; scanned qualification remains #739 and engine retirement remains #741.",
+      "The provider posture (#732) and the customer authorization (#522) stay open on their own facts; this acceptance authorizes no customer processing."
+    ]
+  },
+  "scope": {
+    "deployment": "native-matrix-controlled-scope",
+    "source_class": "native_matrix",
+    "source_sha256s": [
+      "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a"
+    ],
+    "corpus_version": "native-matrix-retained-v1",
+    "corpus_sha256": "94962a918d52420a2327b6315e9f01ad67a52ae3172e0e5da9be5eb95ae888df",
+    "purpose": "prospective_production",
+    "history": "excluded_preserve_original",
+    "excluded_classes": ["native_minutes", "scanned", "mixed_ocr", "other"]
+  }
+}
