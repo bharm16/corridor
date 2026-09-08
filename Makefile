@@ -491,7 +491,7 @@ native-matrix-replay:
 # exactly one basis, a passing `gate` or a recorded `accept`; no measurement
 # invokes it and none of these changes a default.
 # Example: make pipeline-qualification ARGS="shadow --output <new-dir> --postgres-admin-url-env <name> --actor local:<human>"
-# Example: make pipeline-qualification ARGS="accept --acceptance docs/operations/native-matrix-maintainer-acceptance.json --project <slug> --actor local:<human>"
+# Example: make pipeline-qualification ARGS="accept --acceptance docs/operations/native-matrix-maintainer-acceptance.json --project <slug> --configuration <run>/configuration.json --actor local:<human>"
 # Example: make pipeline-qualification ARGS="select --acceptance <id> --initial --actor local:<human> --reason '<why>'"
 .PHONY: pipeline-qualification
 pipeline-qualification:

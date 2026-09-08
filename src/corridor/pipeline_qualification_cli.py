@@ -146,8 +146,15 @@ def _acceptance(session, args, actor: HumanPrincipal):
     scope, the evidence relied on, the limits it does not establish and the
     maintainer's own words. Nothing here is inferred: a field the decision
     requires and the file omits is a refusal, not a default.
+
+    `--configuration` exists because the acceptance names a configuration by
+    digest and the record must hold its exact bytes. A database that has not
+    run this chain does not have them, and registering a configuration selects
+    nothing. Bytes that are not the configuration the acceptance names are
+    refused rather than registered beside it.
     """
     from corridor.models import Project
+    from corridor.native_pipeline import register_pipeline_configuration
     from corridor.pipeline_qualification import record_acceptance
 
     document = json.loads(args.acceptance.read_bytes())
@@ -156,6 +163,10 @@ def _acceptance(session, args, actor: HumanPrincipal):
     project = session.scalar(select(Project).where(Project.slug == args.project))
     if project is None:
         raise ValueError(f"no project is registered as {args.project!r}")
+    if args.configuration is not None:
+        registered = register_pipeline_configuration(session, json.loads(args.configuration.read_bytes()))
+        if registered.configuration_sha256 != acceptance.configuration_sha256:
+            raise ValueError("the supplied configuration is not the configuration this acceptance names")
     return record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=actor)
 
 
@@ -222,6 +233,8 @@ def main(argv=None, *, session_factory=None) -> int:
     acceptance.add_argument("--acceptance", type=Path, required=True,
                             help="the acceptance document: decision, configuration, revision, scope, evidence, limits and words")
     acceptance.add_argument("--project", required=True, help="project slug the accepted scope belongs to")
+    acceptance.add_argument("--configuration", type=Path,
+                            help="the accepted configuration's own bytes, when this database has not run the chain; registering one selects nothing")
     selection = commands.add_parser(
         "select", help="explicit maintainer selection on one basis; never implied by a passing gate or an acceptance")
     basis = selection.add_mutually_exclusive_group(required=True)
