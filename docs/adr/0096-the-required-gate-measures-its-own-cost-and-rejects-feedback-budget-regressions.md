@@ -47,6 +47,9 @@ is reported; this current-run ceiling enforces its limit on every new run
 without making old slow samples block a faster repair. Median enforcement
 begins with five validated samples in a ten-run window. A current gate below
 the three-minute target may pass while the historical median remains slow.
+Before five usable samples exist, the current run must itself finish below
+three minutes. Unavailable historical log access therefore cannot disable the
+budget: the current job-output proof and its strict time limit remain required.
 Raising a limit is a policy change that requires an explicit successor
 decision; ordinary timing refreshes cannot move these limits.
 
@@ -64,6 +67,9 @@ Current job logs are not a dependency: GitHub may not make them downloadable
 until the workflow has finished. Only historical completed-workflow logs are
 read through the API. Pytest children do not inherit Actions command-file
 paths; the owning runner alone publishes its receipt after pytest exits.
+Unavailable historical logs produce a visible diagnostic and use the validated
+bootstrap weights. These initial weights were calibrated from all nine successful
+test commands in run 34257502898; no extra local suite was run to produce them.
 This removes the requirement to run two additional local timing suites after
 every change that alters test cost. Missing history starts a visible bootstrap;
 missing current receipts fails closed. No classifier or summary package

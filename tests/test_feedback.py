@@ -243,11 +243,22 @@ def test_median_budget_is_strictly_under_180(seconds, passed):
     assert feedback.assess(_report(seconds), history, POLICY)["passed"] is passed
 
 
-@pytest.mark.parametrize("seconds,passed", [(299.9, True), (300, False), (1200, False)])
-def test_bootstrap_has_no_twenty_minute_loophole(seconds, passed):
+@pytest.mark.parametrize("seconds,passed", [
+    (179.9, True), (180, False), (299.9, False), (300, False), (1200, False),
+])
+def test_missing_history_still_requires_the_current_gate_under_three_minutes(seconds, passed):
     result = feedback.assess(_report(seconds), [], POLICY)
     assert result["passed"] is passed
     assert result["history_status"] == "insufficient_history"
+
+
+def test_too_few_healthy_samples_cannot_waive_the_current_three_minute_budget():
+    history = [_report(120, run) for run in range(90, 93)]
+    result = feedback.assess(_report(180), history, POLICY)
+    assert result["median_seconds"] == 120
+    assert result["sample_count"] == 4
+    assert result["passed"] is False
+    assert any("history is insufficient" in reason for reason in result["failures"])
 
 
 @pytest.mark.parametrize("seconds,passed", [(44.9, True), (45, False)])
@@ -263,6 +274,7 @@ def test_latest_distinct_heads_fill_the_window_not_repeated_attempts():
     assert result["sample_count"] == 2
     assert result["sample_runs"][1]["run_id"] == "98"
     assert result["history_status"] == "insufficient_history"
+    assert result["passed"] is False
 
 
 def test_window_keeps_only_the_ten_latest_heads():

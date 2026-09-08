@@ -84,7 +84,7 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
     candidates = [run for run in runs if (
         int(run["id"]) < int(run_id)
         and run["conclusion"] in ("success", "failure")
-        and run.get("head_repository", {}).get("id") == run["repository"]["id"]
+        and (run.get("head_repository") or {}).get("id") == run["repository"]["id"]
     )]
     def load(run):
         summaries = [job for job in run_jobs(repository, str(run["id"])) if job["name"] == "release-gate" and job["run_attempt"] == run["run_attempt"]]
@@ -102,8 +102,17 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
         if report["expected"]["run_id"] != str(run["id"]) or report["expected"]["run_attempt"] != run["run_attempt"]:
             raise EvidenceError("historical timing disagrees with its GitHub job")
         return aggregate_receipts(report["receipts"], report["expected"], max(report["gate_elapsed_seconds"], _elapsed(_attempt_start(run), run["updated_at"])), report["breakdown"])
+    def available_report(run):
+        try:
+            return load(run)
+        except subprocess.SubprocessError as error:
+            detail = getattr(error, "stderr", b"") or b""
+            if isinstance(detail, bytes):
+                detail = detail.decode("utf-8", errors="replace")
+            print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. The current-run budget remains enforced.")
+            return None
     with ThreadPoolExecutor(max_workers=4) as executor:
-        reports = [report for report in executor.map(load, candidates) if report is not None]
+        reports = [report for report in executor.map(available_report, candidates) if report is not None]
     return sorted(reports, key=lambda report: (int(report["expected"]["run_id"]), report["expected"]["run_attempt"]), reverse=True)
 
 

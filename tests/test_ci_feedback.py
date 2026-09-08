@@ -3,6 +3,7 @@
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -136,6 +137,17 @@ def test_corrupt_historical_measurement_is_ignored_explicitly(monkeypatch, capsy
                  {14: (ci.REPORT_MARKER + " {broken}\n").encode()})
     assert ci.previous_reports("owner/repo", "200") == []
     assert "Ignoring unusable historical timing for run 100" in capsys.readouterr().out
+
+
+def test_unavailable_historical_logs_do_not_block_current_job_outputs(monkeypatch, capsys):
+    run = _run()
+    def github(path, **kwargs):
+        if "/workflows/" in path:
+            return {"workflow_runs": [run]}
+        raise subprocess.CalledProcessError(1, ["gh", "api"], stderr=b"HTTP 403: log access unavailable")
+    monkeypatch.setattr(ci, "github", github)
+    assert ci.previous_reports("owner/repo", "200") == []
+    assert "current-run budget remains enforced" in capsys.readouterr().out
 
 
 def test_prepare_emits_one_shared_output_for_measured_and_bootstrap_weights(tmp_path, monkeypatch):

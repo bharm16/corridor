@@ -249,10 +249,16 @@ def assess(current: dict, history: list[dict], policy: dict) -> dict:
     enough = len(times) >= minimum
     now = current["gate_elapsed_seconds"]
     failures = []
-    # The five-minute ceiling also applies while the median is warming up;
-    # a new history must not license twenty-minute checks.
+    # Historical logs may remain unavailable to CI's token. Their absence
+    # cannot suspend the three-minute budget indefinitely: require today's
+    # run to meet it until there is enough evidence for a rolling median.
     if now >= policy["p90_seconds"]:
         failures.append(f"current gate {now:.1f}s reaches the {policy['p90_seconds']:g}s ceiling")
+    if not enough and now >= policy["median_seconds"]:
+        failures.append(
+            f"current gate {now:.1f}s reaches the {policy['median_seconds']:g}s "
+            "budget while history is insufficient"
+        )
     if enough and median >= policy["median_seconds"] and now >= policy["median_seconds"]:
         failures.append(
             f"rolling median {median:.1f}s and current {now:.1f}s reach the "
