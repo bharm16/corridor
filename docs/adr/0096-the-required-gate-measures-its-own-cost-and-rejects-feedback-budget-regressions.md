@@ -96,10 +96,14 @@ command to 113.5 seconds but crowded indivisible slow modules into a
 166.6-second command. Six ordinary and three slow runners brought the gate to
 183.6 seconds in run `34287893996`, still above target. Run `34290598598`
 measured a 128.6-second ordinary command and a 211.1-second gate, including a
-late-starting runner. The next capacity trial adds one ordinary runner:
+late-starting runner. The next capacity trial added one ordinary runner:
 seven ordinary and three slow, with twelve downloading jobs when check and
-migration are required. Earlier package saturation predates dependency
-changes, so the previous ceiling must be checked against current execution.
+migration are required. [Run `34291250899`](https://github.com/bharm16/corridor/actions/runs/34291250899)
+passed on 2026-09-08 with a 164.92-second required gate, a 112.41-second
+ordinary command, a 113.15-second slow command, and 31.48 seconds for migration.
+This is the measured result of that allocation; subsequent PRs measure it
+again. Earlier package saturation predates dependency changes, so the previous
+ceiling must be checked against current execution.
 Two workers per runner, the `worksteal`/`loadfile` distinction, complete test
 coverage, and every feedback threshold remain unchanged. The required gate
 measures and accepts or rejects this allocation through the same receipts;

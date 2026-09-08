@@ -110,10 +110,12 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   saturated this account's package downloads: `uv sync --locked` went from 2s
   to as much as 588s and two jobs stalled for *minutes inside pytest*, taking
   the gate to 11m55s. Nine jobs measured healthy twice, every `uv sync` at
-  1-2s. The 2026-09-08 seven/three trial revisits that capacity after dependency
-  changes, with one additional runner. Inspect its actual download and gate
-  timings before treating the new allocation as an improvement. A historical
-  ceiling is evidence to check, not a permanent prohibition on more capacity.
+  1-2s. The 2026-09-08 seven/three trial passed in
+  [run 34291250899](https://github.com/bharm16/corridor/actions/runs/34291250899):
+  164.92s gate, 112.41s ordinary command, 113.15s slow command, 31.48s migration.
+  Keep measuring this allocation on subsequent PRs; every feedback threshold
+  is unchanged. A historical ceiling is evidence to check, not a permanent
+  prohibition on more capacity.
 - **Nothing may download packages inside a test.** `workers/render` is a
   separate uv project whose `opencv-python-headless` is never in the root
   lock, so the first page render used to build that environment over the
