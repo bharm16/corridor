@@ -202,6 +202,12 @@ def append_native_matrix_facts(
             subject_key=field.row.row_id, recorded_by=f"extractor:{run.prompt_version}",
             content_sha256=_fact_digest(
                 run_identity={
+                    # Equal values under a later semantic mapping are a new
+                    # run's captured Facts. Content retry is resolved before
+                    # this phase; a Fact owned by an older run cannot support
+                    # the new run's Extracted Proposal.
+                    "extraction_run_id": run.id,
+                    "native_mapping_sha256": run.row_accounting_json["native_mapping"]["identity"],
                     "document_id": document.id, "prompt_version": run.prompt_version,
                     "schema_version": run.schema_version, "model": run.model,
                     "extractor_config_sha256": run.extractor_config_sha256,

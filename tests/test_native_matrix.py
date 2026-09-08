@@ -484,6 +484,51 @@ def test_retry_returns_original_source_spine_rows(session, project, matrix_sourc
     assert _spine_ids(session) == original
 
 
+def test_new_mapping_owns_new_facts_while_exact_mapping_retries_keep_their_run(
+    session, project, matrix_source,
+):
+    document = _document(session, project, matrix_source)
+    first = _extract(session, document, matrix_source, idempotency_key=None)
+    first_facts = {fact.id for fact in first.facts}
+    first_snapshots = proposal_input_snapshots(session, first.run)
+    first_links = {
+        (link.proposal_id, link.fact_id)
+        for link in session.scalars(select(ExtractedProposalFact)).all()
+    }
+
+    retry = _extract(session, document, matrix_source, idempotency_key=None)
+    fresh_key = _extract(session, document, matrix_source, idempotency_key="another-exact-mapping-request")
+    for same in (retry, fresh_key):
+        assert same.created is False
+        assert same.run.id == first.run.id
+        assert {fact.id for fact in same.facts} == first_facts
+
+    changed = _answer()
+    changed["mapping_confidence"] = 0.75
+    second = _extract(
+        session, document, matrix_source, idempotency_key=None,
+        client=RecordedStructureClient(matrix_source, answers=[changed]),
+    )
+
+    assert second.created is True and second.run.id != first.run.id
+    assert second.mapping.identity != first.mapping.identity
+    second_facts = {fact.id for fact in second.facts}
+    assert second_facts and first_facts.isdisjoint(second_facts)
+    assert all(fact.extraction_run_id == first.run.id for fact in first.facts)
+    assert all(fact.extraction_run_id == second.run.id for fact in second.facts)
+    for proposal in session.scalars(select(ExtractedProposal)).all():
+        ids = set(session.scalars(select(ExtractedProposalFact.fact_id).where(
+            ExtractedProposalFact.proposal_id == proposal.id,
+        )).all())
+        assert ids == (first_facts if proposal.extraction_run_id == first.run.id else second_facts)
+    assert first_links <= {
+        (link.proposal_id, link.fact_id)
+        for link in session.scalars(select(ExtractedProposalFact)).all()
+    }
+    assert proposal_input_snapshots(session, first.run) == first_snapshots
+    assert read_current_project_record(session, project.id) == ()
+
+
 def test_explicit_reading_preserves_and_ignores_unrelated_historical_segments(
     session, project, matrix_source, monkeypatch
 ):
