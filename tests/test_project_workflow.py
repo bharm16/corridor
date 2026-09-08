@@ -34,6 +34,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.consequence_levels import AFFECTS_ISSUE, LEVEL_HEADINGS
+from corridor.analytics import EventFamily, capture_events
 from corridor.db import engine
 from corridor.issue_content import NO_ISSUE_PROFILE
 from corridor.models import (
@@ -275,6 +276,24 @@ class Adopted:
             is_complete_enumerative_source=False,
             row_accounting_sealed=False,
         )
+
+
+def test_the_week_records_all_ten_children_before_the_packet_is_opened(session, project, client):
+    fixture = Adopted(session, project).accepted(*range(1, 11)).template().issued().adopt()
+    for number in range(1, 11):
+        fixture.answer(document="revised-ucm.xlsx", family="ucm-workbook", revision="2026-09",
+                       value="2026-12-01", number=number)
+    with capture_events() as captured:
+        response = client.get(f"/work/{project.slug}")
+    assert response.status_code == 200
+    surfaced = captured.by_family(EventFamily.PACKET_SURFACING)
+    assert len(surfaced) == 1
+    assert surfaced[0].payload["child_count"] == 10
+    assert len(surfaced[0].payload["child_consequences"]) == 10
+    assert surfaced[0].payload["principal_subject"] == COORDINATOR.subject
+    assert captured.by_family(EventFamily.PACKET_OPENING) == []
+    assert len(captured.by_family(EventFamily.PROJECT_OPENING)) == 1
+    assert len(captured.by_family(EventFamily.COVERAGE_READING)) == 1
 
 
 def _cross_source(session: Session, project: Project) -> Adopted:

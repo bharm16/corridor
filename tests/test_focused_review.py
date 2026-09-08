@@ -1121,10 +1121,11 @@ def test_the_focused_screen_deep_links_the_external_record_read_only(
     body = _open(client, project, item.item_key).text
 
     assert f"UCM-{CONFLICT:05d}" in body
-    assert (
-        f'href="https://records.example.gov/conflict/{CONFLICT}" '
-        'rel="noopener noreferrer nofollow"' in body
-    )
+    import html
+    href = html.unescape(re.search(r'href="([^"]+/source\?[^"]+)"', body).group(1))
+    response = client.get(href, follow_redirects=False)
+    assert response.status_code == 303
+    assert response.headers["location"] == f"https://records.example.gov/conflict/{CONFLICT}"
 
 
 def test_the_focused_screen_keeps_the_accessibility_properties(

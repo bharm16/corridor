@@ -90,7 +90,7 @@ coordinator sees them on the project's own chase list.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Mapping, Sequence
 
@@ -631,16 +631,7 @@ def portfolio_binding(binding: AnalyticsBinding | None = None) -> AnalyticsBindi
     base = binding or default_binding()
     if base.packetizer_rules_version == PARTITION_RULE_VERSION:
         return base
-    return AnalyticsBinding(
-        code_revision=base.code_revision,
-        product_revision=base.product_revision,
-        packetizer_rules_version=PARTITION_RULE_VERSION,
-        source_configuration=base.source_configuration,
-        connector_configuration=base.connector_configuration,
-        template_identity=base.template_identity,
-        mapping_identity=base.mapping_identity,
-        enabled_feature_flags=base.enabled_feature_flags,
-    )
+    return replace(base, packetizer_rules_version=PARTITION_RULE_VERSION)
 
 
 def emit_portfolio_reading(

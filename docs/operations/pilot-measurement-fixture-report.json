@@ -1,0 +1,216 @@
+{
+  "customer_findings": "insufficient_evidence",
+  "input_sha256": "ffe176f2350d34e91f1a2448706f96dcc146748d3133dd6e600cf5aca024e163",
+  "periods": [
+    {
+      "captured_source_arrivals": 1,
+      "child_diagnostic_denominator": 10,
+      "cohort_status": "bound",
+      "committed_decision_count": 0,
+      "configured_artifact_obligation": [
+        [
+          "updated_ucm",
+          "weekly_report"
+        ]
+      ],
+      "domain_receipt_coverage": "not asserted; event-only outcomes are not proof of commit",
+      "interrupting_packet_denominator": 1,
+      "manual_reconstruction": {
+        "entries": 1,
+        "evidence": [
+          {
+            "event_id": "fixture-037",
+            "event_version": "1.0",
+            "receipt": null
+          }
+        ],
+        "minutes": null,
+        "recorded_minutes": 0,
+        "status": "unavailable",
+        "unavailable_entries": [
+          "fixture-037"
+        ]
+      },
+      "packet_denominator": 1,
+      "packet_outcomes": [
+        [
+          "apply",
+          "deferred",
+          "edit",
+          "ignored/open",
+          "keep current",
+          "needs coordination",
+          "superseded"
+        ]
+      ],
+      "portfolio": {
+        "observation_end": "2026-09-14T00:00:00+00:00",
+        "observation_start": "2026-09-07T00:00:00+00:00",
+        "presentation_event_ids": [],
+        "presented_states": [],
+        "project_open_event_ids": [],
+        "quiet_zero_click": null,
+        "zero_click": null
+      },
+      "project_week": "2026-W37",
+      "provider_cost": {
+        "actual_cost_usd": "0.30",
+        "breakdown": [
+          {
+            "actual_cost_usd": "0.25",
+            "entries": 1,
+            "mode": "actual_call",
+            "model": "fixture-model",
+            "policy_version": "fixture-policy-v1",
+            "prompt_version": "fixture-prompt-v1",
+            "provider": "fixture-provider",
+            "purpose": "production",
+            "source_class": "ucm",
+            "unavailable_entries": 0
+          },
+          {
+            "actual_cost_usd": "0.05",
+            "entries": 1,
+            "mode": "retry",
+            "model": "fixture-model",
+            "policy_version": "fixture-policy-v1",
+            "prompt_version": "fixture-prompt-v1",
+            "provider": "fixture-provider",
+            "purpose": "production",
+            "source_class": "ucm",
+            "unavailable_entries": 0
+          },
+          {
+            "actual_cost_usd": "0.00",
+            "entries": 1,
+            "mode": "cache_reuse",
+            "model": "fixture-model",
+            "policy_version": "fixture-policy-v1",
+            "prompt_version": "fixture-prompt-v1",
+            "provider": "fixture-provider",
+            "purpose": "production",
+            "source_class": "ucm",
+            "unavailable_entries": 0
+          },
+          {
+            "actual_cost_usd": "99.00",
+            "entries": 1,
+            "mode": "historical_experiment",
+            "model": "fixture-model",
+            "policy_version": "fixture-policy-v1",
+            "prompt_version": "fixture-prompt-v1",
+            "provider": "fixture-provider",
+            "purpose": "experiment",
+            "source_class": "ucm",
+            "unavailable_entries": 0
+          }
+        ],
+        "counts": {
+          "actual_call": 1,
+          "cache_reuse": 1,
+          "historical_experiment": 1,
+          "retry": 1
+        },
+        "historical_experiment_cost_usd": "99.00",
+        "recorded_actual_cost_usd": "0.30",
+        "status": "recorded",
+        "unavailable_entries": []
+      },
+      "volume_stratum": "ordinary"
+    },
+    {
+      "captured_source_arrivals": 0,
+      "child_diagnostic_denominator": 0,
+      "cohort_status": "bound",
+      "committed_decision_count": 0,
+      "configured_artifact_obligation": [],
+      "domain_receipt_coverage": "not asserted; event-only outcomes are not proof of commit",
+      "interrupting_packet_denominator": 0,
+      "manual_reconstruction": {
+        "entries": 0,
+        "evidence": [],
+        "minutes": null,
+        "recorded_minutes": 0,
+        "status": "unavailable",
+        "unavailable_entries": []
+      },
+      "packet_denominator": 0,
+      "packet_outcomes": [],
+      "portfolio": {
+        "observation_end": "2026-09-21T00:00:00+00:00",
+        "observation_start": "2026-09-14T00:00:00+00:00",
+        "presentation_event_ids": [
+          "fixture-048"
+        ],
+        "presented_states": [
+          "nothing_needs_you"
+        ],
+        "project_open_event_ids": [],
+        "quiet_zero_click": true,
+        "zero_click": true
+      },
+      "project_week": "2026-W38",
+      "provider_cost": {
+        "actual_cost_usd": null,
+        "breakdown": [],
+        "counts": {
+          "actual_call": 0,
+          "cache_reuse": 0,
+          "historical_experiment": 0,
+          "retry": 0
+        },
+        "historical_experiment_cost_usd": "0.00",
+        "recorded_actual_cost_usd": "0.00",
+        "status": "unavailable",
+        "unavailable_entries": []
+      },
+      "volume_stratum": "quiet"
+    },
+    {
+      "captured_source_arrivals": 12,
+      "child_diagnostic_denominator": 0,
+      "cohort_status": "bound",
+      "committed_decision_count": 0,
+      "configured_artifact_obligation": [],
+      "domain_receipt_coverage": "not asserted; event-only outcomes are not proof of commit",
+      "interrupting_packet_denominator": 0,
+      "manual_reconstruction": {
+        "entries": 0,
+        "evidence": [],
+        "minutes": null,
+        "recorded_minutes": 0,
+        "status": "unavailable",
+        "unavailable_entries": []
+      },
+      "packet_denominator": 0,
+      "packet_outcomes": [],
+      "portfolio": {
+        "observation_end": "2026-09-28T00:00:00+00:00",
+        "observation_start": "2026-09-21T00:00:00+00:00",
+        "presentation_event_ids": [],
+        "presented_states": [],
+        "project_open_event_ids": [],
+        "quiet_zero_click": null,
+        "zero_click": null
+      },
+      "project_week": "2026-W39",
+      "provider_cost": {
+        "actual_cost_usd": null,
+        "breakdown": [],
+        "counts": {
+          "actual_call": 0,
+          "cache_reuse": 0,
+          "historical_experiment": 0,
+          "retry": 0
+        },
+        "historical_experiment_cost_usd": "0.00",
+        "recorded_actual_cost_usd": "0.00",
+        "status": "unavailable",
+        "unavailable_entries": []
+      },
+      "volume_stratum": "burst"
+    }
+  ],
+  "schema_version": "pilot-measurement-v1",
+  "synthetic": true
+}

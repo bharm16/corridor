@@ -59,6 +59,8 @@ from corridor.models import (
     ReleasePreparationRequest,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.analytics import EventFamily
+from corridor.measurement_collection import emit_preparation_interaction
 
 
 # What a project's next issue is doing, derived from the two append-only
@@ -173,6 +175,10 @@ def request_preparation(
         )
     ).first()
     if existing is not None:
+        emit_preparation_interaction(session, EventFamily.PREPARATION_REQUEST, existing,
+                                     at=requested_at, principal_subject=actor.subject,
+                                     request_id=existing.id, coverage_declaration_id=declaration.id,
+                                     outcome="replayed")
         return existing
 
     row = ReleasePreparationRequest(
@@ -189,6 +195,10 @@ def request_preparation(
     )
     session.add(row)
     session.flush()
+    emit_preparation_interaction(session, EventFamily.PREPARATION_REQUEST, row,
+                                 at=requested_at, principal_subject=actor.subject,
+                                 request_id=row.id, coverage_declaration_id=declaration.id,
+                                 outcome="requested")
     return row
 
 

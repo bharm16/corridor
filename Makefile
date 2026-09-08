@@ -5,6 +5,12 @@ TEST_TIMEOUT_SECONDS ?= 600
 FOCUSED_TEST_TIMEOUT_SECONDS ?= 30
 LOCAL_BROAD_REASON ?=
 
+# Read #558 product events and immutable receipts into a governed #532 report.
+# Fixture: make pilot-measurement ARGS="--input tests/fixtures/pilot-measurement.json --output out/pilot-measurement.json"
+.PHONY: pilot-measurement
+pilot-measurement:
+	uv run python -m corridor.pilot_measurement_cli $(ARGS)
+
 # Which engine-absent proof `make test-engine-absent` runs: imports, collect
 # or the complete suite.
 MODE ?= suite

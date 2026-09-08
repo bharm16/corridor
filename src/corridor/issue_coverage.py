@@ -61,6 +61,9 @@ the section's one action label is the maintainer's own wording.
 
 from __future__ import annotations
 
+from corridor.analytics import EventFamily
+from corridor.measurement_collection import emit_preparation_interaction
+
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -543,6 +546,11 @@ def confirm_coverage(
         )
     ).first()
     if existing is not None:
+        emit_preparation_interaction(session, EventFamily.COVERAGE_CONFIRMATION, existing,
+                                     at=confirmed_at, principal_subject=actor.subject,
+                                     coverage_declaration_id=existing.id,
+                                     reading_sha256=reading.reading_digest,
+                                     annotation_count=len(annotated), unchanged_declaration_reused=True)
         return existing
 
     row = IssueCoverageDeclaration(
@@ -563,6 +571,10 @@ def confirm_coverage(
     )
     session.add(row)
     session.flush()
+    emit_preparation_interaction(session, EventFamily.COVERAGE_CONFIRMATION, row,
+                                 at=confirmed_at, principal_subject=actor.subject,
+                                 coverage_declaration_id=row.id, reading_sha256=reading.reading_digest,
+                                 annotation_count=len(annotated), unchanged_declaration_reused=False)
     return row
 
 

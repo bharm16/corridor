@@ -67,6 +67,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+from pathlib import Path
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -129,6 +131,16 @@ class EventFamily(str, Enum):
     PORTFOLIO_READING = "portfolio_reading"
     PROJECT_SELECTION = "project_selection"
     FOLLOW_UP_READING = "follow_up_reading"
+    PROJECT_OPENING = "project_opening"
+    EVIDENCE_OPENING = "evidence_opening"
+    COVERAGE_READING = "coverage_reading"
+    COVERAGE_CONFIRMATION = "coverage_confirmation"
+    PREPARATION_REQUEST = "preparation_request"
+    PREPARATION_ATTEMPT = "preparation_attempt"
+    DELTA_SUPERSESSION = "delta_supersession"
+    WORK_OBSERVATION = "work_observation"
+    MEASUREMENT_SAMPLE = "measurement_sample"
+    PROVIDER_USAGE = "provider_usage"
 
 
 DERIVABLE_RECEIPT_ALTERNATIVES: dict[EventFamily, str] = {
@@ -148,6 +160,16 @@ DERIVABLE_RECEIPT_ALTERNATIVES: dict[EventFamily, str] = {
     EventFamily.FOLLOW_UP_READING: (
         "Explicit presentation event; the chase list is derived and stores nothing"
     ),
+    EventFamily.PROJECT_OPENING: "Explicit project presentation event; no domain write",
+    EventFamily.EVIDENCE_OPENING: "Explicit source/evidence opening; no domain write",
+    EventFamily.COVERAGE_READING: "Explicit presentation of the derived coverage reading",
+    EventFamily.COVERAGE_CONFIRMATION: "IssueCoverageDeclaration with actor and confirmed_at",
+    EventFamily.PREPARATION_REQUEST: "ReleasePreparationRequest with declaration and requested_at",
+    EventFamily.PREPARATION_ATTEMPT: "ReleasePreparationAttempt with started_at and finished_at",
+    EventFamily.DELTA_SUPERSESSION: "DeltaSupersession naming the prior and superseding delta",
+    EventFamily.WORK_OBSERVATION: "Attributable measured-time entry; never inferred from idle time",
+    EventFamily.MEASUREMENT_SAMPLE: "Attributable sampling observation and retained evidence reference",
+    EventFamily.PROVIDER_USAGE: "Actual provider call/billing receipt, retry or retained cache-use record",
 }
 
 
@@ -163,6 +185,12 @@ class AnalyticsBinding:
     template_identity: str = CURRENT_TEMPLATE_IDENTITY
     mapping_identity: str = CURRENT_MAPPING_IDENTITY
     enabled_feature_flags: tuple[str, ...] = ()
+    issue_profile_identity: str | None = None
+    issue_profile_version: int | None = None
+    issue_profile_sha256: str | None = None
+    customer_id: str | None = None
+    environment: str | None = None
+    database_identity: str | None = None
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -174,6 +202,12 @@ class AnalyticsBinding:
             "template_identity": self.template_identity,
             "mapping_identity": self.mapping_identity,
             "enabled_feature_flags": list(self.enabled_feature_flags),
+            "issue_profile_identity": self.issue_profile_identity,
+            "issue_profile_version": self.issue_profile_version,
+            "issue_profile_sha256": self.issue_profile_sha256,
+            "customer_id": self.customer_id,
+            "environment": self.environment,
+            "database_identity": self.database_identity,
         }
 
     @classmethod
@@ -187,6 +221,12 @@ class AnalyticsBinding:
             template_identity=data.get("template_identity", CURRENT_TEMPLATE_IDENTITY),
             mapping_identity=data.get("mapping_identity", CURRENT_MAPPING_IDENTITY),
             enabled_feature_flags=tuple(data.get("enabled_feature_flags", ())),
+            issue_profile_identity=data.get("issue_profile_identity"),
+            issue_profile_version=data.get("issue_profile_version"),
+            issue_profile_sha256=data.get("issue_profile_sha256"),
+            customer_id=data.get("customer_id"),
+            environment=data.get("environment"),
+            database_identity=data.get("database_identity"),
         )
 
 
@@ -200,18 +240,51 @@ def default_binding(
     template_identity: str = CURRENT_TEMPLATE_IDENTITY,
     mapping_identity: str = CURRENT_MAPPING_IDENTITY,
     enabled_feature_flags: tuple[str, ...] = (),
+    issue_profile_identity: str | None = None,
+    issue_profile_version: int | None = None,
+    issue_profile_sha256: str | None = None,
+    customer_id: str | None = None,
+    environment: str | None = None,
+    database_identity: str | None = None,
 ) -> AnalyticsBinding:
-    """Construct a standard binding for the current runtime."""
+    """Construct a binding, using the optional measured-deployment declaration.
+
+    The running image's code revision takes precedence over a declaration
+    file: a stale file cannot relabel the executable. Missing deployment
+    evidence retains the historical placeholders and is reported unmeasured.
+    The file contains configuration identities only, never connector secrets.
+    """
+
+    configured: dict[str, Any] = {}
+    if path := os.environ.get("CORRIDOR_ANALYTICS_BINDING_FILE"):
+        configured = AnalyticsBinding.from_dict(json.loads(Path(path).read_text())).as_dict()
+    code_revision = os.environ.get("CORRIDOR_CODE_REVISION") or (
+        configured.get("code_revision", code_revision) if code_revision == "git:current" else code_revision
+    )
+    if product_revision == CURRENT_PRODUCT_REVISION:
+        product_revision = configured.get("product_revision", product_revision)
+    if packetizer_rules_version == CURRENT_PACKETIZER_VERSION:
+        packetizer_rules_version = configured.get("packetizer_rules_version", packetizer_rules_version)
+    if template_identity == CURRENT_TEMPLATE_IDENTITY:
+        template_identity = configured.get("template_identity", template_identity)
+    if mapping_identity == CURRENT_MAPPING_IDENTITY:
+        mapping_identity = configured.get("mapping_identity", mapping_identity)
 
     return AnalyticsBinding(
         code_revision=code_revision,
         product_revision=product_revision,
         packetizer_rules_version=packetizer_rules_version,
-        source_configuration=source_configuration or {},
-        connector_configuration=connector_configuration or {},
+        source_configuration=source_configuration if source_configuration is not None else configured.get("source_configuration", {}),
+        connector_configuration=connector_configuration if connector_configuration is not None else configured.get("connector_configuration", {}),
         template_identity=template_identity,
         mapping_identity=mapping_identity,
-        enabled_feature_flags=enabled_feature_flags,
+        enabled_feature_flags=enabled_feature_flags or tuple(configured.get("enabled_feature_flags", ())),
+        issue_profile_identity=issue_profile_identity or configured.get("issue_profile_identity"),
+        issue_profile_version=issue_profile_version or configured.get("issue_profile_version"),
+        issue_profile_sha256=issue_profile_sha256 or configured.get("issue_profile_sha256"),
+        customer_id=customer_id or configured.get("customer_id"),
+        environment=environment or configured.get("environment"),
+        database_identity=database_identity or configured.get("database_identity"),
     )
 
 
@@ -377,9 +450,9 @@ class LoggingEventEmitter:
 
     def emit(self, event: AnalyticsEvent) -> None:
         logger.info(
-            "analytics_event %s",
-            json.dumps(event.as_dict(), sort_keys=True),
-            extra={"analytics_event": event.as_dict()},
+            "analytics_event",
+            extra={"analytics_event": event.as_dict(),
+                   "corridor_fields": {"analytics_event": event.as_dict()}},
         )
 
 

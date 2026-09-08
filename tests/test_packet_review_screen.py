@@ -265,10 +265,21 @@ def test_an_external_identifier_and_url_deep_link_read_only(
     body = _open(client, project, key).text
 
     assert "UCM-00001" in body
-    assert (
-        '<a href="https://records.example.gov/conflict/1" '
-        'rel="noopener noreferrer nofollow">' in body
-    )
+    import html
+    href = html.unescape(re.search(r'href="([^"]+/source\?[^"]+)"', body).group(1))
+    with capture_events() as events:
+        opened = client.get(href, follow_redirects=False)
+    assert opened.status_code == 303
+    assert opened.headers["location"] == "https://records.example.gov/conflict/1"
+    assert len(events.by_family(EventFamily.EVIDENCE_OPENING)) == 1
+    assert events.by_family(EventFamily.EVIDENCE_OPENING)[0].payload["principal_subject"] == COORDINATOR.subject
+    assert client.get(href.replace("delta_id=", "delta_id=999"), follow_redirects=False).status_code == 404
+    saved = client.post(f"/review/{project.slug}", data={
+        "item_key": key, "outcome": "keep_current",
+        "child": [str(value) for value in _delta_ids(session, project)],
+    })
+    assert saved.status_code == 200
+    assert client.get(href, follow_redirects=False).headers["location"] == "https://records.example.gov/conflict/1"
 
 
 def test_only_the_opened_item_carries_decision_controls(

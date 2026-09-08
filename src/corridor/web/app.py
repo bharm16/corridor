@@ -136,6 +136,8 @@ from corridor.documentation_checklist import (
     record_documentation_clarification,
 )
 from corridor.models import (
+    BaselineSourceRow,
+    ProposedDelta,
     RESOLUTION_STRATEGIES,
     AssignmentNotification,
     AuditLog,
@@ -225,6 +227,8 @@ from corridor.dependency_events import (
 )
 from corridor.web.follow_up_view import chase_view
 from corridor.web.issue_section import issue_view
+from corridor.analytics import EventFamily
+from corridor.measurement_collection import binding_for_session, emit_presentation
 from corridor.web.queue import (
     build_cohort_rail,
     build_evidence,
@@ -4881,11 +4885,32 @@ def _project_workflow_response(
     # reading was bound to rather than at a clock. The Product Proving receipt
     # above proves which handler served the request; this records what the
     # chase list said when it did, by its own content digest.
+    analytics_binding = binding_for_session(session)
     emit_follow_up_reading(
         chase.reading,
         principal_subject=principal.subject,
         surface="project_workflow",
+        binding=analytics_binding,
     )
+    # The week already puts these packets in front of a person. Waiting until
+    # /review was opened would lose every unopened interruption from #532.
+    for item in workflow.undecided:
+        emit_packet_surfacing(workflow.review, item, principal_subject=principal.subject, binding=analytics_binding)
+    if method == "GET":
+        emit_presentation(EventFamily.PROJECT_OPENING, project_id=project.id,
+                          principal_subject=principal.subject, at=now, binding=analytics_binding)
+    if issue.coverage is not None:
+        coverage = issue.coverage
+        emit_presentation(
+            EventFamily.COVERAGE_READING, project_id=project.id,
+            principal_subject=principal.subject, at=now, binding=analytics_binding,
+            reading_sha256=coverage.reading_digest,
+            issue_profile_identity=coverage.profile_identity,
+            issue_profile_version=coverage.profile_version,
+            issue_profile_sha256=coverage.profile_sha256,
+            coverage_declaration_id=(issue.candidate.coverage_declaration_id if issue.candidate else None),
+            through_source_delivery_id=coverage.through_source_delivery_id,
+        )
     session.commit()
     return response
 
@@ -4937,6 +4962,7 @@ def authorize_project_issue(
             releaser=principal,
             authorized_at=now,
             surface="project_workflow",
+            binding=binding_for_session(session),
         )
     except AuthorizationRefused as refusal:
         # Every refusal left the candidate as it was and wrote no part of a
@@ -5186,7 +5212,7 @@ def portfolio(
     # Nothing further is emitted for a project that was shown and left alone,
     # which is what makes the absence of a `project_selection` naming it
     # evidence that it cost no click.
-    emit_portfolio_reading(reading)
+    emit_portfolio_reading(reading, binding=binding_for_session(session))
     return response
 
 
@@ -5221,7 +5247,7 @@ def coordinator_home(
                 session, projects=(project,), as_of=now
             )[0]
             emit_project_selection(
-                standing, principal_subject=principal.subject, at=now
+                standing, principal_subject=principal.subject, at=now, binding=binding_for_session(session)
             )
         return _project_workflow_response(
             request, project, principal, session, now=now
@@ -5527,11 +5553,46 @@ def review_source_changes(
     project = _project(session, slug, principal)
     now = clock()
     context = _review_context(session, project, now=now, opened_key=item)
+    analytics_binding = binding_for_session(session)
     for view in context["items"]:
-        emit_packet_surfacing(context["reading"], view["item"])
+        emit_packet_surfacing(context["reading"], view["item"], principal_subject=principal.subject, binding=analytics_binding)
     if context["opened"] is not None:
-        emit_packet_opening(context["reading"], context["opened"])
+        emit_packet_opening(context["reading"], context["opened"], principal_subject=principal.subject, binding=analytics_binding)
     return TEMPLATES.TemplateResponse(request, "review.html", context)
+
+
+@app.get("/review/{slug}/source")
+def open_review_source(
+    slug: str, item: str, delta_id: int, source_row_id: int, role: str,
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session), clock=Depends(get_review_clock),
+):
+    """Open the exact source link the authorized packet reading already offered.
+
+    No URL comes from the query: resolve the retained child and its immutable
+    baseline source row inside the project read boundary. This still works
+    after the child is resolved or superseded. Inline source presentation is
+    not counted as a click, and the event carries no external URL or source text.
+    """
+    project = _project(session, slug, principal)
+    now = clock()
+    child = session.get(ProposedDelta, delta_id)
+    source = session.get(BaselineSourceRow, source_row_id)
+    if (child is None or source is None or child.project_id != project.id or source.project_id != project.id
+            or child.target_subject_identity != source.record_subject_key
+            or role not in {"external_system_id", "source_url"}):
+        raise HTTPException(404, "no such source link in this reading")
+    url = (getattr(source, role) or "").strip()
+    try:
+        parsed = urlsplit(url)
+    except ValueError:
+        raise HTTPException(404, "no followable source link") from None
+    if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+        raise HTTPException(404, "no followable source link")
+    emit_presentation(EventFamily.EVIDENCE_OPENING, project_id=project.id,
+                      principal_subject=principal.subject, at=now, binding=binding_for_session(session),
+                      item_key=item, delta_id=delta_id, source_row_id=source_row_id, link_role=role)
+    return RedirectResponse(url, status_code=303)
 
 
 @app.post("/review/{slug}", response_class=HTMLResponse)
@@ -5662,7 +5723,7 @@ def save_source_changes(
             status_code=409,
         )
 
-    result = resolve_review_packet(session, act)
+    result = resolve_review_packet(session, act, binding=binding_for_session(session))
     if result.status != "saved":
         return _review_render(
             request,
@@ -5867,7 +5928,7 @@ def save_focused_answers(
             status_code=409,
         )
 
-    result = resolve_review_packet(session, act)
+    result = resolve_review_packet(session, act, binding=binding_for_session(session))
     if result.status != "saved":
         return _review_render(
             request,

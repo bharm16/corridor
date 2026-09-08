@@ -340,6 +340,7 @@ class ExternalRecordLink:
     role: str
     text: str
     href: str | None = None
+    source_row_id: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -1245,6 +1246,7 @@ def _external_links(row: BaselineSourceRow | None) -> tuple[ExternalRecordLink, 
                 role="external_system_id",
                 text=row.external_system_id,
                 href=_linkable(row.external_system_id),
+                source_row_id=int(row.id),
             )
         )
     if row.source_url:
@@ -1253,6 +1255,7 @@ def _external_links(row: BaselineSourceRow | None) -> tuple[ExternalRecordLink, 
                 role="source_url",
                 text=row.source_url,
                 href=_linkable(row.source_url),
+                source_row_id=int(row.id),
             )
         )
     return tuple(links)
@@ -1884,16 +1887,7 @@ def screen_binding(
     base = binding or default_binding()
     if base.packetizer_rules_version == item.grouping_rule_version:
         return base
-    return AnalyticsBinding(
-        code_revision=base.code_revision,
-        product_revision=base.product_revision,
-        packetizer_rules_version=item.grouping_rule_version,
-        source_configuration=base.source_configuration,
-        connector_configuration=base.connector_configuration,
-        template_identity=base.template_identity,
-        mapping_identity=base.mapping_identity,
-        enabled_feature_flags=base.enabled_feature_flags,
-    )
+    return replace(base, packetizer_rules_version=item.grouping_rule_version)
 
 
 def emit_packet_surfacing(
@@ -1901,6 +1895,7 @@ def emit_packet_surfacing(
     item: ItemReading,
     *,
     binding: AnalyticsBinding | None = None,
+    principal_subject: str | None = None,
 ) -> None:
     """One event per item the Work List actually put in front of a person."""
 
@@ -1909,7 +1904,7 @@ def emit_packet_surfacing(
             family=EventFamily.PACKET_SURFACING,
             binding=screen_binding(item, binding),
             occurred_at=reading.as_of,
-            payload=_item_payload(reading, item),
+            payload={**_item_payload(reading, item), "principal_subject": principal_subject},
             metric_labels=_item_labels(item),
         )
     )
@@ -1920,6 +1915,7 @@ def emit_packet_opening(
     item: ItemReading,
     *,
     binding: AnalyticsBinding | None = None,
+    principal_subject: str | None = None,
 ) -> None:
     """The coordinator opened this item; surfacing alone is not opening."""
 
@@ -1928,7 +1924,7 @@ def emit_packet_opening(
             family=EventFamily.PACKET_OPENING,
             binding=screen_binding(item, binding),
             occurred_at=reading.as_of,
-            payload=_item_payload(reading, item),
+            payload={**_item_payload(reading, item), "principal_subject": principal_subject},
             metric_labels=_item_labels(item),
         )
     )

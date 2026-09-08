@@ -174,7 +174,7 @@
         <td>
           {%- if row.external_links %}
             {%- for link in row.external_links %}
-              {%- if link.href %}<a href="{{ link.href }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
+              {%- if link.href %}<a href="/review/{{ project.slug }}/source?item={{ view.item.item_key|urlencode }}&amp;delta_id={{ row.delta_id }}&amp;source_row_id={{ link.source_row_id }}&amp;role={{ link.role }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
               {%- else %}{{ link.text }}{% endif %}{% if not loop.last %}<br>{% endif %}
             {%- endfor %}
           {%- else %}{{ not_recorded }}{% endif %}
@@ -244,7 +244,7 @@
         <td>
           {%- if child.external_links %}
             {%- for link in child.external_links %}
-              {%- if link.href %}<a href="{{ link.href }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
+              {%- if link.href %}<a href="/review/{{ project.slug }}/source?item={{ view.item.item_key|urlencode }}&amp;delta_id={{ child.delta_id }}&amp;source_row_id={{ link.source_row_id }}&amp;role={{ link.role }}" rel="noopener noreferrer nofollow">{{ link.text }}</a>
               {%- else %}{{ link.text }}{% endif %}{% if not loop.last %}<br>{% endif %}
             {%- endfor %}
           {%- else %}{{ not_recorded }}{% endif %}
