@@ -45,7 +45,7 @@ def project(session):
 
 
 @pytest.fixture
-def pdf(tmp_path):
+def pdf(tmp_path, request):
     """A synthetic PDF. Exercises code paths only — never a quality claim."""
     fixture = PdfFixture()
     # Each page must carry more than MIN_TEXT_CHARS of real text, or the
@@ -54,8 +54,14 @@ def pdf(tmp_path):
         "Utility Owner: AT&T Texas (SWBT) - Telecom - underground fiber optic",
         "STA 1149+00 to STA 1153+17, offset 303 L/R, crossing IH 69 baseline",
     ]
-    for n, body in enumerate(bodies, start=1):
-        page = fixture.add_page()
+    # Only page fan-out assertions need two pages. Identity, provenance,
+    # failure, and re-ingestion cases use one complete synthetic page.
+    page_count = getattr(request, "param", 1)
+    for n, body in enumerate(bodies[:page_count], start=1):
+        # These assertions exercise ingestion, not full-sheet geometry. Keep
+        # the authored coordinates and text without rasterizing unused space
+        # for every provenance and re-ingestion test.
+        page = fixture.add_page(height=180)
         page.text((72, 100), f"Page {n}")
         page.text((72, 130), body)
     return fixture.save(tmp_path / "matrix.pdf")
@@ -72,6 +78,7 @@ def ingest(session, project, pdf, images, **kw):
     )
 
 
+@pytest.mark.parametrize("pdf", [2], indirect=True)
 def test_registers_the_document_with_its_provenance(session, project, pdf, tmp_path):
     doc = ingest(
         session,
@@ -135,6 +142,7 @@ def test_registry_identity_cannot_move_to_different_document_bytes(
         )
 
 
+@pytest.mark.parametrize("pdf", [2], indirect=True)
 def test_every_page_gets_text_and_an_image(session, project, pdf, tmp_path):
     doc = ingest(session, project, pdf, tmp_path / "images")
     pages = session.scalars(
@@ -195,6 +203,7 @@ def test_page_numbers_are_one_based(session, project, pdf, tmp_path):
     assert "Page 1" in first.text
 
 
+@pytest.mark.parametrize("pdf", [2], indirect=True)
 def test_reingest_is_a_noop(session, project, pdf, tmp_path):
     first = ingest(session, project, pdf, tmp_path / "images")
     session.flush()
@@ -425,6 +434,7 @@ def test_a_scanned_page_reads_through_the_provider(
     assert ocr.artifact_path != review.artifact_path
 
 
+@pytest.mark.parametrize("pdf", [2], indirect=True)
 def test_every_pdf_page_persists_its_inventory_and_routing_decision(
     session, project, pdf, tmp_path
 ):
@@ -833,6 +843,7 @@ def _native_layers(session, document_id):
     ).all()
 
 
+@pytest.mark.parametrize("pdf", [2], indirect=True)
 def test_the_reader_supplies_the_page_text_and_the_native_layer(
     session, project, pdf, tmp_path
 ):

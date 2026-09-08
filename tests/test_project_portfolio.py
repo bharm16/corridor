@@ -1378,20 +1378,6 @@ def test_a_newer_independent_source_wakes_snoozed_work_in_both_readings(session)
 # --- nothing is stored, nothing is completed -------------------------------
 
 
-def test_the_page_has_no_completion_action_of_any_kind(session, client, tmp_path, store):
-    """No portfolio-work table means nothing to tick, so nothing to tick with."""
-
-    _mixed(session, tmp_path, store)
-
-    body = client.get("/portfolio").text
-
-    assert "<form" not in body
-    assert "<button" not in body
-    assert "<input" not in body
-    for token in ("done", "complete", "dismiss", "snooze"):
-        assert f'value="{token}"' not in body
-
-
 def test_reading_the_portfolio_records_nothing_about_any_project(session, client, tmp_path, store):
     """Looking at a project is not an act on it."""
 
@@ -1492,28 +1478,62 @@ def test_one_bounded_read_produces_the_whole_portfolio(session, tmp_path, store)
 # --- how it reads ----------------------------------------------------------
 
 
-def test_reading_the_portfolio_moves_no_focus_at_all(session, client, tmp_path, store):
-    """Loading a reading takes the keyboard nowhere.
+def test_portfolio_page_preserves_accessibility_and_presentation_contract(
+    session, client, tmp_path, store
+):
+    """One unchanged mixed page carries all seven presentation obligations.
 
-    It used to `autofocus` the first project still waiting, on the argument
-    that a keyboard user should start where the work is. That argument is
-    wrong for this page and the maintainer refused it: moving focus on load
+    Loading a reading takes the keyboard nowhere: moving focus on load
     can carry a screen-reader user past the heading and past the paragraph
-    that says what the cutoff is and what this page does not do, landing them
-    mid-list with nothing explaining where they are. The primitives' focus
-    rule governs the *response to a write* — a refusal, a refused field, a
-    completed Save — and this page performs no act at all.
+    explaining the cutoff. Regions remain focusable for an explicit skip-link
+    action. This page records no completion act and names only derived project
+    states, using the approved words from the project's own week.
     """
 
-    _mixed(session, tmp_path, store)
-
+    projects = _mixed(session, tmp_path, store)
+    reading = _portfolio(session)
     body = client.get("/portfolio").text
 
+    # No portfolio completion action of any kind.
+    assert "<form" not in body
+    assert "<button" not in body
+    assert "<input" not in body
+    for token in ("done", "complete", "dismiss", "snooze"):
+        assert f'value="{token}"' not in body
+
+    # Focus moves only after the reader chooses the skip link.
     assert "autofocus" not in body
-    # Every region stays programmatically focusable, because the skip link
-    # below moves focus to one of them.
-    for row in _portfolio(session).standings:
+    for row in reading.standings:
         assert f'id="project-{row.slug}" tabindex="-1"' in body
+
+    # Every row is reachable by its own heading and landmark.
+    for project in projects.values():
+        assert f'aria-labelledby="project-{project.slug}-heading"' in body
+        assert f'<h2 id="project-{project.slug}-heading">' in body
+
+    # The document has one main/heading and skips no heading level.
+    assert body.count("<main>") == 1
+    assert body.count("<h1>") == 1
+    levels = [int(level) for level in re.findall(r"<h([1-6])[ >]", body)]
+    assert levels[0] == 1
+    for previous, level in zip(levels, levels[1:]):
+        assert level <= previous + 1, "a heading level is skipped"
+
+    # Colour is redundant: every derived state is also stated in words.
+    for project in projects.values():
+        assert SENTENCES[reading.standing(project.id).state] in body
+
+    # Provisional customer labels and internal state/type names stay absent.
+    for label in PROVISIONAL_LABELS:
+        assert label not in body
+    for state in STATE_PRECEDENCE:
+        assert state not in body
+    assert "Review Packet" not in body
+    assert "Release Package" not in body
+
+    # Consequence levels belong to packets, not a cross-project count (#641).
+    for level in VISIBLE_LEVELS:
+        assert level not in body
 
 
 def test_the_skip_link_names_the_first_project_waiting_and_is_user_activated(
@@ -1576,33 +1596,6 @@ def test_focus_is_drawn_where_the_keyboard_can_land(session, client):
     assert body.count("outline:3px solid currentcolor") == 2
 
 
-def test_every_project_is_a_region_bound_to_its_own_heading(session, client, tmp_path, store):
-    """Each row is reachable by heading and by landmark."""
-
-    projects = _mixed(session, tmp_path, store)
-
-    body = client.get("/portfolio").text
-
-    for project in projects.values():
-        assert f'aria-labelledby="project-{project.slug}-heading"' in body
-        assert f'<h2 id="project-{project.slug}-heading">' in body
-
-
-def test_the_page_reads_as_one_document_with_descending_headings(session, client, tmp_path, store):
-    """`docs/accessibility-acceptance-checklist.md` §2, for this screen."""
-
-    _mixed(session, tmp_path, store)
-
-    body = client.get("/portfolio").text
-
-    assert body.count("<main>") == 1
-    assert body.count("<h1>") == 1
-    levels = [int(level) for level in re.findall(r"<h([1-6])[ >]", body)]
-    assert levels[0] == 1
-    for previous, level in zip(levels, levels[1:]):
-        assert level <= previous + 1, "a heading level is skipped"
-
-
 def _state_sentence(body: str, slug: str) -> str:
     """The words the state element of one project's own row actually carries.
 
@@ -1627,18 +1620,6 @@ def _state_sentence(body: str, slug: str) -> str:
     )
     assert len(states) == 1, f"{slug} carries {len(states)} state elements"
     return states[0].strip()
-
-
-def test_every_state_is_printed_in_its_own_words(session, client, tmp_path, store):
-    """Colour is redundant reinforcement; the sentence carries the meaning."""
-
-    projects = _mixed(session, tmp_path, store)
-    reading = _portfolio(session)
-
-    body = client.get("/portfolio").text
-
-    for project in projects.values():
-        assert SENTENCES[reading.standing(project.id).state] in body
 
 
 def test_the_five_states_are_five_different_sentences_on_five_rows(
@@ -1684,43 +1665,6 @@ def test_the_five_states_are_five_different_sentences_on_five_rows(
         rung: reading.standing(project.id).state
         for rung, project in shapes.items()
     } == {rung: rung for rung in shapes}
-
-
-def test_no_provisional_customer_label_is_printed(session, client, tmp_path, store):
-    """`This Week`, `Review needed`, and `Ready to issue` are not yet approved.
-
-    The repository terminology procedure has not run on any of them, so none
-    may be coined here; every state prints the words #536 already prints for
-    the same fact. Internal state names stay internal.
-    """
-
-    _mixed(session, tmp_path, store)
-
-    body = client.get("/portfolio").text
-
-    for label in PROVISIONAL_LABELS:
-        assert label not in body
-    for state in STATE_PRECEDENCE:
-        assert state not in body
-    assert "Review Packet" not in body
-    assert "Release Package" not in body
-
-
-def test_the_portfolio_prints_no_consequence_level(session, client, tmp_path, store):
-    """A level belongs to one packet, and this reading shows no packets (#641).
-
-    ADR-0085's three headings are derived now, and the review screen and the
-    project's own week both print them. The portfolio is a row per project with
-    a count of questions on it; printing one packet's level beside a count of
-    several would be a fourth state nobody derived.
-    """
-
-    _mixed(session, tmp_path, store)
-
-    body = client.get("/portfolio").text
-
-    for level in VISIBLE_LEVELS:
-        assert level not in body
 
 
 # --- the measurement contract (#558) ---------------------------------------

@@ -98,7 +98,8 @@ class AdvancingClock:
 
 def _pdf(marker: str = "Utility Conflict Matrix") -> bytes:
     fixture = PdfFixture()
-    page = fixture.add_page()
+    # Discovery exercises delivery/identity; keep its two-line raster bounded.
+    page = fixture.add_page(height=180)
     page.text((72, 100), marker)
     page.text((72, 130), "FOC1-1  AT&T Texas  Telecom  STA 1149+00 to 1153+17")
     return fixture.tobytes()
