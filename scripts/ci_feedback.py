@@ -122,7 +122,10 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
             detail = detail.replace("\x1b", "\\x1b")
             print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. The current-run budget remains enforced.")
             return None
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # The ten-run history window is I/O-bound metadata, not test execution.
+    # Eight bounded readers avoid serial waves of independent job/log calls
+    # without increasing the runner or package-download count.
+    with ThreadPoolExecutor(max_workers=8) as executor:
         reports = [report for report in executor.map(available_report, candidates) if report is not None]
     return sorted(reports, key=lambda report: (int(report["expected"]["run_id"]), report["expected"]["run_attempt"]), reverse=True)
 

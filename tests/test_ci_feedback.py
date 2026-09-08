@@ -138,6 +138,32 @@ def test_history_uses_completed_attempt_time_and_validated_job_log_weights(monke
     ]
 
 
+def test_history_reads_the_bounded_window_without_serial_waves(monkeypatch):
+    runs = [_run(run) for run in range(100, 108)]
+    summaries, logs = {}, {}
+    for run in runs:
+        jobs = _jobs(run["created_at"], run["updated_at"])
+        for index, job in enumerate(jobs):
+            job["id"] = run["id"] * 10 + index
+        summaries[run["id"]] = jobs
+        logs[jobs[-1]["id"]] = _log(ci.REPORT_MARKER, _report(run=run["id"]))
+    _history_api(monkeypatch, runs, summaries, logs)
+    github = ci.github
+    started = Barrier(8, timeout=1)
+
+    def concurrent_history(path, **kwargs):
+        if "/jobs?filter=all" in path:
+            started.wait()
+        return github(path, **kwargs)
+
+    monkeypatch.setattr(ci, "github", concurrent_history)
+    reports = ci.previous_reports("owner/repo", "200")
+    assert [report["expected"]["run_id"] for report in reports] == [
+        str(run) for run in range(107, 99, -1)
+    ]
+    assert all(ci.validate_report(report) for report in reports)
+
+
 def test_history_ignores_newer_runs_forks_cancelled_runs_and_old_unmeasured_jobs(monkeypatch):
     measured = _run()
     summaries = {100: [{"id": 14, "name": "release-gate", "run_attempt": 1,
