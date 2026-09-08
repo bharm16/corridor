@@ -5,6 +5,7 @@ import importlib.util
 import json
 import subprocess
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -14,6 +15,39 @@ SPEC = importlib.util.spec_from_file_location(
 )
 ci = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(ci)
+
+
+def test_colored_logs_are_captured_without_printing_terminal_control_bytes(monkeypatch, capsys):
+    calls = []
+    raw = b"\x1b[36mstep heading\x1b[0m\nCORRIDOR_TEST_RECEIPT {\"sample\":1}\n"
+    def run(command, **kwargs):
+        calls.append(command[:])
+        assert kwargs["capture_output"] is True
+        if "--allow-escape-sequences" not in command:
+            raise subprocess.CalledProcessError(1, command, stderr=b"response contains terminal escape sequences; pass --allow-escape-sequences")
+        return SimpleNamespace(stdout=raw)
+    monkeypatch.setattr(ci.subprocess, "run", run)
+    result = ci.github("repos/owner/repo/actions/jobs/1/logs", binary=True)
+    assert result == raw
+    assert ci.logged_json(result, ci.RECEIPT_MARKER) == {"sample": 1}
+    assert len(calls) == 2
+    assert "--allow-escape-sequences" not in calls[0]
+    assert capsys.readouterr().out == ""
+
+
+def test_old_cli_needs_no_new_flag_and_unrelated_errors_are_not_retried(monkeypatch):
+    calls = []
+    def success(command, **kwargs):
+        calls.append(command[:])
+        return SimpleNamespace(stdout=b"plain logs")
+    monkeypatch.setattr(ci.subprocess, "run", success)
+    assert ci.github("job/logs", binary=True) == b"plain logs"
+    assert len(calls) == 1 and "--allow-escape-sequences" not in calls[0]
+    def denied(command, **kwargs):
+        raise subprocess.CalledProcessError(1, command, stderr=b"HTTP 403")
+    monkeypatch.setattr(ci.subprocess, "run", denied)
+    with pytest.raises(subprocess.CalledProcessError):
+        ci.github("job/logs", binary=True)
 
 
 def _report(run=100, attempt=1):

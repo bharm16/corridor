@@ -27,7 +27,17 @@ WORKFLOW = ".github/workflows/release-gate.yml"
 
 
 def github(path: str, *, binary: bool = False):
-    result = subprocess.run(["gh", "api", "--method", "GET", path], capture_output=True, check=True, timeout=30)
+    command = ["gh", "api", "--method", "GET", path]
+    try:
+        result = subprocess.run(command, capture_output=True, check=True, timeout=30)
+    except subprocess.CalledProcessError as error:
+        # Newer gh versions protect terminal output containing ANSI controls.
+        # These bytes are captured for JSON-record parsing, never printed raw.
+        # Retry only that explicit refusal; older gh versions need no flag.
+        if not binary or b"--allow-escape-sequences" not in (error.stderr or b""):
+            raise
+        command.insert(2, "--allow-escape-sequences")
+        result = subprocess.run(command, capture_output=True, check=True, timeout=30)
     return result.stdout if binary else json.loads(result.stdout)
 
 
@@ -109,6 +119,7 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
             detail = getattr(error, "stderr", b"") or b""
             if isinstance(detail, bytes):
                 detail = detail.decode("utf-8", errors="replace")
+            detail = detail.replace("\x1b", "\\x1b")
             print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. The current-run budget remains enforced.")
             return None
     with ThreadPoolExecutor(max_workers=4) as executor:

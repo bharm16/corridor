@@ -63,9 +63,10 @@ validates their identities against GitHub job metadata, writes the summary, and 
 `CORRIDOR_TEST_FEEDBACK` JSON line even when the budget fails. These existing
 logs retain the evidence without a separate upload that can fail after the
 tests have already passed.
-Current job logs are not a dependency: GitHub may not make them downloadable
-until the workflow has finished. Only historical completed-workflow logs are
-read through the API. Pytest children do not inherit Actions command-file
+Current proof does not depend on log downloading or CLI formatting behavior.
+Only historical completed-workflow logs are read through the API; colored logs
+are captured for machine parsing without printing raw terminal controls.
+Pytest children do not inherit Actions command-file
 paths; the owning runner alone publishes its receipt after pytest exits.
 Unavailable historical logs produce a visible diagnostic and use the validated
 bootstrap weights. These initial weights were calibrated from all nine successful
