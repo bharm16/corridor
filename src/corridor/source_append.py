@@ -19,6 +19,7 @@ command family in ``fact_decisions.py`` and never pass through here.
 
 from __future__ import annotations
 
+from collections import Counter
 from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date, datetime
@@ -193,6 +194,15 @@ def append_fact(
 
     if not isinstance(value, MaterializedValue):
         raise TypeError("a Source Fact value must be materialized from a Source Segment")
+    source_ordinals: Counter[str] = Counter()
+    sources: list[dict[str, str | int]] = []
+    for role, segment_id in value.source_links:
+        source_ordinals[role] += 1
+        sources.append({
+            "role": role,
+            "source_segment_id": segment_id,
+            "ordinal": source_ordinals[role],
+        })
     satellites: dict[str, object] = {}
     if applies_to is not None:
         satellites["applies_to"] = list(applies_to)
@@ -231,12 +241,7 @@ def append_fact(
                 value.transformation,
                 recorded_by,
                 content_sha256,
-                _jsonb(
-                    [
-                        {"role": role, "source_segment_id": segment_id, "ordinal": 1}
-                        for role, segment_id in value.source_links
-                    ]
-                ),
+                _jsonb(sources),
                 _jsonb(satellites),
             )
         )

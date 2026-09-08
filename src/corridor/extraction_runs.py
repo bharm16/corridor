@@ -109,6 +109,116 @@ def record_extraction_run(
     return _record_extraction_run(session, document, **values)
 
 
+def append_native_matrix_source_facts(
+    session: Session, document: Document, *, mapping,
+    source_path: str | Path, idempotency_key: str | None,
+    token_usage: Mapping[str, object], fail_after_stage: str | None = None,
+) -> dict:
+    """Atomic native capture: stored sources, sealed Facts, then compatibility.
+
+    The existing spreadsheet command needs Candidate IDs while materializing
+    its cells. Native IDs already name the source row, so this route can append
+    Facts first and never stage a legacy-only result. It neither selects a
+    production run nor requests legacy automatic Record Inclusion.
+    """
+    from corridor.facts import (
+        append_native_matrix_facts, materialize_native_matrix_fields,
+        native_matrix_candidates,
+    )
+    from corridor.native_matrix_bindings import ACCOUNTING_SCHEMA, NativeMatrixMapping
+    from corridor.reader_segments import append_native_segments
+
+    if not isinstance(mapping, NativeMatrixMapping):
+        raise TypeError("native source append requires its sealed mapping")
+    mapping.certify(document)
+    if sha256(Path(source_path).read_bytes()).hexdigest() != document.sha256:
+        raise ValueError("native source append bytes do not match the Document")
+    if fail_after_stage not in {None, "segments", "run", "facts", "proposals", "receipt"}:
+        raise ValueError("unknown native append failure stage")
+    config = ExtractorConfig(**mapping.config_record)
+    content_sha256 = mapping.identity
+    key = idempotency_key or f"native-matrix:{content_sha256}"
+    lock_project(session, document.project_id)
+    existing = session.scalar(select(SourceFactAppendReceipt).where(
+        SourceFactAppendReceipt.project_id == document.project_id,
+        SourceFactAppendReceipt.idempotency_key == key,
+    ))
+    if existing is None:
+        existing = session.scalar(select(SourceFactAppendReceipt).where(
+            SourceFactAppendReceipt.project_id == document.project_id,
+            SourceFactAppendReceipt.content_sha256 == content_sha256,
+        ))
+    if existing is not None:
+        if existing.content_sha256 != content_sha256:
+            raise SourceFactAppendConflict("native append key names another mapping")
+        return _native_append_result(session, existing.extraction_run_id, created=False)
+
+    with session.begin_nested():
+        append_native_segments(session, document, mapping.native_reading)
+        _fail_after(fail_after_stage, "segments")
+        prepared = materialize_native_matrix_fields(session, document, mapping)
+        accounting = {
+            **mapping.row_accounting, "schema_version": ACCOUNTING_SCHEMA,
+            "native_mapping": {
+                "identity": mapping.identity,
+                "reading_sha256": mapping.native_reading.reading_sha256,
+                "pages": mapping.pages,
+            },
+            "field_materialization": [field.outcome for field in prepared],
+        }
+        count = accounting["extracted_row_count"]
+        validate_row_accounting(accounting, prompt_version=config.prompt_version,
+                                outcome="completed", candidate_count=count)
+        lineage, sealed = _validated_lineage(
+            document=document, prompt_version=config.prompt_version, model=config.model,
+            schema_version=config.schema_version, extractor_config=config,
+            token_usage=token_usage, allow_unsealed_legacy=False,
+        )
+        register_extractor_configuration(session, config_json=sealed,
+                                         config_sha256=config.config_sha256)
+        run = ExtractionRun(
+            document_id=document.id, prompt_version=config.prompt_version,
+            outcome="completed", candidate_count=count, page_errors=0,
+            model=config.model, schema_version=config.schema_version,
+            candidate_inputs_json=None, row_accounting_json=accounting, **lineage,
+        )
+        session.add(run)
+        session.flush([run])
+        _fail_after(fail_after_stage, "run")
+        facts = append_native_matrix_facts(session, document, run, prepared)
+        _fail_after(fail_after_stage, "facts")
+        candidates = native_matrix_candidates(document, mapping, prepared)
+        if len(candidates) != count:
+            raise ValueError("native candidates do not match sealed row accounting")
+        session.add_all(candidates)
+        session.flush()
+        for candidate in candidates:
+            session.add(ExtractionRunCandidate(extraction_run_id=run.id, candidate_id=candidate.id))
+        append_extracted_proposals(session, document, run, candidates, facts)
+        for candidate in candidates:
+            candidate.extraction_run_id = run.id
+        session.flush()
+        _fail_after(fail_after_stage, "proposals")
+        append_source_fact_receipt(
+            session, project_id=document.project_id, document_id=document.id,
+            extraction_run_id=run.id, idempotency_key=key, content_sha256=content_sha256,
+        )
+        session.flush()
+        _fail_after(fail_after_stage, "receipt")
+    return _native_append_result(session, run.id, created=True)
+
+
+def _native_append_result(session: Session, run_id: int, *, created: bool) -> dict:
+    run = session.get_one(ExtractionRun, run_id)
+    return {
+        "run": run,
+        "facts": tuple(session.scalars(select(Fact).where(Fact.extraction_run_id == run_id).order_by(Fact.id)).all()),
+        "candidates": tuple(session.scalars(select(Candidate).where(Candidate.extraction_run_id == run_id).order_by(Candidate.id)).all()),
+        "field_outcomes": tuple(deepcopy(run.row_accounting_json["field_materialization"])),
+        "created": created,
+    }
+
+
 def append_source_facts(
     session: Session,
     document: Document,

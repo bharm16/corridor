@@ -9822,6 +9822,198 @@ PUBLIC_PRIVILEGE_RESTORE = "\n".join(
 
 
 
+# #737: PDF Facts remain captured source values; no accepted-record rule changes.
+# Freeze the predecessor expression here. The historical schema bytes stay inert
+# and future model edits cannot silently change this supported transition.
+FACTS_TYPED_VALUE_BEFORE_PDF = """(fact_type IN ('utility_id', 'external_org', 'external_org_contact', 'utility_type', 'utility_subtype', 'utility_function', 'operational_status', 'size', 'material', 'oh_ug', 'row_placement', 'orientation', 'baseline', 'station_from', 'station_to', 'offset_from', 'offset_to', 'sue_level', 'conflict_description', 'resolution_strategy', 'notes', 'alignment', 'location_start', 'location_end', 'offset_side', 'potential_conflict', 'data_source', 'marked_resolution')) AND text_value IS NOT NULL AND length(TRIM(BOTH FROM text_value)) > 0 AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND (fact_type::text = 'external_org'::text OR external_org_value_id IS NULL) AND document_value_id IS NULL AND transformation::text = 'trim_cell_text_v1'::text OR (fact_type IN ('committed_date', 'action_due_date', 'need_date')) AND text_value IS NULL AND date_value IS NOT NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NULL AND transformation::text = 'iso_date_cell_v1'::text OR fact_type::text = 'applies_to'::text AND text_value IS NULL AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NULL AND transformation::text = 'structured_reference_set_v1'::text OR fact_type::text = 'closure_result'::text AND text_value IS NULL AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NULL AND transformation::text = 'typed_closure_result_v1'::text OR fact_type::text = 'statement_wording'::text AND text_value IS NOT NULL AND length(TRIM(BOTH FROM text_value)) > 0 AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NULL AND transformation::text = 'exact_prose_span_v1'::text OR fact_type::text = 'statement_timing'::text AND text_value IS NULL AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NULL AND transformation::text = 'typed_statement_timing_v1'::text OR fact_type::text = 'supporting_documentation_in_use'::text AND text_value IS NULL AND date_value IS NULL AND date_range_start IS NULL AND date_range_end IS NULL AND external_org_value_id IS NULL AND document_value_id IS NOT NULL AND transformation::text = 'supporting_document_revision_v1'::text"""
+FACTS_TYPED_VALUE_WITH_PDF = FACTS_TYPED_VALUE_BEFORE_PDF.replace(
+    "transformation::text = 'trim_cell_text_v1'::text",
+    "(transformation in ('trim_cell_text_v1', 'collapse_pdf_whitespace_v1') "
+    "or (fact_type = 'resolution_strategy' and transformation = 'pdf_marked_resolution_v1'))",
+    1,
+)
+
+
+# #737: native receipts have their own fail-closed shape and completion checks.
+NATIVE_ROW_ACCOUNTING_COMPLETENESS_BEFORE = '''
+            not (
+                outcome = 'completed'
+                and prompt_version in (
+                    'sheet_native_v2', 'matrix_tiered_v4',
+                    'prose_interpretation_v1'
+                )
+            ) or (
+                row_accounting_json is not null
+                and (
+                    (
+                        row_accounting_json ->> 'schema_version' =
+                            'matrix-row-accounting-v1'
+                        and jsonb_array_length(
+                            row_accounting_json -> 'unaccounted_rows'
+                        ) = 0
+                        and (row_accounting_json ->> 'accounted_row_count')::integer =
+                            (row_accounting_json ->> 'detected_row_count')::integer
+                        and (row_accounting_json ->> 'extracted_row_count')::integer =
+                            candidate_count
+                    ) or (
+                        row_accounting_json ->> 'schema_version' =
+                            'prose-segment-accounting-v1'
+                        and (row_accounting_json ->> 'proposed_fact_count')::integer =
+                            candidate_count
+                    )
+                )
+            )
+            '''
+NATIVE_ROW_ACCOUNTING_COMPLETENESS = ('''
+            case when prompt_version = 'matrix_structure_ids_v1'
+            then (
+            outcome <> 'completed' or (
+                row_accounting_json is not null
+                and row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+                and jsonb_array_length(row_accounting_json -> 'unaccounted_rows') = 0
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'extracted_row_count')::integer = candidate_count
+            ) is true
+            ) else (''' + NATIVE_ROW_ACCOUNTING_COMPLETENESS_BEFORE + ''') end
+            ''')
+
+NATIVE_ROW_ACCOUNTING_SHAPE_BEFORE = '''
+            row_accounting_json is null or (
+                jsonb_typeof(row_accounting_json) = 'object'
+                and row_accounting_json ->> 'reader_version' = prompt_version
+                and (
+                    (
+                        row_accounting_json ?& array[
+                            'schema_version', 'reader_version', 'reader_path',
+                            'detected_row_count', 'accounted_row_count',
+                            'extracted_row_count', 'blank_row_count',
+                            'skipped_row_count', 'unaccounted_rows', 'rows'
+                        ]
+                        and row_accounting_json ->> 'schema_version' =
+                            'matrix-row-accounting-v1'
+                        and jsonb_typeof(row_accounting_json -> 'rows') = 'array'
+                        and jsonb_typeof(
+                            row_accounting_json -> 'unaccounted_rows'
+                        ) = 'array'
+                        and row_accounting_json ->> 'detected_row_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'accounted_row_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'extracted_row_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'blank_row_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'skipped_row_count' ~ '^[0-9]+$'
+                        and jsonb_array_length(row_accounting_json -> 'rows') =
+                            (row_accounting_json ->> 'detected_row_count')::integer
+                        and (row_accounting_json ->> 'accounted_row_count')::integer =
+                            (row_accounting_json ->> 'extracted_row_count')::integer +
+                            (row_accounting_json ->> 'blank_row_count')::integer +
+                            (row_accounting_json ->> 'skipped_row_count')::integer
+                        and jsonb_array_length(
+                            row_accounting_json -> 'unaccounted_rows'
+                        ) =
+                            (row_accounting_json ->> 'detected_row_count')::integer -
+                            (row_accounting_json ->> 'accounted_row_count')::integer
+                    ) or (
+                        row_accounting_json ?& array[
+                            'schema_version', 'reader_version', 'reader_path',
+                            'document_id', 'detected_segment_count',
+                            'read_segment_count', 'proposed_fact_count',
+                            'unread_segment_ids',
+                            'proposed_subject_candidate_ids',
+                            'unproposed_subject_candidate_ids'
+                        ]
+                        and row_accounting_json ->> 'schema_version' =
+                            'prose-segment-accounting-v1'
+                        and row_accounting_json ->> 'reader_path' =
+                            'prose_interpretation'
+                        and row_accounting_json ->> 'document_id' ~ '^[0-9]+$'
+                        and (row_accounting_json ->> 'document_id')::bigint = document_id
+                        and row_accounting_json ->> 'detected_segment_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'read_segment_count' ~ '^[0-9]+$'
+                        and row_accounting_json ->> 'proposed_fact_count' ~ '^[0-9]+$'
+                        and jsonb_typeof(
+                            row_accounting_json -> 'unread_segment_ids'
+                        ) = 'array'
+                        and jsonb_typeof(
+                            row_accounting_json -> 'proposed_subject_candidate_ids'
+                        ) = 'array'
+                        and jsonb_typeof(
+                            row_accounting_json -> 'unproposed_subject_candidate_ids'
+                        ) = 'array'
+                        and (row_accounting_json ->> 'read_segment_count')::integer +
+                            jsonb_array_length(
+                                row_accounting_json -> 'unread_segment_ids'
+                            ) =
+                            (row_accounting_json ->> 'detected_segment_count')::integer
+                    )
+                )
+            )
+            '''
+NATIVE_ROW_ACCOUNTING_SHAPE = ('''
+            case when prompt_version = 'matrix_structure_ids_v1' or row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+            then (
+            row_accounting_json is null or (
+                jsonb_typeof(row_accounting_json) = 'object'
+                and row_accounting_json ?& array[
+                    'schema_version', 'reader_version', 'reader_path',
+                    'detected_row_count', 'accounted_row_count',
+                    'extracted_row_count', 'blank_row_count',
+                    'skipped_row_count', 'unaccounted_rows', 'rows',
+                    'native_mapping', 'field_materialization'
+                ]
+                and prompt_version = 'matrix_structure_ids_v1'
+                and row_accounting_json ->> 'reader_version' = prompt_version
+                and row_accounting_json ->> 'reader_path' = 'native_matrix_cells'
+                and row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+                and jsonb_typeof(row_accounting_json -> 'rows') = 'array'
+                and jsonb_typeof(row_accounting_json -> 'unaccounted_rows') = 'array'
+                and jsonb_typeof(row_accounting_json -> 'native_mapping') = 'object'
+                and jsonb_typeof(row_accounting_json #> '{native_mapping,pages}') = 'array'
+                and row_accounting_json #>> '{native_mapping,identity}' ~ '^[0-9a-f]{64}$'
+                and row_accounting_json #>> '{native_mapping,reading_sha256}' ~ '^[0-9a-f]{64}$'
+                and jsonb_typeof(row_accounting_json -> 'field_materialization') = 'array'
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.field_materialization[*] ? (
+                        @.type() == "object" && @.row_id.type() == "string" && @.row_id != ""
+                        && @.local_row_id.type() == "string" && @.local_row_id != ""
+                        && @.page.type() == "number" && @.page > 0
+                        && @.field.type() == "string" && @.field != ""
+                        && (@.status == "materialized" || @.status == "refused" || @.status == "not_extracted")
+                        && @.reason.type() == "string" && @.reason != ""
+                        && @.value_source_ids.type() == "array" && @.value_source_ids.size() > 0
+                        && @.context_source_ids.type() == "array"
+                    )'
+                )) = jsonb_array_length(row_accounting_json -> 'field_materialization')
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.native_mapping.pages[*].reading.rows[*].fields.keyvalue()'
+                )) = jsonb_array_length(row_accounting_json -> 'field_materialization')
+                and row_accounting_json ->> 'detected_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'accounted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'extracted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'blank_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'skipped_row_count' ~ '^[0-9]+$'
+                and jsonb_array_length(row_accounting_json -> 'rows') =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'extracted_row_count')::integer +
+                    (row_accounting_json ->> 'blank_row_count')::integer +
+                    (row_accounting_json ->> 'skipped_row_count')::integer
+                and jsonb_array_length(row_accounting_json -> 'unaccounted_rows') =
+                    (row_accounting_json ->> 'detected_row_count')::integer -
+                    (row_accounting_json ->> 'accounted_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "extracted")'
+                )) = (row_accounting_json ->> 'extracted_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "blank")'
+                )) = (row_accounting_json ->> 'blank_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "skipped")'
+                )) = (row_accounting_json ->> 'skipped_row_count')::integer
+            ) is true
+            ) else (''' + NATIVE_ROW_ACCOUNTING_SHAPE_BEFORE + ''') end
+            ''')
+
+
 # #736: reading-bound PDF locators; fold into the one unreleased transition.
 NATIVE_SEGMENTS_SCHEMA = """alter table public.source_segments add column rendition_sha256 VARCHAR(64);
 alter table public.source_segments add column reading_sha256 VARCHAR(64);
@@ -10778,6 +10970,14 @@ def upgrade() -> None:
     # than a statement about named relations. Running it earlier would leave a
     # PUBLIC grant made by a later block standing, which is the exact failure
     # mode it exists to close.
+    for name, expression in (
+        ("ck_extraction_runs_row_accounting_shape", NATIVE_ROW_ACCOUNTING_SHAPE),
+        ("ck_extraction_runs_completed_row_accounting", NATIVE_ROW_ACCOUNTING_COMPLETENESS),
+    ):
+        op.drop_constraint(name, "extraction_runs", type_="check")
+        op.create_check_constraint(name, "extraction_runs", expression)
+    op.drop_constraint("ck_facts_typed_value", "facts", type_="check")
+    op.create_check_constraint("ck_facts_typed_value", "facts", FACTS_TYPED_VALUE_WITH_PDF)
     op.execute(NATIVE_SEGMENTS_SCHEMA)
     op.execute(APPEND_NATIVE_SOURCE_SEGMENTS)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
@@ -10790,9 +10990,28 @@ def downgrade() -> None:
     downgrade removes it whole rather than opening it to raw writes.
     """
 
+    if op.get_bind().scalar(sa.text(
+        "select exists (select 1 from extraction_runs where "
+        "row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1')"
+    )):
+        raise RuntimeError("native matrix receipts cannot be represented by the supported predecessor")
+    for name, expression in (
+        ("ck_extraction_runs_row_accounting_shape", NATIVE_ROW_ACCOUNTING_SHAPE_BEFORE),
+        ("ck_extraction_runs_completed_row_accounting", NATIVE_ROW_ACCOUNTING_COMPLETENESS_BEFORE),
+    ):
+        op.drop_constraint(name, "extraction_runs", type_="check")
+        op.create_check_constraint(name, "extraction_runs", expression)
+
     # Never remove a recorded reading or its locator, even on downgrade.
     if op.get_bind().scalar(sa.text("select exists (select 1 from source_segments where reading_sha256 is not null)")):
         raise RuntimeError("native PDF source segments cannot be represented by the supported predecessor")
+    if op.get_bind().scalar(sa.text(
+        "select exists (select 1 from facts where transformation in "
+        "('collapse_pdf_whitespace_v1', 'pdf_marked_resolution_v1'))"
+    )):
+        raise RuntimeError("PDF Fact transformations cannot be represented by the supported predecessor")
+    op.drop_constraint("ck_facts_typed_value", "facts", type_="check")
+    op.create_check_constraint("ck_facts_typed_value", "facts", FACTS_TYPED_VALUE_BEFORE_PDF)
     op.execute(NATIVE_SEGMENTS_SCHEMA_DOWN)
     op.execute(APPEND_SOURCE_SEGMENTS_OVER_ORIGIN.replace("create function", "create or replace function", 1))
 

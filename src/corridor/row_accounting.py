@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 ACCOUNTING_REQUIRED_READERS = frozenset(
-    {"sheet_native_v2", "matrix_tiered_v4", "prose_interpretation_v1"}
+    {"sheet_native_v2", "matrix_tiered_v4", "matrix_structure_ids_v1", "prose_interpretation_v1"}
 )
 _RECEIPT_KEYS = frozenset(
     {
@@ -164,6 +164,13 @@ def validate_row_accounting(
             )
         return None
     if isinstance(receipt, dict) and receipt.get("schema_version") == (
+        "native-matrix-row-accounting-v1"
+    ):
+        return _validate_native_matrix_accounting(
+            receipt, prompt_version=prompt_version,
+            outcome=outcome, candidate_count=candidate_count,
+        )
+    if isinstance(receipt, dict) and receipt.get("schema_version") == (
         "prose-segment-accounting-v1"
     ):
         return _validate_prose_accounting(
@@ -178,7 +185,7 @@ def validate_row_accounting(
         receipt.get("schema_version") != "matrix-row-accounting-v1"
         or receipt.get("reader_version") != prompt_version
         or receipt.get("reader_path")
-        not in {"spreadsheet_cells", "page_geometry_and_transcription"}
+        not in {"spreadsheet_cells", "page_geometry_and_transcription", "native_matrix_cells"}
     ):
         raise ValueError("matrix row accounting reader identity is invalid")
     count_names = (
@@ -249,6 +256,69 @@ def validate_row_accounting(
         raise ValueError(
             "failed accounted matrix run must retain its row discrepancy"
         )
+    return receipt
+
+
+def _validate_native_matrix_accounting(receipt, *, prompt_version, outcome, candidate_count):
+    """Native zero-based row positions and field outcomes have distinct scope."""
+    if (set(receipt) != _RECEIPT_KEYS | {"native_mapping", "field_materialization"}
+            or prompt_version != "matrix_structure_ids_v1"
+            or receipt.get("reader_path") != "native_matrix_cells"
+            or outcome != "completed"):
+        raise ValueError("native matrix accounting identity or shape is invalid")
+    rows = receipt.get("rows")
+    if not isinstance(rows, list) or any(
+        not isinstance(row, dict) or type(row.get("row_number")) is not int or row["row_number"] < 0
+        for row in rows
+    ):
+        raise ValueError("native matrix source row positions are invalid")
+    # Reuse the existing completeness proof without changing its historical
+    # one-based reader contract. The stored native positions remain zero-based.
+    base = {key: receipt[key] for key in _RECEIPT_KEYS}
+    base["schema_version"] = "matrix-row-accounting-v1"
+    base["rows"] = [{**row, "row_number": row["row_number"] + 1} for row in rows]
+    validate_row_accounting(base, prompt_version=prompt_version, outcome=outcome, candidate_count=candidate_count)
+    mapping = receipt["native_mapping"]
+    if not isinstance(mapping, dict) or set(mapping) != {"identity", "reading_sha256", "pages"}:
+        raise ValueError("native matrix mapping receipt is invalid")
+    for key in ("identity", "reading_sha256"):
+        value = mapping[key]
+        if not isinstance(value, str) or len(value) != 64 or any(c not in "0123456789abcdef" for c in value):
+            raise ValueError("native matrix mapping digest is invalid")
+    expected = set()
+    for page in mapping["pages"]:
+        for row in page["reading"]["rows"]:
+            for name in row["fields"]:
+                key = (page["number"], row["row_id"], name)
+                if key in expected:
+                    raise ValueError("native matrix repeats a field occurrence")
+                expected.add(key)
+    dispositions = {row["row_id"]: row["disposition"] for row in rows}
+    outcomes = receipt["field_materialization"]
+    if not isinstance(outcomes, list):
+        raise ValueError("native field outcomes must be a list")
+    seen = set()
+    required = {"row_id", "local_row_id", "page", "field", "status", "reason", "value_source_ids", "context_source_ids"}
+    for field in outcomes:
+        if not isinstance(field, dict) or set(field) != required:
+            raise ValueError("native field outcome shape is invalid")
+        key = (field["page"], field["local_row_id"], field["field"])
+        if key not in expected or key in seen or field["row_id"] not in dispositions:
+            raise ValueError("native field outcome is missing, repeated or out of scope")
+        if (field["status"] not in {"materialized", "refused", "not_extracted"}
+                or not isinstance(field["reason"], str) or not field["reason"]
+                or (field["status"] == "not_extracted") != (dispositions[field["row_id"]] != "extracted")):
+            raise ValueError("native field outcome contradicts its row disposition")
+        for name in ("value_source_ids", "context_source_ids"):
+            ids = field[name]
+            if (not isinstance(ids, list) or any(type(value) is not int or value <= 0 for value in ids)
+                    or len(ids) != len(set(ids))):
+                raise ValueError("native field sources are invalid")
+        if not field["value_source_ids"]:
+            raise ValueError("native field needs its value source")
+        seen.add(key)
+    if seen != expected:
+        raise ValueError("native field materialization outcomes are incomplete")
     return receipt
 
 

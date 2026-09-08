@@ -50,6 +50,8 @@ from sqlalchemy.orm import (
 
 from corridor.fact_types import (
     EFFECTIVE_SINGLE_VALUE_FACT_TYPES,
+    PDF_MARKED_RESOLUTION_TRANSFORMATION,
+    PDF_TEXT_TRANSFORMATION,
     SINGLE_VALUED_FACT_TYPES,
     STRUCTURED_DATE_FACT_TYPES,
     STRUCTURED_SATELLITE_FACT_TYPES,
@@ -1378,7 +1380,9 @@ class Fact(Base):
             "and date_range_start is null and date_range_end is null "
             "and (fact_type = 'external_org' or external_org_value_id is null) "
             "and document_value_id is null "
-            "and transformation = 'trim_cell_text_v1') or "
+            f"and (transformation in ('trim_cell_text_v1', '{PDF_TEXT_TRANSFORMATION}') "
+            "or (fact_type = 'resolution_strategy' "
+            f"and transformation = '{PDF_MARKED_RESOLUTION_TRANSFORMATION}'))) or "
             f"(fact_type in ({_STRUCTURED_DATE_FACT_TYPES_SQL}) and text_value is null "
             "and date_value is not null and date_range_start is null "
             "and date_range_end is null and external_org_value_id is null "
@@ -4629,7 +4633,69 @@ class ExtractionRun(Base):
             name="ck_extraction_runs_config_receipt_shape",
         ),
         CheckConstraint(
-            """
+            '''
+            case when prompt_version = 'matrix_structure_ids_v1' or row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+            then (
+            row_accounting_json is null or (
+                jsonb_typeof(row_accounting_json) = 'object'
+                and row_accounting_json ?& array[
+                    'schema_version', 'reader_version', 'reader_path',
+                    'detected_row_count', 'accounted_row_count',
+                    'extracted_row_count', 'blank_row_count',
+                    'skipped_row_count', 'unaccounted_rows', 'rows',
+                    'native_mapping', 'field_materialization'
+                ]
+                and prompt_version = 'matrix_structure_ids_v1'
+                and row_accounting_json ->> 'reader_version' = prompt_version
+                and row_accounting_json ->> 'reader_path' = 'native_matrix_cells'
+                and row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+                and jsonb_typeof(row_accounting_json -> 'rows') = 'array'
+                and jsonb_typeof(row_accounting_json -> 'unaccounted_rows') = 'array'
+                and jsonb_typeof(row_accounting_json -> 'native_mapping') = 'object'
+                and jsonb_typeof(row_accounting_json #> '{native_mapping,pages}') = 'array'
+                and row_accounting_json #>> '{native_mapping,identity}' ~ '^[0-9a-f]{64}$'
+                and row_accounting_json #>> '{native_mapping,reading_sha256}' ~ '^[0-9a-f]{64}$'
+                and jsonb_typeof(row_accounting_json -> 'field_materialization') = 'array'
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.field_materialization[*] ? (
+                        @.type() == "object" && @.row_id.type() == "string" && @.row_id != ""
+                        && @.local_row_id.type() == "string" && @.local_row_id != ""
+                        && @.page.type() == "number" && @.page > 0
+                        && @.field.type() == "string" && @.field != ""
+                        && (@.status == "materialized" || @.status == "refused" || @.status == "not_extracted")
+                        && @.reason.type() == "string" && @.reason != ""
+                        && @.value_source_ids.type() == "array" && @.value_source_ids.size() > 0
+                        && @.context_source_ids.type() == "array"
+                    )'
+                )) = jsonb_array_length(row_accounting_json -> 'field_materialization')
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.native_mapping.pages[*].reading.rows[*].fields.keyvalue()'
+                )) = jsonb_array_length(row_accounting_json -> 'field_materialization')
+                and row_accounting_json ->> 'detected_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'accounted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'extracted_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'blank_row_count' ~ '^[0-9]+$'
+                and row_accounting_json ->> 'skipped_row_count' ~ '^[0-9]+$'
+                and jsonb_array_length(row_accounting_json -> 'rows') =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'extracted_row_count')::integer +
+                    (row_accounting_json ->> 'blank_row_count')::integer +
+                    (row_accounting_json ->> 'skipped_row_count')::integer
+                and jsonb_array_length(row_accounting_json -> 'unaccounted_rows') =
+                    (row_accounting_json ->> 'detected_row_count')::integer -
+                    (row_accounting_json ->> 'accounted_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "extracted")'
+                )) = (row_accounting_json ->> 'extracted_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "blank")'
+                )) = (row_accounting_json ->> 'blank_row_count')::integer
+                and jsonb_array_length(jsonb_path_query_array(
+                    row_accounting_json, '$.rows[*] ? (@.disposition == "skipped")'
+                )) = (row_accounting_json ->> 'skipped_row_count')::integer
+            ) is true
+            ) else (
             row_accounting_json is null or (
                 jsonb_typeof(row_accounting_json) = 'object'
                 and row_accounting_json ->> 'reader_version' = prompt_version
@@ -4698,11 +4764,23 @@ class ExtractionRun(Base):
                     )
                 )
             )
-            """,
+            ) end
+            ''',
             name="ck_extraction_runs_row_accounting_shape",
         ),
         CheckConstraint(
-            """
+            '''
+            case when prompt_version = 'matrix_structure_ids_v1'
+            then (
+            outcome <> 'completed' or (
+                row_accounting_json is not null
+                and row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1'
+                and jsonb_array_length(row_accounting_json -> 'unaccounted_rows') = 0
+                and (row_accounting_json ->> 'accounted_row_count')::integer =
+                    (row_accounting_json ->> 'detected_row_count')::integer
+                and (row_accounting_json ->> 'extracted_row_count')::integer = candidate_count
+            ) is true
+            ) else (
             not (
                 outcome = 'completed'
                 and prompt_version in (
@@ -4730,7 +4808,8 @@ class ExtractionRun(Base):
                     )
                 )
             )
-            """,
+            ) end
+            ''',
             name="ck_extraction_runs_completed_row_accounting",
         ),
         Index(

@@ -17,10 +17,16 @@ from corridor.config import settings
 from corridor.facts import _fact_digest, _statement_timing_structured
 from corridor.m8_acceptance_database import provision_disposable_postgres
 from corridor.materializer import (
+    PDF_MARKED_RESOLUTION_TRANSFORMATION,
+    PDF_TEXT_TRANSFORMATION,
+    materialize_pdf_marked_resolution,
+    materialize_pdf_segment_value,
     materialize_quoted_statement_wording,
     materialize_typed_satellite,
+    replay_pdf_materialized_value,
 )
 from corridor.models import SourceSegment
+from corridor.source_append import append_fact
 from corridor.statement_values import StatementTiming
 from alembic.config import Config
 from alembic.script import ScriptDirectory
@@ -55,7 +61,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "b52f8103548185b29ef2223f4495d63de5709e38a13de88742a2db5eda22f013"
+    "43d912f5fb4fad8717084ec68d61d9e11865e09eb07e8be91c1aa2b9c3ce9519"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -222,6 +228,11 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                 "ordinal, page_no, start_offset, end_offset, created_at "
                 "from source_segments where id = :id"
             ), {"id": segment_id}).one())
+            historical_fact = _seed_identified_fact(
+                session, slug="pdf-fact-predecessor",
+                digest=sha256(b"pdf-fact-preserved-predecessor").hexdigest(),
+            )
+            old_fact_and_authority = _fact_and_revision_bytes(session, historical_fact)
 
         upgraded = _alembic(database_url, "upgrade", "head")
         assert upgraded.returncode == 0, upgraded.stderr
@@ -234,6 +245,7 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.content_sha256, row.ordinal, row.page_no, row.start_offset,
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
+            assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
 
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
@@ -247,28 +259,96 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                 "from source_segments where id = :id"
             ), {"id": segment_id}).one()
             assert tuple(restored) == old_segment
+            assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
 
         # A recorded native reading cannot be discarded to make a downgrade
         # succeed. Exercise the same supported transition, with actual source
         # bytes and the normal SECURITY DEFINER append command.
         assert _alembic(database_url, "upgrade", "head").returncode == 0
-        from corridor.models import Document
+        from corridor.models import Document, ExtractionRun
         from corridor.reader_segments import append_native_segments, read_native_pdf
         from pdf_fixture_support import PdfFixture
 
         fixture = PdfFixture()
-        fixture.add_page().text((40, 80), "Native source wording.")
+        page = fixture.add_page()
+        for x in (40, 180, 320):
+            page.line((x, 40), (x, 140))
+        for y in (40, 90, 140):
+            page.line((40, y), (320, y))
+        page.text((50, 70), "Relocate")
+        page.text((190, 70), "Protect")
+        page.text((50, 120), "X")
+        page.text((190, 120), "X")
+        page.text((40, 220), "Native Source Company")
         source = fixture.save(tmp_path / "native-transition.pdf")
         digest = sha256(source.read_bytes()).hexdigest()
         reading = read_native_pdf(source, source_sha256=digest)
         with database.session_factory() as session, session.begin():
             document = Document(project_id=project_id, sha256=digest,
-                                filename=source.name, doc_type="minutes")
+                                filename=source.name, doc_type="matrix")
             session.add(document)
             session.flush()
             native = append_native_segments(session, document, reading)
             native_id = native[0].id
             expected_text = native[0].exact_text
+            run = ExtractionRun(
+                document_id=document.id, prompt_version="native-migration-fixture", candidate_count=0,
+            )
+            session.add(run)
+            session.flush()
+            headers = sorted(
+                (row for row in native if row.kind == "pdf_cell" and row.cell_row == 0),
+                key=lambda row: row.cell_column,
+            )
+            marks = sorted(
+                (row for row in native if row.kind == "pdf_cell" and row.cell_row == 1),
+                key=lambda row: row.cell_column,
+            )
+            organization = next(row for row in native if row.kind == "pdf_span" and row.exact_text == "Native Source Company")
+            accepted_before = session.execute(text(
+                "select (select count(*) from fact_decisions), "
+                "(select count(*) from project_record_revisions)"
+            )).one()
+            native_facts = []
+            for value in (
+                materialize_pdf_segment_value(session, "external_org", organization),
+                materialize_pdf_marked_resolution(headers, marks),
+            ):
+                native_facts.append(append_fact(
+                    session, project_id=project_id, document_id=document.id,
+                    extraction_run_id=run.id, subject_kind="source_row", subject_key="p1:t0:r1",
+                    recorded_by="local:migration-proof",
+                    content_sha256=_fact_digest(
+                        run_identity={"document_id": document.id, "extraction_run_id": run.id},
+                        subject_kind="source_row", subject_key="p1:t0:r1", value=value,
+                    ),
+                    value=value,
+                ))
+            assert [(fact.text_value, fact.transformation) for fact in native_facts] == [
+                ("Native Source Company", PDF_TEXT_TRANSFORMATION),
+                ("Relocate; Protect", PDF_MARKED_RESOLUTION_TRANSFORMATION),
+            ]
+            resolution = native_facts[1]
+            stored_sources = session.execute(text(
+                "select role, ordinal, source_segment_id from fact_sources "
+                "where fact_id = :id order by id"
+            ), {"id": resolution.id}).all()
+            assert stored_sources == [
+                ("value_source", 1, headers[0].id), ("value_source", 2, headers[1].id),
+                ("context", 1, marks[0].id), ("context", 2, marks[1].id),
+            ]
+            from corridor.source_segments import dereference_source_segment
+
+            for segment in (*headers, *marks):
+                dereference_source_segment(document, segment, source)
+            assert replay_pdf_materialized_value(
+                session, resolution.fact_type, resolution.transformation, headers, marks,
+            ).text_value == resolution.text_value
+            assert session.execute(text(
+                "select (select count(*) from fact_decisions), "
+                "(select count(*) from project_record_revisions)"
+            )).one() == accepted_before
+            assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
         before_refusal = fingerprint_database_url(database_url.render_as_string(hide_password=False))
         refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert refused.returncode != 0 and "native PDF source segments cannot be represented" in refused.stderr
@@ -276,6 +356,7 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
         assert fingerprint_database_url(database_url.render_as_string(hide_password=False)) == before_refusal
         with database.session_factory() as session:
             assert session.get(SourceSegment, native_id).exact_text == expected_text
+            assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
 
     # #693: the supported revision carries three undocumented grants to
     # PUBLIC, the transition removes all three, and the downgrade returns
@@ -304,6 +385,16 @@ def test_downgrade_across_the_consolidated_baseline_is_unsupported():
         "consolidated schema baseline downgrade is unsupported"
         in completed.stderr
     )
+
+
+def _fact_and_revision_bytes(session, identity: dict) -> tuple:
+    """All original Fact, source-link and accepted-authority fields, without rewriting."""
+
+    return tuple(session.execute(text(
+        "select (select to_jsonb(f) from facts f where id = :fact_id), "
+        "(select jsonb_agg(to_jsonb(s) order by id) from fact_sources s where fact_id = :fact_id), "
+        "(select to_jsonb(r) from project_record_revisions r where id = :revision_id)"
+    ), identity).one())
 
 
 def _project_row(session_factory):
