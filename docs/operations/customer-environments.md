@@ -130,6 +130,16 @@ The configured route also covers sign-in and probes, before any database data
 is read. Worker sessions re-resolve the same configured environment on every
 opening. A cached connection never caches permission to use the environment.
 
+After routing-key rotation, visit `/sign-in` to authenticate again. Only the
+three sign-in endpoints can discard an invalid or missing customer binding:
+they ignore the old session identity, verify the configured environment, and
+clear the old customer/session/CSRF cookies on form and unsuccessful-attempt
+responses. A successful fresh magic link issues a new session and customer
+binding under the current key. A browser can also submit an already-open form
+or consume a fresh link while still carrying stale cookies. Protected routes
+continue to refuse those cookies before any customer-database query; disabled
+or mismatched environment configuration cannot use the recovery path.
+
 Missing, unknown, disabled, mismatched or inaccessible routes refuse. A
 credential pointing at another database, a local attestation mismatch, or a
 customer cookie from another session refuses before customer data. There is

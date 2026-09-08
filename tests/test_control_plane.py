@@ -604,3 +604,201 @@ def test_only_unconfigured_local_processes_may_use_the_legacy_database(monkeypat
     monkeypatch.setattr(settings, "environment", "nonproduction")
     with pytest.raises(RouteRefused):
         configured_customer_router()
+
+
+def test_key_rotation_recovers_by_fresh_sign_in_without_accepting_foreign_cookies(
+    customer_environment_databases, control_plane_capabilities, monkeypatch
+):
+    from urllib.parse import urlsplit
+
+    from fastapi.testclient import TestClient
+    from sqlalchemy import event
+    from sqlalchemy.engine import Engine
+    from corridor.config import settings
+    from corridor.customer_routing import (
+        CustomerIdentity,
+        CustomerSessionSigner,
+        bind_customer_environment,
+    )
+    from corridor.customer_routing_runtime import build_customer_router
+    from corridor.models import PersonIdentity, Project, ProjectRosterEntry
+    from corridor.web import auth
+    from corridor.web.app import app
+    from corridor.web.customer_routing import CUSTOMER_COOKIE
+
+    class Sender:
+        def __init__(self):
+            self.links = []
+
+        def send_sign_in_link(self, *, email, link):
+            self.links.append(link)
+
+    _, _, another_customer = customer_environment_databases
+    operations, resolver = control_plane_capabilities
+    registry = ControlPlane(operations)
+    with another_customer() as database:
+        identity = CustomerIdentity(
+            "recovery-customer", "recovery-environment", "recovery-proof"
+        )
+        engine = database.session_factory.kw["bind"]
+        bind_customer_environment(engine, identity)
+        registry.register(
+            EnvironmentRegistration(
+                **identity.__dict__,
+                database_host=engine.url.host,
+                database_port=engine.url.port,
+                database_name=database.name,
+                web_credential_ref="env:RECOVERY_WEB",
+                worker_credential_ref="env:RECOVERY_WORKER",
+                object_namespace_ref="namespace:recovery",
+                connector_configuration_ref="configuration:none",
+            )
+        )
+        monkeypatch.setenv(
+            "RECOVERY_WEB",
+            engine.url.set(
+                username="corridor_web", password="corridor_web"
+            ).render_as_string(hide_password=False),
+        )
+        for name, value in (
+            ("customer_id", identity.customer_id),
+            ("customer_environment_id", identity.environment_id),
+            ("deployment_id", identity.deployment_id),
+            (
+                "control_plane_resolver_database_url",
+                resolver.url.render_as_string(hide_password=False),
+            ),
+            ("customer_routing_key", "old-key-" * 8),
+            ("live_pilot_web_boundary", True),
+        ):
+            monkeypatch.setattr(settings, name, value)
+        with database.session_factory.begin() as session:
+            project = Project(
+                slug="recovery-project", name="Recovered project", is_synthetic=True
+            )
+            session.add(project)
+            session.flush()
+            session.add(
+                PersonIdentity(
+                    email_normalized="recovery@example.test",
+                    principal_subject="local:recovery-person",
+                )
+            )
+            session.add(
+                ProjectRosterEntry(
+                    project_id=project.id,
+                    principal_subject="local:recovery-person",
+                    display_name="Recovery person",
+                    active=True,
+                )
+            )
+
+        sender = Sender()
+        monkeypatch.setitem(
+            app.dependency_overrides, auth.get_email_sender, lambda: sender
+        )
+        customer_reads = []
+
+        def capture_customer_read(
+            connection, cursor, statement, parameters, context, executemany
+        ):
+            if connection.engine.url.database == database.name:
+                customer_reads.append(statement)
+
+        try:
+            with TestClient(app, base_url="https://testserver") as client:
+                assert (
+                    client.post(
+                        "/sign-in/request", data={"email": "recovery@example.test"}
+                    ).status_code
+                    == 200
+                )
+                link = urlsplit(sender.links[-1])
+                assert (
+                    client.get(
+                        link.path + "?" + link.query, follow_redirects=False
+                    ).status_code
+                    == 303
+                )
+                assert "Recovered project" in client.get("/").text
+                old_session = client.cookies.get(auth.SESSION_COOKIE)
+                old_binding = client.cookies.get(CUSTOMER_COOKIE)
+                old_headers = {
+                    "cookie": f"{auth.SESSION_COOKIE}={old_session}; {CUSTOMER_COOKIE}={old_binding}"
+                }
+
+                monkeypatch.setattr(settings, "customer_routing_key", "new-key-" * 8)
+                event.listen(Engine, "before_cursor_execute", capture_customer_read)
+                foreign = CustomerSessionSigner(settings.customer_routing_key).issue(
+                    replace(
+                        identity,
+                        customer_id="foreign-customer",
+                        environment_id="foreign-environment",
+                    ),
+                    old_session,
+                )
+                for binding in (old_binding, old_binding + "forged", foreign, ""):
+                    headers = {
+                        "cookie": f"{auth.SESSION_COOKIE}={old_session}; {CUSTOMER_COOKIE}={binding}"
+                    }
+                    assert client.get("/", headers=headers).status_code == 503
+                    assert (
+                        client.get(
+                            "/work/recovery-project", headers=headers
+                        ).status_code
+                        == 503
+                    )
+                assert customer_reads == []
+
+                # The same browser still carries its old cookies here. It must
+                # reach the form instead of authenticating that old DB session.
+                form = client.get("/sign-in", follow_redirects=False)
+                assert form.status_code == 200
+                for cookie in (auth.SESSION_COOKIE, auth.CSRF_COOKIE, CUSTOMER_COOKIE):
+                    assert client.cookies.get(cookie) is None
+
+                # A form already open during rotation can post directly, and a
+                # fresh link can be opened in another tab still holding stale
+                # cookies. Neither endpoint may reuse the stale identity.
+                assert (
+                    client.post(
+                        "/sign-in/request",
+                        data={"email": "recovery@example.test"},
+                        headers=old_headers,
+                    ).status_code
+                    == 200
+                )
+                link = urlsplit(sender.links[-1])
+                consumed = client.get(
+                    link.path + "?" + link.query,
+                    headers=old_headers,
+                    follow_redirects=False,
+                )
+                assert consumed.status_code == 303
+                renewed_session = client.cookies.get(auth.SESSION_COOKIE)
+                renewed_binding = client.cookies.get(CUSTOMER_COOKIE)
+                assert renewed_session != old_session
+                assert renewed_binding != old_binding
+                assert (
+                    CustomerSessionSigner(settings.customer_routing_key).authenticate(
+                        renewed_binding, renewed_session
+                    )
+                    == identity
+                )
+                assert "Recovered project" in client.get("/").text
+                assert client.get("/sign-in", follow_redirects=False).status_code == 303
+
+                registry.set_state(identity.environment_id, enabled=False, hold=False)
+                assert client.get("/sign-in", headers=old_headers).status_code == 503
+        finally:
+            if event.contains(Engine, "before_cursor_execute", capture_customer_read):
+                event.remove(Engine, "before_cursor_execute", capture_customer_read)
+            router = build_customer_router(
+                settings.control_plane_resolver_database_url,
+                identity.customer_id,
+                identity.environment_id,
+                identity.deployment_id,
+            )
+            router.close()
+            router.control_plane.engine.dispose()
+            build_customer_router.cache_clear()
