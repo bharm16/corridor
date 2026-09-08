@@ -1,0 +1,110 @@
+{
+  "clean_tree_before_between_and_after": true,
+  "competing_team_test_lanes": 0,
+  "corpus_cache_available": true,
+  "generation": "Unmodified scripts/test_timing.py, then independent exact producer/file-set and one-occurrence-per-shard verification.",
+  "partitions": {
+    "non-slow": {
+      "estimated_file_plus_collection_seconds": [
+        176.2,
+        176.2,
+        176.15,
+        176.2,
+        176.2
+      ],
+      "exact_file_seconds": 867.9300000000001,
+      "files_observed_in_junit": 249,
+      "path": "tests/durations.json",
+      "rounded_file_seconds": 868.1,
+      "sha256": "b9c65e0a1e3b4d3da6d0ae80a185c4b46edba362de49e9c20d6d589fcabdb615",
+      "shard_file_counts": [
+        50,
+        52,
+        51,
+        52,
+        52
+      ],
+      "shards": 5,
+      "test_file_entries": 257
+    },
+    "slow": {
+      "estimated_file_plus_collection_seconds": [
+        71.85,
+        71.85,
+        71.85,
+        71.9
+      ],
+      "exact_file_seconds": 274.768,
+      "files_observed_in_junit": 11,
+      "path": "tests/durations-slow.json",
+      "rounded_file_seconds": 274.6,
+      "sha256": "f2f59caeba9357a9f35379c243bfb93abc3c09bba9ee77184801d51d793bafa2",
+      "shard_file_counts": [
+        103,
+        45,
+        107,
+        2
+      ],
+      "shards": 4,
+      "test_file_entries": 257
+    }
+  },
+  "prior_receipts_preserved": [
+    "timing/pr752/",
+    "timing/slow-clean.xml",
+    "timing/f485a8f-native-wave/",
+    "timing/78d5cb7-native-wave/",
+    "timing/ebe1641-native-wave/slow-pg14-failed.xml"
+  ],
+  "regression_change": "Exact global protected-state snapshots preserve preexisting rows and permit only intended new selection IDs; flush makes queued ORM insert/update/delete visible. Runtime unchanged.",
+  "results": {
+    "non-slow": {
+      "errors": 0,
+      "exit_code": 0,
+      "failures": 0,
+      "log_sha256": "436639404cf3f2773faebb33faa9b5e4429d04eeed61997d74df0b30a35200fd",
+      "passed": 5157,
+      "pytest_wall_seconds": 228.52,
+      "skipped": 3,
+      "skips": [
+        {
+          "reason": "RLIMIT_AS is accepted but not enforced on this platform; recorded in the contract",
+          "test": "tests.test_pdf_reader_execution.test_the_memory_bound_is_enforced_where_the_platform_allows"
+        },
+        {
+          "reason": "the shared NHHIP corpus is not present",
+          "test": "tests.test_briefing.test_live_nhhip_project_floor_is_bounded_by_buckets"
+        },
+        {
+          "reason": "the legacy-development login is created only where it is asked for",
+          "test": "tests.test_database_authority.test_the_legacy_development_login_writes_legacy_tables_and_nothing_accepted"
+        }
+      ],
+      "xml_sha256": "b5b3b6ab70a9785d7d9a7abdcee5e8c00e9dad3240bcfe84da135cc6f688a039"
+    },
+    "slow": {
+      "errors": 0,
+      "exit_code": 0,
+      "failures": 0,
+      "log_sha256": "ef348a5cea78d08a482bf8d564a0b875ec32377f0692ad7341be5b8cf67835c4",
+      "passed": 72,
+      "pytest_wall_seconds": 95.02,
+      "skipped": 2,
+      "skips": [
+        {
+          "reason": "the real SH 99 replay needs the separately managed source in the expected #248 pre-Admission lifecycle state",
+          "test": "tests.test_sh99_admission_acceptance.test_real_sh99_clone_replays_the_exact_shared_operation_twice"
+        },
+        {
+          "reason": "the separately managed SH99 source is not present",
+          "test": "tests.test_sh99_shared_admission_seal.test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded"
+        }
+      ],
+      "xml_sha256": "93744b5e93149e73c899e1d16823312f8b583e438ccfc5bc9a14973283994239"
+    }
+  },
+  "retained_at": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/timing/ebe1641-native-wave",
+  "revision": "ebe16417bbcf1a06a3fc812d8cc3406778e2bf77",
+  "slow_client": "Verified PostgreSQL 16.15 container clients through task-local PATH wrappers; host 14.19 failure retained separately.",
+  "source_or_test_changes_between_successful_runs": false
+}
