@@ -1,0 +1,114 @@
+{
+  "audited": {
+    "environments": {
+      "application": {
+        "present": [
+          "fitz",
+          "pymupdf",
+          "pymupdf-1.28.0.dist-info",
+          "pytesseract",
+          "pytesseract-0.3.13.dist-info"
+        ],
+        "site_packages": "/opt/corridor/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/.venv"
+      },
+      "render_worker": {
+        "present": [
+          "fitz",
+          "pymupdf",
+          "pymupdf-1.28.2.dist-info"
+        ],
+        "site_packages": "/opt/corridor/workers/render/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/workers/render/.venv"
+      }
+    },
+    "executables": {
+      "tesseract": "/usr/bin/tesseract"
+    },
+    "notices": {
+      "declared_files": 25,
+      "files_on_disk": 26,
+      "installed_in_image": {
+        "pdf-oxide": [
+          {
+            "dist_info": "pdf_oxide-0.3.77.dist-info",
+            "licence_files": [
+              "licenses/LICENSE-APACHE",
+              "licenses/LICENSE-MIT",
+              "licenses/NOTICE"
+            ]
+          }
+        ],
+        "pillow": [
+          {
+            "dist_info": "pillow-12.3.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSE"
+            ]
+          }
+        ],
+        "pypdfium2": [
+          {
+            "dist_info": "pypdfium2-5.13.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSES/Apache-2.0.txt",
+              "licenses/LICENSES/BSD-3-Clause.txt",
+              "licenses/LICENSES/CC-BY-4.0.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/abseil.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/agg23.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/fast_float.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/freetype.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/icu.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/lcms.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libopenjpeg.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libpng.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libtiff.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/llvm-libc.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/simdutf.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/zlib.txt"
+            ]
+          }
+        ]
+      },
+      "manifest_present": true,
+      "missing_files": [],
+      "packages": [
+        "pypdfium2",
+        "pdf-oxide",
+        "pillow"
+      ],
+      "root": "/opt/corridor/src/corridor_pdf_reader/replacement/third-party-notices"
+    },
+    "path": "/opt/corridor/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "system_packages": {
+      "tesseract-ocr": "install ok installed|5.3.0-2"
+    }
+  },
+  "clear_of_retired_engines": false,
+  "findings": [
+    "application environment still installs fitz",
+    "application environment still installs pymupdf",
+    "application environment still installs pymupdf-1.28.0.dist-info",
+    "application environment still installs pytesseract",
+    "application environment still installs pytesseract-0.3.13.dist-info",
+    "render_worker environment still installs fitz",
+    "render_worker environment still installs pymupdf",
+    "render_worker environment still installs pymupdf-1.28.2.dist-info",
+    "the tesseract executable is on PATH at /usr/bin/tesseract",
+    "the tesseract-ocr system package is installed (install ok installed|5.3.0-2)"
+  ],
+  "image": {
+    "command": "docker build --build-arg GIT_REVISION=32907241243bb153ec973b015c0c65a3dfee7f97 -t corridor-engine-audit:local .",
+    "image_id": "sha256:b1431dda21c24d0c3ab8f5c575cdcc9dddaa22e8540f4cef3501a48c57ab70d4",
+    "size_bytes": 3179361236,
+    "tag": "corridor-engine-audit:local"
+  },
+  "recorded_at": "2026-09-08T14:39:57.939344+00:00",
+  "revision": "32907241243bb153ec973b015c0c65a3dfee7f97",
+  "schema_version": "corridor.built-image-engine-audit.v1",
+  "working_tree_dirty": true
+}
