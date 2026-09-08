@@ -54,6 +54,14 @@ a clean-tree acceptance check affected by concurrently written audit receipts.
 The corrected full run started from a clean tree and passed. No test was
 deselected to obtain the passing receipt.
 
+The first Linux PR run exposed one test portability error: the corpus test
+compared its PNG to a historical macOS PNG hash. The corrected assertion keeps
+that historical hash intact and verifies the current run's transmitted image
+against its own render receipt, 110 DPI and the known 1870 by 1210 geometry.
+Both corpus cases were rerun in the engine-absent environment. Production
+source and dependencies are unchanged from the complete-suite/image proofs
+above; the required PR gate validates the revised test on Linux.
+
 ## Preservation and deployment decision
 
 The remaining legacy geometry and structure/transcription flow are removed;

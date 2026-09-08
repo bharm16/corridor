@@ -9,10 +9,12 @@ that a removed reader can reconstruct its original physical location.
 
 from base64 import b64decode
 from hashlib import sha256
+from io import BytesIO
 import json
 from pathlib import Path
 
 import pytest
+from PIL import Image
 from sqlalchemy import func, select, text
 
 from corridor.config import Settings
@@ -140,7 +142,16 @@ def test_corpus_ingest_selected_extraction_and_retained_citation_without_engines
     assert content_digest(payload["text"]["format"]["schema"]) == retained["schema_sha256"]
     content = payload["input"][0]["content"]
     assert content[0]["text"] == retained["user"]
-    assert sha256(b64decode(content[1]["image_url"].split(",", 1)[1])).hexdigest() == retained["image_sha256"]
+    image_bytes = b64decode(content[1]["image_url"].split(",", 1)[1])
+    rendered = json.loads(observation.receipt_text)["chain"]["model_context"]["1"]
+    # The historical PNG hash remains archived. This selected configuration
+    # includes the current platform/PDFium build, so its actual fresh render
+    # must be the image sent, not a PNG encoded on another platform.
+    assert sha256(image_bytes).hexdigest() == rendered["sha256"]
+    assert rendered["dpi"] == 110
+    with Image.open(BytesIO(image_bytes)) as image:
+        assert image.format == "PNG"
+        assert image.size == (1870, 1210)
     assert evidence_quotation(session, link) == original
     replay = replay_retained_reading(old, document=document, path=source)
     assert replay.exact_text == words and replay.original_bytes_verified
