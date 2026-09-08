@@ -1,0 +1,1374 @@
+{
+  "schema_version": "corridor.native-matrix-measurement.v1",
+  "mode": "offline_retained_answer_replay",
+  "pass": true,
+  "dataset_sha256": "94962a918d52420a2327b6315e9f01ad67a52ae3172e0e5da9be5eb95ae888df",
+  "required_outcomes_pass": true,
+  "status": "passed_with_diagnostic_differences",
+  "full_reading_parity": false,
+  "retained_at": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/737-native-matrix-selection-replay-2026-09-08",
+  "machine_references": {
+    "wsdot-9424": {
+      "path": "gold/wsdot-9424.machine.csv",
+      "sha256": "94720ed31bc66616479a5de0d2448774569c50b22cbdb4768d31090c1566a111",
+      "expected_rows": 162,
+      "scope": "Historical Counter matching of source_ref multiplicities only. The CSV does not establish scoped document/page/row occurrence identity. No independent field values; critical is not scored."
+    },
+    "wsdot-9540": {
+      "path": "gold/wsdot-9540.machine.csv",
+      "sha256": "97323bebdedcf3bd6db2d43be3c55cdaa0e662b9125b5835a52962e0e18b5bd9",
+      "expected_rows": 192,
+      "scope": "Historical Counter matching of source_ref multiplicities only. The CSV does not establish scoped document/page/row occurrence identity. No independent field values; critical is not scored.",
+      "holdout_status": "spent; retained-answer/reference replay only, not a new generalization score"
+    }
+  },
+  "historical_configuration": {
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "none",
+    "image_detail": "original",
+    "image_dpi": 110,
+    "native_engine": "tagged",
+    "native_dpi": 36,
+    "prompt_version": "matrix_structure_ids_v1",
+    "prompt_sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+    "schema_sha256": "d050e1f7e37f5aeee14e53000a211c818e8f3bcd59c35997a589122e782e7c33",
+    "semantics_sha256": "3e71909194ab3e97399dd068769eeaa34c3c225d2f8feaef75e10c1988b774a9"
+  },
+  "implementation_files": {
+    "src/corridor/native_matrix_measurement.py": "15abcd91845c930cdd374c01482ffbc635a5cbe085f05c094717e646fc5fb9cf",
+    "src/corridor/native_matrix.py": "3842b380d30e7078ce7d9061b0bba15515106b193b1f6aac9bc934e262328cc5",
+    "src/corridor/native_matrix_bindings.py": "1482ceb0fc0840c91398f768cf1bc338dac32d60fb1bd3522a0710824bcae9ab",
+    "src/corridor/facts.py": "a05345a66199093618eaca0e60d9d09dfb191009c097e5dddcbe037549d524c9",
+    "src/corridor/materializer.py": "9d7405650dbb4481a45d430b12e9402ee09e17726c903cfec07b29bf9998bfa4",
+    "src/corridor/fact_types.py": "08ea0325a06c6cd859444fe4669ad89ccc00334bff56dade070164488ede3a09",
+    "src/corridor/source_append.py": "fa7bc8aa2b7960087e1e0210cf349472ccfb3524003e8d4443f43242bb25a25b",
+    "src/corridor/models.py": "d6a8b89ba1b474d9bd6c4276d2471eed4fa27ea4ce8e906464af4809620d0459",
+    "src/corridor/extractor_lineage.py": "222ad63689a602f82edd37a8033543e164848350dc19d4305f1e16b42d58038e",
+    "src/corridor/extraction_runs.py": "00559ee113381a7970725a31057db0d406be596d7afb879f1775d68ebac2d67b",
+    "src/corridor/row_accounting.py": "109b32e2d4cbb2c52c2e973cfd24fee0a409f3be60128320bc8063b3fd1e45ca",
+    "src/corridor/reader_segments.py": "737782506d420bcb263adb3cddb287962ab74e467aad9b6c06b8468ead842946",
+    "src/corridor/token_layers.py": "6f1e58307d033f09ab34e358925f1024c2d521aa8dfe53be47203e09d51759d2"
+  },
+  "database": {
+    "name": "corridor_native_matrix_measurement_14395b5363d849f58cc9b87fcceba520",
+    "postgres_version": "16.15 (Debian 16.15-1.pgdg13+2)",
+    "migration_head": "b2d5f8a1c4e7",
+    "disposable": true,
+    "dropped_after_replay": true
+  },
+  "documents": [
+    {
+      "name": "semantics-9424-v2",
+      "cohort": "wsdot-9424",
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "reading_sha256": "6fdd961cf7bad142e0cf39a9a988809adf01c0c33b0fdd5797cf3010ea1de43e",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "2a60062750405bc18369a3fcf5b3e699873d8c27913de7d5becdb2662d191af3",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "945021e2cb6b1aeedf4715b2bb9213c5d0ae02353754574095439a66c8051c20",
+          "bytes": 270242
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "c7311f92aeb8ccacd3d1dd5485773ee7da4a4beda955bc59e48090e395047c61",
+          "bytes": 312789
+        },
+        {
+          "path": "page-10.png",
+          "sha256": "cd964d530825a75cb9657083b1ee6900a375019fce1b0dcf2f0457f9b79f6ded",
+          "bytes": 296678
+        },
+        {
+          "path": "page-11.png",
+          "sha256": "50f186ef463a957fedac69d68299f85ed8c1a1778a7f74ba2fe057916819a957",
+          "bytes": 127964
+        },
+        {
+          "path": "page-2.png",
+          "sha256": "153eff606fa168858b80a8ee45b834eba9cf9184bf3a555cc3de3ec45794666e",
+          "bytes": 272547
+        },
+        {
+          "path": "page-3.png",
+          "sha256": "1fb71148b128d7ec4edf8488763aba8e8d9f329df0461845f34bcdd15ff4a7b5",
+          "bytes": 368934
+        },
+        {
+          "path": "page-4.png",
+          "sha256": "ec8a5296016f5b8fcd82e0cba931faeaaa13ed7c4c91f75d62acb6fa2cdb1e57",
+          "bytes": 305963
+        },
+        {
+          "path": "page-5.png",
+          "sha256": "d3db461985256ee2dac37f44032b235b516e697bdde2631871003f36b8690c3a",
+          "bytes": 265072
+        },
+        {
+          "path": "page-6.png",
+          "sha256": "6f468a58834acff6b526b66c0ddb36e67518224ccb92c6cc147f7db5e745f3ea",
+          "bytes": 245129
+        },
+        {
+          "path": "page-7.png",
+          "sha256": "b4a25d847de3efafebba0202c188b8021c259c4ebfd09a569958c1358af8b1fd",
+          "bytes": 296407
+        },
+        {
+          "path": "page-8.png",
+          "sha256": "92cd64d4c8937f8adbc5e336a21038d51c4218371d24ab6353f0322726bebe96",
+          "bytes": 318445
+        },
+        {
+          "path": "page-9.png",
+          "sha256": "881d1bb1fd011ba41697f97fbaed8c5d5ffd69dc6d27e3823a978acd0bdb1088",
+          "bytes": 221606
+        }
+      ],
+      "output": {
+        "file": "semantics-9424-v2.json",
+        "sha256": "417d796497d860d08b450144e32d56037e52b23274d6e084248b4ade09a25a54"
+      },
+      "retained_reading_comparison": {
+        "pass": true,
+        "expected_sha256": "b70ed4f387617d401b76dab712c57ce4c4a73b81e075595b7f39815731883f14",
+        "actual_sha256": "b70ed4f387617d401b76dab712c57ce4c4a73b81e075595b7f39815731883f14",
+        "compared_pages": 11,
+        "compared_rows": 265,
+        "actual_rows": 265,
+        "field_values": 1144,
+        "reasons": {
+          "candidate_recorded": 162,
+          "insufficient_mapped_fields": 2,
+          "retired_row": 101
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "aed542ddf94a0693547f2a96104e90d45e17dadc3484f84c0c80d5e22c6ec4a6",
+        "actual_sha256": "aed542ddf94a0693547f2a96104e90d45e17dadc3484f84c0c80d5e22c6ec4a6",
+        "compared_rows": 265,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": true,
+      "mapping_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": []
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 1144,
+        "actual_outcomes": 1144,
+        "statuses": {
+          "materialized": 933,
+          "not_extracted": 200,
+          "refused": 11
+        },
+        "refusal_reasons": {
+          "non_iso_date": 11
+        },
+        "non_iso_date_refusals": [
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:1",
+            "field": "committed_date",
+            "text": "Summer 2019",
+            "cells": [
+              "t0r7c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:2",
+            "field": "committed_date",
+            "text": "Summer 2019",
+            "cells": [
+              "t0r8c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:3",
+            "field": "committed_date",
+            "text": "Jun-19",
+            "cells": [
+              "t0r9c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:4",
+            "field": "committed_date",
+            "text": "Spring 2019",
+            "cells": [
+              "t0r10c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:8",
+            "field": "committed_date",
+            "text": "N/A",
+            "cells": [
+              "t0r14c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:10",
+            "field": "committed_date",
+            "text": "Summer 2020",
+            "cells": [
+              "t0r16c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:11",
+            "field": "committed_date",
+            "text": "Summer 2020",
+            "cells": [
+              "t0r17c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:12",
+            "field": "committed_date",
+            "text": "Summer 2020",
+            "cells": [
+              "t0r18c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 2,
+            "local_row_id": "structure:2:table:0:row:13",
+            "field": "committed_date",
+            "text": "Summer 2020",
+            "cells": [
+              "t0r19c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 7,
+            "local_row_id": "structure:7:table:0:row:11",
+            "field": "committed_date",
+            "text": "Apr-20",
+            "cells": [
+              "t0r17c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          },
+          {
+            "page": 7,
+            "local_row_id": "structure:7:table:0:row:12",
+            "field": "committed_date",
+            "text": "Apr-20",
+            "cells": [
+              "t0r18c19"
+            ],
+            "status": "refused",
+            "reason": "non_iso_date"
+          }
+        ],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 162,
+        "persisted_proposals": 162,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 933,
+        "persisted_and_replayed_facts": 933,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "6d2a686b910cdf0863b6853b69241ebd0586bb0b341fbc2159e73a7f9d8034d1",
+        "actual_sha256": "6d2a686b910cdf0863b6853b69241ebd0586bb0b341fbc2159e73a7f9d8034d1",
+        "differences": []
+      },
+      "row_accounting_sha256": "6d2a686b910cdf0863b6853b69241ebd0586bb0b341fbc2159e73a7f9d8034d1",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 11,
+        "prompt_tokens": 71207,
+        "completion_tokens": 3422,
+        "cached_tokens": 26334
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 11,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-comm",
+      "cohort": "wsdot-9540",
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "reading_sha256": "8eda454213dc00e8270936e9c5ca522d093e2095c5f81e59bdf2627cf6f708d0",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "f745a4c2b4a11474f720f886d4eac8e347172e4127bb1cbe6432c4b16c9ef5f7",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "e4e81e993306895914ccba9258a40e12914e4175caec60ac42d9d54081c8322e",
+          "bytes": 119313
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "ebd1907a95ac6c40485972f7b2ea1f5d6bf0bfc93e7771b7dc69e96920dd0e9d",
+          "bytes": 431604
+        },
+        {
+          "path": "page-2.png",
+          "sha256": "a3670abb7069ee43cca32b9700a10bd6a0526d9314cf6e76c1b6c035c3a79fac",
+          "bytes": 441236
+        },
+        {
+          "path": "page-3.png",
+          "sha256": "211d9bf427587e21e4c6ddffbe01483b31fa2a41a2c85c1e47d0ea346dbae4e9",
+          "bytes": 283400
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-comm.json",
+        "sha256": "9fe19817c033ba07a871fbc8032a0dd90e390af14609414dfaf748ed0e24a9d5"
+      },
+      "retained_reading_comparison": {
+        "pass": true,
+        "expected_sha256": "41b286b7f46f448738e08f097ce78a72494942b53f6e663a841b5c14f2c78dcd",
+        "actual_sha256": "41b286b7f46f448738e08f097ce78a72494942b53f6e663a841b5c14f2c78dcd",
+        "compared_pages": 3,
+        "compared_rows": 89,
+        "actual_rows": 89,
+        "field_values": 694,
+        "reasons": {
+          "candidate_recorded": 86,
+          "missing_required_fields": 3
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "b644a45813a571548bc8e9b7845893dd712e6dd1fcb2ed5895a742a9346730d0",
+        "actual_sha256": "b644a45813a571548bc8e9b7845893dd712e6dd1fcb2ed5895a742a9346730d0",
+        "compared_rows": 89,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": true,
+      "mapping_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": []
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 694,
+        "actual_outcomes": 694,
+        "statuses": {
+          "materialized": 688,
+          "not_extracted": 6
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 86,
+        "persisted_proposals": 86,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 688,
+        "persisted_and_replayed_facts": 688,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "c5eb2a39df6973b948ade956155fea299192ef961757f5aea3bcc07feabddfa6",
+        "actual_sha256": "c5eb2a39df6973b948ade956155fea299192ef961757f5aea3bcc07feabddfa6",
+        "differences": []
+      },
+      "row_accounting_sha256": "c5eb2a39df6973b948ade956155fea299192ef961757f5aea3bcc07feabddfa6",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 3,
+        "prompt_tokens": 19318,
+        "completion_tokens": 546,
+        "cached_tokens": 7182
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 3,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-gas",
+      "cohort": "wsdot-9540",
+      "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "reading_sha256": "1ff9ade65b7e111a9a42bc08930d9f7555561cdff23e1e79bd8da46b614b20d3",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "cd5c64475e6c4ed7cdd77596ac8a72708bd3be8e85bbd78f19ab783fab86b6ec",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "069c09d9f3e62a1b333ed36de4e94b3177f660e885a88601c5252f0ac6f698a9",
+          "bytes": 24491
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "9c7cc25e930c5b24c827d5c4984f898e5554a31d4ee71ad862403e2f7e4c1dfe",
+          "bytes": 242438
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-gas.json",
+        "sha256": "3f097490f4452f3b3f22d1b03bfd741429fccb0413f1d07a3f9b3a2ad0f1ef54"
+      },
+      "retained_reading_comparison": {
+        "pass": false,
+        "expected_sha256": "0625df6a2f0fb1db45d770c6ede41e9c997c635e2e6774c2137dbe0f3674ed15",
+        "actual_sha256": "2b4f4ffaed3218b35b19a78b26250a54579194d1c169acbcffd6fdb11e94fabd",
+        "compared_pages": 1,
+        "compared_rows": 15,
+        "actual_rows": 15,
+        "field_values": 115,
+        "reasons": {
+          "candidate_recorded": 14,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "239d8cad79ce2e27d380cb802d0a2c9ffbf9458255e23af1e7a0cd9e9dcf3f76",
+        "actual_sha256": "239d8cad79ce2e27d380cb802d0a2c9ffbf9458255e23af1e7a0cd9e9dcf3f76",
+        "compared_rows": 15,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": false,
+      "mapping_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": [
+          {
+            "page": 1,
+            "current_header_cells": [
+              {
+                "row": 4,
+                "column": 11,
+                "row_span": 1,
+                "column_span": 2,
+                "text": "FRANCHISE (F)\nEASEMENT (E)\nPERMIT (P)\nOR EXISTING (EP, EF)\nAND NUMBER"
+              }
+            ],
+            "historical_header_geometry": "not_retained"
+          }
+        ]
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 115,
+        "actual_outcomes": 115,
+        "statuses": {
+          "materialized": 112,
+          "not_extracted": 3
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 14,
+        "persisted_proposals": 14,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 112,
+        "persisted_and_replayed_facts": 112,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "ed5b04829c1dade7ce17752bcc2d6eed2f8f4e572e8209c2d91f950020ce4d18",
+        "actual_sha256": "ed5b04829c1dade7ce17752bcc2d6eed2f8f4e572e8209c2d91f950020ce4d18",
+        "differences": []
+      },
+      "row_accounting_sha256": "ed5b04829c1dade7ce17752bcc2d6eed2f8f4e572e8209c2d91f950020ce4d18",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 1,
+        "prompt_tokens": 6713,
+        "completion_tokens": 189,
+        "cached_tokens": 2359
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 1,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed_with_diagnostic_differences",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-opl",
+      "cohort": "wsdot-9540",
+      "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "reading_sha256": "20ac8c378b296bfe94d9757cc2d1ec3ea2b06c2aebf0979c1c1a180a2606a44f",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "6ff0a98f9546f9a3125a16da2a63ad944b2e034cc4e363fdae75617518da1b87",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "4e7f86db6adc987c2ad4be707b5dd363135d9515b2c0e0882141538081b8fa5e",
+          "bytes": 5948
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "f99b88d0e4ac8c96185c475abc8dd34622f374b7be74534246595c230ad03c18",
+          "bytes": 75263
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-opl.json",
+        "sha256": "c56390267fd3197163b7614e032910249c5d73c82012423adc7f98c724c44650"
+      },
+      "retained_reading_comparison": {
+        "pass": false,
+        "expected_sha256": "1207a62157db5b8af0e7c72b70ab84f7cb9c8cecde342feaf6ca3a9890f55174",
+        "actual_sha256": "28ef7e6ca2db5ebd73f892a5e92b064b567bff5e56cc330d43ce8fbbfe938d8b",
+        "compared_pages": 1,
+        "compared_rows": 2,
+        "actual_rows": 2,
+        "field_values": 11,
+        "reasons": {
+          "candidate_recorded": 1,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "2244b93ab898f61533596f41fbb754de2729ec0b082f140d6c3749151e12e920",
+        "actual_sha256": "2244b93ab898f61533596f41fbb754de2729ec0b082f140d6c3749151e12e920",
+        "compared_rows": 2,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": false,
+      "mapping_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": [
+          {
+            "page": 1,
+            "current_header_cells": [
+              {
+                "row": 4,
+                "column": 12,
+                "row_span": 1,
+                "column_span": 2,
+                "text": "FRANCHISE (F)\nEASEMENT (E)\nPERMIT (P)\nOR EXISTING (EP, EF)\nAND NUMBER"
+              }
+            ],
+            "historical_header_geometry": "not_retained"
+          }
+        ]
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 11,
+        "actual_outcomes": 11,
+        "statuses": {
+          "materialized": 8,
+          "not_extracted": 3
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 1,
+        "persisted_proposals": 1,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 8,
+        "persisted_and_replayed_facts": 8,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "94ddf57cb608e6e2777589acecd2bda7d333720a953f6216ade9fc6b25b4ba3d",
+        "actual_sha256": "94ddf57cb608e6e2777589acecd2bda7d333720a953f6216ade9fc6b25b4ba3d",
+        "differences": []
+      },
+      "row_accounting_sha256": "94ddf57cb608e6e2777589acecd2bda7d333720a953f6216ade9fc6b25b4ba3d",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 1,
+        "prompt_tokens": 5605,
+        "completion_tokens": 217,
+        "cached_tokens": 2359
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 1,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed_with_diagnostic_differences",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-power",
+      "cohort": "wsdot-9540",
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "reading_sha256": "af19e64303b2336636329b5e9443e10234a844b2fc8bca5a53f0fb4128bdb3a3",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "4e4971144769aae917589b6db032937717138e241e29d486b364bf5765d19338",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "1f7aa75d81f8479e14fb9849902095cb4031ec3758536b2693c1b1a3e39660e0",
+          "bytes": 58037
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "64161d1c7278b3a92153e44da4061cdb7a1c0dac9d890c2d0bcde87dd5fbcfa9",
+          "bytes": 397838
+        },
+        {
+          "path": "page-2.png",
+          "sha256": "f4f96941d854e840aa94187c3632ba04402d21c2c7d400c79b33170614cf2d9f",
+          "bytes": 193037
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-power.json",
+        "sha256": "9bec793c8d1cfb83a2f513c3cb9c6251584001411bf5de26abff9a1fe1afbe11"
+      },
+      "retained_reading_comparison": {
+        "pass": true,
+        "expected_sha256": "c55476743de24d9fabbcfd756eec2acf20801ca19802e50ad0aa373396ae5b23",
+        "actual_sha256": "c55476743de24d9fabbcfd756eec2acf20801ca19802e50ad0aa373396ae5b23",
+        "compared_pages": 2,
+        "compared_rows": 39,
+        "actual_rows": 39,
+        "field_values": 299,
+        "reasons": {
+          "candidate_recorded": 37,
+          "missing_required_fields": 2
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "3fb9d67cda9c557a608fd8c6ce4d07ad351b71e7a77931247f87eb37ec1f68a0",
+        "actual_sha256": "3fb9d67cda9c557a608fd8c6ce4d07ad351b71e7a77931247f87eb37ec1f68a0",
+        "compared_rows": 39,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": true,
+      "mapping_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": []
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 299,
+        "actual_outcomes": 299,
+        "statuses": {
+          "materialized": 293,
+          "not_extracted": 6
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 37,
+        "persisted_proposals": 37,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 293,
+        "persisted_and_replayed_facts": 293,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "9b3e6e4d556b74e395c2c73208ab497e2a3c4e1a0c96a70ddd26533eca2985db",
+        "actual_sha256": "9b3e6e4d556b74e395c2c73208ab497e2a3c4e1a0c96a70ddd26533eca2985db",
+        "differences": []
+      },
+      "row_accounting_sha256": "9b3e6e4d556b74e395c2c73208ab497e2a3c4e1a0c96a70ddd26533eca2985db",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 2,
+        "prompt_tokens": 12944,
+        "completion_tokens": 385,
+        "cached_tokens": 4718
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 2,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-sewer",
+      "cohort": "wsdot-9540",
+      "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "reading_sha256": "9d27c539cacd2ca8a542b31df9b14169f957016c641d67e416b1b6819f4a911a",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "a386190b23254e9b55e24d1c3d2d344f45b8653e911072ab66ff6d32f0c933c2",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "1b1e72f9744b227c15d6c7cf26d3cb2564f659aaf289a1cfd0dd23eeb6de235b",
+          "bytes": 35830
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "eafe4e7e121019c7e8daab65e823381b3ea8e5886555c2c0567d3a9ca78d400e",
+          "bytes": 326793
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-sewer.json",
+        "sha256": "959982548478ffaf26be1c811d06bf5aa4d83799ea9aab2aab3ed35768e3afe4"
+      },
+      "retained_reading_comparison": {
+        "pass": false,
+        "expected_sha256": "975c31f4de446c3a8675af9eaf9827fc5919a20854fc0f72ac2fa6eddd9336b7",
+        "actual_sha256": "a8e1c3393fb7f8794311f569732fae3ce97aca277d4d8ddf77919fe2a20e196d",
+        "compared_pages": 1,
+        "compared_rows": 26,
+        "actual_rows": 26,
+        "field_values": 203,
+        "reasons": {
+          "candidate_recorded": 25,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "ed236953d8a837924ee1f8d5b58aa46db704bfae3db8175222915f800c9f32ab",
+        "actual_sha256": "ed236953d8a837924ee1f8d5b58aa46db704bfae3db8175222915f800c9f32ab",
+        "compared_rows": 26,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": false,
+      "mapping_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": [
+          {
+            "page": 1,
+            "current_header_cells": [
+              {
+                "row": 4,
+                "column": 12,
+                "row_span": 1,
+                "column_span": 2,
+                "text": "FRANCHISE (F)\nEASEMENT (E)\nPERMIT (P)\nOR EXISTING (EP, EF)\nAND NUMBER\nRIGHT OF WAY (RW)"
+              }
+            ],
+            "historical_header_geometry": "not_retained"
+          }
+        ]
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 203,
+        "actual_outcomes": 203,
+        "statuses": {
+          "materialized": 200,
+          "not_extracted": 3
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 25,
+        "persisted_proposals": 25,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 200,
+        "persisted_and_replayed_facts": 200,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "efe2e7b86624574202a2aca0e4f8173e975fa80d08ac7dc7513e89cccf7217eb",
+        "actual_sha256": "efe2e7b86624574202a2aca0e4f8173e975fa80d08ac7dc7513e89cccf7217eb",
+        "differences": []
+      },
+      "row_accounting_sha256": "efe2e7b86624574202a2aca0e4f8173e975fa80d08ac7dc7513e89cccf7217eb",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 1,
+        "prompt_tokens": 6420,
+        "completion_tokens": 197,
+        "cached_tokens": 2359
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 1,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed_with_diagnostic_differences",
+      "required_outcomes_pass": true
+    },
+    {
+      "name": "semantics-9540-water",
+      "cohort": "wsdot-9540",
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "reading_sha256": "81a2d42db7608ebefb2da1af4859cc3a67c45017d7c9eae893c37121a234bd64",
+      "reader_identity": {
+        "integration_sha256": "e64b9848e9d4b229f6dfb40e33df3b31297459539f81819a144e52135b6e9c74",
+        "native_layer": {
+          "adapter_version": "native-reader-v2",
+          "configuration": {
+            "reader_engine": "tagged",
+            "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+          },
+          "dpi": 36,
+          "engine": "corridor-pdf-reader",
+          "engine_version": "pypdfium2-5.13.0+PDFium-153.0.7999.0",
+          "language": null,
+          "oem": null,
+          "origin": "native",
+          "preprocessing_profile": null,
+          "psm": null,
+          "render_profile_id": null,
+          "traineddata": {}
+        },
+        "pypdf_version": "6.17.0",
+        "reader_runtime_sha256": "6b68198035ded608e96d7d0a17af0ad56224906969bc841e1fcc990e9754cf55",
+        "scheme": "corridor.pdf-segments.v1"
+      },
+      "manifest_sha256": "bccb7c0ab39fbd26774f5af0c3828754173d34fd9d427507e932e3438169c492",
+      "input_files": [
+        {
+          "path": "document.json",
+          "sha256": "eb8649418cb622c2beb1718c782f161390fbbb931d23d31cbc223d7f3e265590",
+          "bytes": 41922
+        },
+        {
+          "path": "page-1.png",
+          "sha256": "2e3c463b43ac476cdd5c6b47f4b6e95fa2f73ad18a7ccaafddb2acfa3ea30ed3",
+          "bytes": 388036
+        }
+      ],
+      "output": {
+        "file": "semantics-9540-water.json",
+        "sha256": "c94070b852a1c81ed7ceec3889da630e5c8dc82c45256064e3a2278de2921957"
+      },
+      "retained_reading_comparison": {
+        "pass": false,
+        "expected_sha256": "46145cea447aed6f9fdb96d910be3b1d8392caacf2c219f54000ef306a660071",
+        "actual_sha256": "5e94218bf5ff1f5845adf641f16187c0491ad98efa5071687e3cde2f65e6a5c4",
+        "compared_pages": 1,
+        "compared_rows": 30,
+        "actual_rows": 30,
+        "field_values": 235,
+        "reasons": {
+          "candidate_recorded": 29,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "required_row_parity": {
+        "pass": true,
+        "expected_sha256": "9f4e4ca6a56b387352c8989f7d4394623c8d34c602237b220da923769f034d79",
+        "actual_sha256": "9f4e4ca6a56b387352c8989f7d4394623c8d34c602237b220da923769f034d79",
+        "compared_rows": 30,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "full_reading_parity": false,
+      "mapping_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality.",
+        "current_topology": [
+          {
+            "page": 1,
+            "current_header_cells": [
+              {
+                "row": 4,
+                "column": 12,
+                "row_span": 1,
+                "column_span": 2,
+                "text": "FRANCHISE (F)\nEASEMENT (E)\nPERMIT (P)\nOR EXISTING (EP, EF)\nAND NUMBER"
+              }
+            ],
+            "historical_header_geometry": "not_retained"
+          }
+        ]
+      },
+      "field_materialization": {
+        "pass": true,
+        "expected_fields": 235,
+        "actual_outcomes": 235,
+        "statuses": {
+          "materialized": 232,
+          "not_extracted": 3
+        },
+        "refusal_reasons": {},
+        "non_iso_date_refusals": [],
+        "differences": [],
+        "scope": "Per-field Fact materialization decisions, separate from extracted/excluded row accounting."
+      },
+      "persisted_proposals": {
+        "pass": true,
+        "expected_proposals": 29,
+        "persisted_proposals": 29,
+        "differences": []
+      },
+      "persisted_facts": {
+        "pass": true,
+        "expected_facts": 232,
+        "persisted_and_replayed_facts": 232,
+        "differences": []
+      },
+      "persisted_row_accounting": {
+        "pass": true,
+        "expected_sha256": "3d47b6b110bc62ef34b71737f68d6e643d7c75f9511f43ff5599fbe1ea56b821",
+        "actual_sha256": "3d47b6b110bc62ef34b71737f68d6e643d7c75f9511f43ff5599fbe1ea56b821",
+        "differences": []
+      },
+      "row_accounting_sha256": "3d47b6b110bc62ef34b71737f68d6e643d7c75f9511f43ff5599fbe1ea56b821",
+      "extractor_config_sha256": "a56a64fb57b0c7ce18a925f6f8c1035a8d5989680ae1393ce384ec5bb30e38ee",
+      "historical_usage": {
+        "calls": 1,
+        "prompt_tokens": 6550,
+        "completion_tokens": 217,
+        "cached_tokens": 0
+      },
+      "new_usage": {
+        "provider_calls": 0,
+        "prompt_tokens": 0,
+        "completion_tokens": 0,
+        "cached_tokens": 0,
+        "replayed_answers": 1,
+        "provider_cost": 0
+      },
+      "pass": true,
+      "status": "passed_with_diagnostic_differences",
+      "required_outcomes_pass": true
+    }
+  ],
+  "machine_identifier_matching": {
+    "wsdot-9424": {
+      "pass": true,
+      "reference_rows": 162,
+      "extracted_rows": 162,
+      "matched_rows": 162,
+      "missing": [],
+      "extra": [],
+      "scope": "Historical machine source-reference multiplicities only. The CSV does not establish document/page/row occurrence identity, critical or field accuracy. WSDOT 9540 is spent; this is not a new generalization score."
+    },
+    "wsdot-9540": {
+      "pass": true,
+      "reference_rows": 192,
+      "extracted_rows": 192,
+      "matched_rows": 192,
+      "missing": [],
+      "extra": [],
+      "scope": "Historical machine source-reference multiplicities only. The CSV does not establish document/page/row occurrence identity, critical or field accuracy. WSDOT 9540 is spent; this is not a new generalization score."
+    }
+  },
+  "limitations": [
+    "Retained answers are model outputs, not independent field gold.",
+    "Source-reference matching and exact retained-reading replay are separate measures.",
+    "Historical call/token counts belong to retained runs; this replay makes zero new provider calls.",
+    "Passing this replay does not select production; selection belongs to #447/#739.",
+    "Non-ISO matrix date phrases remain source-bound proposal fields and must refuse ISO-date Fact materialization.",
+    "WSDOT 9540 is spent; this replay grants no new generalization claim and changes no evaluation guard.",
+    "The frozen WSDOT 9424 sidecar has a different row population (97 retired); this native retained-reading population (101 retired) does not correct that sidecar."
+  ],
+  "historical_usage": {
+    "calls": 20,
+    "prompt_tokens": 128757,
+    "completion_tokens": 5173,
+    "cached_tokens": 45311
+  },
+  "new_usage": {
+    "provider_calls": 0,
+    "provider_cost": 0,
+    "replayed_answers": 20
+  }
+}

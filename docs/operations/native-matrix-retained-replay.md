@@ -60,13 +60,36 @@ WSDOT 9540 is already spent. This is historical retained-answer/reference
 replay, not a new generalization score. Passing it does not select production;
 that remains with #447/#739. No evaluation guard or current prompt path changes.
 
-## Retained result, 2026-09-08
+## Current retained result, 2026-09-08: lineage and selection corrections
 
-The [retained receipt](../../gold/native-matrix/v1/receipts/2026-09-08.json)
+The [current retained receipt](../../gold/native-matrix/v1/receipts/2026-09-08-selection.json)
 records `passed_with_diagnostic_differences`, `required_outcomes_pass: true`,
 and `full_reading_parity: false`. All seven actual adapter runs committed in a
 disposable database and passed fresh-session proposal, source-binding, Fact
 replay and stored row-receipt checks. The database was dropped afterward.
+
+This receipt reruns the cohort against core commit
+`546a70cdf325ebc3a5b5dce054b570c750598787`. Native Fact identity includes the
+owning Extraction Run ID and sealed mapping identity: a changed mapping,
+including a confidence-only change, creates Facts owned by the new run.
+An exact mapping retry still returns the original run and Facts, including
+when supplied with a fresh explicit request key.
+
+Explicit challenger runs remain completed, but direct human and policy
+declarations refuse to select them as Current Production Runs. Both bulk
+declaration paths exclude them before counting eligible runs or reporting
+ambiguity. The authored integration tests cover those selection refusals and
+the multi-run ownership/retry distinction. This seven-document replay proves
+that the corrected implementation preserves the retained cohort's extraction
+outcomes; it does not independently exercise production declarations.
+
+All 13 implementation fingerprints were verified against the corrected
+checkout. Only `src/corridor/extraction_runs.py` differs from the
+[lineage receipt](../../gold/native-matrix/v1/receipts/2026-09-08-lineage.json).
+That receipt and the [original receipt](../../gold/native-matrix/v1/receipts/2026-09-08.json)
+remain byte-for-byte preserved as historical evidence. The new replay made
+zero provider calls and reused the same 20 retained answers and measured
+images; it changes no source answer, machine CSV or production selection.
 
 | Reference population | Body rows matched exactly | Extracted rows | Facts replayed | Non-extracted field outcomes | Non-ISO date refusals |
 |---|---:|---:|---:|---:|---:|
