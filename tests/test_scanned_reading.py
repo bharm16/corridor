@@ -20,7 +20,8 @@ from corridor.config import settings
 from corridor.db import Session as DbSession, engine
 from corridor.models import DocPage, Document, Project
 from corridor.page_inventory import (
-    OCR_ENGINE,
+    OCR_ENGINES,
+    TEXTRACT_ENGINE,
     PageRoutingDecision,
     PdfRect,
     RoutingRegion,
@@ -140,13 +141,20 @@ def test_a_structural_trigger_routes_a_text_layer_page_region():
 
 
 def test_a_decision_naming_the_incumbent_engine_routes_nothing_to_textract():
-    """The incumbent router names tesseract; nothing in this module reads for it."""
+    """A decision recorded before #741 names the retired engine, and is read.
+
+    Nothing in this module reads for that engine, and the removal did not
+    change what an old row says: the retained identity is still a value the
+    model accepts, held as data rather than named in source.
+    """
+    retained_engine, = (name for name in OCR_ENGINES if name != TEXTRACT_ENGINE)
     incumbent = PageRoutingDecision(
+        ocr_engine=retained_engine,
         page_mode="ocr",
         reason="image_only_page",
         regions=(RoutingRegion(region_id="image-1", box=box(), mode="ocr", reason="embedded_image_region"),),
     )
-    assert incumbent.ocr_engine == OCR_ENGINE
+    assert incumbent.ocr_engine != TEXTRACT_ENGINE
 
     assert routed_textract_regions(incumbent) == ()
 

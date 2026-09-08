@@ -161,9 +161,16 @@ def test_only_external_organization_accepts_an_outside_pdf_span(session, documen
     value = materialize_pdf_segment_value(session, "external_org", segment)
     assert (value.text_value, value.external_org_value_id) == ("Exact Utilities", organization.id)
     assert _capture(session, document, value).external_org_value_id == organization.id
-    for fact_type in ("station_from", "need_date", "statement_wording"):
+    for fact_type in ("station_from", "need_date"):
         with pytest.raises(FactValidationError, match="does not accept pdf_span"):
             materialize_pdf_segment_value(session, fact_type, segment)
+    # A statement Fact's value source is a `pdf_span` too since #741, so the
+    # kind no longer separates the contracts and the refusal names the reason:
+    # statement wording is the exact prose span, with an attribution source.
+    with pytest.raises(
+        FactValidationError, match="does not materialize as a PDF cell reading"
+    ):
+        materialize_pdf_segment_value(session, "statement_wording", segment)
 
 
 def test_native_fact_support_does_not_extend_automatic_record_policies():

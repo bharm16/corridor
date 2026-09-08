@@ -1,0 +1,101 @@
+{
+  "audited": {
+    "environments": {
+      "application": {
+        "present": [
+          "fitz",
+          "pymupdf",
+          "pymupdf-1.28.0.dist-info"
+        ],
+        "site_packages": "/opt/corridor/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/.venv"
+      },
+      "render_worker": {
+        "present": [],
+        "site_packages": "/opt/corridor/workers/render/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/workers/render/.venv"
+      }
+    },
+    "executables": {
+      "tesseract": null
+    },
+    "notices": {
+      "declared_files": 25,
+      "files_on_disk": 26,
+      "installed_in_image": {
+        "pdf-oxide": [
+          {
+            "dist_info": "pdf_oxide-0.3.77.dist-info",
+            "licence_files": [
+              "licenses/LICENSE-APACHE",
+              "licenses/LICENSE-MIT",
+              "licenses/NOTICE"
+            ]
+          }
+        ],
+        "pillow": [
+          {
+            "dist_info": "pillow-12.3.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSE"
+            ]
+          }
+        ],
+        "pypdfium2": [
+          {
+            "dist_info": "pypdfium2-5.13.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSES/Apache-2.0.txt",
+              "licenses/LICENSES/BSD-3-Clause.txt",
+              "licenses/LICENSES/CC-BY-4.0.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/abseil.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/agg23.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/fast_float.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/freetype.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/icu.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/lcms.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libopenjpeg.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libpng.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libtiff.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/llvm-libc.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/simdutf.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/zlib.txt"
+            ]
+          }
+        ]
+      },
+      "manifest_present": true,
+      "missing_files": [],
+      "packages": [
+        "pypdfium2",
+        "pdf-oxide",
+        "pillow"
+      ],
+      "root": "/opt/corridor/src/corridor_pdf_reader/replacement/third-party-notices"
+    },
+    "path": "/opt/corridor/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "system_packages": {
+      "tesseract-ocr": null
+    }
+  },
+  "clear_of_retired_engines": false,
+  "findings": [
+    "application environment still installs fitz",
+    "application environment still installs pymupdf",
+    "application environment still installs pymupdf-1.28.0.dist-info"
+  ],
+  "image": {
+    "command": "docker build --build-arg GIT_REVISION=b4215a0cecf5cad9232570b845f4d192c60b2297 -t corridor-engine-audit:local .",
+    "image_id": "sha256:b66883feaf2df184af0157980fd69017602b6ef4d46b6f9256e848d5501442d0",
+    "size_bytes": 2816094656,
+    "tag": "corridor-engine-audit:local"
+  },
+  "recorded_at": "2026-09-08T16:22:09.775678+00:00",
+  "revision": "b4215a0cecf5cad9232570b845f4d192c60b2297",
+  "schema_version": "corridor.built-image-engine-audit.v1",
+  "working_tree_dirty": true
+}
