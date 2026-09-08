@@ -73,8 +73,9 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
 - **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
   every pull request.** It runs `make check` unconditionally, and the same
   tests `make test` and the non-migration `make test-slow` select, partitioned
-  by `make test-shard` across five runners and `make test-slow-shard` across
-  four, unless every changed file is documentation. `make check` owns
+  by `make test-shard` across seven runners and `make test-slow-shard` across
+  two, unless every changed file is documentation. These are the same nine
+  test runners, allocated from measured workload (ADR-0096). `make check` owns
   `test_architecture.py` and `test_source_scan_support.py`; behavior shards
   omit those two files so each required proof runs once. Every other behavior
   test remains required (ADR-0088, ADR-0096).

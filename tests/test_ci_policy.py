@@ -498,8 +498,8 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
 def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_command():
     """Metadata transport must not fail a completed test job or alter its partition."""
     commands = {
-        "pytest": "make test-shard SHARDS=5 SHARD=${{ matrix.shard }}",
-        "slow": "make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}",
+        "pytest": "make test-shard SHARDS=7 SHARD=${{ matrix.shard }}",
+        "slow": "make test-slow-shard SHARDS=2 SHARD=${{ matrix.shard }}",
         "migration": "make test-migrations",
     }
     for suite, command in commands.items():

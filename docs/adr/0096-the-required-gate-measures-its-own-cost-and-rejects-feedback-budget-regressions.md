@@ -86,6 +86,18 @@ shared acceptance fixture is built once on its runner. A universal distribution
 mode is no longer required: the scheduler must avoid duplicated setup as well
 as balance independent tests. Local worker counts remain configurable.
 
+The 2026-09-08 receipts in runs `34280898163` and `34285214380` exposed an
+allocation imbalance within the existing nine test runners. The latter
+recorded 1,231 ordinary case-seconds and 362 slow case-seconds; its slowest
+ordinary command took 154.3 seconds while the slow complement took 91.3.
+The complete gate remained over budget at 208.1 seconds after bounded fixture
+work was reduced. Seven ordinary runners and two slow runners allocate the
+same capacity in proportion to that measured work. Total test jobs, package
+downloads, two workers per runner, the `worksteal`/`loadfile` distinction,
+complete test coverage, and every feedback threshold remain unchanged. The
+required gate measures and accepts or rejects this allocation through the
+same receipts; reallocating workers does not grant a budget exception.
+
 The complete 1,018-Fact workbook replay belongs to the required slow complement,
 matching the declared slow marker's real-corpus scope. Its existing extraction,
 replay, inclusion and projection assertions all remain. It ran for 484 seconds
