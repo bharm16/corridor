@@ -1,10 +1,10 @@
 {
-  "note": "ADR-0095's acceptance document, prepared for the maintainer's own act. Everything the decision requires is already stated here except the two run-bound identities: fill acceptance.configuration_sha256 from the configuration.json the shadow run wrote, and acceptance.implementation_revision from the code revision that configuration names. acceptance.scope_sha256 is the SHA-256 over the canonical JSON of the scope below; the accept command recomputes it and refuses a mismatch. Recording this is not a passing gate and is not a selection: `accept` records it, `select --acceptance <id>` acts on it.",
+  "note": "ADR-0095's acceptance document, prepared for the maintainer's own act. Everything the decision requires is already stated here except the two run-bound identities: fill acceptance.configuration_sha256 from the configuration.json the shadow run wrote, and acceptance.implementation_revision from the code revision that configuration names. acceptance.scope_sha256 is already the SHA-256 over the canonical JSON of the scope below; edit the scope and it must be recomputed, because the accept command recomputes it and refuses a mismatch. Recording this is not a passing gate and is not a selection: `accept` records it, `select --acceptance <id>` acts on it.",
   "acceptance": {
     "decision": "ADR-0095",
     "configuration_sha256": "fill from the shadow run's configuration.json digest",
     "implementation_revision": "fill from that configuration's code_revision",
-    "scope_sha256": "fill from the canonical digest of the scope below",
+    "scope_sha256": "0dac9d2ab77b8deebb4dfd4386198310ec1d47ed6e22aa892679186a741b8c5d",
     "accepted_on": "2026-09-08",
     "words": "I'm done with the pdf replacement shit. It works.",
     "evidence": [

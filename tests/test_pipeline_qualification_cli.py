@@ -178,9 +178,11 @@ def test_the_prepared_acceptance_document_is_complete_but_for_its_run_bound_iden
     with pytest.raises(ValidationError):
         MaintainerAcceptance.model_validate(document["acceptance"])
     scope = PipelineScope.model_validate(document["scope"])
+    # The scope binding is already computed; editing the scope must recompute it.
+    assert document["acceptance"]["scope_sha256"] == scope.identity
     acceptance = MaintainerAcceptance.model_validate({
         **document["acceptance"], "configuration_sha256": scope.identity,
-        "implementation_revision": "0" * 40, "scope_sha256": scope.identity,
+        "implementation_revision": "0" * 40,
     })
     assert acceptance.decision == "ADR-0095" and acceptance.words.strip()
     assert len(acceptance.evidence) >= 4 and all(item.reference.strip() for item in acceptance.evidence)
