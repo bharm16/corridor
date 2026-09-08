@@ -28,11 +28,6 @@ _USAGE_FIELDS = (
 )
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_MATRIX_PROMPT_PATHS = (
-    "prompts/matrix_structure_v3.md",
-    "prompts/matrix_v1.md",
-)
-
 # Exact code sources that can change Candidate meaning after the provider has
 # returned structured JSON.  Prompts and schemas are sealed separately; this
 # list owns deterministic normalization, validation, mapping, and Candidate
@@ -55,16 +50,6 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor_pdf_reader/replacement/semantics.py",
         "src/corridor_pdf_reader/replacement/pages.py",
         "src/corridor_pdf_reader/replacement/vocabulary.py",
-    ),
-    "matrix": (
-        "src/corridor/extract_matrix.py",
-        "src/corridor/pipeline.py",
-        "src/corridor/geometry.py",
-        "src/corridor/vocabulary.py",
-        "src/corridor/verify.py",
-        "src/corridor/candidates.py",
-        "src/corridor/models.py",
-        "src/corridor/llm.py",
     ),
     "minutes": (
         "src/corridor/extract_minutes_v5.py",
@@ -206,16 +191,8 @@ def deployed_extractor_config(
 ) -> ExtractorConfig:
     """Seal one current deployed extractor from the central source registry."""
 
-    if extractor == "matrix":
-        from corridor import extract_matrix
-
-        return deployed_matrix_config(
-            client=client,
-            structure_system=extract_matrix.STRUCTURE_PROMPT.read_text(),
-            transcribe_system=extract_matrix.TRANSCRIBE_PROMPT.read_text(),
-            structure_schema=extract_matrix.STRUCTURE_SCHEMA,
-            transcribe_schema=extract_matrix.TRANSCRIBE_SCHEMA,
-        )
+    if extractor in {"matrix", "native_matrix"}:
+        return deployed_native_matrix_config(client=client)
     if extractor in {"minutes", "minutes_v4", "minutes_v3"}:
         module_name = {
             "minutes": "corridor.extract_minutes_v5",
@@ -307,42 +284,8 @@ def deployed_extractor_config(
     raise ValueError(f"unknown deployed extractor {extractor!r}")
 
 
-def deployed_matrix_config(
-    *,
-    client: object | None,
-    structure_system: str,
-    transcribe_system: str,
-    structure_schema: Mapping[str, Any],
-    transcribe_schema: Mapping[str, Any],
-) -> ExtractorConfig:
-    """Seal the exact Matrix prompts/schemas the route will pass to the client."""
-
-    from corridor import extract_matrix
-
-    prompt_sources = {
-        _MATRIX_PROMPT_PATHS[0]: structure_system.encode("utf-8"),
-        _MATRIX_PROMPT_PATHS[1]: transcribe_system.encode("utf-8"),
-    }
-    return _deployed_config(
-        extractor="matrix",
-        prompt_version=extract_matrix.PROMPT_VERSION,
-        model=_model(client),
-        schema_version=extract_matrix.SCHEMA_VERSION,
-        prompt_bytes=_named_source_bytes(prompt_sources),
-        schema={
-            "structure": structure_schema,
-            "transcribe": transcribe_schema,
-        },
-        request_controls=_model_request_controls(
-            client,
-            image_detail="original",
-            logprobs={"structure": False, "transcribe": True},
-        ),
-    )
-
-
 def deployed_native_matrix_config(*, client: object) -> ExtractorConfig:
-    """Seal the explicit, measured ID-mapping challenger without selecting it."""
+    """Seal the measured ID-mapping reader; selection is a separate boundary."""
     from corridor.native_matrix_bindings import MODEL_IMAGE_DPI, NATIVE_MATRIX_SCHEMA_VERSION
     from corridor_pdf_reader.replacement.semantics import (
         PROMPT_PATH, PROMPT_VERSION, STRUCTURE_SCHEMA,
@@ -359,7 +302,7 @@ def deployed_native_matrix_config(*, client: object) -> ExtractorConfig:
         request_controls={
             **controls, "model_image_dpi": MODEL_IMAGE_DPI,
             "native_reader_engine": "tagged", "native_reader_dpi": 36,
-            "selection": "explicit_challenger_only",
+            "selection": "explicit_selection_required",
         },
         runtime=_runtime_receipt(("pypdfium2", "pypdf", "Pillow", "httpx")),
     )
@@ -618,7 +561,7 @@ def _is_sha256(value: object) -> bool:
     )
 
 
-def _runtime_receipt(distributions=("PyMuPDF", "httpx", "openpyxl")) -> dict[str, Any]:
+def _runtime_receipt(distributions=("pypdfium2", "pypdf", "httpx", "openpyxl")) -> dict[str, Any]:
     packages: dict[str, str] = {}
     for distribution in distributions:
         try:

@@ -88,7 +88,7 @@ def make_document(session, project, tmp_path, rows=None):
     fixture = write_pdf(pdf, [rows or ROWS])
     doc = Document(
         project_id=project.id,
-        sha256="g" * 64,
+        sha256=hashlib.sha256(pdf.read_bytes()).hexdigest(),
         filename="matrix.pdf",
         doc_type="matrix",
         parse_status="parsed",
@@ -342,338 +342,6 @@ def test_position_annotates_a_row_it_never_classifies_it(
     assert orphan.above_body is True
 
 
-# ---------------- machine-authored gold: the ceiling (#81 as amended)
-
-
-WSDOT_SHAPE = [
-    # The spanning group band the family prints above its marked columns —
-    # what the authoring anchors on, since the column names differ between
-    # contracts (9424 names them after its route number, 9540 does not).
-    ["", "", "", "RECOMMENDED RESOLUTION", "", "", "", ""],
-    ["Owner", "Conflict ID", "Facility Type", "509 Relocation Needed",
-     "ST Relocation Needed", "Retain and Protect", "Abandon / Deactivate", "Notes"],
-    # One mark on the critical side.
-    ["HWD", "1", "Water Main", "X", "", "", "", ""],
-    # One mark on the stays side.
-    ["PSE", "2", "AG Power", "", "", "X", "", ""],
-    # Two marks that agree: both relocations.
-    ["Comcast", "3", "AG TV", "X", "X", "", "", ""],
-    # Marks on both sides of the line: unsettled, blank label.
-    ["Lumen", "4", "Fiber", "", "X", "X", "", ""],
-    # No mark at all: blank label.
-    ["Zayo", "5", "Fiber", "", "", "", "", ""],
-    # Retired numbering and an empty slot: not conflicts, not rows.
-    ["", "6", "", "", "", "", "", "Not Used"],
-    ["", "7", "", "", "", "", "", ""],
-    # Abandonment is critical (ADR-0009).
-    ["HWD", "8", "Sewer", "", "", "", "X", ""],
-]
-
-
-def authored(session, project, tmp_path, rows=None):
-    from corridor.gold import author_machine_gold
-
-    # Bound, not discarded: the identity map holds Documents weakly, and a
-    # dropped reference takes the fixture's `_pdf_path` with it.
-    document = make_document(session, project, tmp_path, rows or WSDOT_SHAPE)
-    gold = author_machine_gold(session, project.id)
-    assert document.filename in gold.document
-    return gold
-
-
-def test_machine_gold_reads_criticality_from_the_marks(session, project, tmp_path):
-    """Header-anchored grid reading, the published table's line: relocation
-    and abandonment critical, retain-and-protect not (ADR-0009 via the one
-    vocabulary that already encodes it)."""
-    gold = authored(session, project, tmp_path)
-    by_ref = {row.source_ref: row.critical for row in gold.rows}
-
-    assert by_ref["1"] == "yes"
-    assert by_ref["2"] == "no"
-    assert by_ref["3"] == "yes"
-    assert by_ref["8"] == "yes"
-
-
-def test_a_row_the_document_left_unsettled_gets_a_blank_label(
-    session, project, tmp_path
-):
-    """Marks on both sides, or no mark: the document has not settled, and
-    blank keeps the row out of the >=95% denominator — ADR-0009's "left
-    unlabelled", exactly as the hand rule would have written it."""
-    gold = authored(session, project, tmp_path)
-    by_ref = {row.source_ref: row.critical for row in gold.rows}
-
-    assert by_ref["4"] == ""
-    assert by_ref["5"] == ""
-
-
-def test_retired_rows_and_empty_slots_are_not_gold_rows(
-    session, project, tmp_path
-):
-    """The denominator counts what names a facility (ADR-0012)."""
-    gold = authored(session, project, tmp_path)
-
-    assert {row.source_ref for row in gold.rows} == {"1", "2", "3", "4", "5", "8"}
-
-
-def test_authoring_refuses_a_layout_without_its_anchor(
-    session, project, tmp_path
-):
-    """9540 is expected to be the twin's form. If it is not, the authoring
-    stops loudly rather than guessing — a surprise layout is a decision
-    for a human, not a fallback for a script."""
-    from corridor.gold import LayoutAnchorMissing
-
-    with pytest.raises(LayoutAnchorMissing):
-        authored(session, project, tmp_path, rows=ROWS)
-
-
-def test_machine_gold_is_stamped_as_a_ceiling(session, project, tmp_path):
-    """The caveat travels with the artifact, not just the ticket: the
-    sidecar says semi-independent, names the shared blind spot, and lists
-    the page images."""
-    from corridor.gold import render_machine_gold
-
-    gold = authored(session, project, tmp_path)
-    out = render_machine_gold(gold)
-
-    assert "ceiling" in out.lower()
-    assert "shares" in out.lower()
-    assert "#81" in out
-
-
-def test_the_hand_worksheet_path_is_untouched(session, project, tmp_path):
-    """The amendment adds a path; it does not delete the stricter one."""
-    out = worksheet()
-
-    assert out.strip() == ",".join(WORKSHEET_COLUMNS)
-
-
-def test_machine_gold_round_trips_through_the_eval_loader(
-    session, project, tmp_path
-):
-    """The artifact is only worth authoring if the eval can read it."""
-    from corridor.eval import load_gold
-    from corridor.gold import gold_csv
-
-    gold = authored(session, project, tmp_path)
-    path = tmp_path / "machine.csv"
-    path.write_text(gold_csv(gold))
-
-    records = load_gold(path)
-
-    assert len(records) == 6
-    critical = {r.source_ref: r.critical for r in records}
-    assert critical["1"] is True
-    assert critical["2"] is False
-    # Blank reads as not-critical — the documented contract that keeps an
-    # unsettled row out of the ≥95% denominator. None would mean the gold
-    # set labels no criticality at all, which this one does.
-    assert critical["4"] is False
-
-
-def test_machine_reference_scope_manifest_binds_csv_method_and_documents(
-    session, project, tmp_path
-):
-    from corridor.gold import gold_csv, machine_reference_scope
-
-    gold = authored(session, project, tmp_path)
-    csv_text = gold_csv(gold)
-
-    scope = machine_reference_scope(gold, csv_text.encode())
-
-    assert scope == {
-        "schema_version": "corridor.machine-reference-scope.v2",
-        "project": project.slug,
-        "method": "pymupdf-table-grid",
-        "method_version": "1",
-        "reference_sha256": hashlib.sha256(csv_text.encode()).hexdigest(),
-        "documents": [
-            {
-                "sha256": gold.documents[0].sha256,
-                "filename": gold.documents[0].filename,
-            }
-        ],
-        "limitations": [
-            "Semi-independent ceiling: the machine reference and extractor "
-            "share PyMuPDF table detection, so a region omitted by that "
-            "library is invisible to both."
-        ],
-        "manifest_provenance": {"kind": "author_time"},
-    }
-
-
-def test_the_anchor_is_the_family_band_not_one_contracts_column(
-    session, project, tmp_path
-):
-    """The M7 cold run's second finding.
-
-    Authoring anchored on `509 Relocation Needed` and refused the holdout,
-    which is the same Appendix U with its columns named `RELOCATION` /
-    `PROTECTION IN PLACE` / `ABANDON/ DEACTIVATE/ REMOVE`. The refusal was
-    right and its reason was wrong: what this authoring needs is a marked
-    resolution group, not one contract's route number.
-    """
-    rows = [
-        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
-        ["UTILITY OWNER", "UTILITY ID", "FACILITY TYPE", "RELOCATION",
-         "PROTECTION IN PLACE", "ABANDON/ DEACTIVATE/ REMOVE", "NOTES"],
-        ["PSE", "PSEN-G-1001", "Gas Line", "X", "", "", ""],
-        ["City of Fife", "COFI-W-1003", "Water", "", "X", "", ""],
-        ["Comcast", "CMCS-C-1001", "Duct", "", "", "X", ""],
-        ["AT&T", "ATAT-F-1002", "Duct", "X", "X", "", ""],
-    ]
-    gold = authored(session, project, tmp_path, rows)
-    by_ref = {r.source_ref: r.critical for r in gold.rows}
-
-    assert by_ref["PSEN-G-1001"] == "yes"
-    assert by_ref["COFI-W-1003"] == "no"
-    assert by_ref["CMCS-C-1001"] == "yes"
-    # Marked on both sides: the document has not settled.
-    assert by_ref["ATAT-F-1002"] == ""
-
-
-def test_a_band_without_readable_marks_still_refuses(session, project, tmp_path):
-    """The band alone is not enough — a form that groups columns this
-    vocabulary cannot read is a human decision, not a fallback."""
-    from corridor.gold import LayoutAnchorMissing
-
-    rows = [
-        ["", "", "RECOMMENDED RESOLUTION", ""],
-        ["UTILITY OWNER", "UTILITY ID", "SOME NEW COLUMN", "NOTES"],
-        ["PSE", "X-1", "X", ""],
-    ]
-    with pytest.raises(LayoutAnchorMissing):
-        authored(session, project, tmp_path, rows)
-
-
-def make_multipage(session, project, tmp_path, pages_rows, sha="mp"):
-    """A Document of N real pages, so continuation pages are real."""
-    path = tmp_path / f"{sha}.pdf"
-    fixture = write_pdf(path, pages_rows)
-
-    doc = Document(
-        project_id=project.id, sha256=sha[0] * 64, filename=f"{sha}.pdf",
-        doc_type="matrix", parse_status="parsed", pages=len(pages_rows),
-    )
-    session.add(doc)
-    session.flush()
-    for i, page in enumerate(fixture.pages):
-        session.add(
-            DocPage(
-                document_id=doc.id, page_no=i + 1,
-                text=page.expected_text,
-                image_path=str(tmp_path / f"{sha}-{i}.png"),
-                text_source="text_layer",
-            )
-        )
-    session.flush()
-    doc._pdf_path = str(path)
-    return doc
-
-
-def test_a_continuation_page_is_read_not_skipped(session, project, tmp_path):
-    """The M7 cold run's third finding, and the one that mattered most.
-
-    9540's Power listing runs to two pages: page 1 prints the
-    `RECOMMENDED RESOLUTION` band, page 2 reprints the column headings
-    without it. Requiring the band on every page dropped page 2 whole —
-    ten conflicts absent from the denominator, which is a gold set that
-    does not cover its own document.
-
-    The band anchors the *document*; each page finds its header by the
-    resolution headings it prints.
-    """
-    from corridor.gold import author_machine_gold
-
-    headings = [
-        "UTILITY OWNER", "UTILITY ID", "FACILITY TYPE", "RELOCATION",
-        "PROTECTION IN PLACE", "ABANDON/ DEACTIVATE", "NOTES",
-    ]
-    first = [
-        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
-        headings,
-        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
-    ]
-    # No band: the continuation page reprints only the headings.
-    second = [
-        headings,
-        ["TPU", "TCPR-P-1043", "Power", "X", "", "", ""],
-        ["TPU", "TCPR-P-1063", "Power", "", "", "X", ""],
-    ]
-    document = make_multipage(session, project, tmp_path, [first, second])
-
-    gold = author_machine_gold(session, project.id)
-    assert document.filename in gold.document
-
-    refs = {r.source_ref for r in gold.rows}
-    assert refs == {"PSEN-P-1001", "TCPR-P-1043", "TCPR-P-1063"}
-    assert {r.critical for r in gold.rows} == {"yes"}
-
-
-def test_machine_gold_sidecar_names_the_document_beside_each_page_image(
-    session, project, tmp_path
-):
-    """Two documents can both contribute `page 1`.
-
-    The sidecar is the human checklist that narrows the shared blind spot.
-    Once machine gold grew from one matrix to every matrix in the project,
-    `page 1` stopped being a unique identifier for that checklist.
-    """
-    from corridor.gold import author_machine_gold, render_machine_gold
-
-    rows = [
-        ["", "", "", "RECOMMENDED RESOLUTION", "", "", ""],
-        [
-            "UTILITY OWNER",
-            "UTILITY ID",
-            "FACILITY TYPE",
-            "RELOCATION",
-            "PROTECTION IN PLACE",
-            "ABANDON/ DEACTIVATE",
-            "NOTES",
-        ],
-        ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
-    ]
-    first = make_multipage(session, project, tmp_path, [rows], sha="power")
-    second = make_multipage(session, project, tmp_path, [rows], sha="water")
-
-    gold = author_machine_gold(session, project.id)
-    out = render_machine_gold(gold)
-
-    assert first.filename in gold.document
-    assert second.filename in gold.document
-    assert f"{first.filename} page 1" in out
-    assert f"{second.filename} page 1" in out
-
-
-def test_a_document_that_never_prints_the_band_is_still_refused(
-    session, project, tmp_path
-):
-    """Anchoring per document, not per page, must not become anchoring
-    nowhere: a form that never groups its resolution columns is still a
-    human decision."""
-    from corridor.gold import LayoutAnchorMissing
-
-    headings = ["UTILITY OWNER", "UTILITY ID", "RELOCATION", "NOTES"]
-    pages = [
-        [headings, ["PSE", "P-1", "X", ""]],
-        [headings, ["TPU", "P-2", "X", ""]],
-    ]
-    # Bound: the identity map holds Documents weakly, and a dropped
-    # reference takes the fixture's `_pdf_path` with it.
-    document = make_multipage(session, project, tmp_path, pages, sha="nb")
-    assert document.pages == 2
-
-    with pytest.raises(LayoutAnchorMissing):
-        from corridor.gold import author_machine_gold
-
-        author_machine_gold(session, project.id)
-
-
-# ------------------------------------------------- the file-safety rules
-
-
 def test_a_worksheet_in_progress_is_never_overwritten(tmp_path):
     """A regenerable helper yields to any existing operator artifact."""
     from corridor.gold import write_worksheet
@@ -770,7 +438,12 @@ def test_partial_machine_reference_publication_is_recoverable(
         ],
         ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
     ]
-    gold = authored(session, project, tmp_path, rows)
+    from corridor.gold import MachineGold, MachineGoldRow, MachineGoldDocument
+    # Publication of already authored bytes is independent of the retired
+    # reader, including recovery of an interrupted historical publication.
+    gold = MachineGold(project=project.slug, document="matrix.pdf",
+        rows=(MachineGoldRow("PSEN-P-1001", 1, "yes"),), retired=0,
+        empty_slots=0, page_images=(), documents=(MachineGoldDocument("a" * 64, "matrix.pdf"),))
 
     attempts = []
 
@@ -832,7 +505,12 @@ def test_partial_machine_reference_publication_refuses_divergent_existing_bytes(
         ],
         ["PSE", "PSEN-P-1001", "Power", "X", "", "", ""],
     ]
-    gold = authored(session, project, tmp_path, rows)
+    from corridor.gold import MachineGold, MachineGoldRow, MachineGoldDocument
+    # Publication of already authored bytes is independent of the retired
+    # reader, including recovery of an interrupted historical publication.
+    gold = MachineGold(project=project.slug, document="matrix.pdf",
+        rows=(MachineGoldRow("PSEN-P-1001", 1, "yes"),), retired=0,
+        empty_slots=0, page_images=(), documents=(MachineGoldDocument("a" * 64, "matrix.pdf"),))
     csv_path, _sidecar = machine_gold_paths(project.slug, directory=tmp_path)
     csv_path.parent.mkdir(parents=True, exist_ok=True)
     csv_path.write_text("divergent bytes\n")

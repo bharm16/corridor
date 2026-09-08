@@ -722,13 +722,16 @@ def candidate_input_snapshot(candidate: Candidate) -> dict:
 def _production_selection_eligible(session: Session, run: ExtractionRun) -> bool:
     """Honor a configuration's explicit exclusion without changing completion.
 
-    #737 captures a completed challenger for measurement. Its configuration
-    says it cannot become Current Production Run; #447 owns a later qualified
-    configuration. Existing legacy configurations retain their selection rules.
+    Native source-capture selection does not release legacy Record Inclusion.
+    Preserve both the historical challenger marker and the deployed native
+    marker (#766); neither can become a legacy Current Production Run.
+    Existing legacy configurations retain their selection rules.
     """
     configuration = extractor_configuration(session, run)
     controls = (configuration or {}).get("request_controls") or {}
-    return controls.get("selection") != "explicit_challenger_only"
+    return controls.get("selection") not in {
+        "explicit_challenger_only", "explicit_selection_required",
+    }
 
 
 def declare_active_run(

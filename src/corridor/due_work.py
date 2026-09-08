@@ -1192,8 +1192,7 @@ def _project_processing_effectful(context: EffectfulContext) -> dict[str, Any]:
     summarizes the result into a bounded receipt.
     """
 
-    from corridor.llm import OpenAIClient
-    from corridor.pipeline import extraction_route
+    from corridor.pipeline import production_extraction_routes
     from corridor.project_processing import process_project, summarize_pass
 
     with context.session_factory() as reading:
@@ -1203,16 +1202,13 @@ def _project_processing_effectful(context: EffectfulContext) -> dict[str, Any]:
         project_id = schedule.project_id
         configuration_version = schedule.configuration_version
 
-    client = OpenAIClient()
-    try:
+    with production_extraction_routes() as select_route:
         result = process_project(
             context.session_factory,
             project_id=project_id,
-            select_route=lambda document: extraction_route(document, client=client),
+            select_route=select_route,
             clock=context.clock,
         )
-    finally:
-        client.close()
     return summarize_pass(
         result,
         configuration_version=configuration_version,

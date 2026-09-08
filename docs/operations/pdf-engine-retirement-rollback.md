@@ -9,9 +9,13 @@ that someone would work it out afterwards.
 This record was written before any deletion, which is what #741 required of
 it. It has since been completed with what the removal actually did; the
 sections below say which parts describe the before state and which the after.
-**What left, in one sentence: Tesseract is gone from the product entirely, and
-PyMuPDF is gone from everything except the legacy Matrix extraction path.** The
-"What did not leave" section at the end says why that path is a separate act.
+**Final removal (#766): both engines are now absent from source consumers and
+both dependency projects.** Production matrices use the selected native
+configuration and refuse when none applies. The five-entry remainder described
+below is the state after #741, before #766. See
+[native-matrix-production-route.md](native-matrix-production-route.md) for the
+final route, prompt-byte archive, preserved-history contract and proof commands.
+
 
 ## What the retirement removes
 

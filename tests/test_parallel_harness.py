@@ -322,6 +322,16 @@ def test_other_reason_values_do_not_disable_the_broad_guard(broad_guard, monkeyp
         harness._require_local_broad_reason(broad_guard())
 
 
+def test_engine_absent_acceptance_cannot_waive_the_guard_in_the_default_environment(broad_guard, monkeypatch):
+    config = broad_guard()
+    config.option.engine_absent_proof = True
+    # The test itself also runs in the engine-absent acceptance. Simulate a
+    # normal interpreter to prove the flag cannot grant that environment entry.
+    monkeypatch.setattr(harness.sys, "prefix", str(harness.ROOT / ".venv"))
+    with pytest.raises(pytest.UsageError, match="prepared isolated environment"):
+        harness._require_local_broad_reason(config)
+
+
 def test_collect_only_and_github_ci_keep_complete_collection(broad_guard, monkeypatch):
     harness._require_local_broad_reason(broad_guard(collectonly=True))
     monkeypatch.setenv("GITHUB_ACTIONS", "true")

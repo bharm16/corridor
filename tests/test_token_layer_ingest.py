@@ -16,7 +16,6 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.extract_matrix import _read_geometry
 from corridor.ingest import ingest_document
 from corridor.models import (
     Document,
@@ -106,67 +105,6 @@ def test_native_token_layer_persists_with_pinning_and_is_class_b(
     layer = load_token_layer(manifest)
     assert layer.tokens[0].polygon_pdf.x1 > layer.tokens[0].polygon_pdf.x0
     assert layer.tokens[0].confidence is None  # native readings are not estimates
-
-
-def test_geometry_gates_on_the_native_token_layer_not_the_page_verdict(
-    session, project, tmp_path
-):
-    # A page carrying native tokens but tagged text_source="ocr" (a mixed page)
-    # is still eligible for geometry — the old text_layer gate discarded it.
-    pdf = tmp_path / "table.pdf"
-    fixture = PdfFixture()
-    page = fixture.add_page(width=420, height=320)
-    page.text((60, 80), "Owner")
-    page.rect((55, 100, 340, 240))
-    page.line((190, 100), (190, 240))
-    page.text((75, 140), "AT&T")
-    fixture.save(pdf)
-    import hashlib
-
-    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    # Register the document in the content store so stored_pdf resolves it.
-    stored = store_bytes(pdf.read_bytes(), sha256=digest, suffix=".pdf")
-    try:
-        document = Document(
-            project_id=project.id,
-            sha256=digest,
-            filename="table.pdf",
-            doc_type="matrix",
-            parse_status="parsed",
-            pages=1,
-        )
-        session.add(document)
-        session.flush()
-        from corridor.models import DocPage
-
-        page_row = DocPage(
-            document_id=document.id,
-            page_no=1,
-            text="",
-            text_source="ocr",  # a mixed page whose OCR reading "won"
-            image_path=None,
-        )
-        session.add(page_row)
-        session.add(
-            TokenLayerManifest(
-                document_id=document.id,
-                page_no=1,
-                origin="native",
-                layer_key="k" * 64,
-                source_sha256=digest,
-                engine_json={"engine": "pymupdf"},
-                token_count=5,
-                quality_json={},
-                artifact_path=str(tmp_path / "tokens.json"),
-                artifact_sha256="b" * 64,
-                artifact_bytes=10,
-            )
-        )
-        session.flush()
-        grids = _read_geometry(session, document, [page_row])
-        assert 1 in grids, "geometry runs on a native-token page despite ocr verdict"
-    finally:
-        stored.unlink(missing_ok=True)
 
 
 def test_deleting_expired_token_layers_leaves_segments_verifiable(

@@ -33,6 +33,7 @@ Every mode writes a receipt under `artifacts/pdf-engine-retirement/`.
 from __future__ import annotations
 
 import argparse
+from collections import deque
 import json
 import os
 import re
@@ -155,6 +156,18 @@ def prepare(env: dict[str, str]) -> list[dict[str, object]]:
                 f"{' '.join(step)}\n{completed.stderr}"
             )
     return results
+
+
+def expose_uv(env: dict[str, str]) -> None:
+    """Keep uv reachable without restoring a directory that offers an engine."""
+    binary = interpreter(REPO_ROOT).parent / "uv"
+    target = Path(env["CORRIDOR_ENGINE_ABSENT_UV"]).resolve()
+    if binary.exists() or binary.is_symlink():
+        if binary.resolve() != target:
+            raise SystemExit("engine-absent environment contains an unexpected uv executable")
+    else:
+        binary.symlink_to(target)
+    env["PATH"] = str(binary.parent) + os.pathsep + env["PATH"]
 
 
 def interpreter(project: Path) -> Path:
@@ -331,13 +344,21 @@ COLLECT_ERROR = re.compile(r"^ERROR (\S+)", re.MULTILINE)
 def run_pytest(env: dict[str, str], arguments: list[str]) -> dict[str, object]:
     uv = env["CORRIDOR_ENGINE_ABSENT_UV"]
     command = [uv, "run", "--no-sync", "pytest", *arguments]
-    completed = _run(command, env)
-    output = completed.stdout + completed.stderr
+    tail = deque(maxlen=40)
+    errors = set()
+    process = subprocess.Popen(command, cwd=REPO_ROOT, env=env, text=True,
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    assert process.stdout is not None
+    for line in process.stdout:
+        print(line, end="", flush=True)
+        tail.append(line.rstrip())
+        errors.update(COLLECT_ERROR.findall(line))
+    returncode = process.wait()
     return {
         "command": " ".join(command),
-        "returncode": completed.returncode,
-        "errored_paths": sorted(set(COLLECT_ERROR.findall(output))),
-        "tail": output.strip().splitlines()[-40:],
+        "returncode": returncode,
+        "errored_paths": sorted(errors),
+        "tail": list(tail),
     }
 
 
@@ -366,6 +387,7 @@ def main() -> int:
 
     env, removed = build_environment()
     prepared = [] if options.skip_prepare else prepare(env)
+    expose_uv(env)
 
     root_absence = probe_absence(env, REPO_ROOT)
     assert_absent(root_absence, "the test environment")
@@ -412,6 +434,7 @@ def main() -> int:
         receipt["result"] = run_pytest(
             env,
             [
+                "--engine-absent-proof",
                 "-n",
                 options.workers,
                 "--dist",
