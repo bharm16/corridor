@@ -170,6 +170,17 @@ def materialize_pdf_segment_value(
     """
 
     contract = _scalar_contract(fact_type)
+    # A statement Fact's value is the exact prose span, under
+    # `exact_prose_span_v1` and with an attribution source beside it
+    # (`materialize_prose_wording`). Since #741 its value source is a
+    # `pdf_span` like a native cell's, so the kind alone no longer separates
+    # the two contracts and this says which one is being asked for. Folding
+    # whitespace into a statement's wording, or writing it with one role, would
+    # be a different Fact wearing the same words.
+    if contract.subject_kind != "source_row":
+        raise FactValidationError(
+            f"{fact_type} does not materialize as a PDF cell reading"
+        )
     _certify_pdf_segment(segment, fact_type, contract)
     if contract.value_class == "date":
         value = validated_scalar_value(contract, segment.exact_text)

@@ -1,0 +1,28 @@
+{
+  "schema_version": "corridor.retired-engines.v1",
+  "decision": "ADR-0094",
+  "issue": 741,
+  "why_this_is_data_and_not_code": [
+    "tests/test_architecture.py treats a string literal naming an engine as a dependency on it, because that is how the executable reaches subprocess and how an engine identity reaches a provenance row.",
+    "The retirement tooling has to keep naming both engines forever in order to prove they are absent, and #741's acceptance criterion is that the allowlist is empty.",
+    "Holding the identity here keeps one source of truth for the harness, the image audit and the retirement record, and keeps the guard's rule about source code intact."
+  ],
+  "engines": [
+    {
+      "name": "PyMuPDF",
+      "distributions": ["pymupdf"],
+      "import_names": ["pymupdf", "fitz"],
+      "executables": [],
+      "system_packages": [],
+      "note": "One distribution supplies two importable names; the second is the historical alias most call sites use."
+    },
+    {
+      "name": "Tesseract",
+      "distributions": ["pytesseract"],
+      "import_names": ["pytesseract"],
+      "executables": ["tesseract"],
+      "system_packages": ["tesseract-ocr"],
+      "note": "The Python distribution is a wrapper that shells out; the engine itself is an operating-system package, so absence has to be checked on PATH and in the package database as well as in site-packages."
+    }
+  ]
+}

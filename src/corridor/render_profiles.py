@@ -56,18 +56,18 @@ RASTERIZERS = (LEGACY_RASTERIZER, REPLACEMENT_RASTERIZER)
 
 
 def selected_rasterizer() -> str:
-    """The engine this deployment renders with, as configured.
+    """The engine this deployment renders with.
 
-    One setting, defaulting to off, is the whole selection mechanism: #447
-    owns the act of turning it on, and no merged implementation changes it.
-    The worker cannot read it - `worker_environment` scrubs every `CORRIDOR_`
+    One setting chose between the two until #741 removed the MuPDF one, so
+    there is nothing left to select and this is a constant. It stays a
+    function because the manifest and the artifact name both ask what
+    rendered a page, and a retained derivative answers differently.
+    The worker cannot read a setting - `worker_environment` scrubs every `CORRIDOR_`
     variable - so the choice travels in the request, where the manifest
     records which engine actually ran.
     """
 
-    return (
-        REPLACEMENT_RASTERIZER if settings.pdfium_render_worker else LEGACY_RASTERIZER
-    )
+    return REPLACEMENT_RASTERIZER
 
 
 class RenderModel(BaseModel):

@@ -92,21 +92,32 @@ def source_passage_check_label(status: str) -> str:
     """Name a Source Passage Check state without claiming what it supports.
 
     The stored identifiers stay the machine words ADR-0082 fixed (``valid``,
-    ``invalid``, ``not_checked``); these are the customer words for the same
-    three states.  Each says only where the cited passage was looked for and
-    whether it was there, never that the source supports the value beside it —
-    that is a Support Assessment, and it is displayed separately.
+    ``invalid``, ``not_checked``) plus ``not_re_readable`` from #741; these are
+    the customer words for those states.  Each says only where the cited
+    passage was looked for and whether it was there, never that the source
+    supports the value beside it — that is a Support Assessment, and it is
+    displayed separately.
 
     Passed, Failed, and Not run were the first wording and were rejected
     (#600): each reads as a verdict on the value, or on work that passed an
     inspection, which the check never is.  "Not run" also misdescribed the
     mechanism, because the status is computed by replaying the locator when it
     is read; ``not_checked`` means there was no cited location to replay.
+
+    "Cited location cannot be re-read" is built the same way, on this
+    vocabulary's own words.  It is the state of a citation whose locator was
+    written by the reader ADR-0094 retired: the location is recorded, and no
+    reader in the product can return to it.  It deliberately does not say the
+    passage was looked for, because it was not, and it does not say the
+    passage is missing, because nobody looked.  The passage's own words are
+    still provable from their digest, which is a different question and a
+    different receipt (``retained_history``).
     """
     return {
         "valid": "Found at cited location",
         "invalid": "Not found at cited location",
         "not_checked": "No cited location recorded",
+        "not_re_readable": "Cited location cannot be re-read",
     }[status]
 
 

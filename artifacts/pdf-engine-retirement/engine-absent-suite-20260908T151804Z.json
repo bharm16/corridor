@@ -1,0 +1,116 @@
+{
+  "absence": {
+    "render_worker_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/workers/render/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/workers/render/.venv-engine-absent/lib/python3.12/site-packages"
+    },
+    "test_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/.venv-engine-absent/lib/python3.12/site-packages"
+    }
+  },
+  "forbidden_executables": [
+    "tesseract"
+  ],
+  "forbidden_imports": [
+    "pymupdf",
+    "fitz",
+    "pytesseract"
+  ],
+  "mode": "suite",
+  "passed": true,
+  "path_entries_removed": [
+    "/opt/homebrew/bin"
+  ],
+  "prepare": [
+    {
+      "command": "/opt/homebrew/bin/uv sync --locked --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Resolved 84 packages in 6ms",
+        "Audited 77 packages in 11ms"
+      ]
+    },
+    {
+      "command": "/opt/homebrew/bin/uv sync --project workers/render --frozen --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Audited 4 packages in 0.83ms"
+      ]
+    }
+  ],
+  "recorded_at": "2026-09-08T15:17:58.858791+00:00",
+  "result": {
+    "command": "/opt/homebrew/bin/uv run --no-sync pytest -n 2 --dist worksteal --continue-on-collection-errors tests/test_retained_history.py -v -rs",
+    "errored_paths": [],
+    "returncode": 0,
+    "tail": [
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[nearest_offset] ",
+      "tests/test_retained_history.py::test_the_contract_module_imports_no_reader_of_its_own ",
+      "[gw1] [  5%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[nearest_offset] ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[normalized_text_match] ",
+      "[gw1] [ 11%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[normalized_text_match] ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[occurrence_ordinal] ",
+      "[gw1] [ 16%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[occurrence_ordinal] ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[same_page] ",
+      "[gw1] [ 22%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[same_page] ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[single_occurrence] ",
+      "[gw1] [ 27%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[single_occurrence] ",
+      "tests/test_retained_history.py::test_every_insufficient_evidence_at_once_is_still_insufficient ",
+      "[gw1] [ 33%] PASSED tests/test_retained_history.py::test_every_insufficient_evidence_at_once_is_still_insufficient ",
+      "tests/test_retained_history.py::test_unrecognized_binding_evidence_fails_closed ",
+      "[gw1] [ 38%] PASSED tests/test_retained_history.py::test_unrecognized_binding_evidence_fails_closed ",
+      "tests/test_retained_history.py::test_only_a_discriminating_physical_location_proof_authorizes_a_binding ",
+      "[gw1] [ 44%] PASSED tests/test_retained_history.py::test_only_a_discriminating_physical_location_proof_authorizes_a_binding ",
+      "tests/test_retained_history.py::test_a_retained_locator_cannot_be_rewritten_onto_the_replacement_reader ",
+      "[gw0] [ 50%] PASSED tests/test_retained_history.py::test_the_contract_module_imports_no_reader_of_its_own ",
+      "tests/test_retained_history.py::test_a_retained_citation_replays_from_its_own_digests ",
+      "[gw0] [ 55%] PASSED tests/test_retained_history.py::test_a_retained_citation_replays_from_its_own_digests ",
+      "tests/test_retained_history.py::test_replay_refuses_tampered_words_and_the_wrong_bytes ",
+      "[gw1] [ 61%] PASSED tests/test_retained_history.py::test_a_retained_locator_cannot_be_rewritten_onto_the_replacement_reader ",
+      "tests/test_retained_history.py::test_the_fresh_path_reads_the_recorded_location_when_its_reader_is_here ",
+      "[gw0] [ 66%] PASSED tests/test_retained_history.py::test_replay_refuses_tampered_words_and_the_wrong_bytes ",
+      "tests/test_retained_history.py::test_a_cited_retained_segment_dereferences_through_its_citation ",
+      "[gw0] [ 72%] PASSED tests/test_retained_history.py::test_a_cited_retained_segment_dereferences_through_its_citation ",
+      "tests/test_retained_history.py::test_replay_is_not_a_fresh_reading_of_the_original_location ",
+      "[gw0] [ 77%] PASSED tests/test_retained_history.py::test_replay_is_not_a_fresh_reading_of_the_original_location ",
+      "[gw1] [ 83%] SKIPPED tests/test_retained_history.py::test_the_fresh_path_reads_the_recorded_location_when_its_reader_is_here ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[equal_exact_text] ",
+      "tests/test_retained_history.py::test_the_fresh_path_refuses_by_name_when_its_reader_is_gone ",
+      "[gw0] [ 88%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[equal_exact_text] ",
+      "tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[equal_occurrence_count] ",
+      "[gw0] [ 94%] PASSED tests/test_retained_history.py::test_no_text_shaped_evidence_authorizes_a_cross_reader_binding[equal_occurrence_count] ",
+      "[gw1] [100%] PASSED tests/test_retained_history.py::test_the_fresh_path_refuses_by_name_when_its_reader_is_gone ",
+      "",
+      "=========================== short test summary info ============================",
+      "SKIPPED [1] tests/test_retained_history.py:265: the reader that wrote this locator is absent: a prose_span locator can only be re-read at its original location by the reader that established it, and pymupdf is not available here",
+      "======================== 17 passed, 1 skipped in 2.00s ========================="
+    ]
+  },
+  "revision": "cc45e9e7da3583abe4b86707046a5270355a9d56",
+  "schema_version": "corridor.engine-absent-suite.v1",
+  "withheld_distributions": [
+    "pymupdf",
+    "pytesseract"
+  ]
+}

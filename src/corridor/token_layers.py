@@ -5,29 +5,26 @@ native text and per-region OCR text. That single winner threw away coordinates
 and could not tell a trustworthy native reading from a suspect OCR one, which
 is exactly what cell-level fusion needs (research 2026-08-30 §D/§F: "more text
 is not better text"). This module produces two coordinate-bearing token layers
-instead — native tokens from PyMuPDF words with rotation recorded, and OCR
-tokens behind a pluggable engine protocol whose first implementation is
-Tesseract 5 emitting word boxes and confidences.
+instead — native tokens from the paired-rendition reader, and OCR tokens from
+the provider that reads scanned pages.
 
 Token layers are Class B intermediary data (ADR-0072, ADR-0073): high volume,
 TTL-eligible, and never the owner of a citation. A cited reading is promoted
 into a `source_segment` that carries its own exact text and digest (ADR-0068),
 so deleting an expired token layer leaves every promoted segment usable. Raw
 OCR confidence is recorded as a signal, never treated as a calibrated
-probability. The OCR engine is pinned as an engine — executable version,
-traineddata filenames and digests, language, OEM/PSM, DPI, preprocessing
-profile, render profile, and adapter version — not as a Python package, so a
-layer is reproducible from what it records.
+probability.
 
-ADR-0094 replaces the native engine, and #733 adds the second native adapter
-here rather than beside it: `read_native_token_layers` reads the same page
-through the imported paired-rendition reader and returns a layer with its own
-engine identity — the reader's name, the pypdfium2/PDFium versions, its
-measured engine and DPI, the imported commit, and a new adapter version. The
-two native adapters are two engines, never one engine's two versions, so a
-re-read writes a new layer beside the earlier one and rewrites no history.
-`corridor.config.settings.native_reader_token_layer` selects which one ingest
-calls; it is off, because merging an adapter is not selecting it (#447).
+There were two native adapters and two OCR adapters here until #741. The
+incumbent halves are gone: ADR-0094 replaced them, ADR-0095 recorded the
+maintainer's acceptance, and #741 removed the engines from the product. What
+they wrote is untouched. A retained token layer keeps the engine identity it
+was written with — `native-pymupdf-v1`, `ocr-tesseract-v1`, the executable
+version, the traineddata digests — because `EngineIdentity.engine` and
+`adapter_version` are free-form strings that record what produced a layer
+rather than a vocabulary of what may produce one. An old layer still loads,
+still validates and still says truthfully which engine read it; what no longer
+exists is the code that could write another one.
 
 The reader enters PDFium through `PdfiumExecutor` — one spawned process per
 document — and not through the cheaper in-process `pdfium_entry`. PDFium is
@@ -57,17 +54,13 @@ import hmac
 import inspect
 import math
 from pathlib import Path
-import shutil
 import statistics
 import secrets
-import subprocess
-from typing import Any, Literal, Protocol
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-
-import pytesseract
 
 from corridor.models import Document, TokenLayerManifest
 from corridor.page_inventory import FIXED_POINT_SCALE, PdfRect
@@ -80,8 +73,6 @@ from corridor_pdf_reader.provenance import SOURCE_COMMIT, PACKAGE_ROOT
 from corridor.source_segment_errors import SourceDocumentDigestMismatch, SourceSegmentLocatorMismatch
 
 
-NATIVE_ADAPTER_VERSION = "native-pymupdf-v1"
-OCR_ADAPTER_VERSION = "ocr-tesseract-v1"
 # The replacement OCR adapter (ADR-0094, #739). The engine name is the
 # provider, because that is what a scanned reading is answerable to: a
 # retained response, its reported model version and its request identity, not
@@ -96,8 +87,6 @@ READER_ENGINE = "corridor-pdf-reader"
 READER_NATIVE_ADAPTER_VERSION = "native-reader-v2"
 PDF_SEGMENT_SCHEME = "corridor.pdf-segments.v1"
 _NATIVE_READING_SEAL_KEY = secrets.token_bytes(32)
-TESSERACT_OEM = 3
-TESSERACT_PSM = 6
 
 
 class TokenModel(BaseModel):
@@ -192,65 +181,6 @@ def _rect_from_points(x0: float, y0: float, x1: float, y1: float) -> PdfRect:
         x1=round(right * FIXED_POINT_SCALE),
         y1=round(bottom * FIXED_POINT_SCALE),
     )
-
-
-def _rect_from_fixed(x0: float, y0: float, x1: float, y1: float) -> PdfRect:
-    """The render transform's PDF side is already fixed-point thousandths, so a
-    point inverted back from raster space is not scaled again."""
-
-    left, right = sorted((x0, x1))
-    top, bottom = sorted((y0, y1))
-    return PdfRect(x0=round(left), y0=round(top), x1=round(right), y1=round(bottom))
-
-
-def extract_native_token_layer(
-    page, *, page_no: int, source_sha256: str
-) -> TokenLayer:
-    """One native token per PyMuPDF word, with its rotation-aware page box.
-
-    `get_text("words")` returns boxes in the page's displayed coordinate space,
-    so the recorded rotation is a fact about the tokens, not a transform still
-    owed. Native readings never carry a confidence — they are the authoritative
-    character tokens, not an estimate.
-    """
-
-    words = page.get_text("words")
-    tokens: list[Token] = []
-    for ordinal, word in enumerate(sorted(words, key=lambda w: (w[5], w[6], w[7]))):
-        x0, y0, x1, y1, raw_text, block_no, line_no, _word_no = word[:8]
-        if not raw_text.strip():
-            continue
-        tokens.append(
-            Token(
-                ordinal=ordinal,
-                origin="native",
-                raw_text=raw_text,
-                normalized_text=normalize(raw_text),
-                polygon_pdf=_rect_from_points(x0, y0, x1, y1),
-                block=int(block_no),
-                line=int(line_no),
-            )
-        )
-    identity = EngineIdentity(
-        origin="native",
-        engine="pymupdf",
-        engine_version=_pymupdf_version(),
-        adapter_version=NATIVE_ADAPTER_VERSION,
-    )
-    quality = {
-        "token_count": len(tokens),
-        "rotation_degrees": int(page.rotation),
-        "empty_word_tokens": len(words) - len(tokens),
-    }
-    return TokenLayer(
-        page_no=page_no,
-        origin="native",
-        source_sha256=source_sha256,
-        identity=identity,
-        tokens=tuple(tokens),
-        quality=quality,
-    )
-
 
 
 def _canonical(value: object) -> str:
@@ -634,21 +564,6 @@ def _line_words(
     return words
 
 
-class OcrRequest(TokenModel):
-    """One recognition request: a render to read and where it came from."""
-
-    page_no: int = Field(ge=1)
-    source_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
-    image_path: Path
-    derivative: RenderDerivative
-
-
-class OcrEngine(Protocol):
-    """recognize(request) -> token layer. The engine owns its own pinning."""
-
-    def recognize(self, request: OcrRequest) -> TokenLayer: ...
-
-
 def render_point_to_pdf(
     derivative: RenderDerivative, point: tuple[float, float]
 ) -> tuple[float, float]:
@@ -659,99 +574,6 @@ def render_point_to_pdf(
     for step in reversed(derivative.transforms):
         current = step.inverse_point(current)
     return current
-
-
-class TesseractEngine:
-    """Tesseract 5 OCR emitting TSV word boxes and confidences.
-
-    Confidence is a recorded signal in 0..1, never a calibrated probability.
-    The engine pins its executable version and the SHA-256 of every traineddata
-    file in the resolved language set, so a layer records what produced it.
-    """
-
-    def __init__(
-        self,
-        *,
-        language: str = "eng",
-        oem: int = TESSERACT_OEM,
-        psm: int = TESSERACT_PSM,
-    ) -> None:
-        self.language = language
-        self.oem = oem
-        self.psm = psm
-
-    def _identity(self, derivative: RenderDerivative) -> EngineIdentity:
-        return EngineIdentity(
-            origin="ocr",
-            engine="tesseract",
-            engine_version=str(pytesseract.get_tesseract_version()),
-            adapter_version=OCR_ADAPTER_VERSION,
-            language=self.language,
-            oem=self.oem,
-            psm=self.psm,
-            dpi=derivative.dpi,
-            preprocessing_profile="|".join(derivative.preprocessing) or "none",
-            render_profile_id=derivative.profile_id,
-            traineddata=_traineddata_digests(self.language),
-            configuration={"tessdata_dir": _tessdata_dir()},
-        )
-
-    def recognize(self, request: OcrRequest) -> TokenLayer:
-        config = f"--oem {self.oem} --psm {self.psm}"
-        data = pytesseract.image_to_data(
-            str(request.image_path),
-            lang=self.language,
-            config=config,
-            output_type=pytesseract.Output.DICT,
-        )
-        tokens: list[Token] = []
-        confidences: list[float] = []
-        for index in range(len(data["text"])):
-            raw_text = data["text"][index]
-            if not raw_text.strip():
-                continue
-            conf_raw = float(data["conf"][index])
-            if conf_raw < 0:
-                continue
-            confidence = max(0.0, min(1.0, conf_raw / 100.0))
-            confidences.append(confidence)
-            left = float(data["left"][index])
-            top = float(data["top"][index])
-            width = float(data["width"][index])
-            height = float(data["height"][index])
-            render_box = _rect_from_points(left, top, left + width, top + height)
-            px0, py0 = render_point_to_pdf(request.derivative, (left, top))
-            px1, py1 = render_point_to_pdf(
-                request.derivative, (left + width, top + height)
-            )
-            tokens.append(
-                Token(
-                    ordinal=len(tokens),
-                    origin="ocr",
-                    raw_text=raw_text,
-                    normalized_text=normalize(raw_text),
-                    polygon_pdf=_rect_from_fixed(px0, py0, px1, py1),
-                    polygon_render=render_box,
-                    confidence=confidence,
-                    block=int(data["block_num"][index]),
-                    line=int(data["line_num"][index]),
-                )
-            )
-        quality = {
-            "token_count": len(tokens),
-            "mean_confidence": (
-                sum(confidences) / len(confidences) if confidences else None
-            ),
-            "low_confidence_tokens": sum(1 for c in confidences if c < 0.5),
-        }
-        return TokenLayer(
-            page_no=request.page_no,
-            origin="ocr",
-            source_sha256=request.source_sha256,
-            identity=self._identity(request.derivative),
-            tokens=tuple(tokens),
-            quality=quality,
-        )
 
 
 def textract_reading_tokens(reading: dict[str, Any]) -> tuple[Token, ...]:
@@ -979,48 +801,3 @@ def load_token_layer(manifest: TokenLayerManifest) -> TokenLayer:
             sha256=manifest.artifact_sha256,
         )
     return TokenLayer.model_validate_json(destination.read_bytes())
-
-
-def _pymupdf_version() -> str:
-    import pymupdf
-
-    return getattr(pymupdf, "__version__", "unknown")
-
-
-def _tessdata_dir() -> str:
-    """Resolve the tessdata directory Tesseract will actually read from."""
-
-    prefix = _env_tessdata_prefix()
-    if prefix:
-        return prefix
-    executable = shutil.which("tesseract")
-    if executable is not None:
-        completed = subprocess.run(
-            [executable, "--list-langs"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-        for line in (completed.stderr + completed.stdout).splitlines():
-            marker = 'available languages in "'
-            if marker in line:
-                return line.split(marker, 1)[1].split('"', 1)[0]
-    return ""
-
-
-def _env_tessdata_prefix() -> str:
-    import os
-
-    return os.environ.get("TESSDATA_PREFIX", "")
-
-
-def _traineddata_digests(language: str) -> dict[str, str]:
-    directory = Path(_tessdata_dir()) if _tessdata_dir() else None
-    digests: dict[str, str] = {}
-    if directory is None or not directory.is_dir():
-        return digests
-    for code in language.split("+"):
-        traineddata = directory / f"{code}.traineddata"
-        if traineddata.is_file():
-            digests[traineddata.name] = sha256(traineddata.read_bytes()).hexdigest()
-    return digests

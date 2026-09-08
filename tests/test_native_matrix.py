@@ -732,7 +732,7 @@ def test_outside_attribute_without_an_exact_span_is_refused_without_ocr(
     def forbidden(*args, **kwargs):
         pytest.fail("an unavailable native span attempted OCR")
 
-    monkeypatch.setattr("corridor.ingest._ocr_region", forbidden)
+    monkeypatch.setattr("corridor.scanned_reading.read_routed_page", forbidden)
     before = _spine_ids(session)
 
     with pytest.raises(NativeMatrixRefused, match="unique exact native span"):
@@ -842,7 +842,7 @@ def test_semantic_or_malformed_mapping_never_enters_an_ocr_fallback(
     def forbidden(*args, **kwargs):
         pytest.fail("native semantic refusal attempted an incumbent or OCR fallback")
 
-    monkeypatch.setattr("corridor.ingest._ocr_region", forbidden)
+    monkeypatch.setattr("corridor.scanned_reading.read_routed_page", forbidden)
     monkeypatch.setattr("corridor.extract_matrix.extract_document", forbidden)
     document = _document(session, project, matrix_source)
     answer = _answer()
@@ -912,7 +912,7 @@ def test_unmeasured_context_or_model_configuration_is_refused_before_transmissio
     assert not any(_spine_ids(session).values())
 
 
-def test_adapter_configuration_leaves_production_selection_defaults_off():
-    assert Settings.model_fields["native_reader_token_layer"].default is False
-    assert Settings.model_fields["reader_page_inventory"].default is False
+def test_the_reader_is_the_only_configuration_the_product_can_run():
+    assert "native_reader_token_layer" not in Settings.model_fields
+    assert "reader_page_inventory" not in Settings.model_fields
     assert semantics.PROMPT_VERSION == "matrix_structure_ids_v1"

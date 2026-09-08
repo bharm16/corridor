@@ -33,3 +33,7 @@ src/corridor_pdf_reader/tmp/
 
 # macOS Finder metadata.
 .DS_Store
+
+# The engine-absent proof environments built by `make test-engine-absent`:
+# copies of both uv projects that never receive PyMuPDF or pytesseract.
+.venv-engine-absent/

@@ -20,6 +20,8 @@ from corridor.models import (
     Project,
 )
 from corridor.render_profiles import (
+    LEGACY_RASTERIZER,
+    RASTERIZERS,
     PageBox,
     RenderProfileMeasurement,
     load_render_profile_bundle,
@@ -391,35 +393,18 @@ def apply(matrix, point):
     return (a * x + c * y + e, b * x + d * y + f)
 
 
-def test_the_replacement_rasterizer_is_off_by_default(tmp_path, monkeypatch):
-    """#447 owns selection. Merging #735 changes no production default.
+def test_the_only_rasterizer_is_the_replacement_and_retained_renders_keep_their_name():
+    """One setting chose between the two engines; #741 removed the other.
 
-    And one setting is the whole mechanism: turned on, the same call renders
-    with the other engine, so what #447 has to do is exactly this and nothing
-    else.
+    What survives the removal is the retained identity: every derivative
+    rendered before the switch records the MuPDF rasterizer, and the artifact
+    naming rule that leaves it out of the file name is what keeps those files
+    where they are. So the constant stays and the engine does not.
     """
 
-    pdf = geometry_pdf(tmp_path / "default.pdf", rotation=0)
-    assert settings.pdfium_render_worker is False
-    assert selected_rasterizer() == "pymupdf"
-
-    default = render_page_derivative(
-        pdf_path=pdf,
-        page_number=1,
-        profile_name="review",
-        output_dir=tmp_path / "renders",
-    )
-    monkeypatch.setattr(settings, "pdfium_render_worker", True)
-    selected = render_page_derivative(
-        pdf_path=pdf,
-        page_number=1,
-        profile_name="review",
-        output_dir=tmp_path / "renders",
-    )
-
-    assert default.rasterizer == "pymupdf"
     assert selected_rasterizer() == "pdfium"
-    assert selected.rasterizer == "pdfium"
+    assert not hasattr(settings, "pdfium_render_worker")
+    assert LEGACY_RASTERIZER in RASTERIZERS
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
@@ -507,18 +492,21 @@ def test_pdfium_transform_chain_lands_the_page_where_the_ink_is(tmp_path, rotati
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])
-def test_both_rasterizers_place_a_block_on_the_pixel_the_chain_predicts(
+def test_the_rasterizer_places_a_block_on_the_pixel_the_chain_predicts(
     tmp_path, rotation
 ):
-    """The strongest thing that can be said about two rasterizers.
+    """The strongest thing that can be said about the rasterizer.
 
     The page is 288 by 216 points and the block sits at whole points, so at
     200 DPI every edge falls on a whole pixel and the chain's prediction is an
-    integer with no rounding to hide behind. Both engines must put the block
-    exactly there, at every rotation. This is what the corpus comparison's
-    claim rests on: where two renders of a page differ, they differ inside the
-    glyphs, not in where the page is
-    (`artifacts/render-rasterizer-comparison/`).
+    integer with no rounding to hide behind. The engine must put the block
+    exactly there, at every rotation.
+
+    Both engines were asserted here until #741 removed one of them. The
+    two-engine agreement is not lost, and is not something a fixture proves
+    anyway: it is the recorded corpus measurement in
+    `artifacts/render-rasterizer-comparison/`, whose frozen numbers say where
+    two renders of a page differ -- inside the glyphs, not in where the page is.
     """
 
     fixture = PdfFixture()
@@ -528,7 +516,7 @@ def test_both_rasterizers_place_a_block_on_the_pixel_the_chain_predicts(
     pdf = fixture.save(tmp_path / f"exact-{rotation}.pdf")
 
     placed = {}
-    for engine in ("pymupdf", "pdfium"):
+    for engine in ("pdfium",):
         derivative = render_page_derivative(
             pdf_path=pdf,
             page_number=1,
@@ -553,50 +541,14 @@ def test_both_rasterizers_place_a_block_on_the_pixel_the_chain_predicts(
             image.point(lambda value: 255 if value < 128 else 0).getbbox(),
         )
 
-    assert placed["pymupdf"][0] == placed["pymupdf"][1]
     assert placed["pdfium"][0] == placed["pdfium"][1]
-    assert placed["pymupdf"] == placed["pdfium"]
 
 
-def test_pdfium_and_the_legacy_raster_agree_within_recorded_tolerance(tmp_path):
-    """Two independent rasterizers, compared by a stated measure.
-
-    Byte equality is not the criterion and is not asserted: anti-aliasing,
-    hinting and rounding differ between PDFium and MuPDF. The tolerances are
-    the fixture-scale form of the corpus receipt's
-    (`artifacts/render-rasterizer-comparison/`).
-    """
-
-    pdf = geometry_pdf(tmp_path / "compare.pdf", rotation=90)
-    legacy, replacement = (
-        render_page_derivative(
-            pdf_path=pdf,
-            page_number=1,
-            profile_name="review",
-            output_dir=tmp_path / "renders",
-            rasterizer=name,
-        )
-        for name in ("pymupdf", "pdfium")
-    )
-
-    assert legacy.artifact_sha256 != replacement.artifact_sha256
-    assert abs(legacy.raster_width - replacement.raster_width) <= 1
-    assert abs(legacy.raster_height - replacement.raster_height) <= 1
-    assert legacy.crop_box == replacement.crop_box
-    assert legacy.media_box == replacement.media_box
-    left = Image.open(legacy.artifact_path).convert("L")
-    right = Image.open(replacement.artifact_path).convert("L")
-    size = (min(left.width, right.width), min(left.height, right.height))
-    a = left.crop((0, 0, *size)).tobytes()
-    b = right.crop((0, 0, *size)).tobytes()
-    differences = [abs(one - two) for one, two in zip(a, b, strict=True)]
-    ink = [(one < 128, two < 128) for one, two in zip(a, b, strict=True)]
-    intersection = sum(1 for one, two in ink if one and two)
-    union = sum(1 for one, two in ink if one or two)
-
-    assert sum(differences) / len(differences) / 255 <= 0.02
-    assert sum(1 for value in differences if value > 32) / len(differences) <= 0.02
-    assert intersection / union >= 0.90
+# The two rasterizers were compared here within stated tolerances until #741
+# removed one of them. Byte equality was never the criterion and the comparison
+# was never a fixture's to make: the claim lives in the recorded corpus
+# measurement under `artifacts/render-rasterizer-comparison/`, which keeps its
+# frozen numbers, its exclusions and its limits.
 
 
 def test_pdfium_cell_detail_clips_inside_the_rotated_page(tmp_path):
@@ -628,7 +580,7 @@ def test_pdfium_cell_detail_clips_inside_the_rotated_page(tmp_path):
         )
 
 
-def test_a_pdfium_render_is_a_new_derivative_beside_the_legacy_one(
+def test_a_pdfium_render_is_a_new_derivative_beside_the_retained_one(
     session, tmp_path
 ):
     """ADR-0072's manifest pattern: a new reading is a new identity, never an
@@ -648,15 +600,26 @@ def test_a_pdfium_render_is_a_new_derivative_beside_the_legacy_one(
     )
     session.add(document)
     session.flush()
-    legacy, replacement = (
-        render_page_derivative(
-            pdf_path=pdf,
-            page_number=1,
-            profile_name="review",
-            output_dir=tmp_path / "renders",
-            rasterizer=name,
-        )
-        for name in ("pymupdf", "pdfium")
+    replacement = render_page_derivative(
+        pdf_path=pdf,
+        page_number=1,
+        profile_name="review",
+        output_dir=tmp_path / "renders",
+        rasterizer="pdfium",
+    )
+    # The retained MuPDF derivative is constructed, not rendered: the engine
+    # that produced it is gone (#741) and the rows it wrote are not. That is
+    # exactly the case this test is about -- a new reading is a new identity
+    # beside the recorded one, never an overwrite of it.
+    retained_path = replacement.artifact_path.with_name("retained.png")
+    retained_path.write_bytes(replacement.artifact_path.read_bytes() + b"\n")
+    legacy = replacement.model_copy(
+        update={
+            "rasterizer": LEGACY_RASTERIZER,
+            "artifact_sha256": hashlib.sha256(retained_path.read_bytes()).hexdigest(),
+            "artifact_bytes": retained_path.stat().st_size,
+            "artifact_path": retained_path,
+        }
     )
 
     first = persist_render_derivative(session, document.id, legacy)

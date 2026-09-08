@@ -4,35 +4,42 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pymupdf
 from PIL import Image
 
 from corridor.config import Settings, settings
 from corridor.page_inventory import (
     FIXED_POINT_SCALE,
-    OCR_ENGINE,
+    OCR_ENGINES,
     READER_COORDINATE_FRAME,
     READER_ROUTER_VERSION,
     TEXTRACT_ENGINE,
-    inventory_page,
     read_page_facts,
     read_reader_page_inventories,
     reader_page_inventories,
     route_page,
     route_reader_page,
 )
+from corridor.render_profiles import render_page_derivative
 from corridor_pdf_reader.execution import pdfium_entered
 
 from pdf_fixture_support import PdfFixture, scan_image
 
 
-def _open(fixture: PdfFixture) -> pymupdf.Document:
-    """The reader under inventory reads the fixture's bytes; nothing else does."""
+def _reader_facts(fixture: PdfFixture, tmp_path) -> dict:
+    """The reader's own reading of the fixture, in this process.
 
-    return pymupdf.open(stream=fixture.tobytes(), filetype="pdf")
+    The executor's spawned process is exercised once, below; every other case
+    reads in process so a routing rule is not paid for with a fork.
+    """
+
+    directory = Path(tmp_path)
+    directory.mkdir(parents=True, exist_ok=True)
+    return read_page_facts(fixture.save(directory / "reader.pdf"))
 
 
-def test_inventory_records_visible_layers_rotation_boxes_and_table_evidence(capsys):
+def test_inventory_records_visible_layers_rotation_boxes_and_table_evidence(
+    capsys, tmp_path
+):
     fixture = PdfFixture()
     drawn = fixture.add_page(width=400, height=300)
     drawn.text((40, 60), "Utility Owner")
@@ -43,10 +50,9 @@ def test_inventory_records_visible_layers_rotation_boxes_and_table_evidence(caps
     drawn.text((215, 120), "Conflict")
     drawn.text((45, 175), "AT&T")
     drawn.text((215, 175), "UC-1")
-    document = _open(fixture)
-    page = document[0]
-
-    inventory = inventory_page(page)
+    (inventory,) = reader_page_inventories(
+        _reader_facts(fixture, tmp_path)
+    ).values()
 
     assert inventory.schema_version == "corridor.pdf-page-inventory.v1"
     assert inventory.native_text_length == len(drawn.expected_text.strip())
@@ -63,31 +69,31 @@ def test_inventory_records_visible_layers_rotation_boxes_and_table_evidence(caps
     assert inventory.boxes.crop.height == 300_000
     assert inventory.table_regions
     assert capsys.readouterr().out == ""
-    document.close()
 
 
-def test_short_clean_native_text_is_not_sent_to_ocr_by_character_count():
+def test_short_clean_native_text_is_not_sent_to_ocr_by_character_count(tmp_path):
     fixture = PdfFixture()
     fixture.add_page(width=400, height=300).text((40, 60), "OK")
-    document = _open(fixture)
-    page = document[0]
 
-    decision = route_page(inventory_page(page))
+    (inventory,) = reader_page_inventories(
+        _reader_facts(fixture, tmp_path)
+    ).values()
+    decision = route_reader_page(inventory)
 
     assert decision.page_mode == "native"
     assert [region.mode for region in decision.regions] == ["native"]
     assert decision.reason == "clean_native_text"
-    document.close()
 
 
-def test_image_only_and_mixed_pages_route_by_region():
+def test_image_only_and_mixed_pages_route_by_region(tmp_path):
     scan = scan_image(200, 100, dpi=150, lines=(((20, 50), "SCANNED TABLE", 11),))
 
     image_only_fixture = PdfFixture()
     image_only_fixture.add_page(width=400, height=300).image((0, 0, 400, 300), scan)
-    image_only = _open(image_only_fixture)
-    image_inventory = inventory_page(image_only[0])
-    image_decision = route_page(image_inventory)
+    (image_inventory,) = reader_page_inventories(
+        _reader_facts(image_only_fixture, tmp_path / "image-only")
+    ).values()
+    image_decision = route_reader_page(image_inventory)
     assert image_inventory.embedded_image_coverage == 1
     assert image_decision.page_mode == "ocr"
     assert [region.mode for region in image_decision.regions] == ["ocr"]
@@ -96,9 +102,10 @@ def test_image_only_and_mixed_pages_route_by_region():
     mixed_drawn = mixed_fixture.add_page(width=400, height=300)
     mixed_drawn.text((20, 30), "Native page heading")
     embedded = mixed_drawn.image((20, 70, 380, 270), scan)
-    mixed = _open(mixed_fixture)
-    mixed_inventory = inventory_page(mixed[0])
-    mixed_decision = route_page(mixed_inventory)
+    (mixed_inventory,) = reader_page_inventories(
+        _reader_facts(mixed_fixture, tmp_path / "mixed")
+    ).values()
+    mixed_decision = route_reader_page(mixed_inventory)
     [image_region] = mixed_inventory.image_regions
     assert (
         image_region.box.x0,
@@ -109,42 +116,37 @@ def test_image_only_and_mixed_pages_route_by_region():
     assert mixed_decision.page_mode == "both"
     assert {region.mode for region in mixed_decision.regions} == {"native", "ocr"}
 
-    image_only.close()
-    mixed.close()
 
+def test_suspicious_unicode_routes_both_instead_of_trusting_native_glyphs(tmp_path):
+    """The rule, stated on the inventory rather than on a page.
 
-def test_suspicious_unicode_routes_both_instead_of_trusting_native_glyphs():
+    A replacement character is the explicit signal that native decoding lost
+    content, and the router keeps the native layer and asks OCR for a second
+    read. It is asserted from a constructed inventory because the signal is a
+    property of the recorded facts, and a fixture cannot place a character its
+    font cannot encode — which was how the incumbent version of this test
+    supplied one, through a `native_text` override the reader has no use for.
+    """
+
     fixture = PdfFixture()
-    # A replacement character is the explicit signal that native decoding lost
-    # content. The router keeps the native layer and asks OCR for a second read.
-    # The page carries ordinary glyphs; the suspect reading arrives as the
-    # native text the caller already extracted, which is where the signal lives.
-    fixture.add_page(width=400, height=300).text((40, 60), "Owner: ? utility")
-    document = _open(fixture)
-    page = document[0]
+    fixture.add_page(width=400, height=300).text((40, 60), "Owner: utility")
+    (clean,) = reader_page_inventories(_reader_facts(fixture, tmp_path)).values()
+    assert clean.suspicious_text_signals == ()
+    assert route_reader_page(clean).page_mode == "native"
 
-    inventory = inventory_page(page, native_text="Owner: \ufffd utility")
-    decision = route_page(inventory)
+    suspect = clean.model_copy(
+        update={
+            "suspicious_text_signals": ("replacement_character",),
+            "unicode_quality": 0.9,
+        }
+    )
+    decision = route_reader_page(suspect)
 
-    assert "replacement_character" in inventory.suspicious_text_signals
     assert decision.page_mode == "both"
     assert [region.mode for region in decision.regions] == ["both"]
-    document.close()
 
 
 # ---- the reader-backed inventory and routing (#734) -------------------------
-
-
-def _reader_facts(fixture: PdfFixture, tmp_path) -> dict:
-    """The reader's own reading of the fixture, in this process.
-
-    The executor's spawned process is exercised once, below; every other case
-    reads in process so a routing rule is not paid for with a fork.
-    """
-
-    directory = Path(tmp_path)
-    directory.mkdir(parents=True, exist_ok=True)
-    return read_page_facts(fixture.save(directory / "reader.pdf"))
 
 
 def test_the_reader_backed_inventory_records_the_readers_visible_layers(tmp_path):
@@ -229,15 +231,15 @@ def test_a_rotated_pages_image_region_names_the_pixels_the_render_shows(tmp_path
     """The frame is not a detail: it decides which pixels OCR is handed.
 
     A recorded OCR region is cut from the page render, and the render is the
-    page as displayed — `workers/render/render_worker.py` renders with
-    `get_pixmap`, which applies the page's rotation, and clips within rotated
-    page bounds. The reader-backed inventory records displayed-crop boxes, so
-    its region names the pixels the render shows.
+    page as displayed. The reader-backed inventory records displayed-crop
+    boxes, so its region names the pixels the render shows.
 
-    The incumbent records the unrotated box, which on a rotated page is
-    somewhere else entirely. That is asserted rather than described because it
-    is the reason an inventory records the frame it is in at all; #741 removes
-    the incumbent that has it.
+    The incumbent recorded the unrotated box, which on a rotated page is
+    somewhere else entirely; that comparison was this test's other half until
+    #741 removed the engine that could make it. What it established is kept in
+    the record instead: `coordinate_frame` is on every inventory, and it is on
+    the retained ones precisely so a reader of an old row knows which of the
+    two frames it is in.
     """
 
     patch = Image.new("L", (40, 20), 0)
@@ -246,18 +248,20 @@ def test_a_rotated_pages_image_region_names_the_pixels_the_render_shows(tmp_path
     declared = drawn.image((20, 20, 120, 70), patch)
     path = fixture.save(tmp_path / "rotated.pdf")
 
-    with pymupdf.open(path) as document:
-        incumbent = inventory_page(document[0])
-        pixmap = document[0].get_pixmap(dpi=72, alpha=False)
-    rendered = Image.frombytes(
-        "RGB", (pixmap.width, pixmap.height), pixmap.samples
-    ).convert("L")
+    derivative = render_page_derivative(
+        pdf_path=path,
+        page_number=1,
+        profile_name="review",
+        output_dir=tmp_path / "renders",
+    )
+    rendered = Image.open(derivative.artifact_path).convert("L")
+    scale = rendered.width / 400
     (reader,) = reader_page_inventories(read_page_facts(path)).values()
 
     def printed_fraction(region) -> float:
         window = rendered.crop(
             tuple(
-                round(value / FIXED_POINT_SCALE)
+                round(value / FIXED_POINT_SCALE * scale)
                 for value in (
                     region.box.x0,
                     region.box.y0,
@@ -270,15 +274,10 @@ def test_a_rotated_pages_image_region_names_the_pixels_the_render_shows(tmp_path
         return dark / (window.width * window.height)
 
     [reader_region] = reader.image_regions
-    [incumbent_region] = incumbent.image_regions
+    assert reader.coordinate_frame == READER_COORDINATE_FRAME
     assert printed_fraction(reader_region) == 1
-    assert printed_fraction(incumbent_region) == 0
-    # The incumbent's box is the unrotated one the fixture declared; a
-    # 180-degree page displays it at (width - x, height - y).
-    assert (incumbent_region.box.x0, incumbent_region.box.y1) == (
-        round(declared.box[0] * FIXED_POINT_SCALE),
-        round(declared.box[3] * FIXED_POINT_SCALE),
-    )
+    # A 180-degree page displays the declared box at (width - x, height - y),
+    # which is what the reader records and the render shows.
     assert (reader_region.box.x0, reader_region.box.y0) == (
         round((400 - declared.box[2]) * FIXED_POINT_SCALE),
         round((300 - declared.box[3]) * FIXED_POINT_SCALE),
@@ -321,7 +320,9 @@ def test_the_reader_backed_route_decides_as_the_incumbent_router_and_names_textr
     # Same inventory, same regions: the reader route changes who reads an OCR
     # region, never which regions are sent.
     assert route_page(mixed_inventory).regions == mixed_decision.regions
-    assert route_page(mixed_inventory).ocr_engine == OCR_ENGINE != TEXTRACT_ENGINE
+    # The retired engine's name is still a value a persisted decision may
+    # hold, and is held as data rather than named in any source file (#741).
+    assert TEXTRACT_ENGINE in OCR_ENGINES and len(OCR_ENGINES) == 2
 
     native = PdfFixture()
     native.add_page(width=400, height=300).text((40, 60), "OK")
@@ -390,13 +391,13 @@ def test_the_reader_backed_inventory_reads_the_document_in_one_isolated_process(
     )
 
 
-def test_the_reader_backed_page_inventory_is_disabled_by_default():
-    """Enabling the adapter is one configuration change and nothing else.
+def test_the_page_inventory_has_one_reader_and_no_setting_to_choose_it():
+    """The setting that chose between the two readers is gone with the second.
 
-    ADR-0094 keeps "we imported it" apart from "it is approved for
-    production": #447 owns native selection, #739 owns scanned selection, and
-    no merge may move the production default.
+    ADR-0094 chose the reader, ADR-0095 recorded the maintainer's acceptance,
+    and #741 removed the incumbent. A configuration value offering a choice
+    that no longer exists would be a rollback lever that does not work.
     """
 
-    assert Settings().reader_page_inventory is False
-    assert settings.reader_page_inventory is False
+    assert "reader_page_inventory" not in Settings.model_fields
+    assert not hasattr(settings, "reader_page_inventory")

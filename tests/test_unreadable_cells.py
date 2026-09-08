@@ -86,7 +86,7 @@ def _declare(session, project, **overrides):
         min_readable_text_chars=50,
         page_scope=("matrix",),
         image_op_identities=("deskew", "denoise", "contrast", "upscale", "crop"),
-        read_identities=("tesseract", "secondary_ocr", "vision_model_a", "vision_model_b"),
+        read_identities=("textract", "secondary_ocr", "vision_model_a", "vision_model_b"),
         max_cells_per_page=200,
         max_image_ops_per_cell=4,
         max_reads_per_cell=6,
@@ -358,7 +358,7 @@ def test_agreement_ranks_the_reading_but_never_admits_it(session, project):
         async def run(self, case, tools, budget):
             a = tools.read("vision_model_a")
             b = tools.read("vision_model_b")
-            c = tools.read("tesseract")
+            c = tools.read("textract")
             return CellReadingRunOutput(
                 CellReadingPacket(
                     candidates=(
@@ -375,7 +375,7 @@ def test_agreement_ranks_the_reading_but_never_admits_it(session, project):
         page,
         Runtime(),
         reader=Reader(
-            {"vision_model_a": "16", "vision_model_b": "16", "tesseract": "18"}
+            {"vision_model_a": "16", "vision_model_b": "16", "textract": "18"}
         ),
     )
 

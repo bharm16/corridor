@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.ingest import _extract_pages, ingest_document
 from corridor.page_inventory import READER_COORDINATE_FRAME, READER_ROUTER_VERSION
@@ -256,6 +255,104 @@ def test_the_original_file_is_never_modified(session, project, pdf, tmp_path):
     assert pdf.read_bytes() == before
 
 
+
+# --- the scanned route's double (#732, #739) ---------------------------------
+#
+# Ingest reads OCR-routed regions through the authorized Textract boundary, and
+# the incumbent local engine that these tests used to monkeypatch is gone
+# (#741). A test that needs a scanned reading supplies the provider's answer
+# through the same boundary, with a transport double, so nothing here reaches a
+# network and the reading still arrives the way a real one would.
+
+
+def _provider_response(frame, lines):
+    from corridor_pdf_reader.textract.tests.helpers import Page
+
+    builder = Page(frame=frame)
+    top = 30.0
+    for text in lines:
+        words = [builder.word(text, (20, top, 20 + 7 * len(text), top + 16))]
+        builder.line(words)
+        cell = builder.cell(1, 1, (15, top - 5, 25 + 7 * len(text), top + 21), words)
+        builder.table((15, top - 5, 25 + 7 * len(text), top + 21), [cell])
+        top += 40
+    return builder.response()
+
+
+class _RecordedService:
+    """One recorded AnalyzeDocument answer, or a refusal to answer at all."""
+
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = 0
+
+    def analyze_document(self, *, Document, FeatureTypes):
+        self.calls += 1
+        if self.error is not None:
+            raise self.error
+        return self.response
+
+
+def _authorized_reader(project, tmp_path, service, *, dpi=36):
+    from corridor.scanned_reading import ScannedReader
+    from corridor_pdf_reader.textract_adapter.boundary import open_boundary
+    from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
+    from corridor_pdf_reader.textract_adapter.records import (
+        PROVIDER_POSTURE,
+        ExperimentScope,
+        RequestBoundary,
+    )
+    from dataclasses import replace as replace_fields
+
+    scope = ExperimentScope(
+        record_id="exp-741",
+        dataset=str(project.id),
+        dataset_digest="0" * 8,
+        purpose="scanned-page-reading",
+        scope="one synthetic scan built by the test",
+        source_classes=frozenset({"synthetic", "scanned-pdf"}),
+        region=PROVIDER_POSTURE.region,
+        posture_identity=PROVIDER_POSTURE.identity,
+        posture_digest=PROVIDER_POSTURE.digest,
+        recorded_by="a named person",
+        recorded_on="2026-09-08",
+    )
+    boundary = RequestBoundary(
+        project=str(project.id),
+        source_class="scanned-pdf",
+        purpose="scanned-page-reading",
+        region=PROVIDER_POSTURE.region,
+        posture_identity=PROVIDER_POSTURE.identity,
+        stage="experiment",
+    )
+    adapter = open_boundary(
+        scope,
+        boundary,
+        extraction_run="run-741",
+        cache_root=tmp_path / "cache",
+        service=service,
+        configuration=RequestConfiguration(dpi=dpi),
+        posture=replace_fields(
+            PROVIDER_POSTURE,
+            status="accepted",
+            retention="verified",
+            ai_services_opt_out="optOut",
+            permissions="verified",
+        ),
+        sleep=lambda seconds: None,
+    )
+    return ScannedReader(adapter=adapter, refusal=None, request=boundary)
+
+
+def _install_reader(monkeypatch, reader):
+    from corridor import ingest as ingest_module
+
+    monkeypatch.setattr(
+        ingest_module, "open_scanned_reader", lambda *args, **kwargs: reader
+    )
+
+
 @pytest.fixture
 def scanned_pdf(tmp_path):
     """An image-only PDF, as a scanner produces.
@@ -285,8 +382,17 @@ def test_a_page_with_a_real_text_layer_is_not_ocred(session, project, pdf, tmp_p
     assert {p.text_source for p in pages} == {"text_layer"}
 
 
-def test_a_scanned_page_falls_back_to_ocr(session, project, scanned_pdf, tmp_path):
-    """Scanner output yields ~30 chars, which reads as blank rather than scanned."""
+def test_a_scanned_page_reads_through_the_provider(
+    session, project, scanned_pdf, tmp_path, monkeypatch
+):
+    """An image-only page routes to OCR and is read by the selected provider."""
+    service = _RecordedService(
+        _provider_response(
+            (595.0, 842.0),
+            ("UTILITY RELOCATION AGREEMENT", "CENTERPOINT ENERGY"),
+        )
+    )
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
     doc = ingest_document(
         session,
         project_id=project.id,
@@ -347,10 +453,10 @@ def test_a_short_clean_native_page_never_calls_ocr(
     fixture.add_page().text((72, 100), "OK")
     path = fixture.save(tmp_path / "short.pdf")
 
-    def unexpected_ocr(*_args, **_kwargs):
-        raise AssertionError("short native text must not route by character count")
-
-    monkeypatch.setattr("corridor.ingest._ocr_region", unexpected_ocr)
+    service = _RecordedService(
+        error=AssertionError("short native text must not route to the provider")
+    )
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
     stored = ingest_document(
         session,
         project_id=project.id,
@@ -364,6 +470,7 @@ def test_a_short_clean_native_page_never_calls_ocr(
     assert stored_page.text == "OK\n"
     assert stored_page.text_source == "text_layer"
     assert stored_page.routing_json["reason"] == "clean_native_text"
+    assert service.calls == 0
 
 
 def test_a_mixed_page_routes_native_and_image_regions_independently(
@@ -375,9 +482,8 @@ def test_a_mixed_page_routes_native_and_image_regions_independently(
     page.text((20, 30), "Native heading")
     page.image((20, 70, 380, 270), scan)
     path = fixture.save(tmp_path / "mixed.pdf")
-    monkeypatch.setattr(
-        "corridor.ingest._ocr_region", lambda *_args, **_kwargs: "OCR TABLE"
-    )
+    service = _RecordedService(_provider_response((400.0, 300.0), ("OCR TABLE",)))
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
 
     stored = ingest_document(
         session,
@@ -400,13 +506,15 @@ def test_a_mixed_page_routes_native_and_image_regions_independently(
     assert stored_page.text_source == "ocr"
 
 
-def test_ocr_exception_persists_a_visible_processing_failure(
-    session, project, scanned_pdf, tmp_path, monkeypatch
+def test_a_refused_scanned_read_persists_a_visible_processing_failure(
+    session, project, scanned_pdf, tmp_path
 ):
-    def failed_ocr(*_args, **_kwargs):
-        raise RuntimeError("tesseract unavailable")
+    """No authorization record exists (#732, #522), so the read is refused.
 
-    monkeypatch.setattr("corridor.ingest._ocr_region", failed_ocr)
+    The refusal is the ordinary answer today, and it must reach the record as
+    a scoped Processing Failure that fails the document attempt: an OCR-routed
+    page that nobody read is not a parsed page.
+    """
     stored = ingest_document(
         session,
         project_id=project.id,
@@ -428,17 +536,11 @@ def test_ocr_exception_persists_a_visible_processing_failure(
     assert stored.pages == 1
     assert stored_page.text_source == "ocr"
     assert stored_page.routing_json["page_mode"] == "ocr"
-    assert failure.engine == "tesseract"
-    assert failure.configuration_json == {
-        "language": "eng",
-        "page_segmentation_mode": 6,
-        "render_profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
-        "render_dpi": 300,
-    }
+    assert failure.engine == "textract"
+    assert failure.configuration_json["operation"] == "AnalyzeDocument"
     assert failure.scope_json["page_number"] == 1
-    assert failure.scope_json["region_id"].startswith("image-")
-    assert failure.error_type == "RuntimeError"
-    assert failure.error_message == "tesseract unavailable"
+    assert failure.error_type == "authorization-absent"
+    assert failure.error_message
     from corridor.docs import list_documents
 
     [summary] = list_documents(session, project.id)
@@ -448,10 +550,6 @@ def test_ocr_exception_persists_a_visible_processing_failure(
 def test_successful_reparse_preserves_the_prior_processing_failure(
     session, project, scanned_pdf, tmp_path, monkeypatch
 ):
-    def failed_ocr(*_args, **_kwargs):
-        raise RuntimeError("tesseract unavailable")
-
-    monkeypatch.setattr("corridor.ingest._ocr_region", failed_ocr)
     stored = ingest_document(
         session,
         project_id=project.id,
@@ -464,9 +562,15 @@ def test_successful_reparse_preserves_the_prior_processing_failure(
             PageProcessingFailure.document_id == stored.id
         )
     )
-    monkeypatch.setattr(
-        "corridor.ingest._ocr_region", lambda *_args, **_kwargs: "RECOVERED TEXT"
+    refused_message = session.scalar(
+        select(PageProcessingFailure.error_message).where(
+            PageProcessingFailure.id == failure_id
+        )
     )
+    service = _RecordedService(
+        _provider_response((595.0, 842.0), ("RECOVERED TEXT",))
+    )
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
 
     from corridor.ingest import reparse_document
 
@@ -483,14 +587,18 @@ def test_successful_reparse_preserves_the_prior_processing_failure(
         select(PageProcessingFailure.error_message).where(
             PageProcessingFailure.id == failure_id
         )
-    ) == "tesseract unavailable"
+    ) == refused_message
 
 
-def test_ocr_text_is_citable(session, project, scanned_pdf, tmp_path):
+def test_ocr_text_is_citable(session, project, scanned_pdf, tmp_path, monkeypatch):
     """A citation against OCR output must still verify, or scanned evidence
     can never support a claim."""
     from corridor.verify import quote_appears_on
 
+    service = _RecordedService(
+        _provider_response((595.0, 842.0), ("UTILITY RELOCATION AGREEMENT",))
+    )
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
     doc = ingest_document(
         session,
         project_id=project.id,
@@ -725,23 +833,10 @@ def _native_layers(session, document_id):
     ).all()
 
 
-def test_the_native_layer_stays_the_incumbent_until_the_adapter_is_enabled(
+def test_the_reader_supplies_the_page_text_and_the_native_layer(
     session, project, pdf, tmp_path
 ):
-    """No merge moves a production default; #447 owns native selection."""
-
-    assert settings.native_reader_token_layer is False
-    doc = ingest(session, project, pdf, tmp_path / "images")
-
-    layers = _native_layers(session, doc.id)
-    assert [layer.page_no for layer in layers] == [1, 2]
-    assert {layer.engine_json["engine"] for layer in layers} == {"pymupdf"}
-
-
-def test_the_enabled_adapter_supplies_the_page_text_and_the_native_layer(
-    session, project, pdf, tmp_path, monkeypatch
-):
-    monkeypatch.setattr(settings, "native_reader_token_layer", True)
+    """One reader, no switch: ADR-0094's native reading is the only one (#741)."""
 
     doc = ingest(session, project, pdf, tmp_path / "images")
 
@@ -760,48 +855,6 @@ def test_the_enabled_adapter_supplies_the_page_text_and_the_native_layer(
     assert "1149+00" in pages[1].text
 
 
-def test_enabling_the_adapter_changes_the_text_and_the_layer_and_nothing_else(
-    session, project, pdf, tmp_path, monkeypatch
-):
-    """The adapter supplies page text and the native token layer.
-
-    The Page Inventory and the routing decision are read from the incumbent
-    on both settings, because the reader's inventory is #734's and a routing
-    change here would move the OCR boundary with it.
-    """
-
-    incumbent = ingest(session, project, pdf, tmp_path / "incumbent")
-    inventories = [
-        (page.inventory_json, page.routing_json, page.text_source)
-        for page in session.scalars(
-            select(DocPage)
-            .where(DocPage.document_id == incumbent.id)
-            .order_by(DocPage.page_no)
-        ).all()
-    ]
-
-    other = Project(slug="reader-adapter", name="Reader adapter", is_synthetic=True)
-    session.add(other)
-    session.flush()
-    monkeypatch.setattr(settings, "native_reader_token_layer", True)
-    replacement = ingest_document(
-        session,
-        project_id=other.id,
-        path=pdf,
-        doc_type="matrix",
-        images_dir=tmp_path / "replacement",
-    )
-
-    assert [
-        (page.inventory_json, page.routing_json, page.text_source)
-        for page in session.scalars(
-            select(DocPage)
-            .where(DocPage.document_id == replacement.id)
-            .order_by(DocPage.page_no)
-        ).all()
-    ] == inventories
-
-
 # ---- the reader-backed page inventory and routing (#734) -------------------
 
 
@@ -813,85 +866,48 @@ def _pages(session, document_id):
     ).all()
 
 
-def test_enabling_the_reader_backed_inventory_changes_the_inventory_and_the_route_only(
-    session, project, pdf, tmp_path, monkeypatch
+def test_the_inventory_and_the_route_come_from_the_reader(
+    session, project, pdf, tmp_path
 ):
-    """The second adapter's blast radius, stated as an assertion (#734).
+    """The persisted inventory is the reader's and the route names Textract.
 
-    On, the persisted inventory is the reader's and the route it decides names
-    Textract. Everything the inventory does not own is byte-identical to the
-    incumbent run: the page text, which engine's Token Layer was retained, the
-    render derivatives, and the compatibility `text_source`.
+    Both used to be one setting away from the incumbent's inventory and the
+    incumbent's engine name (#734). The incumbent is gone (#741), so this is
+    now what a page records, with nothing to compare it against inside the
+    product.
     """
 
-    incumbent = ingest(session, project, pdf, tmp_path / "incumbent")
-    incumbent_pages = _pages(session, incumbent.id)
-    # The render is content-addressed, so the file name is the same artifact
-    # under either run's images directory.
-    unchanged = [
-        (page.page_no, page.text, page.text_source, Path(page.image_path).name)
-        for page in incumbent_pages
-    ]
-    assert {page.routing_json["ocr_engine"] for page in incumbent_pages} == {
-        "tesseract"
-    }
-    assert {page.routing_json["router_version"] for page in incumbent_pages} == {
-        "page-inventory-router-v1"
-    }
+    doc = ingest(session, project, pdf, tmp_path / "images")
+    pages = _pages(session, doc.id)
 
-    other = Project(slug="reader-inventory", name="Reader inventory", is_synthetic=True)
-    session.add(other)
-    session.flush()
-    monkeypatch.setattr(settings, "reader_page_inventory", True)
-    replacement = ingest_document(
-        session,
-        project_id=other.id,
-        path=pdf,
-        doc_type="matrix",
-        images_dir=tmp_path / "replacement",
-    )
-    replacement_pages = _pages(session, replacement.id)
-
-    assert [
-        (page.page_no, page.text, page.text_source, Path(page.image_path).name)
-        for page in replacement_pages
-    ] == unchanged
-    assert [
-        layer.engine_json["engine"] for layer in _native_layers(session, replacement.id)
-    ] == [
-        layer.engine_json["engine"] for layer in _native_layers(session, incumbent.id)
-    ]
     assert all(
         page.inventory_json["coordinate_frame"] == READER_COORDINATE_FRAME
-        for page in replacement_pages
+        for page in pages
     )
-    assert {page.routing_json["ocr_engine"] for page in replacement_pages} == {
-        "textract"
-    }
-    assert {page.routing_json["router_version"] for page in replacement_pages} == {
+    assert {page.routing_json["ocr_engine"] for page in pages} == {"textract"}
+    assert {page.routing_json["router_version"] for page in pages} == {
         READER_ROUTER_VERSION
     }
-    # The route is still native on these pages, so naming Textract changed
-    # nothing about what was read: the engine is recorded, not invoked.
-    assert {page.routing_json["page_mode"] for page in replacement_pages} == {"native"}
+    # The route is native on these pages, so naming Textract changed nothing
+    # about what was read: the engine is recorded, not invoked.
+    assert {page.routing_json["page_mode"] for page in pages} == {"native"}
+    assert {page.text_source for page in pages} == {"text_layer"}
     assert session.scalars(
         select(PageProcessingFailure).where(
-            PageProcessingFailure.document_id == replacement.id
+            PageProcessingFailure.document_id == doc.id
         )
     ).all() == []
 
 
-def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
+def test_a_failed_provider_call_is_a_scoped_processing_failure(
     session, project, tmp_path, monkeypatch
 ):
-    """The route names Textract; the failure names the engine that failed.
+    """The route names Textract, and so does the failure, because Textract read.
 
-    The scanned setting is off here, so the region is still read by the
-    incumbent OCR engine and a Processing Failure records that engine, its
-    configuration and the page scope. Calling the failure Textract's because
-    the route asked for Textract would be the same lie the retired router told
-    about thin text. The tests below are the other half: with the scanned
-    setting on, the failure names Textract because Textract is what read.
+    A transport failure is not the same record as a refused authorization: the
+    request left, it was answered with an error, and the failure says so. There
+    is no second engine left to answer the region instead (#741), which is the
+    point — a reading from an engine nobody selected would be worse than none.
     """
 
     scan = scan_image(400, 300, dpi=150, lines=(((20, 50), "SCANNED", 11),))
@@ -899,11 +915,8 @@ def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
     fixture.add_page(width=400, height=300).image((0, 0, 400, 300), scan)
     path = fixture.save(tmp_path / "scan.pdf")
 
-    def explode(*_args, **_kwargs):
-        raise RuntimeError("engine unavailable")
-
-    monkeypatch.setattr(settings, "reader_page_inventory", True)
-    monkeypatch.setattr("corridor.ingest._ocr_region", explode)
+    service = _RecordedService(error=RuntimeError("provider unavailable"))
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
     doc = ingest(session, project, path, tmp_path / "images")
 
     [page] = _pages(session, doc.id)
@@ -914,13 +927,9 @@ def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
             PageProcessingFailure.document_id == doc.id
         )
     ).all()
-    assert failure.engine == "tesseract"
-    assert failure.configuration_json["language"] == "eng"
+    assert failure.engine == "textract"
     assert failure.scope_json["page_number"] == 1
-    assert failure.error_type == "RuntimeError"
-
-
-# --- the scanned route, behind its own setting (#739) ---------------------------
+    assert failure.error_type == "provider-call-failed"
 
 
 def _scan_pdf(tmp_path, name="scan.pdf"):
@@ -941,20 +950,6 @@ def _ocr_layers(session, document_id):
     ).all()
 
 
-def test_the_scanned_path_needs_the_router_that_names_its_engine(tmp_path, monkeypatch):
-    """The engine an OCR route names comes from the reader-backed inventory.
-
-    With the incumbent inventory the route names the incumbent engine, so the
-    scanned setting alone would have ingest read regions Textract was never
-    routed to. The pair is refused rather than resolved by the setting.
-    """
-    monkeypatch.setattr(settings, "textract_scanned_reading", True)
-    monkeypatch.setattr(settings, "reader_page_inventory", False)
-
-    with pytest.raises(ValueError, match="reader_page_inventory beside it"):
-        _extract_pages(_scan_pdf(tmp_path), tmp_path / "images", "a" * 64, project="1")
-
-
 def test_the_scanned_route_refuses_without_an_authorization_and_never_falls_back(
     session, project, tmp_path, monkeypatch
 ):
@@ -965,8 +960,6 @@ def test_the_scanned_route_refuses_without_an_authorization_and_never_falls_back
     there is no OCR token layer and the page carries no OCR text. A reading
     from an engine nobody selected would be worse than no reading.
     """
-    monkeypatch.setattr(settings, "reader_page_inventory", True)
-    monkeypatch.setattr(settings, "textract_scanned_reading", True)
 
     doc = ingest(session, project, _scan_pdf(tmp_path), tmp_path / "images")
 
@@ -990,83 +983,13 @@ def test_an_authorized_scanned_read_writes_the_provider_backed_token_layer(
     session, project, tmp_path, monkeypatch
 ):
     """The other branch, with a record and a transport double: no live call anywhere."""
-    from corridor import ingest as ingest_module
-    from corridor.scanned_reading import ScannedReader
-    from corridor_pdf_reader.textract_adapter.boundary import open_boundary
-    from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
-    from corridor_pdf_reader.textract_adapter.records import (
-        PROVIDER_POSTURE,
-        ExperimentScope,
-        RequestBoundary,
-    )
-    from corridor_pdf_reader.textract.tests.helpers import Page
-    from dataclasses import replace as replace_fields
-
-    page_builder = Page(frame=(400.0, 300.0))
-    word = page_builder.word("SCANNED", (20, 40, 90, 56))
-    page_builder.line([word])
-    cell = page_builder.cell(1, 1, (15, 35, 100, 60), [word])
-    page_builder.table((15, 35, 100, 60), [cell])
-    response = page_builder.response()
-
-    class Recorded:
-        calls = 0
-
-        def analyze_document(self, *, Document, FeatureTypes):
-            type(self).calls += 1
-            return response
-
-    # The experiment scope's dataset identity is what a request's `project`
-    # field is matched against, and ingest names the project by its id.
-    scope = ExperimentScope(
-        record_id="exp-739",
-        dataset=str(project.id),
-        dataset_digest="0" * 8,
-        purpose="scanned-page-reading",
-        scope="one synthetic scan built by the test",
-        source_classes=frozenset({"synthetic", "scanned-pdf"}),
-        region=PROVIDER_POSTURE.region,
-        posture_identity=PROVIDER_POSTURE.identity,
-        posture_digest=PROVIDER_POSTURE.digest,
-        recorded_by="a named person",
-        recorded_on="2026-09-08",
-    )
-    boundary = RequestBoundary(
-        project=str(project.id),
-        source_class="scanned-pdf",
-        purpose="scanned-page-reading",
-        region=PROVIDER_POSTURE.region,
-        posture_identity=PROVIDER_POSTURE.identity,
-        stage="experiment",
-    )
-    adapter = open_boundary(
-        scope,
-        boundary,
-        extraction_run="run-739",
-        cache_root=tmp_path / "cache",
-        service=Recorded(),
-        configuration=RequestConfiguration(dpi=36),
-        posture=replace_fields(
-            PROVIDER_POSTURE,
-            status="accepted",
-            retention="verified",
-            ai_services_opt_out="optOut",
-            permissions="verified",
-        ),
-        sleep=lambda seconds: None,
-    )
-    monkeypatch.setattr(settings, "reader_page_inventory", True)
-    monkeypatch.setattr(settings, "textract_scanned_reading", True)
-    monkeypatch.setattr(
-        ingest_module,
-        "open_scanned_reader",
-        lambda *args, **kwargs: ScannedReader(adapter=adapter, refusal=None, request=boundary),
-    )
+    service = _RecordedService(_provider_response((400.0, 300.0), ("SCANNED",)))
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
 
     doc = ingest(session, project, _scan_pdf(tmp_path), tmp_path / "images")
 
     [page] = _pages(session, doc.id)
-    assert Recorded.calls == 1
+    assert service.calls == 1
     assert session.scalars(
         select(PageProcessingFailure).where(
             PageProcessingFailure.document_id == doc.id
@@ -1103,8 +1026,6 @@ def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(
     clean page must not become a Processing Failure just because the scanned
     path is selected.
     """
-    monkeypatch.setattr(settings, "reader_page_inventory", True)
-    monkeypatch.setattr(settings, "textract_scanned_reading", True)
 
     doc = ingest(session, project, pdf, tmp_path / "images")
 

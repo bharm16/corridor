@@ -53,17 +53,6 @@ class Settings(BaseSettings):
     # the rest of the pipeline reads (`corridor.ingest`).
     corpus_images: str = "out/page-images"
 
-    # Which rasterizer the isolated render worker uses (#735). Off is MuPDF,
-    # the measured path every existing derivative was rendered with; on is
-    # PDFium, the engine ADR-0094 decided on. It is off here because a merged
-    # implementation is not a selection: #447 owns that act, and turning this
-    # on is the one configuration change it makes. A PDFium render is a new
-    # derivative identity beside the MuPDF one, never an overwrite (ADR-0072),
-    # so a deployment can be turned back without losing what it rendered.
-    pdfium_render_worker: bool = Field(
-        default=False, validation_alias="CORRIDOR_PDFIUM_RENDER_WORKER"
-    )
-
     # The one server-owned mailbox address and webhook credential for #372.
     # Empty credential is intentionally non-operational: a deployment must
     # explicitly configure the sender-authentication boundary before mail can
@@ -125,42 +114,15 @@ class Settings(BaseSettings):
         default="development", validation_alias="CORRIDOR_ENVIRONMENT"
     )
 
-    # Whether native page text and the native Token Layer come from the
-    # paired-rendition reader (ADR-0094, #733) instead of the incumbent
-    # engine. Off is the incumbent path, unchanged; on is the whole switch,
-    # so a deployment that wants the replacement changes this one value and
-    # nothing else. It stays off here because merging an adapter is not
-    # selecting it: #447 owns native selection, and a production default
-    # moves by that decision, never because an implementation landed.
-    native_reader_token_layer: bool = Field(
-        default=False, validation_alias="CORRIDOR_NATIVE_READER_TOKEN_LAYER"
-    )
-
-    # Whether the Page Inventory and the routing decision come from the same
-    # reader (ADR-0094, #734) instead of the incumbent engine. Separate from
-    # the setting above because the two move different boundaries: that one
-    # changes which engine's text a page carries, this one changes which pages
-    # are sent to OCR at all, and a rollback of either must not drag the other
-    # with it. Off for the same reason: #447 owns native selection and #739
-    # owns scanned selection, and neither moves because an adapter merged.
-    reader_page_inventory: bool = Field(
-        default=False, validation_alias="CORRIDOR_READER_PAGE_INVENTORY"
-    )
-
-    # Whether the pages and image regions the inventory routes to OCR read
-    # through the authorized Textract adapter (ADR-0094, #739) instead of the
-    # incumbent local engine. Off is the incumbent Tesseract path, unchanged;
-    # on is the whole switch, so a deployment that wants the replacement OCR
-    # changes this one value and nothing else. It is separate from the two
-    # native settings above because it moves a third boundary — who reads a
-    # scanned page, and what a value only that engine supplies may claim — and
-    # a rollback of one must not drag the others with it. Off, because merging
-    # an adapter is not selecting it: scanned selection is #739's own act
-    # through #447's mechanism, and a production default moves by that
-    # decision, never because an implementation landed.
-    textract_scanned_reading: bool = Field(
-        default=False, validation_alias="CORRIDOR_TEXTRACT_SCANNED_READING"
-    )
+    # There were three settings here until #741: whether native page text and
+    # the native Token Layer, the Page Inventory and routing decision, and the
+    # reading of scanned pages came from the replacement rather than from the
+    # incumbent PyMuPDF and Tesseract engines. Each existed so a rollback of
+    # one boundary could not drag the others with it. ADR-0095 recorded the
+    # maintainer's acceptance of the replacement and #741 removed the
+    # incumbents, so none of the three had a second option left to select.
+    # Rollback is now a version-control revert, not a value in this file
+    # (docs/operations/pdf-engine-retirement-rollback.md).
 
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"

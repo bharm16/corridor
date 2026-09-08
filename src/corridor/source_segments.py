@@ -2,18 +2,27 @@
 
 Copied quotations made the old evidence path shallow: every consumer owned a
 slightly different text copy.  Source Segments give those consumers one durable
-address instead. Structured workbook cells and Minutes prose spans are the first
-two locator shapes. Both come directly from original bytes: native cell
-coordinates for a workbook, and page-local character bounds for a PDF text
-layer (ADR-0068). The new pdf_span/pdf_cell schemes delegate to reader_segments
-(#736), which records the rendition, exact reader/configuration result and
-physical glyph locations. The legacy prose_span kind always retains its old
-reader and offsets; selecting a challenger cannot reinterpret them.
+address instead. A structured workbook cell is native cell coordinates; a PDF
+passage is the pdf_span/pdf_cell scheme, which delegates to reader_segments
+(#736) and records the rendition, the exact reader/configuration result and
+physical glyph locations (ADR-0068).
 
 The module deliberately owns both directions of the contract.  Segmentation
 turns source bytes into ordered append-only rows; dereference follows a row's
 typed locator back through the same native reader and checks the registered
 Document digest, stored text digest, and recovered value before returning text.
+
+**The retained prose_span kind is read here and is no longer written or
+re-read.**  Its offsets index the page string the retired incumbent reader
+produced, so only that reader could return to the location, and #741 removed it
+(ADR-0094, ADR-0095).  Dereferencing one now raises ``FreshReadingUnavailable``
+naming the reader it needed.  That exception is deliberately *not* a
+``SourceSegmentIntegrityError``: an integrity error means the locator was
+followed and the source disagreed, and calling "we cannot look" by that name
+would relabel every retained prose citation as not found at its cited location.
+What a retained citation is verified by instead is
+``retained_history.replay_retained_reading``, which proves the retained words
+and the registered bytes from their own digests and opens no page.
 """
 
 from __future__ import annotations
@@ -24,22 +33,17 @@ from pathlib import Path
 import re
 
 from openpyxl import load_workbook
-import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, SourceSegment
 from corridor.source_append import SegmentValues, append_source_segments
-from corridor.prose_spans import (
-    NumberedActionSpan,
-    numbered_action_spans,
-    page_prose_ranges,
-)
 
 SPREADSHEET_SUFFIXES = frozenset({".xlsx", ".xlsm"})
 
 
 from corridor.source_segment_errors import (
+    FreshReadingUnavailable,
     SourceSegmentIntegrityError,
     SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
@@ -54,18 +58,6 @@ class SpreadsheetSegment:
     ordinal: int
     sheet_name: str
     cell_range: str
-    exact_text: str
-    content_sha256: str
-
-
-@dataclass(frozen=True)
-class ProseSegment:
-    """One non-overlapping exact prose span in deterministic page order."""
-
-    ordinal: int
-    page_no: int
-    start_offset: int
-    end_offset: int
     exact_text: str
     content_sha256: str
 
@@ -98,89 +90,43 @@ def spreadsheet_segments(path: Path | str) -> tuple[SpreadsheetSegment, ...]:
     return tuple(segments)
 
 
-def pdf_prose_segments(path: Path | str) -> tuple[ProseSegment, ...]:
-    """Read non-overlapping Minutes spans from each native PDF text layer."""
-
-    segments: list[ProseSegment] = []
-    with pymupdf.open(Path(path)) as pdf:
-        for page_index, page in enumerate(pdf):
-            page_no = page_index + 1
-            text = page.get_text()
-            for start, end in page_prose_ranges(text):
-                exact_text = text[start:end]
-                segments.append(
-                    ProseSegment(
-                        ordinal=len(segments) + 1,
-                        page_no=page_no,
-                        start_offset=start,
-                        end_offset=end,
-                        exact_text=exact_text,
-                        content_sha256=_text_digest(exact_text),
-                    )
-                )
-    return tuple(segments)
-
-
 def append_ingested_source_segments(
     session: Session, document: Document, path: Path | str, *, native_reading=None
 ) -> tuple[SourceSegment, ...]:
     """Append the supported segments for registered source bytes, at most once."""
 
     original = Path(path)
-    # A configured native challenger must never append incumbent prose beside
-    # its new page string, including the ordinary ingest deduplication path.
-    from corridor.config import settings
     from corridor.reader_segments import append_native_segments, read_native_pdf
 
-    if native_reading is not None or (
-        settings.native_reader_token_layer and original.suffix.lower() == ".pdf"
-    ):
+    if native_reading is not None or original.suffix.lower() == ".pdf":
         _require_registered_bytes(document, original)
         reading = native_reading or read_native_pdf(original, source_sha256=document.sha256)
         return append_native_segments(session, document, reading)
-    is_spreadsheet = original.suffix.lower() in SPREADSHEET_SUFFIXES
-    is_minutes_pdf = (
-        document.doc_type == "minutes" and original.suffix.lower() == ".pdf"
-    )
-    if not original.exists() or not (is_spreadsheet or is_minutes_pdf):
+    if not original.exists() or original.suffix.lower() not in SPREADSHEET_SUFFIXES:
         return ()
     _require_registered_bytes(document, original)
     existing = tuple(
         session.scalars(
             select(SourceSegment)
             .where(SourceSegment.document_id == document.id)
-            .where(SourceSegment.kind.in_(("spreadsheet_cell", "prose_span")))
+            .where(SourceSegment.kind == "spreadsheet_cell")
             .order_by(SourceSegment.ordinal)
         ).all()
     )
     if existing:
         return existing
 
-    if is_spreadsheet:
-        values = tuple(
-            SegmentValues(
-                kind="spreadsheet_cell",
-                exact_text=segment.exact_text,
-                content_sha256=segment.content_sha256,
-                ordinal=segment.ordinal,
-                sheet_name=segment.sheet_name,
-                cell_range=segment.cell_range,
-            )
-            for segment in spreadsheet_segments(original)
+    values = tuple(
+        SegmentValues(
+            kind="spreadsheet_cell",
+            exact_text=segment.exact_text,
+            content_sha256=segment.content_sha256,
+            ordinal=segment.ordinal,
+            sheet_name=segment.sheet_name,
+            cell_range=segment.cell_range,
         )
-    else:
-        values = tuple(
-            SegmentValues(
-                kind="prose_span",
-                exact_text=segment.exact_text,
-                content_sha256=segment.content_sha256,
-                ordinal=segment.ordinal,
-                page_no=segment.page_no,
-                start_offset=segment.start_offset,
-                end_offset=segment.end_offset,
-            )
-            for segment in pdf_prose_segments(original)
-        )
+        for segment in spreadsheet_segments(original)
+    )
     return append_source_segments(
         session,
         project_id=document.project_id,
@@ -243,7 +189,8 @@ def dereference_source_segment(
             original, sheet_name=segment.sheet_name, cell_range=segment.cell_range
         )
     elif segment.kind == "prose_span":
-        recovered = _dereference_pdf_prose_span(original, segment)
+        # Not an integrity failure: nothing was read, so nothing disagreed.
+        raise FreshReadingUnavailable("prose_span", "pymupdf")
     elif segment.kind in {"pdf_span", "pdf_cell"}:
         from corridor.reader_segments import replay_native_segment
 
@@ -347,27 +294,6 @@ def _dereference_spreadsheet_cell(
         return _exact_cell_text(value)
     finally:
         workbook.close()
-
-
-def _dereference_pdf_prose_span(path: Path, segment: SourceSegment) -> str:
-    if path.suffix.lower() != ".pdf":
-        raise SourceSegmentLocatorMismatch("prose span requires registered PDF bytes")
-    if (
-        not isinstance(segment.page_no, int)
-        or not isinstance(segment.start_offset, int)
-        or not isinstance(segment.end_offset, int)
-        or segment.page_no < 1
-        or segment.start_offset < 0
-        or segment.end_offset <= segment.start_offset
-    ):
-        raise SourceSegmentLocatorMismatch("prose span locator is incomplete")
-    with pymupdf.open(path) as pdf:
-        if segment.page_no > pdf.page_count:
-            raise SourceSegmentLocatorMismatch("prose span page does not exist")
-        page_text = pdf[segment.page_no - 1].get_text()
-    if segment.end_offset > len(page_text):
-        raise SourceSegmentLocatorMismatch("prose span bounds exceed the page text")
-    return page_text[segment.start_offset : segment.end_offset]
 
 
 def _exact_cell_text(value: object) -> str:

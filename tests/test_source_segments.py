@@ -19,6 +19,7 @@ from corridor.db import Session, engine
 from corridor.config import settings
 from corridor.ingest import ingest_document
 from corridor.models import Project, SourceSegment
+from corridor.prose_spans import is_prose_segment
 from corridor.source_segments import (
     SourceSegmentDigestMismatch,
     dereference_source_segment,
@@ -43,9 +44,16 @@ REAL_MINUTES_SHA256 = (
 REAL_MINUTES = (
     CORPUS_STORE / REAL_MINUTES_SHA256[:2] / f"{REAL_MINUTES_SHA256}.pdf"
 )
+# The exact wording the reader in the product recovers for this statement.
+# The retired reader put a space before the line break inside "(Due \ndate" and
+# cut this document into 135 page-prose spans; the paired-rendition reader's
+# page-text projection does not, and cuts it into 82 (#741). Both are readings
+# of the same registered bytes, so these numbers describe the reader rather
+# than the document, and a citation retained under the old reading keeps the
+# words it was written with.
 REAL_MINUTES_STATEMENT = (
     "Equistar to provide a chain of title on the ROW agreement that is in DOW’s name "
-    "(Due \ndate of 01/2025)."
+    "(Due\ndate of 01/2025)."
 )
 needs_corpus = pytest.mark.skipif(
     not REAL_WORKBOOK.exists(),
@@ -213,6 +221,15 @@ def test_every_segment_replays_from_the_original_workbook_bytes(
 def test_minutes_pdf_ingest_appends_non_overlapping_replayable_prose_spans(
     session, project, tmp_path
 ):
+    """The prose of a Minutes page, under the reader that now reads it.
+
+    The locator scheme changed with the reader: a page's exact prose is a
+    ``pdf_span`` on the page stream, cut by the same boundaries the retired
+    ``prose_span`` used (#736, #741). What the segments have to be is
+    unchanged -- non-overlapping, in page order, and replayable to their own
+    stored words.
+    """
+
     path = _minutes_pdf(tmp_path)
 
     document = ingest_document(
@@ -224,12 +241,16 @@ def test_minutes_pdf_ingest_appends_non_overlapping_replayable_prose_spans(
     )
     segments = session.scalars(
         select(SourceSegment)
-        .where(SourceSegment.document_id == document.id)
+        .where(
+            SourceSegment.document_id == document.id,
+            SourceSegment.kind == "pdf_span",
+            SourceSegment.span_stream == "page",
+        )
         .order_by(SourceSegment.ordinal)
     ).all()
 
     assert MINUTES_STATEMENT in [segment.exact_text for segment in segments]
-    assert all(segment.kind == "prose_span" for segment in segments)
+    assert all(is_prose_segment(segment) for segment in segments)
     assert all(
         segment.sheet_name is None
         and segment.cell_range is None
@@ -270,7 +291,8 @@ def test_real_dev_corpus_minutes_replay_exact_statement_spans(
         select(SourceSegment)
         .where(
             SourceSegment.document_id == document.id,
-            SourceSegment.kind == "prose_span",
+            SourceSegment.kind == "pdf_span",
+            SourceSegment.span_stream == "page",
         )
         .order_by(SourceSegment.ordinal)
     ).all()
@@ -278,7 +300,7 @@ def test_real_dev_corpus_minutes_replay_exact_statement_spans(
         segment for segment in segments if segment.exact_text == REAL_MINUTES_STATEMENT
     )
 
-    assert len(segments) == 135
+    assert len(segments) == 82
     assert statement.page_no == 2
     assert dereference_source_segment(document, statement, REAL_MINUTES) == (
         REAL_MINUTES_STATEMENT
@@ -351,7 +373,8 @@ def test_database_refuses_overlapping_prose_span_locators(
         select(SourceSegment)
         .where(
             SourceSegment.document_id == document.id,
-            SourceSegment.kind == "prose_span",
+            SourceSegment.kind == "pdf_span",
+            SourceSegment.span_stream == "page",
         )
         .order_by(SourceSegment.ordinal)
     ).first()
@@ -362,15 +385,20 @@ def test_database_refuses_overlapping_prose_span_locators(
         SourceSegment(
             project_id=project.id,
             document_id=document.id,
-            kind="prose_span",
+            kind="pdf_span",
             exact_text=overlapping_text,
             content_sha256=sha256(overlapping_text.encode()).hexdigest(),
             ordinal=100,
             sheet_name=None,
             cell_range=None,
             page_no=first.page_no,
+            span_stream=first.span_stream,
             start_offset=first.start_offset + 1,
             end_offset=first.end_offset,
+            rendition_sha256=first.rendition_sha256,
+            reading_sha256=first.reading_sha256,
+            reader_identity=first.reader_identity,
+            location_json=first.location_json,
         )
     )
 

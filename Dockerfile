@@ -33,7 +33,6 @@ ENV PYTHONUNBUFFERED=1 \
     UV_LINK_MODE=copy \
     UV_CACHE_DIR=/opt/corridor/uv-cache
 
-# tesseract-ocr    pytesseract shells out to this binary.
 # libpango/libcairo/libgdk-pixbuf/libffi  WeasyPrint's native stack; it fails
 #                  at import without them, not at first render.
 # ca-certificates  needed to fetch the RDS trust bundle below.
@@ -46,7 +45,6 @@ RUN apt-get update \
         libgdk-pixbuf-2.0-0 \
         libpango-1.0-0 \
         libpangocairo-1.0-0 \
-        tesseract-ocr \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /opt/corridor

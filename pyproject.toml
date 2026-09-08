@@ -12,8 +12,13 @@ dependencies = [
     "pillow>=12.3.0",
     "psycopg[binary]>=3.2",
     "pydantic-settings>=2.2",
+    # Retired by ADR-0094 and removed from the product by #741 everywhere
+    # except the legacy matrix extraction path, which reads table geometry
+    # through it (`geometry.py`, `extract_matrix.py`, `gold.py`). That path
+    # leaves when the deployed Matrix route moves to the paired-rendition
+    # reader's own cell-ID semantics; `ENGINE_ALLOWLIST` in
+    # tests/test_architecture.py is the exact remaining list.
     "pymupdf>=1.28.0",
-    "pytesseract>=0.3.13",
     "python-multipart>=0.0.32",
     "pyyaml>=6.0.3",
     "sqlalchemy>=2.0",

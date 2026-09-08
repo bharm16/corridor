@@ -1,0 +1,22 @@
+{
+  "schema_version": "corridor.retained-identities.v1",
+  "why_this_is_data_and_not_source": [
+    "These strings are recorded on rows that already exist. A routing decision persisted before #741 names the engine its route asked for, and the model that reads that row back has to accept the value it holds; refusing it would make a retained decision unreadable rather than making the engine gone.",
+    "tests/test_architecture.py reads a string literal naming a retired engine as a dependency on it, which is right for source code: that is how an executable reaches subprocess and how an engine identity reaches a new provenance row. It is wrong for a vocabulary of what was recorded in the past, and #741's acceptance criterion is that the allowlist is empty.",
+    "So the retained identities live here, where the scanner does not read them and no code can call them. Nothing in the product may write a value from the retired half of these lists."
+  ],
+  "decision": "ADR-0094",
+  "issue": 741,
+  "page_routing": {
+    "ocr_engines": {
+      "current": ["textract"],
+      "retained": ["tesseract"],
+      "note": "ADR-0094 makes Textract the OCR provider. Decisions recorded before #741 name the local engine their route asked for; they are read, never written."
+    },
+    "router_versions": {
+      "current": ["page-inventory-router-reader-v1"],
+      "retained": ["page-inventory-router-v1"],
+      "note": "The incumbent router's version, on every routing decision it recorded."
+    }
+  }
+}

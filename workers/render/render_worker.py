@@ -5,14 +5,19 @@ work. This process owns engine dependencies and emits one identified derivative
 plus a complete affine manifest. It has no database access and cannot mutate the
 source PDF or any reviewer rendition.
 
-Two rasterizers reach the same manifest (#735). PDFium, through pypdfium2, is
-the replacement ADR-0094 decided on; `legacy_pymupdf` is the measured path it
-replaces, imported only when a request asks for it, so this module depends on
-no MuPDF. Which one runs is the caller's decision, carried in the request,
-never read from this process's environment: `render_profiles.worker_environment`
-scrubs every `CORRIDOR_` variable before the subprocess starts, so a setting
-could not reach here even if it were consulted. Nothing about a merged
-implementation selects it for production; #447 owns that act.
+One rasterizer reaches the manifest: PDFium, through pypdfium2, the
+replacement ADR-0094 decided on. `legacy_pymupdf` held the measured MuPDF path
+it replaces and was imported only when a request asked for it; #741 deleted it
+with the engine, so a request naming the legacy rasterizer is refused by name
+rather than answered by a different engine. Which rasterizer runs is still the
+caller's decision, carried in the request and never read from this process's
+environment: `render_profiles.worker_environment` scrubs every `CORRIDOR_`
+variable before the subprocess starts.
+
+`LEGACY_RASTERIZER` stays, because it is the identity on every derivative
+rendered before the switch and the rule that names their files: a retained
+MuPDF render is named without a rasterizer suffix, and moving it would make
+every stored path wrong.
 
 **Why PDFium needs no further isolation here.** `corridor_pdf_reader.execution`
 holds the rule that PDFium is unsafe to call from more than one thread of a
@@ -252,11 +257,9 @@ def rasterise(rasterizer, source_path, page_number, dpi):
             "pdfium": pypdfium2.version.PDFIUM_INFO.version,
         }
     if rasterizer == LEGACY_RASTERIZER:
-        import legacy_pymupdf
-
-        return (
-            legacy_pymupdf.rasterise(source_path, page_number, dpi),
-            legacy_pymupdf.library_versions(),
+        raise ValueError(
+            f"the {LEGACY_RASTERIZER} rasterizer was removed with the engine "
+            "(#741); its renders are retained and are not re-rendered here"
         )
     raise ValueError(f"unknown rasterizer {rasterizer!r}")
 
@@ -309,7 +312,7 @@ def render(request):
     # flip constant is the crop box's *top* edge in PDF user space. That is
     # `page_origin_y`, not `crop_box["y1"]`: the two agree on every page whose
     # media box starts at y = 0, and differ by `media_box["y0"]` on the pages
-    # that do not (`legacy_pymupdf`).
+    # that do not (the retired MuPDF rasterizer).
     pdf_to_page = (
         1.0,
         0.0,

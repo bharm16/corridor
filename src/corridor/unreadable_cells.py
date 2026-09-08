@@ -79,10 +79,11 @@ KNOWN_IMAGE_OPS: tuple[str, ...] = ("deskew", "denoise", "contrast", "upscale", 
 # ADR-0094 makes Textract a read identity here rather than a special case: it
 # is enumerated like every other read, a profile must declare it before the
 # harness may call it, and a read of it generates a candidate and never proves
-# one. The incumbent local engine stays in the vocabulary while its rollback is
-# retained; #741 removes it (#739).
+# one. This is the vocabulary a *new* profile may declare, so the incumbent
+# local engine left it with the engine (#741): nothing in the product can call
+# a read that does not exist, and a profile that asks for one is refused by
+# name rather than silently answered by another engine.
 KNOWN_READS: tuple[str, ...] = (
-    "tesseract",
     "textract",
     "secondary_ocr",
     "vision_model_a",

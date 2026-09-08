@@ -10,6 +10,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from corridor.prose_spans import PROSE_SEGMENT_KINDS
+
 
 def inclusion_rule_admits_human_record_decision(inclusion_rule: str) -> bool:
     """Whether a Fact type may be settled by a Human Record Decision.
@@ -127,7 +129,7 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="source_row",
         transformation="structured_reference_set_v1",
         accepted_segment_kinds=frozenset(
-            {"spreadsheet_cell", "recorded_verbal_statement", "prose_span"}
+            {"spreadsheet_cell", "recorded_verbal_statement", *PROSE_SEGMENT_KINDS}
         ),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
@@ -141,7 +143,9 @@ FACT_TYPE_CONTRACTS = {
         value_class="closure_result",
         subject_kind="source_row",
         transformation="typed_closure_result_v1",
-        accepted_segment_kinds=frozenset({"spreadsheet_cell", "prose_span"}),
+        accepted_segment_kinds=frozenset(
+            {"spreadsheet_cell", *PROSE_SEGMENT_KINDS}
+        ),
         automatic_segment_kinds=frozenset({"spreadsheet_cell"}),
         required_roles=frozenset({"value_source"}),
         validation_rule="typed_closure_with_governing_sources",
@@ -153,7 +157,7 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="statement_candidate",
         transformation="exact_prose_span_v1",
         accepted_segment_kinds=frozenset(
-            {"prose_span", "recorded_verbal_statement"}
+            {*PROSE_SEGMENT_KINDS, "recorded_verbal_statement"}
         ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source", "attribution_source"}),
@@ -166,7 +170,7 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="statement_candidate",
         transformation="typed_statement_timing_v1",
         accepted_segment_kinds=frozenset(
-            {"recorded_verbal_statement", "prose_span"}
+            {"recorded_verbal_statement", *PROSE_SEGMENT_KINDS}
         ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source"}),

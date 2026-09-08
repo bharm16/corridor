@@ -1,0 +1,207 @@
+{
+  "inventory": {
+    "citations": [],
+    "citations_by_locator_scheme": {},
+    "connection": {
+      "alembic_revision": "b2d5f8a1c4e7",
+      "configured_url_without_credentials": "localhost:5433/corridor",
+      "server": {
+        "database_name": "corridor",
+        "isolation": "repeatable read",
+        "read_only": "on",
+        "role_name": "corridor",
+        "server_address": "172.18.0.2/32",
+        "server_port": "5432",
+        "server_version": "PostgreSQL 16.15 (Debian 16.15-1.pgdg13+2) on aarch64-unknown-linux-gnu, compiled by gcc (Debian 14.2.0-19) 14.2.0, 64-bit"
+      }
+    },
+    "environment_label": "local development database for this checkout",
+    "retained_anchors": [
+      {
+        "present": true,
+        "rows": 0,
+        "table": "fact_decisions",
+        "why_it_qualifies": "an accepted Source Fact decision"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "delta_record_decisions",
+        "why_it_qualifies": "a resolved Proposed Delta"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "project_record_revisions",
+        "why_it_qualifies": "an atomic accepted-record revision"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "project_baseline_adoptions",
+        "why_it_qualifies": "an adopted baseline receipt"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "report_runs",
+        "why_it_qualifies": "a report run, which retains the reading it published"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "release_candidates",
+        "why_it_qualifies": "a prepared release candidate"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "release_candidate_artifacts",
+        "why_it_qualifies": "a candidate's rendered bytes"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "release_packages",
+        "why_it_qualifies": "an authorized release package"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "release_package_artifacts",
+        "why_it_qualifies": "a released package's rendered bytes"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "external_report_releases",
+        "why_it_qualifies": "a legacy external release"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "external_report_artifacts",
+        "why_it_qualifies": "a legacy external release's bytes"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "documents",
+        "why_it_qualifies": "a registered source document"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "source_segments",
+        "why_it_qualifies": "a persisted citation"
+      },
+      {
+        "present": true,
+        "rows": 0,
+        "table": "facts",
+        "why_it_qualifies": "a captured Source Fact"
+      }
+    ],
+    "schema": {
+      "absent_native_reading_columns": [
+        "rendition_sha256",
+        "reading_sha256",
+        "reader_identity",
+        "location_json",
+        "span_stream",
+        "table_index",
+        "cell_row",
+        "cell_column",
+        "row_span",
+        "column_span"
+      ],
+      "can_hold_a_native_reading_identity": false,
+      "source_segments_columns": [
+        "cell_range",
+        "content_sha256",
+        "created_at",
+        "document_id",
+        "end_offset",
+        "exact_text",
+        "id",
+        "kind",
+        "ordinal",
+        "page_no",
+        "project_id",
+        "recorded_verbal_origin_id",
+        "sheet_name",
+        "start_offset"
+      ]
+    },
+    "segment_reference_tables": [
+      {
+        "constraints": [
+          "fk_evidence_link_sources_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "evidence_link_sources",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "fk_fact_closure_source_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "fact_closure_sources",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "fk_fact_sources_segment_project",
+          "fk_fact_sources_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "fact_sources",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "recorded_verbal_origin_backfill_receipts_source_segment_id_fkey"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "recorded_verbal_origin_backfill_receipts",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "fk_subject_resolution_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "subject_resolution_attempts",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "fk_subject_resolution_decision_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "subject_resolution_decisions",
+        "rows": 0
+      },
+      {
+        "constraints": [
+          "fk_support_assessment_sources_segment_project",
+          "fk_support_assessment_sources_segment_scope"
+        ],
+        "links": 0,
+        "referring_column": "source_segment_id",
+        "referring_table": "support_assessment_sources",
+        "rows": 0
+      }
+    ]
+  },
+  "issue": 741,
+  "recorded_at": "2026-09-08T14:43:46.456764+00:00",
+  "schema_version": "corridor.retained-citation-inventory.v1"
+}

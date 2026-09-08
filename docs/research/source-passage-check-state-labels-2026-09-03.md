@@ -63,3 +63,25 @@ Why the placeholder was rejected:
 Section 2's finding stands: the primary sources still supply no counterpart, so these remain scoped plain-language product wording carrying explicit maintainer approval, not an adopted industry term. The concrete example in section 3 reads the same way with the approved words — the letter's passage is **Found at cited location** whether it supports the date, contradicts it, or merely mentions it.
 
 The correction is presentation only. The stored identifiers `valid`, `invalid`, and `not_checked` are unchanged, the check stays mechanical and replayable, and a found passage is still not a Support Assessment. No successor ADR is written: the procedure permits a wording correction once the missing-counterpart decision is explicitly approved, provided it alters neither authority nor lifecycle, and this alters neither. [ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md) and #493 stand as they are.
+
+## 6. A fourth state, added 2026-09-08 by [#741](https://github.com/bharm16/corridor/issues/741) — wording not yet confirmed by the maintainer
+
+[ADR-0094](../adr/0094-pdf-facts-come-from-the-paired-rendition-reader-scanned-pages-from-textract-and-pymupdf-and-tesseract-leave-the-product.md) retires the reader that established every historical `prose_span` locator, and [ADR-0095](../adr/0095-the-maintainer-accepts-the-pdf-replacement-on-the-evidence-already-measured.md) records the maintainer's acceptance of the replacement. A `prose_span` is a pair of character offsets into the page string that reader produced, so once it leaves the product no reader here can return to that location. The retained citation itself is untouched: its exact words and their digest are stored, and `retained_history.replay_retained_reading` proves them without opening any page.
+
+**Why a fourth state rather than one of the three.** The check has to answer *something* for a retained prose citation, and each existing state would say something false:
+
+- `invalid` / **Not found at cited location** asserts that a locator was replayed and the passage was not there. That is a statement about the source, and nothing made it — no page was opened. Falling through to `invalid` would relabel every retained prose citation in the record as a failed check on the day the reader left.
+- `not_checked` / **No cited location recorded** asserts there was nothing to dereference. There is: the locator is recorded, and it is exactly what cannot be replayed.
+- `valid` is obviously unavailable.
+
+**Machine identifier:** `not_re_readable`, beside the three [ADR-0082](../adr/0082-provenance-follows-the-value-class-and-support-is-a-relation.md) fixed. The refusal it comes from is `source_segments.FreshReadingUnavailable`, deliberately a `RuntimeError` and not a `SourceSegmentIntegrityError`, so that "we cannot look" can never be caught as "the source disagreed".
+
+**Proposed customer label:** **Cited location cannot be re-read**.
+
+It is built from this vocabulary's own words. Every approved label in section 5 is about a *cited location*, and this one keeps that noun, says nothing about looking, and says nothing about the passage being absent. "Cannot be re-read" is the fact: the location is recorded, and the reading that could return to it is not available.
+
+Rejected wordings, for the same reasons as section 5: *Cannot be verified* (reintroduces the word ADR-0082 removed, and reads as a verdict on the value); *Check unavailable* (describes a system's state where every other label describes the passage); *Not re-checkable* (says the check failed to run without saying that the location is still recorded, which is the part a reader needs).
+
+**Status: proposed, not approved.** Section 2's finding still holds — the primary sources supply no counterpart for this state either, so procedure step 6 requires explicit maintainer agreement, exactly as it did for the three words in section 5. The maintainer approved those on 2026-09-03 in [#600](https://github.com/bharm16/corridor/issues/600); he has not been asked about this one. It is in the product as scoped plain-language wording pending his answer, and the stored identifier is what the record keeps either way.
+
+**What did not change.** The check stays mechanical, replayable and separate from the Support Assessment. `evidence_links.verified` remains exactly the projection `locator_validation_status == valid`, so a passage nobody can re-read is not a verified one. Every check that needs no reader still runs: a retained prose citation whose stored words no longer match their recorded digest, or whose registered bytes changed, is still **Not found at cited location**, because that failure was found without opening anything.

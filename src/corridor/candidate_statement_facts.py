@@ -37,6 +37,7 @@ from corridor.subject_resolution import (
     resolve_subject_reference,
 )
 from corridor.verify import normalize
+from corridor.prose_spans import prose_segment_filter
 
 
 @dataclass(frozen=True)
@@ -288,7 +289,7 @@ def _statement_attribution_segment(
                 ExtractedProposal.document_id == candidate.source_document_id,
                 Fact.fact_type == "statement_wording",
                 FactSource.role == "attribution_source",
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
             )
             .order_by(SourceSegment.id)
         ).all()

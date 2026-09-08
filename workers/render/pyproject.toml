@@ -8,9 +8,8 @@ dependencies = [
     "pillow>=12.0",
     # The rasterizer ADR-0094 selected, pinned to the version the paired-
     # rendition reader was measured with so one PDFium build serves both
-    # (#735, #729). PyMuPDF stays until #741 retires the measured rollback.
+    # (#735, #729). PyMuPDF left with the engine (#741).
     "pypdfium2==5.13.0",
-    "pymupdf>=1.28",
 ]
 
 [tool.uv]

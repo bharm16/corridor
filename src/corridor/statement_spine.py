@@ -34,6 +34,7 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal
+from corridor.prose_spans import prose_segment_filter
 
 
 def record_cited_statement_on_spine(
@@ -403,7 +404,7 @@ def _cited_passage_segment(
             Fact.subject_key == f"candidate:{candidate_id}",
             Fact.fact_type == "statement_wording",
             FactSource.role == "value_source",
-            SourceSegment.kind == "prose_span",
+            prose_segment_filter(SourceSegment),
         )
         .order_by(SourceSegment.id)
     )
@@ -417,7 +418,7 @@ def _cited_passage_segment(
             select(SourceSegment).where(
                 SourceSegment.project_id == project_id,
                 SourceSegment.document_id == evidence.document_id,
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
                 SourceSegment.page_no == evidence.page_no,
             )
         ).all()

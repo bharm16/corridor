@@ -21,27 +21,23 @@ mixed pages, and failed OCR indistinguishable. PDF ingest now persists the page
 inventory and region decision before it uses any recovered text; an engine
 exception becomes a scoped Processing Failure and fails the document attempt.
 
-Which engine supplies a PDF page's native reading is one setting,
-`native_reader_token_layer` (ADR-0094, #733). Off, and this is the incumbent
-path unchanged. On, and the paired-rendition reader supplies exactly two
-things initially: the page's native text and its native Token Layer. #736
-binds those projections and the new prose/cell Source Segments to the same
-immutable reading. Explicit shadow ingestion can append that reading to an
-already-ingested document without replacing its historical DocPage projection.
+A PDF page's native reading, its Page Inventory and its routing decision all
+come from one reader: the paired-rendition reader (ADR-0094, ADR-0095). Each
+of the three used to be a setting choosing between that reader and the
+incumbent engine, kept apart so a rollback of one could not drag the others
+with it. #741 removed the incumbent, so there is nothing left for those
+settings to select and they are gone; what a rollback means now is a
+version-control revert, recorded in
+`docs/operations/pdf-engine-retirement-rollback.md`.
 
-Which engine's facts decide where OCR is needed is a second, separate setting,
-`reader_page_inventory` (#734). Off, and the Page Inventory and the routing
-decision come from the incumbent open below. On, and both come from the same
-reader, in its own isolated read of the document. The two settings are kept
-apart because they move different boundaries — one changes which engine's text
-a page carries, the other changes which pages are sent to OCR at all — and a
-rollback of either must not drag the other with it. Both are off, because
-merging an adapter is not selecting it (#447, #739).
-
-A reader-backed route names Amazon Textract as the engine that should read its
-OCR regions (ADR-0094). Ingest does not call Textract: wiring the scanned read
-is #739's, and until then the OCR attempt below is the incumbent engine's and
-records itself as the incumbent engine's. A routing decision says who a region
+Pages and image regions the inventory routes to OCR read through Amazon
+Textract, at the authorized outbound boundary (#732, #739). The ordinary
+answer today is that boundary's refusal, with zero outbound requests, because
+the customer authorization it requires is #522's and does not exist yet: a
+routed OCR region becomes a scoped Processing Failure naming the refusal. That
+is the designed behaviour, not a gap left by this removal — an unauthorized
+project has never been allowed to send a customer page to a provider, and it
+used to be answered locally instead. A routing decision says who a region
 *should* be read by; an attempt and its Processing Failure record who read it.
 Neither is allowed to borrow the other's name.
 """
@@ -54,11 +50,9 @@ from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
 
-import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.config import settings
 from corridor.models import (
     NUMBERING_SCHEMES,
     DocPage,
@@ -68,14 +62,9 @@ from corridor.models import (
     ProcessingArtifact,
 )
 from corridor.page_inventory import (
-    OCR_CONFIGURATION,
-    OCR_ENGINE,
     PageInventory,
     PageRoutingDecision,
-    PdfRect,
-    inventory_page,
     read_reader_page_inventories,
-    route_page,
     route_reader_page,
 )
 from corridor.render_profiles import (
@@ -95,10 +84,8 @@ from corridor.source_segments import (
     append_ingested_source_segments,
 )
 from corridor.token_layers import (
-    OcrRequest,
-    TesseractEngine,
+    TEXTRACT_ENGINE,
     TokenLayer,
-    extract_native_token_layer,
     page_text_projection,
     persist_token_layer,
     read_native_token_layers,
@@ -258,7 +245,7 @@ def ingest_document(
         # (ADR-0030).
         if numbering_scheme is not None:
             existing.numbering_scheme = numbering_scheme
-        if settings.native_reader_token_layer and path.suffix.lower() == ".pdf":
+        if path.suffix.lower() == ".pdf":
             ingest_native_reader(
                 session, document=existing, path=path, images_dir=images_dir
             )
@@ -470,8 +457,14 @@ def _persist_pages(
             referenced_by = f"page_processing_failure:{failure_row.id}"
             # An open failure keeps its own render and raw-OCR intermediaries
             # reachable (90 days), so the evidence survives while it is unresolved.
+            # The scanned route reads the whole page in one call and writes
+            # one receipt for it, while its failures are still recorded per
+            # routed region, so a region-keyed lookup finds nothing and the
+            # receipt an open failure needs would expire under it. Fall back to
+            # the page receipt, which is the attempt that failed.
             for artifact in (
-                raw_ocr_by_region.get(failure.region_id),
+                raw_ocr_by_region.get(failure.region_id)
+                or raw_ocr_by_region.get("page"),
                 ocr_layout_artifact,
             ):
                 if artifact is None:
@@ -563,244 +556,113 @@ def _extract_pages(
 ) -> list[ExtractedPage]:
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[ExtractedPage] = []
-    # Which engine actually reads an OCR region. The route names one (#734),
-    # and ADR-0094 makes that Textract; `textract_scanned_reading` is what
-    # decides whether ingest reads through the authorized adapter or through
-    # the incumbent engine (#739). Exactly one of the two is built, so a
-    # refused Textract read can never be quietly answered by Tesseract.
-    scanned = (
-        open_scanned_reader(
-            project,
-            extraction_run=source_sha256,
-            cache_root=Path(images_dir) / "textract",
-        )
-        if settings.textract_scanned_reading
-        else None
+    # The boundary an OCR-routed region reads through (#732, #739). It is
+    # opened for every document rather than behind a setting, because the
+    # incumbent local engine that the setting used to choose instead is gone
+    # (#741). Opening it is not a network call: an unauthorized project gets
+    # the boundary's refusal, recorded per region as a Processing Failure.
+    scanned = open_scanned_reader(
+        project,
+        extraction_run=source_sha256,
+        cache_root=Path(images_dir) / "textract",
     )
-    ocr_engine = None if scanned is not None else TesseractEngine()
-    if scanned is not None and not settings.reader_page_inventory:
-        # The engine an OCR route names comes from the reader-backed router.
-        # With the incumbent inventory the route names the incumbent engine,
-        # and the scanned setting would have ingest read regions Textract was
-        # never routed to. Refuse the pair rather than route by the setting.
-        raise ValueError(
-            f"{path.name}: the Textract scanned path reads what the "
-            "reader-backed Page Inventory routes to it; enable "
-            "reader_page_inventory beside it, or neither"
-        )
-    # One isolated read of the whole document, before the page loop, when the
-    # replacement adapter is selected. A failure here fails the document
-    # attempt like any other engine failure; it is never quietly answered by
-    # the incumbent, which would make the two readings indistinguishable in
-    # the record.
+    # One isolated read of the whole document, before the page loop. A failure
+    # here fails the document attempt like any other engine failure.
     from corridor.reader_segments import read_native_pdf
 
-    native_reading = (
-        read_native_pdf(path, source_sha256=source_sha256)
-        if settings.native_reader_token_layer else None
-    )
+    native_reading = read_native_pdf(path, source_sha256=source_sha256)
     reader_layers = {
         layer.page_no: layer for layer in native_reading.token_layers
-    } if native_reading is not None else {}
-    # The inventory's own isolated read, on the same terms. It is a second
-    # read of the same document when both settings are on: the two adapters
-    # own their own readings and neither answers for the other, which is what
-    # keeps a rollback of one from disturbing the other. Collapsing them into
-    # one read is worth doing the day both are selected together (#447).
-    reader_inventories: dict[int, PageInventory] = (
-        read_reader_page_inventories(path)
-        if settings.reader_page_inventory
-        else {}
-    )
+    }
+    # The inventory's own isolated read of the same document. It stayed a
+    # second read when the two adapters could be rolled back separately;
+    # collapsing them into one is worth doing on its own evidence, not as a
+    # side effect of this removal.
+    reader_inventories: dict[int, PageInventory] = read_reader_page_inventories(path)
 
-    with pymupdf.open(path) as pdf:
-        if pdf.page_count == 0:
-            raise ValueError(f"{path.name}: no pages")
-        for index, page in enumerate(pdf):
-            # 1-based: citations are written for humans, and [D12 p.4] must
-            # mean the page a reader sees.
-            page_no = index + 1
-            incumbent_text = page.get_text()
-            if settings.reader_page_inventory:
-                reader_inventory = reader_inventories.get(page_no)
-                if reader_inventory is None:
-                    raise ValueError(
-                        f"{path.name}: the reader returned no page {page_no}"
-                    )
-                inventory, routing = (
-                    reader_inventory,
-                    route_reader_page(reader_inventory),
-                )
-            else:
-                inventory = inventory_page(page, native_text=incumbent_text)
-                routing = route_page(inventory)
-            reader_layer = reader_layers.get(page_no)
-            if settings.native_reader_token_layer and reader_layer is None:
-                raise ValueError(
-                    f"{path.name}: the reader returned no page {page_no}"
-                )
-            # `DocPage.text` is a projection over the native token layer, not
-            # a second reading beside it (ADR-0073).
-            native_text = (
-                page_text_projection(reader_layer)
-                if reader_layer is not None
-                else incumbent_text
+    if not reader_inventories:
+        raise ValueError(f"{path.name}: no pages")
+    for page_no in sorted(reader_inventories):
+        # 1-based: citations are written for humans, and [D12 p.4] must
+        # mean the page a reader sees.
+        inventory = reader_inventories[page_no]
+        routing = route_reader_page(inventory)
+        reader_layer = reader_layers.get(page_no)
+        if reader_layer is None:
+            raise ValueError(
+                f"{path.name}: the reader returned no page {page_no}"
             )
-            # The layout/model derivative is purpose-specific even when OCR is
-            # not needed; vision consumers never borrow reviewer pixels. All
-            # three are asked for at once so the worker's OpenCV/PyMuPDF import
-            # is paid once a page rather than three times (#548).
-            derivatives = render_page_derivatives(
-                pdf_path=path,
-                page_number=page_no,
-                profile_names=("review", "ocr_layout", "table_cv"),
-                output_dir=images_dir,
-            )
-            review_derivative, ocr_derivative, table_derivative = derivatives
-            image_path = review_derivative.artifact_path
-            ocr_text: list[str] = []
-            failures: list[PageFailure] = []
-            ocr_attempts: list[OcrAttempt] = []
-            scanned_layer: TokenLayer | None = None
-            if scanned is not None:
-                outcome = _read_scanned_page(
-                    scanned,
-                    path=path,
-                    images_dir=images_dir,
-                    page_no=page_no,
-                    source_sha256=source_sha256,
-                    routing=routing,
-                    native_layer=reader_layer,
-                    render_profile_id=ocr_derivative.profile_id,
-                )
-                ocr_text.extend(outcome.text)
-                failures.extend(outcome.failures)
-                ocr_attempts.extend(outcome.attempts)
-                scanned_layer = outcome.token_layer
-            # The incumbent per-region loop. The scanned route read the whole
-            # page above — one raster, one call, the routed regions selecting
-            # which of its cells are consumed — so the two never both run.
-            for region in routing.regions if scanned is None else ():
-                if region.mode not in {"ocr", "both"}:
-                    continue
-                scope = {
-                    "page_number": page_no,
-                    "region_id": region.region_id,
-                    "box": region.box.model_dump(mode="json"),
-                }
-                # The engine that actually reads the region, and its
-                # configuration — not the engine the route names. Until #739
-                # wires Textract in, those differ on a reader-backed route,
-                # and a Processing Failure must name the engine that failed.
-                configuration = {
-                    **OCR_CONFIGURATION,
-                    "render_profile_id": ocr_derivative.profile_id,
-                    "render_dpi": ocr_derivative.dpi,
-                }
-                try:
-                    recovered = _ocr_region(
-                        ocr_derivative.artifact_path,
-                        region.box,
-                        inventory.boxes.crop,
-                    )
-                except Exception as exc:
-                    outcome = "failed"
-                    receipt = _write_raw_ocr_receipt(
-                        images_dir,
-                        page_no=page_no,
-                        region_id=region.region_id,
-                        configuration=configuration,
-                        scope=scope,
-                        outcome=outcome,
-                        text=None,
-                        error_type=type(exc).__name__,
-                        error_message=str(exc),
-                    )
-                    ocr_attempts.append(
-                        OcrAttempt(region.region_id, outcome, receipt)
-                    )
-                    failures.append(
-                        PageFailure(
-                            engine=OCR_ENGINE,
-                            configuration=configuration,
-                            region_id=region.region_id,
-                            scope=scope,
-                            error_type=type(exc).__name__,
-                            error_message=str(exc),
-                        )
-                    )
-                    continue
-                outcome = "recovered" if recovered.strip() else "empty"
-                receipt = _write_raw_ocr_receipt(
-                    images_dir,
-                    page_no=page_no,
-                    region_id=region.region_id,
-                    configuration=configuration,
-                    scope=scope,
-                    outcome=outcome,
-                    text=recovered,
-                    error_type=None,
-                    error_message=None,
-                )
-                ocr_attempts.append(OcrAttempt(region.region_id, outcome, receipt))
-                if recovered.strip():
-                    ocr_text.append(recovered.strip())
-            parts = []
-            if routing.page_mode in {"native", "both"} or not ocr_text:
-                if native_text:
-                    parts.append(native_text.rstrip())
-            parts.extend(text for text in ocr_text if text not in parts)
-            text = "\n".join(parts)
-            if text:
-                text += "\n"
-            # Compatibility readers keep every page that required OCR on the
-            # less-trusted OCR path, including failed attempts. Calling an
-            # image-only failure `text_layer` would recreate the retired lie.
-            source = (
-                "ocr" if routing.page_mode in {"ocr", "both"} else "text_layer"
-            )
+        # `DocPage.text` is a projection over the native token layer, not
+        # a second reading beside it (ADR-0073).
+        native_text = page_text_projection(reader_layer)
+        # The layout/model derivative is purpose-specific even when OCR is
+        # not needed; vision consumers never borrow reviewer pixels. All
+        # three are asked for at once so the worker's OpenCV import is paid
+        # once a page rather than three times (#548).
+        derivatives = render_page_derivatives(
+            pdf_path=path,
+            page_number=page_no,
+            profile_names=("review", "ocr_layout", "table_cv"),
+            output_dir=images_dir,
+        )
+        review_derivative, ocr_derivative, table_derivative = derivatives
+        image_path = review_derivative.artifact_path
+        ocr_text: list[str] = []
+        failures: list[PageFailure] = []
+        ocr_attempts: list[OcrAttempt] = []
+        outcome = _read_scanned_page(
+            scanned,
+            path=path,
+            images_dir=images_dir,
+            page_no=page_no,
+            source_sha256=source_sha256,
+            routing=routing,
+            native_layer=reader_layer,
+            render_profile_id=ocr_derivative.profile_id,
+        )
+        ocr_text.extend(outcome.text)
+        failures.extend(outcome.failures)
+        ocr_attempts.extend(outcome.attempts)
+        scanned_layer: TokenLayer | None = outcome.token_layer
+        parts = []
+        if routing.page_mode in {"native", "both"} or not ocr_text:
+            if native_text:
+                parts.append(native_text.rstrip())
+        parts.extend(text for text in ocr_text if text not in parts)
+        text = "\n".join(parts)
+        if text:
+            text += "\n"
+        # Compatibility readers keep every page that required OCR on the
+        # less-trusted OCR path, including failed attempts. Calling an
+        # image-only failure `text_layer` would recreate the retired lie.
+        source = (
+            "ocr" if routing.page_mode in {"ocr", "both"} else "text_layer"
+        )
 
-            # Two coordinate-bearing token layers, kept separately (ADR-0073):
-            # the native reading always, plus an OCR layer when the page routes
-            # through OCR. Nothing picks a page-wide winner here — DocPage.text
-            # above is a rebuildable projection, and geometry-consuming
-            # extraction reads these tokens, not the page string.
-            token_layers: list[TokenLayer] = [
-                reader_layer
-                if reader_layer is not None
-                else extract_native_token_layer(
-                    page, page_no=page_no, source_sha256=source_sha256
-                )
-            ]
-            if scanned_layer is not None:
-                token_layers.append(scanned_layer)
-            elif ocr_engine is not None and routing.page_mode in {"ocr", "both"}:
-                token_layers.append(
-                    ocr_engine.recognize(
-                        OcrRequest(
-                            page_no=page_no,
-                            source_sha256=source_sha256,
-                            image_path=ocr_derivative.artifact_path,
-                            derivative=ocr_derivative,
-                        )
-                    )
-                )
+        # Two coordinate-bearing token layers, kept separately (ADR-0073):
+        # the native reading always, plus an OCR layer when the page routes
+        # through OCR. Nothing picks a page-wide winner here — DocPage.text
+        # above is a rebuildable projection, and geometry-consuming
+        # extraction reads these tokens, not the page string.
+        token_layers: list[TokenLayer] = [reader_layer]
+        if scanned_layer is not None:
+            token_layers.append(scanned_layer)
 
-            out.append(
-                ExtractedPage(
-                    page_no=page_no,
-                    text=text,
-                    image_path=image_path,
-                    text_source=source,
-                    inventory=inventory,
-                    routing=routing,
-                    failures=tuple(failures),
-                    derivatives=tuple(derivatives),
-                    ocr_attempts=tuple(ocr_attempts),
-                    token_layers=tuple(token_layers),
-                    native_reading=native_reading,
-                )
+        out.append(
+            ExtractedPage(
+                page_no=page_no,
+                text=text,
+                image_path=image_path,
+                text_source=source,
+                inventory=inventory,
+                routing=routing,
+                failures=tuple(failures),
+                derivatives=tuple(derivatives),
+                ocr_attempts=tuple(ocr_attempts),
+                token_layers=tuple(token_layers),
+                native_reading=native_reading,
             )
+        )
 
     return out
 
@@ -935,7 +797,7 @@ def _write_raw_ocr_receipt(
     text: str | None,
     error_type: str | None,
     error_message: str | None,
-    engine: str = OCR_ENGINE,
+    engine: str = TEXTRACT_ENGINE,
     values: list[dict] | None = None,
 ) -> Path:
     """Write one OCR attempt's exact output to a content-addressed Class B file.
@@ -983,44 +845,6 @@ def _write_raw_ocr_receipt(
     else:
         destination.write_bytes(content)
     return destination.resolve()
-
-
-def _ocr_region(image_path: Path, region: PdfRect, page_box: PdfRect) -> str:
-    """OCR one recorded page region from the compatibility render.
-
-    The spec names `ocrmypdf`, whose value is producing a searchable PDF.
-    v0 stores page text and never mutates originals, so that second PDF
-    pipeline (and its ghostscript dependency chain) buys nothing here —
-    the 150 dpi PNG is already on disk.
-
-    Exceptions deliberately escape this adapter. The page loop turns each one
-    into a scoped Processing Failure; an empty-string fallback would make a
-    failed engine indistinguishable from a genuinely blank region.
-    """
-    import pytesseract
-    from PIL import Image
-
-    with Image.open(image_path) as image:
-        page_width = max(1, page_box.width)
-        page_height = max(1, page_box.height)
-        crop = (
-            round((region.x0 - page_box.x0) * image.width / page_width),
-            round((region.y0 - page_box.y0) * image.height / page_height),
-            round((region.x1 - page_box.x0) * image.width / page_width),
-            round((region.y1 - page_box.y0) * image.height / page_height),
-        )
-        bounded = (
-            max(0, crop[0]),
-            max(0, crop[1]),
-            min(image.width, crop[2]),
-            min(image.height, crop[3]),
-        )
-        region_image = image.crop(bounded)
-        return pytesseract.image_to_string(
-            region_image,
-            lang=str(OCR_CONFIGURATION["language"]),
-            config=f"--psm {OCR_CONFIGURATION['page_segmentation_mode']}",
-        )
 
 
 def _as_datetime(value: str | datetime | None) -> datetime | None:

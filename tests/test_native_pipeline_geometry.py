@@ -223,7 +223,6 @@ def _inventory_render_and_header(authored, tmp_path, monkeypatch, profile="revie
     image_region, = (r for r in routing.regions if r.mode == "ocr")
     assert native_region.box == inventory.boxes.crop
     assert image_region.box == inventory.image_regions[0].box
-    monkeypatch.setattr(settings, "pdfium_render_worker", True)
     derivative = render_page_derivative(
         pdf_path=authored.path, page_number=1, profile_name=profile,
         output_dir=tmp_path / "full",
@@ -431,11 +430,18 @@ def _worker_derivative(tmp_path, request, name):
     return RenderDerivative.model_validate(manifest)
 
 
-@pytest.mark.parametrize("rasterizer", [LEGACY_RASTERIZER, "pdfium"])
+@pytest.mark.parametrize("rasterizer", ["pdfium"])
 @pytest.mark.parametrize("skew", [-3, 3], ids=["minus-3", "plus-3"])
 def test_unversioned_worker_pixels_keep_their_old_identity_and_direction(
     tmp_path, monkeypatch, rasterizer, skew,
 ):
+    """The MuPDF case ran here until #741 removed that rasterizer.
+
+    What it established is not lost: the filename contract it exercised is the
+    one that keeps every retained MuPDF render where it is, and it is asserted
+    below from `LEGACY_RASTERIZER` rather than by rendering one.
+    """
+
     authored = _author_page(tmp_path, rotation=0, skew=skew)
     profile = _colour_deskew_profile(monkeypatch)
     request = {

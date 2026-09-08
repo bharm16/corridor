@@ -29,7 +29,6 @@ pytestmark = pytest.mark.slow
 import corridor.m8_acceptance as m8_acceptance_module
 import corridor.m8_acceptance_controlled as m8_acceptance_controlled_module
 from corridor.config import settings
-from corridor.page_inventory import inventory_page, route_page
 from corridor.m8_acceptance import (
     AcceptanceCaptureConfig,
     AcceptanceError,

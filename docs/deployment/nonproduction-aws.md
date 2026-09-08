@@ -36,8 +36,15 @@ on; it should not remain the permanent administrative path.
 `Dockerfile` builds one image that all three roles run, because nothing in the
 repository has a separate build context. It carries Python 3.12, a pinned `uv`
 (the render subprocess invokes it at run time), both uv projects synced at
-build time, `tesseract`, WeasyPrint's native stack, the RDS trust bundle, and a
-non-root `corridor` user.
+build time, WeasyPrint's native stack, the RDS trust bundle, and a non-root
+`corridor` user.
+
+It carried `tesseract-ocr` until #741 retired the engine (ADR-0094). The image
+recorded before that removal was 3179 MB uncompressed and held PyMuPDF 1.28.0
+in the application environment, PyMuPDF 1.28.2 in the render worker's,
+pytesseract 0.3.13, and `tesseract-ocr` 5.3.0-2 at `/usr/bin/tesseract`;
+`make image-engine-audit` builds the image and reports what is in it now, and
+its receipts are under `artifacts/pdf-engine-retirement/`.
 
 `scripts/container_entrypoint.py` is the entrypoint. It composes exactly one
 database URL for the role in `CORRIDOR_TASK_ROLE`, percent-encodes the
