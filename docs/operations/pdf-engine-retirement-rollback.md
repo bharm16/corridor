@@ -123,9 +123,12 @@ requires, not something to be settled in passing.
 
 **What has actually been decided.** ADR-0095 records the maintainer's
 acceptance of the replacement on 2026-09-08, on the evidence already
-measured. Neither it nor ADR-0094, #727 or #741 sets any duration. **No
-waiting period has been decided by anyone, and this record does not invent
-one.**
+measured. Neither it nor ADR-0094, #727 or #741 sets any duration, and this
+record does not invent one. The maintainer set the window himself, on the same
+day; his decision is under "The maintainer's decision" below, and it is that
+**the window ends immediately and no pre-removal image is retained**. The rest
+of this section is the reasoning that question was put to him with, kept
+because it says what a rollback is actually made of.
 
 The one durable statement that does exist comes from the ticket whose scope
 #741 inherited: #460 required that "rollback after this point is by version
@@ -148,20 +151,39 @@ back has two halves with two different clocks:
 So what keeps this window open is retaining artifacts, and what closes it is
 losing them — not the passage of time.
 
-**What the maintainer still has to decide.** Two questions, both open:
+**The maintainer's decision, 2026-09-08.** Both questions above were put to
+the maintainer and he answered them together, in the same direction as
+ADR-0095: "I'm done with the pdf replacement shit, it works, finish the
+tickets."
 
-1. Whether a pre-removal image is retained, where it lives, and for how long.
-   Without one, runtime rollback means a rebuild whose OCR package version
-   depends on what the base image serves that day.
-2. What ends the window: a date, a condition, or nothing at all — that is,
-   whether the gated deletions may proceed together with the engine removal.
-   Answering "immediately" is a legitimate answer and is the maintainer's to
-   give; this record's requirement is that the answer be recorded, not that it
-   be long.
+1. **No pre-removal image is retained.** The image recorded under "The
+   retirement point" was built locally for the audit and pushed nowhere, and
+   it is not being kept, published or archived. Runtime rollback therefore
+   means a rebuild, whose `tesseract-ocr` version is whatever the base image's
+   package index serves on the day of that rebuild. The version this
+   repository last saw, 5.3.0-2, is recorded above as an observation, not as a
+   guarantee that a rebuild reproduces it.
+2. **The window ends immediately.** There is no waiting period, no date and no
+   condition. Rollback after this point is by version-control revert only —
+   the statement #741 inherited from #460 — and that is the whole of it: no
+   retained image, no disabled fallback to re-enable, no flag to flip and no
+   retained code path to call.
 
-**What the window gates.** #741 removes the engines from source, dependencies,
-CI and the images without waiting for anything. Four deletions wait for the
-window to close, because each one removes a path that a rollback would want:
+The decision is the maintainer's and is recorded here as his. It is not a
+finding of this work, and nothing measured here recommended it; he was asked
+what ended the window and this is the answer he gave.
+
+**What that makes deletable now.** Because the window ends immediately, the
+four gated legacy paths listed below are deletable in the same change as the
+engine removal rather than after it. They are named separately anyway, because
+each one is still a deliberate deletion of a path a rollback would have wanted,
+and a reader of this record should be able to see exactly what left and on
+whose say-so.
+
+**What the window gated.** #741 removes the engines from source, dependencies,
+CI and the images without waiting for anything. Four deletions waited for the
+window to close, because each one removes a path that a rollback would want,
+and the decision above closes it:
 
 - the old table geometry (`src/corridor/geometry.py`);
 - the old structure prompt path (`prompts/matrix_structure_v1.md`, `v2` and
