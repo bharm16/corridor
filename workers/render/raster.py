@@ -15,7 +15,7 @@ in the frame the rest of Corridor uses: the media box's top-left corner, y
 downwards. `page_origin_y` is the PDF user-space y that page-space y = 0 sits
 at - the crop box's top edge - and it is carried separately because MuPDF's
 already-flipped crop box cannot express it when the media box's origin is not
-zero (see `legacy_pymupdf`).
+zero, which the retired MuPDF rasterizer did not.
 """
 
 from __future__ import annotations

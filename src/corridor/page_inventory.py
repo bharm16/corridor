@@ -6,34 +6,20 @@ a legitimate short page, a scanned table, mixed native/image content, or broken
 Unicode. This module records the visible layers first, then makes a replayable
 region decision from that inventory. It never performs OCR or writes storage.
 
-Two inventories live here, one schema between them (ADR-0094, #734). The
-incumbent takes its facts from the incumbent engine; the reader-backed one
-takes them from the imported paired-rendition reader, and
-`corridor.config.settings.reader_page_inventory` selects which one ingest
-records. It is off: merging an adapter is not selecting it (#447, #739).
+Two inventories lived here until #741, one schema between them (ADR-0094,
+#734), and a setting chose which one ingest recorded. The incumbent's facts
+came from the retired engine, so the incumbent inventory went with it and the
+reader-backed one is the only one left; the routing *rules* were always one
+function and still are.
 
-The routing *rules* are one function. `route_reader_page` calls `route_page`
-and replaces only what the facts' source changes — the engine an OCR route
-names, and the structural triggers the reader can see — so a difference
-between the two routers on the Stage 1 corpus is a difference in the facts,
-never a second opinion about them.
-
-Three things differ between the two sets of facts, and each is recorded
-rather than smoothed over:
-
-- **Frame.** The reader reports one frame per page: displayed crop, PDF
-  points, top-left origin — its tables' own words, and the frame the render
-  derivative an OCR region is cut from is in. The incumbent reports glyph and
-  image boxes unrotated and `find_tables` boxes displayed, so a rotated page's
-  incumbent inventory mixes two frames. `coordinate_frame` says which frame an
-  inventory is in instead of leaving a consumer to infer it from the engine.
-- **Visible glyphs.** The reader drops glyphs hidden behind a clip path, so
-  its glyph coverage is coverage of what the page prints. The incumbent counts
-  every glyph the text API returns, printed or not.
-- **Page boxes.** The reader reports the media and crop boxes. It does not
-  report trim, bleed or art, so the reader-backed inventory records the PDF
-  default for those three — the crop box — and does not pretend to have read
-  them. Nothing consumes them today.
+`coordinate_frame` survives that removal and is worth keeping. The reader
+reports one frame per page — displayed crop, PDF points, top-left origin, its
+tables' own words, and the frame the render derivative an OCR region is cut
+from is in. The incumbent reported glyph and image boxes unrotated and table
+boxes displayed, so a rotated page's incumbent inventory mixed two frames.
+Every retained inventory says which frame it is in rather than leaving a
+consumer to infer it from the engine, which is exactly what a reader of an old
+row now needs.
 
 Two facts the routing rules need are not in the reader's page result at all:
 the embedded image regions and the drawn vector count. `read_page_facts` takes
@@ -50,10 +36,10 @@ from io import StringIO
 from pathlib import Path
 from typing import Any, Literal
 import ctypes
+import json
 import unicodedata
 
-import pymupdf
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
@@ -62,9 +48,6 @@ from corridor_pdf_reader.replacement.layout import rotate_box
 
 
 FIXED_POINT_SCALE = 1_000
-ROUTER_VERSION = "page-inventory-router-v1"
-OCR_ENGINE = "tesseract"
-OCR_CONFIGURATION = {"language": "eng", "page_segmentation_mode": 6}
 MIN_IMAGE_REGION_COVERAGE = 0.02
 MIN_VECTOR_DENSITY_FOR_OCR = 0.000_01
 
@@ -72,6 +55,24 @@ MIN_VECTOR_DENSITY_FOR_OCR = 0.000_01
 # is versioned separately from the incumbent because a recorded decision must
 # say which facts decided it, even though the rules below are one function.
 READER_ROUTER_VERSION = "page-inventory-router-reader-v1"
+# What a persisted routing decision may say, current values and retained ones
+# together. The retired engine's name and its router's version are on every
+# decision recorded before #741, and a model that refused them would make those
+# decisions unreadable rather than making the engine gone. They are held as
+# data, in `retained_identities.json`, so no source file names a retired engine
+# and nothing in the product can write one: `route_reader_page` is the only
+# writer here and it names Textract.
+_RETAINED_IDENTITIES = json.loads(
+    (Path(__file__).resolve().parent / "retained_identities.json").read_text()
+)["page_routing"]
+OCR_ENGINES = tuple(
+    _RETAINED_IDENTITIES["ocr_engines"]["current"]
+    + _RETAINED_IDENTITIES["ocr_engines"]["retained"]
+)
+ROUTER_VERSIONS = tuple(
+    _RETAINED_IDENTITIES["router_versions"]["current"]
+    + _RETAINED_IDENTITIES["router_versions"]["retained"]
+)
 # ADR-0094: scanned pages and image regions read through Amazon Textract. The
 # route names the engine; the adapter that calls it records the configuration
 # of the call (#732, #739), and this decision fixes none.
@@ -178,38 +179,27 @@ class PageRoutingDecision(InventoryModel):
     schema_version: Literal["corridor.pdf-page-routing.v1"] = (
         "corridor.pdf-page-routing.v1"
     )
-    router_version: Literal[
-        "page-inventory-router-v1", "page-inventory-router-reader-v1"
-    ] = ROUTER_VERSION
+    router_version: str = READER_ROUTER_VERSION
     page_mode: Literal["native", "ocr", "both"]
     reason: str
-    ocr_engine: Literal["tesseract", "textract"] = OCR_ENGINE
-    ocr_configuration: dict[str, int | str] = Field(
-        default_factory=lambda: dict(OCR_CONFIGURATION)
-    )
+    ocr_engine: str = TEXTRACT_ENGINE
+    ocr_configuration: dict[str, int | str] = Field(default_factory=dict)
+
+    @field_validator("router_version")
+    @classmethod
+    def _known_router(cls, value: str) -> str:
+        if value not in ROUTER_VERSIONS:
+            raise ValueError(f"unknown page inventory router {value!r}")
+        return value
+
+    @field_validator("ocr_engine")
+    @classmethod
+    def _known_engine(cls, value: str) -> str:
+        if value not in OCR_ENGINES:
+            raise ValueError(f"unknown OCR engine {value!r}")
+        return value
     regions: tuple[RoutingRegion, ...]
     structural_triggers: tuple[StructuralTrigger, ...] = ()
-
-
-def _fixed_rect(value) -> PdfRect:
-    rectangle = pymupdf.Rect(value)
-    return PdfRect(
-        x0=round(rectangle.x0 * FIXED_POINT_SCALE),
-        y0=round(rectangle.y0 * FIXED_POINT_SCALE),
-        x1=round(rectangle.x1 * FIXED_POINT_SCALE),
-        y1=round(rectangle.y1 * FIXED_POINT_SCALE),
-    )
-
-
-def _coverage(rectangles: list[pymupdf.Rect], page_area: float) -> float:
-    shapes = [
-        shapely_box(rect.x0, rect.y0, rect.x1, rect.y1)
-        for rect in rectangles
-        if rect.get_area() > 0
-    ]
-    if not shapes or page_area <= 0:
-        return 0.0
-    return round(min(1.0, unary_union(shapes).area / page_area), 8)
 
 
 def _suspicious_signals(text: str) -> tuple[str, ...]:
@@ -239,101 +229,6 @@ def _unicode_quality(text: str) -> float:
         for char in material
     )
     return round(max(0.0, 1 - suspicious / len(material)), 8)
-
-
-def inventory_page(page: pymupdf.Page, *, native_text: str | None = None) -> PageInventory:
-    """Take one deterministic inventory in canonical PDF coordinates."""
-
-    text = page.get_text() if native_text is None else native_text
-    raw = page.get_text("rawdict")
-    native_block_rectangles = [
-        pymupdf.Rect(block["bbox"])
-        for block in raw.get("blocks", ())
-        if block.get("type") == 0 and block.get("bbox")
-    ]
-    glyph_rectangles = [
-        pymupdf.Rect(character["bbox"])
-        for block in raw.get("blocks", ())
-        for line in block.get("lines", ())
-        for span in line.get("spans", ())
-        for character in span.get("chars", ())
-        if character.get("c", "").strip()
-    ]
-    image_rectangles = [
-        pymupdf.Rect(image["bbox"])
-        for image in page.get_image_info(xrefs=True)
-        if image.get("bbox")
-    ]
-    page_area = page.rect.get_area()
-    native_regions = tuple(
-        InventoryRegion(
-            region_id=f"native-{index}",
-            kind="native_text",
-            box=_fixed_rect(rectangle),
-            coverage=(
-                round(min(1.0, rectangle.get_area() / page_area), 8)
-                if page_area
-                else 0
-            ),
-        )
-        for index, rectangle in enumerate(native_block_rectangles, start=1)
-    )
-    image_regions = tuple(
-        InventoryRegion(
-            region_id=f"image-{index}",
-            kind="embedded_image",
-            box=_fixed_rect(rectangle),
-            coverage=(
-                round(min(1.0, rectangle.get_area() / page_area), 8)
-                if page_area
-                else 0
-            ),
-        )
-        for index, rectangle in enumerate(image_rectangles, start=1)
-    )
-    table_regions = []
-    try:
-        # PyMuPDF prints an optional-layout-package advertisement on some
-        # platforms. Inventory is used inside JSON CLIs, so dependency chatter
-        # must never corrupt the adapter's stdout contract.
-        with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
-            found_tables = page.find_tables().tables
-    except (AttributeError, ValueError):
-        found_tables = ()
-    for index, table in enumerate(found_tables, start=1):
-        table_regions.append(
-            TableRegionEvidence(
-                region_id=f"table-{index}",
-                box=_fixed_rect(table.bbox),
-                row_count=int(getattr(table, "row_count", 0)),
-                column_count=int(getattr(table, "col_count", 0)),
-            )
-        )
-    drawing_count = sum(
-        max(1, len(drawing.get("items", ()))) for drawing in page.get_drawings()
-    )
-    return PageInventory(
-        native_text_length=len(text.strip()),
-        native_glyph_count=len(glyph_rectangles),
-        native_glyph_coverage=_coverage(glyph_rectangles, page_area),
-        embedded_image_coverage=_coverage(image_rectangles, page_area),
-        vector_density=(
-            round(drawing_count / page_area, 10) if page_area else 0.0
-        ),
-        unicode_quality=_unicode_quality(text),
-        suspicious_text_signals=_suspicious_signals(text),
-        rotation_degrees=int(page.rotation),
-        boxes=PageBoxes(
-            media=_fixed_rect(page.mediabox),
-            crop=_fixed_rect(page.cropbox),
-            trim=_fixed_rect(page.trimbox),
-            bleed=_fixed_rect(page.bleedbox),
-            art=_fixed_rect(page.artbox),
-        ),
-        native_regions=native_regions,
-        image_regions=image_regions,
-        table_regions=tuple(table_regions),
-    )
 
 
 def route_page(inventory: PageInventory) -> PageRoutingDecision:

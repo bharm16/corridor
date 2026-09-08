@@ -14,7 +14,6 @@ import json
 from pathlib import Path
 import shutil
 
-import pymupdf
 import pytest
 from sqlalchemy import select, text
 
@@ -24,7 +23,11 @@ import corridor.m8_acceptance as m8_acceptance_module
 import corridor.m8_acceptance_controlled as m8_acceptance_controlled_module
 from corridor.config import settings
 from corridor.db import engine
-from corridor.page_inventory import inventory_page, route_page
+from corridor.page_inventory import (
+    read_page_facts,
+    reader_page_inventories,
+    route_reader_page,
+)
 from corridor.m8_acceptance import (
     AcceptanceCaptureConfig,
     AcceptanceError,
@@ -390,8 +393,11 @@ def test_synthetic_matrix_pages_do_not_fall_through_to_ocr(tmp_path):
     for source in sources:
         if source["doc_type"] != "matrix":
             continue
-        with pymupdf.open(source["local_path"]) as document:
-            assert route_page(inventory_page(document[0])).page_mode == "native"
+        inventories = reader_page_inventories(read_page_facts(source["local_path"]))
+        assert {
+            route_reader_page(inventory).page_mode
+            for inventory in inventories.values()
+        } == {"native"}
 
 
 def test_transformations_reject_unknown_nested_behavior(tmp_path):

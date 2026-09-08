@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Prepare one CI job: PostgreSQL, the OCR engine, both uv projects, and the
-# schema of the database the suite's shared-state tests read.
+# Prepare one CI job: PostgreSQL, both uv projects, and the schema of the
+# database the suite's shared-state tests read.
 #
 # Why one step rather than five: the gate's wall clock is the *slowest of its
 # nine test jobs*, so every run samples the worst setup draw taken in it, not
@@ -23,18 +23,10 @@ set -euo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.."
 logs="${RUNNER_TEMP:-/tmp}"
 
-# The OCR engine is a real dependency, not an optional one: token_layers.py
-# runs the `tesseract` executable and tests/test_token_layers.py asserts the
-# version it reports, so a job without it fails rather than skipping.
-# `apt-get update` measured 11-34s and the runner image normally ships usable
-# package lists, so the lists are refreshed only when the install actually
-# needs them (#548). A genuine failure still fails the job.
-(
-  export DEBIAN_FRONTEND=noninteractive
-  sudo apt-get install -y tesseract-ocr ||
-    { sudo apt-get update && sudo apt-get install -y tesseract-ocr; }
-) >"$logs/tesseract.log" 2>&1 &
-tesseract_job=$!
+# The local OCR engine used to be installed here, concurrently with the two
+# `uv sync` calls, because it was a real dependency of the suite. ADR-0094
+# retired it and #741 removed it from the product, so a CI job that installed
+# it would be provisioning something nothing can call.
 
 scripts/ci_postgres.sh >"$logs/postgres.log" 2>&1 &
 postgres_job=$!
@@ -59,5 +51,3 @@ cat "$logs/postgres.log"
 # three measurably do (#595). tests/test_ci_policy.py holds the guard.
 uv run alembic upgrade head
 
-wait "$tesseract_job" || { cat "$logs/tesseract.log" >&2; exit 1; }
-tesseract --version

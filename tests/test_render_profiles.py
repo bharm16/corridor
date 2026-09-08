@@ -391,35 +391,20 @@ def apply(matrix, point):
     return (a * x + c * y + e, b * x + d * y + f)
 
 
-def test_the_replacement_rasterizer_is_off_by_default(tmp_path, monkeypatch):
-    """#447 owns selection. Merging #735 changes no production default.
+def test_the_only_rasterizer_is_the_replacement_and_retained_renders_keep_their_name():
+    """One setting chose between the two engines; #741 removed the other.
 
-    And one setting is the whole mechanism: turned on, the same call renders
-    with the other engine, so what #447 has to do is exactly this and nothing
-    else.
+    What survives the removal is the retained identity: every derivative
+    rendered before the switch records the MuPDF rasterizer, and the artifact
+    naming rule that leaves it out of the file name is what keeps those files
+    where they are. So the constant stays and the engine does not.
     """
 
-    pdf = geometry_pdf(tmp_path / "default.pdf", rotation=0)
-    assert settings.pdfium_render_worker is False
-    assert selected_rasterizer() == "pymupdf"
+    from corridor.render_profiles import LEGACY_RASTERIZER, RASTERIZERS
 
-    default = render_page_derivative(
-        pdf_path=pdf,
-        page_number=1,
-        profile_name="review",
-        output_dir=tmp_path / "renders",
-    )
-    monkeypatch.setattr(settings, "pdfium_render_worker", True)
-    selected = render_page_derivative(
-        pdf_path=pdf,
-        page_number=1,
-        profile_name="review",
-        output_dir=tmp_path / "renders",
-    )
-
-    assert default.rasterizer == "pymupdf"
     assert selected_rasterizer() == "pdfium"
-    assert selected.rasterizer == "pdfium"
+    assert not hasattr(settings, "pdfium_render_worker")
+    assert LEGACY_RASTERIZER in RASTERIZERS
 
 
 @pytest.mark.parametrize("rotation", [0, 90, 180, 270])

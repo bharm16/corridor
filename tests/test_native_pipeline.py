@@ -179,8 +179,7 @@ def test_actual_native_pipeline_renders_maps_and_appends_without_selection(sessi
     _assert_protected_rows_unchanged(session, protected_before)
     load_project(session, project.id)
     _assert_protected_rows_unchanged(session, protected_before)
-    settings = Settings()
-    assert not settings.native_reader_token_layer and not settings.pdfium_render_worker and not settings.reader_page_inventory
+    assert "pdfium_render_worker" not in Settings.model_fields
 
 
 def test_native_minutes_and_unselected_configuration_refuse_before_pipeline_work(session, project, matrix_source, tmp_path, monkeypatch):

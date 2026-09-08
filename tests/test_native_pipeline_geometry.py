@@ -223,7 +223,6 @@ def _inventory_render_and_header(authored, tmp_path, monkeypatch, profile="revie
     image_region, = (r for r in routing.regions if r.mode == "ocr")
     assert native_region.box == inventory.boxes.crop
     assert image_region.box == inventory.image_regions[0].box
-    monkeypatch.setattr(settings, "pdfium_render_worker", True)
     derivative = render_page_derivative(
         pdf_path=authored.path, page_number=1, profile_name=profile,
         output_dir=tmp_path / "full",
