@@ -654,7 +654,11 @@ ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("tests/test_render_retention.py", ("tesseract",)),
     ("tests/test_token_layers.py", ("pymupdf", "tesseract")),
     ("tests/test_unreadable_cells.py", ("tesseract",)),
-    ("workers/render/render_worker.py", ("pymupdf",)),
+    # The render worker itself left this list at #735: it rasterises with
+    # PDFium, and the MuPDF path it replaced is retained whole in one module,
+    # loaded only when a request asks for the measured rollback. #741 deletes
+    # that module rather than untangling an engine from the worker.
+    ("workers/render/legacy_pymupdf.py", ("pymupdf",)),
 )
 
 
