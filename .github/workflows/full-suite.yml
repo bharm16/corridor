@@ -29,6 +29,7 @@ jobs:
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
       CORRIDOR_LEGACY_DEV_LOGIN: "1"
       TEST_WORKERS: "2"
+      TEST_TIMEOUT_SECONDS: "3600"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

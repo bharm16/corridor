@@ -113,8 +113,8 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   captured. Every job that runs tests now runs `uv sync --project
   workers/render --frozen` first.
 - **CI's per-job setup is one concurrent step**, `scripts/ci_environment.sh`.
-  PostgreSQL comes from the runner image instead of a pulled `services:`
-  container, and the OCR engine installs alongside the two `uv sync` calls.
+  PostgreSQL starts from the runner image while the locked Python environments
+  are prepared; it does not pull a `services:` container.
   The gate's wall clock is the slowest of its nine jobs, so it samples the
   worst setup draw taken in the run rather than the average one: serial setup
   steps add their draws, concurrent ones do not (#595).
@@ -250,10 +250,11 @@ remote-tracking ref outlives the work it carried.
 - Postgres is on host port **5433**. A Homebrew Postgres 14 takes 5432 and
   accepts the same credentials, so a wrong port connects and fails much later
   on version-specific SQL (`tests/test_boot.py` guards this).
-- Tests use real PostgreSQL — no sqlite fallback. Bring the stack up first.
-  Parallel `make test`/`make test-full` runs use `tests/conftest.py` to create,
-  migrate, and drop one guarded database per xdist worker; serial pytest uses
-  the configured development database.
+- Database tests use real PostgreSQL — no sqlite fallback. Start the stack
+  only for tests that connect to it. Parallel workers create their guarded
+  database lazily on the first connection and reuse one migrated template;
+  pure checks perform neither database setup nor database teardown. Serial
+  database tests use the configured database.
 - A database test still defines its own rollback-scoped `session` fixture:
   `engine.connect()`, `begin()`, `Session(bind=connection)`. Follow that pattern;
   the session-level harness owns database isolation, not shared test data.
