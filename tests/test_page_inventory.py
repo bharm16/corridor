@@ -319,6 +319,8 @@ def test_the_reader_backed_inventory_reads_the_document_in_one_isolated_process(
     inventories = read_reader_page_inventories(path)
 
     assert sorted(inventories) == [1, 2]
+    # A measurement that declared its pages in advance reads only those.
+    assert sorted(read_reader_page_inventories(path, [2])) == [2]
     assert not pdfium_entered()
     assert all(
         inventory.coordinate_frame == READER_COORDINATE_FRAME

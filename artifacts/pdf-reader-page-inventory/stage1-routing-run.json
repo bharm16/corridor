@@ -1,0 +1,36 @@
+{
+  "observations": [
+    {
+      "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+      "native_text_length": 0,
+      "page_mode": "ocr",
+      "page_number": 1
+    },
+    {
+      "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "native_text_length": 1638,
+      "page_mode": "native",
+      "page_number": 2
+    },
+    {
+      "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+      "native_text_length": 1000,
+      "page_mode": "both",
+      "page_number": 1
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "native_text_length": 3656,
+      "page_mode": "native",
+      "page_number": 5
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "native_text_length": 2830,
+      "page_mode": "native",
+      "page_number": 9
+    }
+  ],
+  "router_version": "page-inventory-router-reader-v1",
+  "schema_version": "corridor.pdf-stage1-run.v1"
+}

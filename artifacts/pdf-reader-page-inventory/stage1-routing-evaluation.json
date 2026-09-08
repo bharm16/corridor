@@ -1,0 +1,139 @@
+{
+  "by_page_class": {
+    "ambiguous-retirement-matrix": {
+      "inventory_router": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      },
+      "retired_character_rule": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      }
+    },
+    "image-only-agreement": {
+      "inventory_router": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 0,
+          "true_positive": 1
+        },
+        "false_ocr_not_needed_rate": 0.0,
+        "unnecessary_ocr_rate": null
+      },
+      "retired_character_rule": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 0,
+          "true_positive": 1
+        },
+        "false_ocr_not_needed_rate": 0.0,
+        "unnecessary_ocr_rate": null
+      }
+    },
+    "marked-resolution-matrix": {
+      "inventory_router": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      },
+      "retired_character_rule": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      }
+    },
+    "mixed-native-scanned-agreement": {
+      "inventory_router": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 0,
+          "true_positive": 1
+        },
+        "false_ocr_not_needed_rate": 0.0,
+        "unnecessary_ocr_rate": null
+      },
+      "retired_character_rule": {
+        "confusion": {
+          "false_negative": 1,
+          "false_positive": 0,
+          "true_negative": 0,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": 1.0,
+        "unnecessary_ocr_rate": null
+      }
+    },
+    "page-scoped-owner-matrix": {
+      "inventory_router": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      },
+      "retired_character_rule": {
+        "confusion": {
+          "false_negative": 0,
+          "false_positive": 0,
+          "true_negative": 1,
+          "true_positive": 0
+        },
+        "false_ocr_not_needed_rate": null,
+        "unnecessary_ocr_rate": 0.0
+      }
+    }
+  },
+  "cases": 5,
+  "dataset_version": "2026-08-31.2",
+  "inventory_router": {
+    "confusion": {
+      "false_negative": 0,
+      "false_positive": 0,
+      "true_negative": 3,
+      "true_positive": 2
+    },
+    "false_ocr_not_needed_rate": 0.0,
+    "unnecessary_ocr_rate": 0.0
+  },
+  "pdf_gold_dataset_version": "2026-08-31.2",
+  "retired_character_rule": {
+    "confusion": {
+      "false_negative": 1,
+      "false_positive": 0,
+      "true_negative": 3,
+      "true_positive": 1
+    },
+    "false_ocr_not_needed_rate": 0.5,
+    "unnecessary_ocr_rate": 0.0
+  },
+  "router_version": "page-inventory-router-reader-v1",
+  "schema_version": "corridor.pdf-stage1-evaluation.v1"
+}

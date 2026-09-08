@@ -31,6 +31,20 @@ positive pages. Synthetic tests exercise both error directions but contribute
 to no quality claim. FDOT holdout access for this predeclared measurement is
 recorded in `holdout-access.jsonl`.
 
+## Stage 1 routing under the reader-backed inventory (#734)
+
+The same five pages were decided again from the paired-rendition reader's
+facts and scored through the same evaluator. No page's routing changed: the
+false "OCR not needed" rate and the unnecessary-OCR rate are both 0, as they
+are for the incumbent inventory above, and the by-page-class breakdown is
+identical. The run, its evaluation, the per-page comparison and the prose that
+explains the inventory differences behind those identical decisions are under
+`artifacts/pdf-reader-page-inventory/`, reproducible with
+`make page-inventory-routing-replay`. The FDOT holdout access is the
+2026-09-07 line of `holdout-access.jsonl`. The replay is a seam regression on
+five pages, not a selection: #447 owns native selection and #739 owns scanned
+selection.
+
 ## Render profile selection
 
 `render-profile-measurement.json` records the five real Stage 1 pages and every

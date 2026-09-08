@@ -1,4 +1,8 @@
+<<<<<<< HEAD
 .PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval render-rasterizer-compare minutes report
+=======
+.PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay minutes report
+>>>>>>> b529b88 (Replay the Stage 1 routing corpus under the reader-backed inventory (#734))
 
 TEST_WORKERS ?= 4
 
@@ -384,12 +388,22 @@ pdf-eval:
 page-inventory-eval:
 	uv run python -m corridor.page_inventory_evaluation_cli $(ARGS)
 
+<<<<<<< HEAD
 # Render corpus pages under both rasterizers and record the comparison with
 # its declared tolerances (#735). An explicit experiment outside pytest and
 # CI; it reads the corpus content store and takes minutes:
 #   make render-rasterizer-compare ARGS="--output artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json"
 render-rasterizer-compare:
 	uv run python -m corridor.render_rasterizer_comparison $(ARGS)
+=======
+# Decide the frozen Stage 1 routing pages again from the reader-backed Page
+# Inventory and record every difference from the incumbent run and the gold
+# labels (#734). An experiment runner, not a pytest alias; the holdout family
+# needs an actor and a reason, appended to gold/pdf/v1/holdout-access.jsonl:
+#   make page-inventory-routing-replay ARGS="--output-dir artifacts/pdf-reader-page-inventory --holdout-actor <actor> --holdout-reason <reason>"
+page-inventory-routing-replay:
+	uv run python scripts/page_inventory_routing_replay.py $(ARGS)
+>>>>>>> b529b88 (Replay the Stage 1 routing corpus under the reader-backed inventory (#734))
 
 # LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
 # Bound a run to exact registered notes by repeating --document-id; --redo

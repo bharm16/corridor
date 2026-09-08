@@ -44,6 +44,7 @@ measured commit (#729).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from pathlib import Path
@@ -428,13 +429,17 @@ def route_page(inventory: PageInventory) -> PageRoutingDecision:
 # ---- the reader-backed inventory (ADR-0094, #734) ---------------------------
 
 
-def read_page_facts(source: Path | str) -> dict[str, Any]:
+def read_page_facts(
+    source: Path | str, pages: Sequence[int] | None = None
+) -> dict[str, Any]:
     """Every page fact the inventory needs, from one guarded PDFium session.
 
     The reader's own document result, plus the embedded image regions and the
     drawn path count it does not return, read in the same entry rather than in
     a second process. `pdfium_entry` nests on one thread, so the reader's own
-    guard inside `read_document` is satisfied by this one.
+    guard inside `read_document` is satisfied by this one. `pages=None` reads
+    every page, which is what ingest wants; a measurement that declared its
+    pages in advance names them and pays for no others.
 
     This is the function `PdfiumExecutor` runs in a child; it is module-level
     for that reason. A caller already alone in its process — a test, a
@@ -443,12 +448,16 @@ def read_page_facts(source: Path | str) -> dict[str, Any]:
 
     path = Path(source)
     with pdfium_entry():
-        facts = read_document(path)
-        facts["objects"] = _pdfium_page_objects(path)
+        facts = read_document(path, pages)
+        facts["objects"] = _pdfium_page_objects(
+            path, [page["number"] for page in facts["pages"]]
+        )
     return facts
 
 
-def _pdfium_page_objects(path: Path) -> dict[int, dict[str, Any]]:
+def _pdfium_page_objects(
+    path: Path, numbers: Sequence[int]
+) -> dict[int, dict[str, Any]]:
     """Embedded image bounds and painted path counts, per 1-based page.
 
     The imported reader returns glyphs, boxes, rules and reconstructed tables,
@@ -468,8 +477,8 @@ def _pdfium_page_objects(path: Path) -> dict[int, dict[str, Any]]:
     facts: dict[int, dict[str, Any]] = {}
     document = pdfium.PdfDocument(path)
     try:
-        for index in range(len(document)):
-            page = document[index]
+        for number in numbers:
+            page = document[number - 1]
             images: list[list[float]] = []
             painted = 0
             try:
@@ -486,14 +495,17 @@ def _pdfium_page_objects(path: Path) -> dict[int, dict[str, Any]]:
                         painted += 1
             finally:
                 page.close()
-            facts[index + 1] = {"images": images, "painted_paths": painted}
+            facts[number] = {"images": images, "painted_paths": painted}
     finally:
         document.close()
     return facts
 
 
 def read_reader_page_inventories(
-    source: Path | str, *, executor: PdfiumExecutor | None = None
+    source: Path | str,
+    pages: Sequence[int] | None = None,
+    *,
+    executor: PdfiumExecutor | None = None,
 ) -> dict[int, PageInventory]:
     """One inventory per page, from the reader, in one isolated process.
 
@@ -504,7 +516,9 @@ def read_reader_page_inventories(
     """
 
     return reader_page_inventories(
-        (executor or PdfiumExecutor()).run(read_page_facts, Path(source))
+        (executor or PdfiumExecutor()).run(
+            read_page_facts, Path(source), None if pages is None else list(pages)
+        )
     )
 
 

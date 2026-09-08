@@ -1,0 +1,264 @@
+{
+  "cases": 5,
+  "configuration": {
+    "corridor_commit": "275e693c30a60f39c811227f390269453da9d8ac",
+    "execution_contract": {
+      "in_process_guard": "pdfium_entry refuses a second thread at once",
+      "isolation": "one spawned process per call, joined or killed before return",
+      "memory_bytes": 4294967296,
+      "memory_limit_enforced": false,
+      "platform": "darwin",
+      "wall_seconds": 600.0
+    },
+    "page_inventory": {
+      "coordinate_frame": "displayed crop, PDF points, top-left origin",
+      "dpi": 36,
+      "ocr_engine_named_by_the_route": "textract",
+      "package_digest": "181719aab8acae237dec64f3935570eb68a56c07f10d71ec4d540387b6c12028",
+      "reader_engine": "tagged",
+      "router_version": "page-inventory-router-reader-v1",
+      "source_commit": "c39363e26c2726b61c4e707f589093c67173e538"
+    },
+    "platform": "macOS-26.6.2-arm64-arm-64bit",
+    "python": "3.12.12",
+    "run_at": "2026-09-08T03:22:45+00:00"
+  },
+  "confusion": {
+    "false_negative": 0,
+    "false_positive": 0,
+    "true_negative": 3,
+    "true_positive": 2
+  },
+  "false_ocr_not_needed_rate": 0.0,
+  "gold": "gold/pdf/v1/stage1-routing-gold.json",
+  "holdout_access": {
+    "accessed_at": "2026-09-08T03:22:40.626190+00:00",
+    "actor": "codex/734 lane for bharm16",
+    "dataset_version": "2026-08-31.2",
+    "document_sha256s": [
+      "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be"
+    ],
+    "reason": "the predeclared Stage 1 routing replay for #734: the reader-backed Page Inventory decides the frozen five-page slice once, against the labels and the incumbent run frozen before it, nothing tuned before or after (ADR-0008)",
+    "schema_version": "corridor.pdf-holdout-access.v1"
+  },
+  "incumbent_run": "gold/pdf/v1/stage1-routing-run.json",
+  "pages": [
+    {
+      "document_sha256": "0462b167206f1b2cee0f79d3c37388e511be138825e4b6018811f78dca541611",
+      "expected_ocr_needed": true,
+      "holdout": false,
+      "incumbent_native_text_length": 0,
+      "incumbent_page_mode": "ocr",
+      "page_class": "image-only-agreement",
+      "page_mode_changed": false,
+      "page_number": 1,
+      "reader_inventory": {
+        "embedded_image_coverage": 0.99999993,
+        "image_regions": 6,
+        "native_glyph_count": 0,
+        "native_glyph_coverage": 0.0,
+        "rotation_degrees": 180,
+        "suspicious_text_signals": [],
+        "table_regions": [],
+        "unicode_quality": 1.0,
+        "vector_density": 0.0
+      },
+      "reader_native_text_length": 0,
+      "reader_page_mode": "ocr",
+      "reader_reason": "image_only_page",
+      "reader_regions": [
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-2"
+        },
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-3"
+        },
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-4"
+        },
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-5"
+        },
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-6"
+        }
+      ],
+      "reader_structural_triggers": []
+    },
+    {
+      "document_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+      "expected_ocr_needed": false,
+      "holdout": true,
+      "incumbent_native_text_length": 1713,
+      "incumbent_page_mode": "native",
+      "page_class": "page-scoped-owner-matrix",
+      "page_mode_changed": false,
+      "page_number": 2,
+      "reader_inventory": {
+        "embedded_image_coverage": 0.0,
+        "image_regions": 0,
+        "native_glyph_count": 1381,
+        "native_glyph_coverage": 0.05270616,
+        "rotation_degrees": 0,
+        "suspicious_text_signals": [],
+        "table_regions": [
+          {
+            "cells_with_text": 63,
+            "column_count": 11,
+            "region_id": "table-1",
+            "row_count": 14
+          }
+        ],
+        "unicode_quality": 1.0,
+        "vector_density": 8.95755e-05
+      },
+      "reader_native_text_length": 1638,
+      "reader_page_mode": "native",
+      "reader_reason": "clean_native_text",
+      "reader_regions": [
+        {
+          "mode": "native",
+          "reason": "clean_native_text",
+          "region_id": "native-page"
+        }
+      ],
+      "reader_structural_triggers": []
+    },
+    {
+      "document_sha256": "6cf9abd1e4c0f6071c2eb1dffcac75da1045d3074718212caf7b5fe67c1988a2",
+      "expected_ocr_needed": true,
+      "holdout": false,
+      "incumbent_native_text_length": 1035,
+      "incumbent_page_mode": "both",
+      "page_class": "mixed-native-scanned-agreement",
+      "page_mode_changed": false,
+      "page_number": 1,
+      "reader_inventory": {
+        "embedded_image_coverage": 1.0,
+        "image_regions": 1,
+        "native_glyph_count": 847,
+        "native_glyph_coverage": 0.13293213,
+        "rotation_degrees": 0,
+        "suspicious_text_signals": [],
+        "table_regions": [
+          {
+            "cells_with_text": 15,
+            "column_count": 12,
+            "region_id": "table-1",
+            "row_count": 13
+          }
+        ],
+        "unicode_quality": 1.0,
+        "vector_density": 0.0
+      },
+      "reader_native_text_length": 1000,
+      "reader_page_mode": "both",
+      "reader_reason": "mixed_native_and_image_regions",
+      "reader_regions": [
+        {
+          "mode": "native",
+          "reason": "clean_native_text",
+          "region_id": "native-page"
+        },
+        {
+          "mode": "ocr",
+          "reason": "embedded_image_region",
+          "region_id": "image-1"
+        }
+      ],
+      "reader_structural_triggers": []
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "expected_ocr_needed": false,
+      "holdout": false,
+      "incumbent_native_text_length": 3697,
+      "incumbent_page_mode": "native",
+      "page_class": "marked-resolution-matrix",
+      "page_mode_changed": false,
+      "page_number": 5,
+      "reader_inventory": {
+        "embedded_image_coverage": 0.0,
+        "image_regions": 0,
+        "native_glyph_count": 2916,
+        "native_glyph_coverage": 0.07710677,
+        "rotation_degrees": 0,
+        "suspicious_text_signals": [],
+        "table_regions": [
+          {
+            "cells_with_text": 295,
+            "column_count": 29,
+            "region_id": "table-1",
+            "row_count": 34
+          }
+        ],
+        "unicode_quality": 1.0,
+        "vector_density": 0.0001237869
+      },
+      "reader_native_text_length": 3656,
+      "reader_page_mode": "native",
+      "reader_reason": "clean_native_text",
+      "reader_regions": [
+        {
+          "mode": "native",
+          "reason": "clean_native_text",
+          "region_id": "native-page"
+        }
+      ],
+      "reader_structural_triggers": []
+    },
+    {
+      "document_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "expected_ocr_needed": false,
+      "holdout": false,
+      "incumbent_native_text_length": 2874,
+      "incumbent_page_mode": "native",
+      "page_class": "ambiguous-retirement-matrix",
+      "page_mode_changed": false,
+      "page_number": 9,
+      "reader_inventory": {
+        "embedded_image_coverage": 0.0,
+        "image_regions": 0,
+        "native_glyph_count": 2274,
+        "native_glyph_coverage": 0.05969674,
+        "rotation_degrees": 0,
+        "suspicious_text_signals": [],
+        "table_regions": [
+          {
+            "cells_with_text": 298,
+            "column_count": 29,
+            "region_id": "table-1",
+            "row_count": 65
+          }
+        ],
+        "unicode_quality": 1.0,
+        "vector_density": 0.0001567967
+      },
+      "reader_native_text_length": 2830,
+      "reader_page_mode": "native",
+      "reader_reason": "clean_native_text",
+      "reader_regions": [
+        {
+          "mode": "native",
+          "reason": "clean_native_text",
+          "region_id": "native-page"
+        }
+      ],
+      "reader_structural_triggers": []
+    }
+  ],
+  "pages_whose_page_mode_changed": 0,
+  "schema_version": "corridor.pdf-stage1-routing-replay.v1",
+  "unnecessary_ocr_rate": 0.0,
+  "wall_seconds": 5.4
+}
