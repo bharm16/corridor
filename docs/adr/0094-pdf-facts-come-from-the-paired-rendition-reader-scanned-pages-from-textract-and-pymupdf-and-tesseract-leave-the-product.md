@@ -1,15 +1,25 @@
 ---
-status: proposed
+status: accepted
 domain: extraction
 scope: current product
 amends:
   - ADR-0006
-migration: nothing this ADR decides is built — the reader package (#729), the frozen paired-rendition measurement (#731), the Textract adapter (#732), the integrations #733 to #740 and the selection gate (#447) are open — and `ENGINE_ALLOWLIST` in `tests/test_architecture.py` names every module that still imports PyMuPDF or Tesseract until #741 empties it.
+migration: the reader package (#729), independent fixtures (#730), frozen measurement (#731), disabled adapters (#732 to #735) and remaining-call-site migration (#740) are implemented; coherent prose and cell segmentation (#736), semantic mapping (#737), reference integration (#738), qualification and selection (#447 and #739), provider-posture acceptance (#732) and final retirement (#741) remain. `ENGINE_ALLOWLIST` in `tests/test_architecture.py` still records retained incumbent imports.
 ---
 
 # PDF facts come from the paired-rendition reader, scanned pages from Textract, and PyMuPDF and Tesseract leave the product
 
 **Amends ADR-0006.** ADR-0064, ADR-0068 and ADR-0073 stand; this ADR reconciles the replacement with each of them below and moves none of their clauses.
+
+**Maintainer acceptance, 2026-09-08.** The maintainer accepts this architectural
+direction: the paired-rendition native reader, Textract for the declared OCR
+role, preserved unconfirmed-reading and accepted-record authority boundaries,
+and eventual removal of PyMuPDF and Tesseract. This acceptance does not select
+a production configuration, waive historical-citation requirements, accept
+unverified AWS controls, or authorize customer processing. #447, #739, #741
+and #522 retain those responsibilities; provider-posture acceptance remains
+recorded separately under #732. No production default changes through this
+acceptance.
 
 **This ADR changes the decision. It does not prove removal.** Both engines remain in the source, the dependency locks, CI and the runtime images until #741 removes them and proves it with an audit of the built image. Until then `tests/test_architecture.py` holds an exact allowlist of every module that still imports PyMuPDF or Tesseract; each ticket in #727 deletes the lines for the modules it moved, and #741 empties the list.
 
@@ -17,7 +27,7 @@ migration: nothing this ADR decides is built — the reader package (#729), the 
 
 Corridor reads PDFs through PyMuPDF at every stage that touches a page: ingest, page inventory, native token layers, source segmentation, table geometry, locator verification, rendering, report release and the review surfaces. PyMuPDF and MuPDF are dual-licensed AGPL-3.0 or commercial (Artifex). Corridor is proprietary and is to be operated as a network service for customers, a distribution model #461 records as very likely incompatible with the AGPL's terms. #461 asked for a documented answer before any production selection, and on 2026-09-03 it recorded the commercial licence as the chosen option, reaffirmed on 2026-09-04, with procurement as the remaining act.
 
-The maintainer changed that disposition on 2026-09-05, on evidence that did not exist when the licence was chosen. A standalone paired-rendition reader built on pypdfium2 and pypdf — native glyphs, boxes, rules, clip paths, marked content and the structure tree, with a deterministic table reconstructor — was measured against a 333-pair reference corpus, each pair a structured original and its printed rendition. It passes the exact gate on 262 of 263 development pairs and 70 of 70 holdout pairs (1,589 of 1,589 and 409 of 409 pages), and its cell-ID semantics tier matched 162 of 162 and 192 of 192 rows against the WSDOT 9424 and 9540 machine references. Those numbers are reasons to begin the integration, not evidence that a production pipeline has passed anything; the port into Corridor is not built.
+The maintainer changed that disposition on 2026-09-05, on evidence that did not exist when the licence was chosen. A standalone paired-rendition reader built on pypdfium2 and pypdf — native glyphs, boxes, rules, clip paths, marked content and the structure tree, with a deterministic table reconstructor — was measured against a 333-pair reference corpus, each pair a structured original and its printed rendition. It passes the exact gate on 262 of 263 development pairs and 70 of 70 holdout pairs (1,589 of 1,589 and 409 of 409 pages), and its cell-ID semantics tier matched 162 of 162 and 192 of 192 rows against the WSDOT 9424 and 9540 machine references. Those standalone measurements justified beginning integration. The reader package, frozen measurement and disabled native, inventory, render and Textract adapters have since merged; the remaining integration and qualification gates still do not establish a selected production pipeline.
 
 Tesseract is a separate question that the same program answers. The local OCR engine and Amazon Textract were each measured, but on different probe populations, so their results do not rank the two engines against each other; each result keeps its own dataset, configuration and measurement identity. Textract was measured on the ten development pairs in three lanes that must never be collapsed into one number:
 
@@ -84,7 +94,7 @@ pypdfium2 and PDFium are permissively licensed, and PDFium binary distributions 
 
 ## Considered options
 
-**Procure the commercial Artifex licence (the 2026-09-03 disposition).** Paused, not rejected on its merits. It would have kept the incumbent engine and its fidelity, but the measured reader now passes the exact gate on the reference corpus, which removes the "hurried replacement" risk the licence was chosen to avoid, and a licence would leave Tesseract's separate question unanswered. Paused means it resumes only by a new decision, for instance if the selection gate refuses the replacement.
+**Procure the commercial Artifex licence (the 2026-09-03 disposition).** Paused, not rejected on its merits. It would have kept the incumbent engine and its fidelity, and a licence would leave Tesseract's separate question unanswered. The standalone measurements justify staged integration and reduce uncertainty about the native reader. They do not establish production routing, historical citation compatibility, deployed processing, or end-to-end correctness. Those remain subjects of the integration and selection gates. Procurement resumes only by a new decision, for instance if the selection gate refuses the replacement.
 
 **A documented AGPL compliance posture.** Rejected. It is viable only if source-availability obligations are genuinely acceptable for the product's distribution model, and the maintainer chose against that twice: the licence on 2026-09-03 and replacement on 2026-09-05.
 
@@ -105,4 +115,5 @@ pypdfium2 and PDFium are permissively licensed, and PDFium binary distributions 
 - `tests/test_architecture.py` holds `ENGINE_ALLOWLIST`, the exact set of modules that still import PyMuPDF (`pymupdf` or its `fitz` alias) or Tesseract (`pytesseract`, or the engine named in a string literal: the executable, the routing engine identity, the harness read identity). The guard fails on an importer outside the list and on a listed module that no longer imports the engine named for it, so the list can only shrink honestly. Each ticket in #727 deletes the lines for the modules it moved; #741 empties it.
 - No production default changes because this ADR is accepted, or because any child ticket merges. #447 owns native selection; #739 owns scanned selection through the same mechanism; the legacy path stays intact, and PyMuPDF and Tesseract leave source, dependencies, CI and runtime images last, after the selection gate.
 - Old immutable runs, source records and released bytes are preserved. Old OCR readings are never overwritten by new responses.
-- What remains unresolved: every implementation ticket in #727 (#729 to #741 and #447), the maintainer's acceptance of this ADR, and the maintainer's selection act at #447.
+- Implemented: the reader package (#729), independent fixture construction (#730), frozen paired-rendition measurement (#731), disabled Textract/native/inventory/render adapters (#732 to #735), and remaining-call-site migration (#740). Recorded compatibility and raster comparisons keep their limitations and exclusions; implementation is not production qualification.
+- What remains unresolved: new reader-backed prose and PDF cell segmentation (#736), cell-ID semantic mapping (#737), method-specific reference integration (#738), native qualification and explicit selection (#447), scanned integration/qualification and explicit selection (#739), operational provider-posture acceptance (#732), customer authorization (#522), and verified retirement with historical citations preserved (#741). Retained rollback imports belong to #741, not to the completion of disabled adapters.
