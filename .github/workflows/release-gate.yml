@@ -16,11 +16,9 @@ name: release-gate
 # name so the context the ruleset requires today keeps reporting while the
 # transition is made (ADR-0093).
 #
-# Job count is deliberately unchanged. `classify` and `release-gate` are the
-# only additions, they run alone at each end, and neither installs a package:
-# the measured ceiling on this account is concurrent package downloads, not
-# runners, and eleven downloading jobs is what the previous three workflows
-# already ran (#548, #595).
+# `classify` and `release-gate` install no packages. The current capacity
+# trial adds one ordinary test runner, for ten test runners and at most
+# twelve downloading jobs including check and migration (ADR-0096).
 
 on:
   pull_request:
@@ -88,13 +86,10 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/classify_ci_change.py --base "$BASE_SHA" --head "$HEAD_SHA"
-      # The infrastructure project rides in this job rather than taking one of
-      # its own. Every gate job that installs packages is a concurrent
-      # download, and eleven is the measured ceiling for this account -- ten
-      # took a run from 3m28s to 11m55s (#548, #595). `check` already installs,
-      # so these steps cost setup time inside an existing job instead of a
-      # twelfth and thirteenth download. The image build, which is the
-      # expensive half, runs in the scheduled suite.
+      # The infrastructure toolchain shares this existing job so it does not
+      # add more concurrent downloading jobs. Previous capacity trials hit
+      # package saturation (#548, #595); every new allocation is measured.
+      # The expensive image build runs in the scheduled suite.
       - uses: actions/setup-node@v4
         id: infra_node
         if: ${{ steps.infrastructure.outputs.infrastructure_required == 'true' }}
@@ -156,9 +151,9 @@ jobs:
     # Every file lands in exactly one shard. Each private runner has two
     # cores and uses two xdist workers; the ordinary suite uses worksteal.
     # scripts/test_shard.py proves the exact cover (ADR-0096).
-    # Six ordinary plus three slow keeps the measured nine-test-job ceiling.
-    # Five/four left ordinary work on the critical path; seven/two crowded
-    # indivisible slow modules. Reallocate without adding package downloads.
+    # Seven ordinary plus three slow adds one runner to the measured six/three
+    # allocation. The required gate measures this capacity increase against
+    # the unchanged budget and retains every test (ADR-0096).
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
     outputs:
@@ -168,10 +163,11 @@ jobs:
       pytest_4: ${{ steps.measure.outputs.pytest_4 }}
       pytest_5: ${{ steps.measure.outputs.pytest_5 }}
       pytest_6: ${{ steps.measure.outputs.pytest_6 }}
+      pytest_7: ${{ steps.measure.outputs.pytest_7 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6]
+        shard: [1, 2, 3, 4, 5, 6, 7]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -187,14 +183,14 @@ jobs:
         with:
           enable-cache: true
       # One step, and no `services:` container, because this gate's wall
-      # clock is the slowest of its nine test jobs and so samples the worst
+      # clock is the slowest required job and so samples the worst
       # setup draw taken in the run rather than the average one. The script
       # starts the runner's own PostgreSQL 16 and installs the OCR engine
       # concurrently with the two uv syncs; it carries the measurements and
       # the reason each piece is still there (#595).
       - run: scripts/ci_environment.sh
       - id: measure
-        run: make test-shard SHARDS=6 SHARD=${{ matrix.shard }}
+        run: make test-shard SHARDS=7 SHARD=${{ matrix.shard }}
   slow:
     # Keep each module on one worker: loadfile avoids repeating its expensive
     # acceptance fixtures across processes. Full coverage is unchanged.
@@ -326,7 +322,7 @@ jobs:
           CORRIDOR_PYTEST_RECEIPTS: ${{ toJSON(needs.pytest.outputs) }}
           CORRIDOR_SLOW_RECEIPTS: ${{ toJSON(needs.slow.outputs) }}
           CORRIDOR_MIGRATION_RECEIPTS: ${{ toJSON(needs.migration.outputs) }}
-          PYTEST_SHARDS: "6"
+          PYTEST_SHARDS: "7"
           SLOW_SHARDS: "3"
           MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}
         run: python3 scripts/ci_feedback.py finish

@@ -73,9 +73,10 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
 - **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
   every pull request.** It runs `make check` unconditionally, and the same
   tests `make test` and the non-migration `make test-slow` select, partitioned
-  by `make test-shard` across six runners and `make test-slow-shard` across
-  three, unless every changed file is documentation. These are the same nine
-  test runners, allocated from measured workload (ADR-0096). `make check` owns
+  by `make test-shard` across seven runners and `make test-slow-shard` across
+  three, unless every changed file is documentation. This adds one ordinary
+  runner to the previous six/three allocation; required CI measures the
+  capacity change against the unchanged budget (ADR-0096). `make check` owns
   `test_architecture.py` and `test_source_scan_support.py`; behavior shards
   omit those two files so each required proof runs once. Every other behavior
   test remains required (ADR-0088, ADR-0096).
@@ -109,9 +110,10 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   saturated this account's package downloads: `uv sync --locked` went from 2s
   to as much as 588s and two jobs stalled for *minutes inside pytest*, taking
   the gate to 11m55s. Nine jobs measured healthy twice, every `uv sync` at
-  1-2s. The ceiling is what the account serves concurrently, not what the
-  partition can divide, and a shorter shard is worth nothing if a sibling job
-  stalls.
+  1-2s. The 2026-09-08 seven/three trial revisits that capacity after dependency
+  changes, with one additional runner. Inspect its actual download and gate
+  timings before treating the new allocation as an improvement. A historical
+  ceiling is evidence to check, not a permanent prohibition on more capacity.
 - **Nothing may download packages inside a test.** `workers/render` is a
   separate uv project whose `opencv-python-headless` is never in the root
   lock, so the first page render used to build that environment over the
@@ -121,7 +123,7 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
 - **CI's per-job setup is one concurrent step**, `scripts/ci_environment.sh`.
   PostgreSQL starts from the runner image while the locked Python environments
   are prepared; it does not pull a `services:` container.
-  The gate's wall clock is the slowest of its nine jobs, so it samples the
+  The gate's wall clock is the slowest required job, so it samples the
   worst setup draw taken in the run rather than the average one: serial setup
   steps add their draws, concurrent ones do not (#595).
 - **CI measures and reuses its own timings.** Each test command records its

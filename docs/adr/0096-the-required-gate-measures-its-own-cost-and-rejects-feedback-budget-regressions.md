@@ -93,12 +93,17 @@ ordinary command took 154.3 seconds while the slow complement took 91.3.
 The complete gate remained over budget at 208.1 seconds after bounded fixture
 work was reduced. A seven/two trial in run `34286519239` brought the ordinary
 command to 113.5 seconds but crowded indivisible slow modules into a
-166.6-second command. Six ordinary and three slow runners balance those
-constraints within the same capacity. Total test jobs, package
-downloads, two workers per runner, the `worksteal`/`loadfile` distinction,
-complete test coverage, and every feedback threshold remain unchanged. The
-required gate measures and accepts or rejects this allocation through the
-same receipts; reallocating workers does not grant a budget exception.
+166.6-second command. Six ordinary and three slow runners brought the gate to
+183.6 seconds in run `34287893996`, still above target. Run `34290598598`
+measured a 128.6-second ordinary command and a 211.1-second gate, including a
+late-starting runner. The next capacity trial adds one ordinary runner:
+seven ordinary and three slow, with twelve downloading jobs when check and
+migration are required. Earlier package saturation predates dependency
+changes, so the previous ceiling must be checked against current execution.
+Two workers per runner, the `worksteal`/`loadfile` distinction, complete test
+coverage, and every feedback threshold remain unchanged. The required gate
+measures and accepts or rejects this allocation through the same receipts;
+additional capacity does not grant a budget exception.
 
 Slow commands also use `--no-loadscope-reorder`. The pinned xdist scheduler
 otherwise replaces the supplied measured-duration order with case-count order,
