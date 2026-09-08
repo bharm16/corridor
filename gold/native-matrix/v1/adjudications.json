@@ -1,0 +1,81 @@
+{
+ "schema": "corridor.native-matrix-adjudications.v1",
+ "recorded_on": "2026-09-08",
+ "recorded_by": "bharm16",
+ "what_this_is": "Differences between the incumbent's retained reading and the replacement's, settled by reading the page. An entry never rewrites the retained bytes and never changes the exact regression result; it records that a person looked at the source and says which reading the document supports (ADR-0023).",
+ "evidence": "WSDOT 9540 utility listings, page 1 of each. Reproduce with: render the registered rendition and read the header band above the instrument-code and number columns.",
+ "adjudications": [
+  {
+   "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+   "case": "semantics-9540-gas",
+   "path": "pages[0].reading.mapping.unmapped",
+   "reason": "length",
+   "expected": 3,
+   "actual": 4,
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+   "case": "semantics-9540-gas",
+   "path": "pages[0].reading.mapping.unmapped[2]",
+   "reason": "value",
+   "expected": "AGREEMENT STATUS",
+   "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+   "case": "semantics-9540-opl",
+   "path": "pages[0].reading.mapping.unmapped",
+   "reason": "length",
+   "expected": 3,
+   "actual": 4,
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+   "case": "semantics-9540-opl",
+   "path": "pages[0].reading.mapping.unmapped[2]",
+   "reason": "value",
+   "expected": "AGREEMENT STATUS",
+   "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+   "case": "semantics-9540-sewer",
+   "path": "pages[0].reading.mapping.unmapped",
+   "reason": "length",
+   "expected": 3,
+   "actual": 4,
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+   "case": "semantics-9540-sewer",
+   "path": "pages[0].reading.mapping.unmapped[2]",
+   "reason": "value",
+   "expected": "AGREEMENT STATUS",
+   "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+   "case": "semantics-9540-water",
+   "path": "pages[0].reading.mapping.unmapped",
+   "reason": "length",
+   "expected": 3,
+   "actual": 4,
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  },
+  {
+   "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+   "case": "semantics-9540-water",
+   "path": "pages[0].reading.mapping.unmapped[2]",
+   "reason": "value",
+   "expected": "AGREEMENT STATUS",
+   "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+   "verdict": "The page prints one merged header cell over two data columns: the instrument code (EP, EF) and its number (30474C, Fife Ordinance 2001). The header says \"AND NUMBER\" because it names both, and a vertical rule separates them on every data row. The replacement counts two unmapped columns and repeats the shared header text for each; the incumbent counted one and undercounted the page. The replacement matches the document, so its reading is accepted."
+  }
+ ]
+}
