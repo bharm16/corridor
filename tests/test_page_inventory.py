@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pymupdf
 
+from corridor.config import Settings, settings
 from corridor.page_inventory import (
     OCR_ENGINE,
     READER_COORDINATE_FRAME,
@@ -323,3 +324,15 @@ def test_the_reader_backed_inventory_reads_the_document_in_one_isolated_process(
         inventory.coordinate_frame == READER_COORDINATE_FRAME
         for inventory in inventories.values()
     )
+
+
+def test_the_reader_backed_page_inventory_is_disabled_by_default():
+    """Enabling the adapter is one configuration change and nothing else.
+
+    ADR-0094 keeps "we imported it" apart from "it is approved for
+    production": #447 owns native selection, #739 owns scanned selection, and
+    no merge may move the production default.
+    """
+
+    assert Settings().reader_page_inventory is False
+    assert settings.reader_page_inventory is False

@@ -7,6 +7,7 @@ from sqlalchemy import select
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.ingest import ingest_document
+from corridor.page_inventory import READER_COORDINATE_FRAME, READER_ROUTER_VERSION
 from corridor.models import (
     DocPage,
     Document,
@@ -798,3 +799,120 @@ def test_enabling_the_adapter_changes_the_text_and_the_layer_and_nothing_else(
             .order_by(DocPage.page_no)
         ).all()
     ] == inventories
+
+
+# ---- the reader-backed page inventory and routing (#734) -------------------
+
+
+def _pages(session, document_id):
+    return session.scalars(
+        select(DocPage)
+        .where(DocPage.document_id == document_id)
+        .order_by(DocPage.page_no)
+    ).all()
+
+
+def test_enabling_the_reader_backed_inventory_changes_the_inventory_and_the_route_only(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    """The second adapter's blast radius, stated as an assertion (#734).
+
+    On, the persisted inventory is the reader's and the route it decides names
+    Textract. Everything the inventory does not own is byte-identical to the
+    incumbent run: the page text, which engine's Token Layer was retained, the
+    render derivatives, and the compatibility `text_source`.
+    """
+
+    incumbent = ingest(session, project, pdf, tmp_path / "incumbent")
+    incumbent_pages = _pages(session, incumbent.id)
+    # The render is content-addressed, so the file name is the same artifact
+    # under either run's images directory.
+    unchanged = [
+        (page.page_no, page.text, page.text_source, Path(page.image_path).name)
+        for page in incumbent_pages
+    ]
+    assert {page.routing_json["ocr_engine"] for page in incumbent_pages} == {
+        "tesseract"
+    }
+    assert {page.routing_json["router_version"] for page in incumbent_pages} == {
+        "page-inventory-router-v1"
+    }
+
+    other = Project(slug="reader-inventory", name="Reader inventory", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    replacement = ingest_document(
+        session,
+        project_id=other.id,
+        path=pdf,
+        doc_type="matrix",
+        images_dir=tmp_path / "replacement",
+    )
+    replacement_pages = _pages(session, replacement.id)
+
+    assert [
+        (page.page_no, page.text, page.text_source, Path(page.image_path).name)
+        for page in replacement_pages
+    ] == unchanged
+    assert [
+        layer.engine_json["engine"] for layer in _native_layers(session, replacement.id)
+    ] == [
+        layer.engine_json["engine"] for layer in _native_layers(session, incumbent.id)
+    ]
+    assert all(
+        page.inventory_json["coordinate_frame"] == READER_COORDINATE_FRAME
+        for page in replacement_pages
+    )
+    assert {page.routing_json["ocr_engine"] for page in replacement_pages} == {
+        "textract"
+    }
+    assert {page.routing_json["router_version"] for page in replacement_pages} == {
+        READER_ROUTER_VERSION
+    }
+    # The route is still native on these pages, so naming Textract changed
+    # nothing about what was read: the engine is recorded, not invoked.
+    assert {page.routing_json["page_mode"] for page in replacement_pages} == {"native"}
+    assert session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == replacement.id
+        )
+    ).all() == []
+
+
+def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
+    session, project, tmp_path, monkeypatch
+):
+    """The route names Textract; the failure names the engine that failed.
+
+    Wiring Textract in is #739's, so the region is still read by the incumbent
+    OCR engine, and a Processing Failure records that engine, its
+    configuration and the page scope. Calling the failure Textract's because
+    the route asked for Textract would be the same lie the retired router told
+    about thin text.
+    """
+
+    scan = scan_image(400, 300, dpi=150, lines=(((20, 50), "SCANNED", 11),))
+    fixture = PdfFixture()
+    fixture.add_page(width=400, height=300).image((0, 0, 400, 300), scan)
+    path = fixture.save(tmp_path / "scan.pdf")
+
+    def explode(*_args, **_kwargs):
+        raise RuntimeError("engine unavailable")
+
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    monkeypatch.setattr("corridor.ingest._ocr_region", explode)
+    doc = ingest(session, project, path, tmp_path / "images")
+
+    [page] = _pages(session, doc.id)
+    assert page.routing_json["page_mode"] == "ocr"
+    assert page.routing_json["ocr_engine"] == "textract"
+    [failure] = session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == doc.id
+        )
+    ).all()
+    assert failure.engine == "tesseract"
+    assert failure.configuration_json["language"] == "eng"
+    assert failure.scope_json["page_number"] == 1
+    assert failure.error_type == "RuntimeError"
