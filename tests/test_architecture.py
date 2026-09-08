@@ -609,13 +609,13 @@ def test_the_render_worker_has_no_database_or_storage_dependency():
     storage backend."""
 
     worker = REPO_ROOT / "workers" / "render"
-    tree = ast.parse((worker / "render_worker.py").read_text(encoding="utf-8"))
     imported = set()
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            imported.update(alias.name.split(".")[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and node.module:
-            imported.add(node.module.split(".")[0])
+    for module in sorted(worker.glob("*.py")):
+        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[0] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module.split(".")[0])
     forbidden = {"corridor", "sqlalchemy", "psycopg", "boto3", "botocore"}
 
     assert imported & forbidden == set()
