@@ -118,6 +118,14 @@ PRODUCTION_IMPORTERS = {
         "PDFium glyph boxes clustered by baseline, under pdfium_entry in a "
         "single-threaded command; a check on the capture, not a record fact"
     ),
+    "src/corridor/page_inventory.py": (
+        "the replacement Page Inventory is the reader's own glyphs, boxes, "
+        "rotation and reconstructed tables, plus the embedded image bounds and "
+        "painted path count PDFium supplies beside them, read in one "
+        "PdfiumExecutor process per document because ingest runs in a threaded "
+        "worker; disabled by default, and selection for the record stays with "
+        "#447 and #739"
+    ),
     "src/corridor/source_intake_draft.py": (
         "a staged PDF's page text for an intake draft is PDFium's, read in one "
         "PdfiumExecutor process per draft because the draft runs on a web "
