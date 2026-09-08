@@ -204,9 +204,15 @@ def test_outside_metadata_and_actual_clipped_spans_remain_distinct(tmp_path):
     assert result["pages"][0]["clipped"] == slim_page(reading.pages[0])["clipped"]
     handoff = result["source_segment_handoff"]
     (clipped,) = [span for span in handoff["source_spans"] if span["span_stream"] == "clipped"]
-    assert clipped["exact_text"] == reading.page_text(1, stream="clipped") == "H I D D E N"
+    glyphs = reading.pages[0]["clipped"]["value"]
+    # The authored glyph sequence is independent of platform substitute-font
+    # metrics. Projection spacing is a property of this exact reading, not a
+    # cross-platform literal that may silently replace its stored words.
+    assert [glyph["text"] for glyph in glyphs] == list("HIDDEN")
+    assert clipped["exact_text"] == reading.page_text(1, stream="clipped")
+    assert clipped["exact_text"]
     assert clipped["content_sha256"] == sha256(clipped["exact_text"].encode()).hexdigest()
-    assert clipped["source_indices"]
+    assert clipped["source_indices"] == [glyph["source_index"] for glyph in glyphs]
     assert handoff["metrics"]["clipped_characters_in_source_spans"] == 6
     assert handoff["metrics"]["generated_clipped_spans"] == 1
     assert any(span["outside_source_indices"] for span in handoff["source_spans"] if span["span_stream"] == "page")

@@ -30,6 +30,16 @@ missing whitespace or to be visible page text. Every span retains original
 glyph membership and outside/ambiguous membership. A glyph claimed by several
 cells cannot become a cell segment; it remains in its source span.
 
+Clipped-glyph projection spacing can differ across platforms when an
+unembedded PDF font uses different substitute metrics. The authored test
+glyphs `HIDDEN` projected as `H I D D E N` on the measured macOS environment
+and `H I DD E N` in Linux CI. Those strings are distinct readings, not
+interchangeable spellings. Tests assert authored glyphs and physical bounds,
+then exact projection/segment/digest/replay agreement within one reading.
+They do not normalize either string. A changed result digest refuses an old
+locator even when the underlying glyph sequence is unchanged; cross-platform
+qualification remains part of #447.
+
 Cells additionally record page, table, row, column and row/column spans. Build
 `NativeCellIndex(document, reading)` once for a mapping operation. A
 `pdf_cell_id(document, reading.reading_sha256, page, table, row, column)` binds

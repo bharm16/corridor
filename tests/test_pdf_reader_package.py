@@ -1,12 +1,13 @@
-"""The imported reader and Textract rung are commit c39363e, unchanged, and nothing in production reaches them (#729, #732).
+"""Imported reader provenance and every permitted product-tree importer.
 
 Three claims the ticket makes are checked here mechanically rather than in
 prose: every imported file (the reader, the harness and, since #732, the
 Textract rung) still hashes to the blob git recorded for it once the one
-import-prefix rewrite is undone; no module under `src/corridor` (or
-the render worker) imports the package, so no production path can call PDFium
-through it before #447's selection; and the configuration the package
-declares is the one loop-020 measured.
+import-prefix rewrite is undone; every module under `src/corridor` or the
+render worker that imports the package appears in the exact importer table
+with its purpose; and the declared frozen configuration is what loop-020
+measured. Explicit offline measurements and disabled adapters do not select
+a production configuration (#447).
 """
 
 from __future__ import annotations
@@ -107,16 +108,22 @@ def _imported_names(path: Path) -> set[str]:
     return names
 
 
-# The production modules that enter PDFium through the package's execution
-# contract, each with the reason it needs glyph geometry no pure-Python reader
-# supplies (#740). None of them produces a PDF fact for the record, and none of
-# them runs the reader's own algorithm: selection for the record stays with
-# #447. A module leaves this table the day it stops importing the package.
+# Every permitted importer in the product source tree, with its actual role.
+# This includes disabled reader adapters, PDFium geometry utilities (#740),
+# and the explicit offline typed-segment measurement (#736). The table is
+# import accounting, not production selection. A module leaves it only when
+# its imports leave; an unlisted importer always fails this guard.
 PRODUCTION_IMPORTERS = {
     "src/corridor/m8_acceptance.py": (
         "the RID-index rows an acceptance capture binds its declarations to are "
         "PDFium glyph boxes clustered by baseline, under pdfium_entry in a "
         "single-threaded command; a check on the capture, not a record fact"
+    ),
+    "src/corridor/native_segment_measurement.py": (
+        "the explicit offline native-segments-v1 measurement reads registered "
+        "paired PDFs through PdfiumExecutor and sends actual typed segment "
+        "values to the unchanged scorer; no database persistence, model call "
+        "or production selection is performed"
     ),
     "src/corridor/page_inventory.py": (
         "the replacement Page Inventory is the reader's own glyphs, boxes, "

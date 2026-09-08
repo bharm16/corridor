@@ -71,3 +71,21 @@ Production defaults remain disabled. Matrix semantic mapping remains #737;
 native Minutes/statement mapping and source-class qualification remain #447;
 retained engine removal and customer-citation preservation remain #741.
 The native-only Minutes handoff refuses explicitly until its mapping exists.
+
+## CI follow-up
+
+The initial Linux CI run `34190683957` exposed a stale exact-importer table
+and platform-dependent clipped-text spacing in the unembedded Helvetica
+fixture. Linux projected its authored `HIDDEN` glyphs as `H I DD E N`, while
+the measured macOS environment projected `H I D D E N`. The runtime reader
+was unchanged. The corrected tests separately assert the authored glyph
+sequence and location, and exact per-reading projection/segment/digest/replay
+agreement, without normalizing stored values. A regression test proves that
+changed clipped-word boundaries produce a different result identity and
+refuse replay of an older stored locator. The importer guard now explicitly
+names the offline measurement driver, preserving its exact allowlist check.
+
+These test/comment corrections do not change the measured implementation
+fingerprints or rewrite any measurement receipt. The measurements above
+remain scoped to their recorded macOS environment; they do not establish
+cross-platform clipped-spacing equivalence.

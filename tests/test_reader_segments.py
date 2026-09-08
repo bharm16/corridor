@@ -120,8 +120,20 @@ def test_one_reading_owns_page_tokens_prose_cells_and_clipped_stream(tmp_path):
     assert layer.identity.configuration["reading_sha256"] == first.reading_sha256
     assert first.page_text(1) == page_text_projection(layer)
     assert "HIDDEN" not in first.page_text(1)
-    assert first.page_text(1, stream="clipped") == "H I D D E N"
-    assert "".join(g["text"] for g in first.pages[0]["clipped"]["value"]) == "HIDDEN"
+    clipped_text = first.page_text(1, stream="clipped")
+    clipped_glyphs = first.pages[0]["clipped"]["value"]
+    # Clipped glyphs have no advance/break metadata in this reader. Platform
+    # substitute-font metrics can change their projected spacing. The source
+    # sequence and location are authored; the exact projection belongs to its
+    # recorded reading and is never normalized into another platform's text.
+    assert [glyph["text"] for glyph in clipped_glyphs] == list("HIDDEN")
+    assert clipped_text and clipped_text == again.page_text(1, stream="clipped")
+    assert all(
+        50 <= glyph["box"][0] < glyph["box"][2] <= 100 for glyph in clipped_glyphs
+    )
+    assert all(
+        245 <= glyph["box"][1] < glyph["box"][3] <= 265 for glyph in clipped_glyphs
+    )
     assert {v.exact_text for v in values if v.kind == "pdf_cell"} >= {
         "Owner",
         "Station",
@@ -130,7 +142,7 @@ def test_one_reading_owns_page_tokens_prose_cells_and_clipped_stream(tmp_path):
     }
     spans = [v for v in values if v.kind == "pdf_span"]
     assert any(
-        v.span_stream == "clipped" and v.exact_text == "H I D D E N" for v in spans
+        v.span_stream == "clipped" and v.exact_text == clipped_text for v in spans
     )
     outside = PdfFixture()
     outside.add_page().text((40, 80), "Standalone outside wording.")
@@ -600,7 +612,12 @@ def test_clipped_stream_is_persisted_separately_and_same_stream_overlap_is_refus
     hidden = next(row for row in rows if row.span_stream == "clipped")
     visible = next(row for row in rows if row.span_stream == "page")
     assert hidden.start_offset == visible.start_offset == 0
-    assert dereference_source_segment(document, hidden, path) == "H I D D E N"
+    exact_projection = native.page_text(1, stream="clipped")
+    assert [glyph["text"] for glyph in hidden.location_json["glyphs"]] == list("HIDDEN")
+    assert hidden.exact_text == exact_projection
+    assert hidden.content_sha256 == sha256(exact_projection.encode()).hexdigest()
+    assert dereference_source_segment(document, hidden, path) == exact_projection
+    assert reading(path).page_text(1, stream="clipped") == exact_projection
     source = next(
         value
         for value in native_segment_values(native)
@@ -718,3 +735,43 @@ def test_unrelated_rollback_and_measurement_files_do_not_define_native_replay(
     assert native_integration_digest() == first.identity["integration_sha256"]
     assert reading(path).reading_sha256 == first.reading_sha256
     assert irrelevant_reads == []
+
+
+def test_changed_clipped_projection_cannot_rebind_a_stored_reading(
+    session, project, tmp_path, monkeypatch
+):
+    from corridor_pdf_reader.execution import PdfiumExecutor
+
+    path = native_pdf(tmp_path, clipped=True)
+    document = registered(session, project, path)
+    original = reading(path)
+    hidden = next(
+        row
+        for row in append_native_segments(session, document, original)
+        if row.span_stream == "clipped"
+    )
+    stored = (hidden.exact_text, hidden.content_sha256, hidden.reading_sha256)
+
+    class DifferentClippedBreaks:
+        def read_document(self, source, **kwargs):
+            result = PdfiumExecutor().read_document(source, **kwargs)
+            for glyph in result["pages"][0]["clipped"]["value"]:
+                glyph["break_before"] = False
+            return result
+
+    # Model a later reader result with different clipped-word boundaries,
+    # keeping original bytes, glyph text and physical boxes unchanged. A text
+    # projection change may never retarget an earlier stored locator.
+    monkeypatch.setattr("corridor.token_layers.PdfiumExecutor", DifferentClippedBreaks)
+    alternate = reading(path)
+    assert [g["text"] for g in alternate.pages[0]["clipped"]["value"]] == list("HIDDEN")
+    assert alternate.page_text(1, stream="clipped") != original.page_text(
+        1, stream="clipped"
+    )
+    assert alternate.reading_sha256 != original.reading_sha256
+    with pytest.raises(
+        SourceSegmentLocatorMismatch,
+        match="recorded native reader/configuration/result is unavailable",
+    ):
+        dereference_source_segment(document, hidden, path)
+    assert (hidden.exact_text, hidden.content_sha256, hidden.reading_sha256) == stored
