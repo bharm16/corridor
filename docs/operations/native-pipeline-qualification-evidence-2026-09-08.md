@@ -38,6 +38,44 @@ recorded external paths; they are Class B processing evidence, not permanent
 accepted-record content. The durable qualification decision must retain its
 metrics, scope, configuration, evidence identities and limitations separately.
 
+## Full-chain retained-answer observation
+
+At core `6d6ffc4`, the explicit shadow command ran all seven retained cases
+twice: 14 observations over 20 pages per round. Each run freshly executed
+native inventory, reading, PDFium geometry rendering and routed cropping,
+re-rendered the measured 110-DPI model context, verified those image bytes and
+request inputs against the retained response, and appended/read back the
+source-bound output in disposable PostgreSQL. Exact content retries retain the
+original run and Facts rather than minting duplicate rows.
+
+All seven cases completed and reproduced identical input/canonical-output
+identities across their two observations. Each round covers 466 rows and
+2,466 Facts, with 2,701 field outcomes: 2,466 materialized, 224 not extracted
+and eleven explicit date refusals. Required retained-row comparison passes;
+full-reading parity remains false for the same four duplicated FRANCHISE
+diagnostics. This is conditional repeatability using retained answers, not a
+fresh model observation, independent quality result or new WSDOT 9540 score.
+
+The [retained measurement](../../artifacts/pipeline-qualification/retained-shadow-6d6ffc4-v1/summary.json)
+made zero provider calls and executed no selection. Its gate is incomplete
+because no current predeclared metric policy, fresh model observations or
+independent field/physical-source gold were supplied. Total processing cost,
+handling burden and customer ROI remain unmeasured. The database was dropped
+after the measurement; receipts and indexed external artifacts are preserved.
+
+The complete command took 294.09 seconds. An external observer sampled the
+owned process tree every 0.2 seconds, recording 1,264 samples and up to six
+processes. Its maximum summed resident set was 1,131,424 KiB (about 1.08 GiB).
+That observation includes both rounds and driver/setup work. Shared pages may
+be counted in multiple processes, short-lived peaks may be missed, and
+sampling adds overhead; it is neither an exact continuous peak nor a deployed
+cost estimate. Each pipeline observation separately labels its parent-process
+lifetime RSS rather than pretending that value includes render workers.
+
+The runtime files and Git revision were verified unchanged before and after
+execution. This first receipt remains bound to `6d6ffc4`; subsequent gate
+review corrections are not retroactively included in it.
+
 ## Raster failures and actual transform differences
 
 The reconstruction covers 35 comparisons from 28 original, digest-matched
@@ -80,6 +118,33 @@ Later pages remain outside the historical 576-comparison measurement. The
 three excluded plans are still uncovered: SUE test-hole data `2611bbf6`
 (32.56 MB), utility strip maps `375b4c36` (99.40 MB), and League City exhibit
 `92f456c2` (55.39 MB).
+
+## Versioned deskew correction and routed-crop proof
+
+The combined source-authored tests exposed a real preprocessing defect: the
+old rotation sign increases a three-degree tilt to roughly six degrees. The
+explicit PDFium request version `pdfium-deskew-v2` corrects that direction.
+Omitted-version calls retain the original behavior and identities for rollback.
+Replacement output paths and derivative identities include worker source/lock
+identity before rendering, so corrected pixels accumulate beside older ones.
+
+The [versioned geometry receipt](../../artifacts/pipeline-qualification/geometry-v2-2026-09-08/receipt.json)
+records both tilt signs and all four page rotations. The largest residual axis
+deviation is 0.076395 degrees; restoring the wrong sign fails all eight pixel
+alignment assertions at 5.931–6.045 degrees. Four replays against the retained
+old worker, covering both rasterizers and both tilt signs, preserve exact PNG
+bytes and filenames, with manifests equal except for their output paths.
+
+The public routed crop follows the actual render transform, intersects page
+edges, and masks pixels outside the requested source polygon. Its fixtures
+separate a native header from an image region and reject wrong-origin or
+missing-deskew interpretations using known colored source marks. The combined
+geometry/render gate passed 51 tests. This proves the tested geometry and
+versioning behavior; it does not qualify OCR, independent field accuracy or
+the 35 corpus outliers. The original raster receipts remain measurements of
+the earlier preprocessing implementation. The copied receipt's worker/test
+hashes match committed core `6d6ffc4`; its earlier integration-check failures
+are retained as history and were superseded by the core's 40 passing checks.
 
 ## Actual retained citations
 
