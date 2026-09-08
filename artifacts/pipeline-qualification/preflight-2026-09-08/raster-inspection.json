@@ -1,0 +1,3413 @@
+{
+  "schema_version": "corridor.render-outlier-inspection.v2",
+  "created_at": "2026-09-08T08:31:44.495056+00:00",
+  "new_observation_receipt": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/receipt.json",
+  "new_observation_receipt_sha256": "2c477c94f916ddb789681078a1e668388decbc392d909004ba9c53186b3107e4",
+  "triage_receipt": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/receipt.json",
+  "triage_receipt_sha256": "c1453a3f8d561bc753a791e6b57d2f21e4717ada2144707a9966e078e476cdf7",
+  "scope": "Bounded supplemental analysis of the new35-pair reconstruction; no additional source pages/profiles rendered and no model/OCR/provider or database operations. Original receipts remain unchanged.",
+  "geometry": [
+    {
+      "source_sha256": "0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "replacement_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "replacement_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "replacement_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "replacement_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -5.573202053919243e-05,
+            2549.999927876205
+          ],
+          "replacement_raster_point": [
+            -5.573202053919243e-05,
+            2549.999927876205
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            5.5732023836554815e-05,
+            -7.212379214562023e-05
+          ],
+          "replacement_raster_point": [
+            5.5732023836554815e-05,
+            -7.212379214562023e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            3299.999944267976,
+            2550.000072123792
+          ],
+          "replacement_raster_point": [
+            3299.999944267976,
+            2550.000072123792
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            3300.0000557320204,
+            7.212379469358207e-05
+          ],
+          "replacement_raster_point": [
+            3300.0000557320204,
+            7.212379469358207e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379214562023e-05,
+            3299.9999442679764
+          ],
+          "replacement_raster_point": [
+            -7.212379214562023e-05,
+            3299.9999442679764
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            7.212379469358207e-05,
+            -5.573202053919243e-05
+          ],
+          "replacement_raster_point": [
+            7.212379469358207e-05,
+            -5.573202053919243e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            2549.999927876205,
+            3300.000055732021
+          ],
+          "replacement_raster_point": [
+            2549.999927876205,
+            3300.000055732021
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2550.000072123792,
+            5.5732023836554815e-05
+          ],
+          "replacement_raster_point": [
+            2550.000072123792,
+            5.5732023836554815e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            3300.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            3300.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2550.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2550.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            3300.0,
+            2550.0
+          ],
+          "replacement_raster_point": [
+            3300.0,
+            2550.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "replacement_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "replacement_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "replacement_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "replacement_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            2550.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            2550.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2550.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            2550.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            2549.999927876205,
+            3300.000055732021
+          ],
+          "replacement_raster_point": [
+            2549.999927876205,
+            3300.000055732021
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            -7.212379214562023e-05,
+            3299.9999442679764
+          ],
+          "replacement_raster_point": [
+            -7.212379214562023e-05,
+            3299.9999442679764
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            2550.000072123792,
+            5.5732023836554815e-05
+          ],
+          "replacement_raster_point": [
+            2550.000072123792,
+            5.5732023836554815e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            7.212379469358207e-05,
+            -5.573202053919243e-05
+          ],
+          "replacement_raster_point": [
+            7.212379469358207e-05,
+            -5.573202053919243e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -14.35022611119065,
+            3288.8108476657767
+          ],
+          "replacement_raster_point": [
+            -14.35022611119065,
+            3288.8108476657767
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            14.44732217035078,
+            -11.06349861060424
+          ],
+          "replacement_raster_point": [
+            14.44732217035078,
+            -11.06349861060424
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            2535.552677829649,
+            3311.0634986106043
+          ],
+          "replacement_raster_point": [
+            2535.552677829649,
+            3311.0634986106043
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2564.3502261111903,
+            11.189152334223229
+          ],
+          "replacement_raster_point": [
+            2564.3502261111903,
+            11.189152334223229
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 0.49999967247977395,
+        "pymupdf": 0.49999967247977395
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -31.44074597556946,
+            3275.219239750378
+          ],
+          "replacement_raster_point": [
+            -31.44074597556946,
+            3275.219239750378
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            31.91067804909834,
+            -24.17261286034895
+          ],
+          "replacement_raster_point": [
+            31.91067804909834,
+            -24.17261286034895
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            2518.0893219509016,
+            3324.1726128603486
+          ],
+          "replacement_raster_point": [
+            2518.0893219509016,
+            3324.1726128603486
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2581.4407459755694,
+            24.780760249621622
+          ],
+          "replacement_raster_point": [
+            2581.4407459755694,
+            24.780760249621622
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 1.099997640119554,
+        "pymupdf": 1.099997640119554
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1423260,
+        "y0": 0,
+        "y1": 920930
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3837.2083333333335
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3837.2083333333335
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            920930
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1423260,
+            0
+          ],
+          "legacy_raster_point": [
+            5930.25,
+            3837.2083333333335
+          ],
+          "replacement_raster_point": [
+            5930.25,
+            3837.2083333333335
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1423260,
+            920930
+          ],
+          "legacy_raster_point": [
+            5930.25,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5930.25,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1423260,
+        "y0": 0,
+        "y1": 920930
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2558.138888888889
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2558.138888888889
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            920930
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1423260,
+            0
+          ],
+          "legacy_raster_point": [
+            3953.5,
+            2558.138888888889
+          ],
+          "replacement_raster_point": [
+            3953.5,
+            2558.138888888889
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1423260,
+            920930
+          ],
+          "legacy_raster_point": [
+            3953.5,
+            0.0
+          ],
+          "replacement_raster_point": [
+            3953.5,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1912500,
+        "y0": 0,
+        "y1": 1237500
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3437.5
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3437.5
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1237500
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1912500,
+            0
+          ],
+          "legacy_raster_point": [
+            5312.5,
+            3437.5
+          ],
+          "replacement_raster_point": [
+            5312.5,
+            3437.5
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1912500,
+            1237500
+          ],
+          "legacy_raster_point": [
+            5312.5,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5312.5,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            2552.877800838594,
+            3297.77223126375
+          ],
+          "replacement_raster_point": [
+            2552.877800838594,
+            3297.77223126375
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            2.8816845772842523,
+            3302.2227427214743
+          ],
+          "replacement_raster_point": [
+            2.8816845772842523,
+            3302.2227427214743
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            2547.1183154227156,
+            -2.2227427214744715
+          ],
+          "replacement_raster_point": [
+            2547.1183154227156,
+            -2.2227427214744715
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            -2.877800838594222,
+            2.2277687362498044
+          ],
+          "replacement_raster_point": [
+            -2.877800838594222,
+            2.2277687362498044
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": -0.09999829515999181,
+        "pymupdf": -0.09999829515999181
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1912500,
+        "y0": 0,
+        "y1": 1237500
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3437.5
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3437.5
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1237500
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1912500,
+            0
+          ],
+          "legacy_raster_point": [
+            5312.5,
+            3437.5
+          ],
+          "replacement_raster_point": [
+            5312.5,
+            3437.5
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1912500,
+            1237500
+          ],
+          "legacy_raster_point": [
+            5312.5,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5312.5,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            1700.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            1700.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            1700.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            1700.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "replacement_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "replacement_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "replacement_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "replacement_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -5.573202053919243e-05,
+            2549.999927876205
+          ],
+          "replacement_raster_point": [
+            -5.573202053919243e-05,
+            2549.999927876205
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            5.5732023836554815e-05,
+            -7.212379214562023e-05
+          ],
+          "replacement_raster_point": [
+            5.5732023836554815e-05,
+            -7.212379214562023e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            3299.999944267976,
+            2550.000072123792
+          ],
+          "replacement_raster_point": [
+            3299.999944267976,
+            2550.000072123792
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            3300.0000557320204,
+            7.212379469358207e-05
+          ],
+          "replacement_raster_point": [
+            3300.0000557320204,
+            7.212379469358207e-05
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "replacement_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "replacement_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "replacement_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "replacement_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 612000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            8.656814654098614,
+            3306.65323376016
+          ],
+          "replacement_raster_point": [
+            7.2115827979839,
+            3305.5475013446176
+          ],
+          "delta_pixels": [
+            -1.445231856114714,
+            -1.1057324155426613
+          ],
+          "distance_pixels": 1.8197085735662701
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            -8.621859909636534,
+            6.698469311816984
+          ],
+          "replacement_raster_point": [
+            -7.187308733998386,
+            5.578914839186991
+          ],
+          "delta_pixels": [
+            1.4345511756381475,
+            -1.1195544726299929
+          ],
+          "distance_pixels": 1.8197085735662764
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            0
+          ],
+          "legacy_raster_point": [
+            2558.6218599096364,
+            3293.301530688183
+          ],
+          "replacement_raster_point": [
+            2557.1873087339986,
+            3294.421085160813
+          ],
+          "delta_pixels": [
+            -1.4345511756378073,
+            1.1195544726301705
+          ],
+          "distance_pixels": 1.8197085735661176
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            612000,
+            792000
+          ],
+          "legacy_raster_point": [
+            2541.3431853459015,
+            -6.653233760160177
+          ],
+          "replacement_raster_point": [
+            2542.7884172020163,
+            -5.547501344617503
+          ],
+          "delta_pixels": [
+            1.4452318561147877,
+            1.1057324155426738
+          ],
+          "distance_pixels": 1.8197085735663363
+        }
+      ],
+      "maximum_corner_distance_pixels": 1.8197085735663363,
+      "deskew_angle_degrees": {
+        "pdfium": -0.24999949461722082,
+        "pymupdf": -0.29999989443629715
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            1700.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            2200.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "replacement_raster_point": [
+            7.212379596756299e-05,
+            -0.00011146404272706606
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "replacement_raster_point": [
+            5100.00007212379,
+            0.00011146404602442844
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "replacement_raster_point": [
+            -7.212379087163931e-05,
+            3299.999888535954
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "replacement_raster_point": [
+            5099.999927876203,
+            3300.0001114640427
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": 2.5044781608585254e-06,
+        "pymupdf": 2.5044781608585254e-06
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 1224000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            1224000
+          ],
+          "legacy_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "replacement_raster_point": [
+            5100.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "profile": "ocr_layout",
+      "pdf_user_crop_box_millipoints": {
+        "x0": -11991,
+        "x1": 1212010,
+        "y0": 11962,
+        "y1": 803962
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            -11991,
+            11962
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3250.1583333333333
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.8416666666667
+          ],
+          "distance_pixels": 49.8416666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            -11991,
+            803962
+          ],
+          "legacy_raster_point": [
+            0.0,
+            -49.84166666666667
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.84166666666667
+          ],
+          "distance_pixels": 49.84166666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1212010,
+            11962
+          ],
+          "legacy_raster_point": [
+            5100.004166666667,
+            3250.1583333333333
+          ],
+          "replacement_raster_point": [
+            5100.004166666667,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.8416666666667
+          ],
+          "distance_pixels": 49.8416666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1212010,
+            803962
+          ],
+          "legacy_raster_point": [
+            5100.004166666667,
+            -49.84166666666667
+          ],
+          "replacement_raster_point": [
+            5100.004166666667,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.84166666666667
+          ],
+          "distance_pixels": 49.84166666666667
+        }
+      ],
+      "maximum_corner_distance_pixels": 49.8416666666667,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": -11991,
+        "x1": 1212010,
+        "y0": 11962,
+        "y1": 803962
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            -11991,
+            11962
+          ],
+          "legacy_raster_point": [
+            0.0,
+            3250.1583333333333
+          ],
+          "replacement_raster_point": [
+            0.0,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.8416666666667
+          ],
+          "distance_pixels": 49.8416666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            -11991,
+            803962
+          ],
+          "legacy_raster_point": [
+            0.0,
+            -49.84166666666667
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.84166666666667
+          ],
+          "distance_pixels": 49.84166666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1212010,
+            11962
+          ],
+          "legacy_raster_point": [
+            5100.004166666667,
+            3250.1583333333333
+          ],
+          "replacement_raster_point": [
+            5100.004166666667,
+            3300.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.8416666666667
+          ],
+          "distance_pixels": 49.8416666666667
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1212010,
+            803962
+          ],
+          "legacy_raster_point": [
+            5100.004166666667,
+            -49.84166666666667
+          ],
+          "replacement_raster_point": [
+            5100.004166666667,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            49.84166666666667
+          ],
+          "distance_pixels": 49.84166666666667
+        }
+      ],
+      "maximum_corner_distance_pixels": 49.8416666666667,
+      "deskew_angle_degrees": {
+        "pdfium": 0.0,
+        "pymupdf": 0.0
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb",
+      "profile": "review",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 1224000,
+        "y0": 0,
+        "y1": 792000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            792000
+          ],
+          "legacy_raster_point": [
+            0.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            0.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            0
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            2200.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            1224000,
+            792000
+          ],
+          "legacy_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "replacement_raster_point": [
+            3400.0,
+            0.0
+          ],
+          "delta_pixels": [
+            0.0,
+            0.0
+          ],
+          "distance_pixels": 0.0
+        }
+      ],
+      "maximum_corner_distance_pixels": 0.0,
+      "deskew_angle_degrees": {
+        "pdfium": null,
+        "pymupdf": null
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    },
+    {
+      "source_sha256": "fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61",
+      "profile": "table_cv",
+      "pdf_user_crop_box_millipoints": {
+        "x0": 0,
+        "x1": 792000,
+        "y0": 0,
+        "y1": 612000
+      },
+      "box_reconstruction": "Undo flip_box: PDF y0=media.y1-display_crop.y1; PDF y1=media.y1-display_crop.y0. The manifest crop_box is top-left/y-down and must not itself be treated as raw PDF user space.",
+      "same_pdf_user_corners_through_full_chains": [
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            0
+          ],
+          "legacy_raster_point": [
+            2575.759719165704,
+            3279.769662558473
+          ],
+          "replacement_raster_point": [
+            2578.6022439316694,
+            3277.49690924939
+          ],
+          "delta_pixels": [
+            2.8425247659652086,
+            -2.2727533090833276
+          ],
+          "distance_pixels": 3.639416800680403
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            0,
+            612000
+          ],
+          "legacy_raster_point": [
+            26.074304842916714,
+            3319.8232265651345
+          ],
+          "replacement_raster_point": [
+            28.990620243378963,
+            3322.000486111927
+          ],
+          "delta_pixels": [
+            2.916315400462249,
+            2.1772595467923566
+          ],
+          "distance_pixels": 3.639416800679986
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            0
+          ],
+          "legacy_raster_point": [
+            2523.9256951570833,
+            -19.823226565134362
+          ],
+          "replacement_raster_point": [
+            2521.009379756621,
+            -22.000486111927056
+          ],
+          "delta_pixels": [
+            -2.916315400462281,
+            -2.177259546792694
+          ],
+          "distance_pixels": 3.639416800680214
+        },
+        {
+          "pdf_user_crop_corner_millipoints": [
+            792000,
+            612000
+          ],
+          "legacy_raster_point": [
+            -25.759719165704094,
+            20.23033744152717
+          ],
+          "replacement_raster_point": [
+            -28.602243931669257,
+            22.503090750610202
+          ],
+          "delta_pixels": [
+            -2.8425247659651625,
+            2.2727533090830327
+          ],
+          "distance_pixels": 3.639416800680183
+        }
+      ],
+      "maximum_corner_distance_pixels": 3.639416800680403,
+      "deskew_angle_degrees": {
+        "pdfium": -0.9999986617142298,
+        "pymupdf": -0.8999978620760771
+      },
+      "limits": "Coordinate propagation from retained full manifests; not an independent text/cell/clipping correctness score."
+    }
+  ],
+  "historical_artifact_hash_comparison": {
+    "historical_artifact": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/orphaned-legacy-metro/pymupdf/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-2210e109f565.png",
+    "historical_sha256": "91a8bdb470005215c8b28682cbd3c4e359df64faa2fe573a5e3fd752f3358905",
+    "new_artifact": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pymupdf/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-2210e109f565.png",
+    "new_sha256": "91a8bdb470005215c8b28682cbd3c4e359df64faa2fe573a5e3fd752f3358905",
+    "byte_identical": true,
+    "limits": "One surviving legacy-only artifact is comparable by exact hash. The main #735 receipt did not retain raster hashes for the other observations or any paired original set."
+  },
+  "visual_inspections": [
+    {
+      "source_prefix": "329ab37f3fbc",
+      "profile": "review",
+      "engines_viewed": [
+        "pymupdf",
+        "pdfium"
+      ],
+      "source_image_dimensions": [
+        2200,
+        1700
+      ],
+      "tool_display_dimensions": [
+        1780,
+        1376
+      ],
+      "observation": "Both new renders show the same dense matrix grid and readable page-level layout. PDFium text and rules are visibly heavier. No gross grid displacement or outer-page clipping is visible at this inspection scale.",
+      "limits": "No cell-by-cell transcription or cell topology evaluation was performed; no renderer-correctness or harmlessness conclusion follows."
+    },
+    {
+      "source_prefix": "0c0cde2d5fd9",
+      "profile": "review",
+      "engines_viewed": [
+        "pymupdf",
+        "pdfium"
+      ],
+      "source_image_dimensions": [
+        3400,
+        2200
+      ],
+      "tool_display_dimensions": [
+        1978,
+        1279
+      ],
+      "observation": "Both new renders show the same cover-sheet composition and map frame. The PDFium view makes faint heading/body text and several hairlines visibly darker/more distinct.",
+      "limits": "No independent authored-ink labeling was performed; unmatched ink is not assigned as a loss/error by either engine."
+    },
+    {
+      "source_prefix": "fb748d4ac7fb",
+      "profile": "table_cv",
+      "engines_viewed": [
+        "pymupdf",
+        "pdfium"
+      ],
+      "source_image_dimensions": [
+        2550,
+        3300
+      ],
+      "tool_display_dimensions": [
+        1376,
+        1780
+      ],
+      "observation": "Both processed agreement images contain mostly sparse letter/line fragments, including scan-edge strokes. The line-fragment shapes differ. The two full manifests retain their distinct applied deskew transforms.",
+      "limits": "This line-morphology profile is not a transcription image. The views do not establish which text/rules were correctly retained or whether near-edge source ink was clipped."
+    }
+  ],
+  "qualification_status": "unqualified: all35 still exceed original tolerances; representative visual observations and exact metric replay do not prove all outliers harmless",
+  "remaining_proof": [
+    "Source-anchored per-region glyph visibility, cell/rule boundaries and near-edge clipping through the actual chosen transform chain.",
+    "Native/model/OCR outcomes with explicit scope, cost and unconfirmed-reading treatment; no such downstream reads were run.",
+    "Later pages and the three oversized excluded PDFs remain outside this observation.",
+    "Keep source-origin differences distinct from raster pixel tolerance, and preserve historical manifests/citations.",
+    "Carry the separately recorded metadata/embedded-label access concern through #447 without a new generalization claim."
+  ],
+  "supersedes_analysis": {
+    "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/inspection.json",
+    "sha256": "38e4bc88b5f102c889a59ba41cfca85145c4db5dc31045b20f0264fe60aff195",
+    "reason": "Correct source-corner sampling by undoing the manifest top-left crop frame before entering the PDF-user transform. Difference magnitudes and visual observations are unchanged. The earlier analysis bytes remain preserved."
+  }
+}

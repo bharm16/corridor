@@ -1,0 +1,438 @@
+{
+  "status": "bounded_evidence_triage_and_reconstruction_complete",
+  "qualification": "not established",
+  "triage": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/receipt.json",
+  "exhaustive_outliers": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/outliers.csv",
+  "new_observation_receipt": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/receipt.json",
+  "new_observation_receipt_sha256": "2c477c94f916ddb789681078a1e668388decbc392d909004ba9c53186b3107e4",
+  "inspection": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/inspection-v2.json",
+  "inspection_sha256": "44a9ef91939a8eff58b46594a2f568bf71d68a8be55e58f5e742eaac52823a7b",
+  "report": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/inspection-v2.md",
+  "report_sha256": "d9f76ea7c8cf1a3e062bc537f4a4cd1898ff4aafcbf1c336a7d70fd75c135b75",
+  "verified_new_rasters_and_complete_manifests": [
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pdfium/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470-p0001-review-3c876829244e.png",
+      "sha256": "8cbcc6352e8ae2a8dc581a03fccaf3231896ebf6dc275008b7292db6e6f0da88",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pdfium-review.manifest.json",
+      "manifest_sha256": "308bff915bd0f7bfb32b5c9374432820c8df0aa94df3dcade154f3cce602a5aa"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pymupdf/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470-p0001-review-db7c2cb29e84.png",
+      "sha256": "b99dd378fcee366013f9f56e836c71567fc5f6084d9040d7239df7fdf25fb751",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pymupdf-review.manifest.json",
+      "manifest_sha256": "9d67b0a6ed218caf36cdac6ea5f0e2d971323b79e4ce3d280459170367fdc095"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "1f49a486b20351790fefb7e7ac4574c6328d55eaa7f7739e4d5a3e1a14b8db45",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "0a8f32bb9824a93c71eefeaa0111da41cb8fa3f187ebe1aa2b9cccafc907f141"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "732565513392975580f4a353fa21f1d86fc902ac9212b8d867b25e2b51a71fc9",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "d10912c3d1ded472d6a1543a2005653eeb5d56ec5fea51365b63e88e116bec70"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-table_cv-d8d58dd96a4f.png",
+      "sha256": "b0972fed8a66c7322156c0eeb2c17e17e1912693b77cff888825a071b9e127b0",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "10f966ce56b164a5ce496109d1be4f0ba523627b806c726e84709e4834920e1a"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-table_cv-55f1338e0d09.png",
+      "sha256": "b282ab27274b5a0642b84c2a7884c32d5fc585cb3eb79450a7a898c39dca30e1",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "3fa428d15643bc9eccb28ded8e96d4c4875afb1c713974d8c341ae6a9a087a6f"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pdfium/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5-p0001-table_cv-b2e5085170de.png",
+      "sha256": "6ceef0f3a4088042a72fe544bce7874d46b07f684300172915855f2bbb09e6dd",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "6a4b6f00b2a00f06cfe0faafa1e152e3df15da75eb9d34cb1afbb63a67396a84"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pymupdf/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5-p0001-table_cv-d171768ad6f8.png",
+      "sha256": "6bc01852e90f0334c330bdd43775fd57fc0d7175a3825a4f2d835cf8f070160f",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "01efb73f7c1afe982b6e005695f0705001d039ba9c686ac5d580c931801bd3d8"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pdfium/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "095bf40346a2d3611888fcee4293f2eca6fc0f88657520cbe17e1a086132bb7d",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "c35169f2ebaba1ebd4a0d233fe8fe4bad38941c659a9d151b4f2ea3c3f2dc6a3"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pymupdf/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730-p0001-table_cv-2210e109f565.png",
+      "sha256": "69a446c4df1fe1485c72ccfa4f7fa9e4132cd25bff3f98e0fc7e620a23d80fff",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "c418770dcc989820389942b6ec93e38c13040428e61efa67089d336b847f5ced"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-ocr_layout-090777c0ea72.png",
+      "sha256": "09328b3797a6a4e6582b150be1e184357b8825c176fd0e963860c8d8b19901e9",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "3d850ce345b055bad833005dc819b6fce7157a42d6a3ef66184f083585f48eb1"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-ocr_layout-0599ca59db0c.png",
+      "sha256": "1e6dc40143416b5be0b5c39e8c99f56d51a875266440c14ec089b10dce3545ac",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "ceffe54266e40f197683e46124add4e071ea06fef301445b2abd7b8210668a9e"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-review-06abebb71cac.png",
+      "sha256": "66f592ce1eec0c81067eab4abffed35d113a7fe38169ecc7e82ad50c2bf71d83",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium-review.manifest.json",
+      "manifest_sha256": "c8304b058d827491e29fb941e4ee8f5f43de6c9f12bef7d9a583af9bf80a4253"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-review-1fd0375e6fc4.png",
+      "sha256": "d20311b8eb16f323912953c17148380ddb5ae56f79f88a4b37d6b61cfaafc1fd",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf-review.manifest.json",
+      "manifest_sha256": "cf6449e094c10269360712aa0a4108b95a5be04c22b26cd94100c63ba59c83e1"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pdfium/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "d696e7f0cec69abd748571d022e2e075911afeabc3ce9d599201cfa6315a06a2",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "2b07810ad0ab421ec29bc718e0e931bbbdc0a3b861a01e87b837083ee68ea687"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pymupdf/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "daceff950f567cedc528dff836ac65861fd7afd350dcd2dfc738da87b7e8cb2a",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "86e50d7e024987dae5205e39070d373de440fe2eaec6b0b5aa447708fd59647a"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "5e8a6e784e0803a0e4c3586ac2640b0f32f258b7811fc8d9a712209dfee3fdd5",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "1ab79e9d0d2856d3fedb987181608e6d46cbb50097e55aae6acb10963482d482"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "6b192d4b21831fa3b4684a44b064768e1ba408b91f92cdb5342a92ae9f318e71",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "d8332beeeb1f7430db71377472ed9309e08a837993d668612bfe2c8c1c679a84"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-table_cv-d8d58dd96a4f.png",
+      "sha256": "078672ddcaa8890168cf491c3196cefbb0ca7cd62bf7ca424d193ec26adda021",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "4a24f938d8d7e6f500bad87dc5798e0fd6588a5ed22e1f76d85488fc8fb1c221"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-table_cv-55f1338e0d09.png",
+      "sha256": "874875e2a524bd87c880139fd2fa28c1083c1c1dcd390712d3f315ef36be81a2",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "1c5617a29564d7abb59ddbaebcca90004ddf13682c7e5452a3335e3f1e2d292f"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pdfium/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602-p0001-ocr_layout-b32b9eca1e66.png",
+      "sha256": "490dac83f08eb808decd494827447f72cf1483951a40cf4287199e9da16ab179",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "7d8a8d4bf239ecc5a747643081caff63976b7052164b9636fc3ba9674c2e1d2e"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pymupdf/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602-p0001-ocr_layout-1e2836c3b3d6.png",
+      "sha256": "dce7a177a99145a356485f8a34c3821e50a6c48eff9ee5eb2b9a4ce7110e2f7b",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "a76370ca40073719f70d8981ead78106dcea22cbc7d4e56ad38712d7332371b7"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pdfium/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "41a595baf435969cf388d65a56cd43c6eb33c7e3a3a066e0ddd21f30110a4eb6",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "57ce3c536b160169b0025bdd85a16cce0aa9f74bde4812b5a796c7381929ecfa"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pymupdf/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af-p0001-table_cv-2210e109f565.png",
+      "sha256": "a4d6537388f28b77afcd0b20322ad60e17fbc7dc8b95f3f14a23faa0d9a6aac8",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "9f9d1fd4d13167adbce3ed22909e664316ee83efb974e1081581a839a4e138c2"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pdfium/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "caa3d3e8e749763aba2b7687b3ca5781fb1f33fcf55bee66e56cd049f07d81a8",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "2f92f6fbd6b8a7a9facd4be5d16a7dad862af3c35fdabc8123105e6a95c6c74d"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pymupdf/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-2210e109f565.png",
+      "sha256": "91a8bdb470005215c8b28682cbd3c4e359df64faa2fe573a5e3fd752f3358905",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "474b7f576f150df4bbc4820206f0e59c4d559f4bc613d4e5e8fb81e4115851f3"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pdfium/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675-p0001-review-06abebb71cac.png",
+      "sha256": "41a9a6a1dec75997a39022ca049b96acf2eeced5e9df4172db676e6294604e3b",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pdfium-review.manifest.json",
+      "manifest_sha256": "b9f72975d72e2cf8bcae71d0b5814e763c8798bfdfa3ac49a490f488777967ba"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pymupdf/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675-p0001-review-1fd0375e6fc4.png",
+      "sha256": "cd8f362b96c478ec928e18f82d553fefacf619bfd56b356ab02523e5db466b5e",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pymupdf-review.manifest.json",
+      "manifest_sha256": "2b898d6a93894f371852f0fd666cea84b1bcdb61118a53ec77bba6905fe63658"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pdfium/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "efefc4aed425b9d44021c764e96e0624b5395213e492f2152412c53467716ec1",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "cbf93c11eefcbf36ff93cca111604af78da275686377abf8b56751ca301e0ca9"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pymupdf/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9-p0001-table_cv-2210e109f565.png",
+      "sha256": "e56883e9727eabe835e622d4ba21dfaed402ed067356cc5e1b6937900728453d",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "e1691c7d1a09da351956e7650a4ebe3292d851135a55380c4fc3c8b2a9bcc7b7"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-ocr_layout-862638b39b96.png",
+      "sha256": "dc6e35cfac1baf075df6c9aa4c6054bb122c84c40535c504965b76c4f81d91a9",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "3108f8b1d910f60b809330434b7f2208fbfe88e38bc9129c20b154811ffc8276"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-ocr_layout-2bf8d8697fb1.png",
+      "sha256": "af0a65b09f26188eede8ea3a28cb4720dae941bba886a6d5ba2190bb51cbabba",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "a721bdfd81e4017d2b2ae4da6904bc4dda862bd35bde4fe93b88a787c5675922"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-review-0c7171720113.png",
+      "sha256": "5a4c6d372f6bc3511f6a24c2ca878228668163720a4714be7fb1c025691d0087",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium-review.manifest.json",
+      "manifest_sha256": "7a976f9498edb8797be5591af47069d34ed905dd9b31af097524d9023266e18d"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-review-bfb0c8453c1d.png",
+      "sha256": "ccfb31fe695e814fe6ed2d9784386379960da8576a1684b58d12c3afd6e0983d",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf-review.manifest.json",
+      "manifest_sha256": "253b806820b09b88b5c04770464147f444484292ef56d6d6f88d51e72f4d1e25"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pdfium/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac-p0001-review-3c876829244e.png",
+      "sha256": "8d65549f19422b6263f4c27768eb64fbac15d8e56a7ba8a6f8fdb66f291005ea",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pdfium-review.manifest.json",
+      "manifest_sha256": "eed9060d17d1ce5a68d959a8b1b10c1dfda44a6265d6db16f2601f03fe6866e7"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pymupdf/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac-p0001-review-db7c2cb29e84.png",
+      "sha256": "f5c40c64859f8d604a53f25e045b63e12eb72f6a36f13307243198f2b23bd025",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pymupdf-review.manifest.json",
+      "manifest_sha256": "1a1788dba1fe0df3fc556eebf3f1e3133a1fc7c05b1778bf27815f9fd6c1be5c"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pdfium/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733-p0001-review-aca4b146fa7c.png",
+      "sha256": "96a2403703e3ba99e157884675d85b63a53922825c38f684b678010a695ad343",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pdfium-review.manifest.json",
+      "manifest_sha256": "cb60a9b64ba2b72d2f22d162c6888663536471e4b8c4dae8612c8d806a6b4a3b"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pymupdf/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733-p0001-review-475627c054b1.png",
+      "sha256": "a4c48ca88bac526a5283157dbc9d686dddb966a53b7c6f5876593f68df1d71ad",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pymupdf-review.manifest.json",
+      "manifest_sha256": "cf5131bf22b5899e779d1f5e93c40b4c74997dd3de7cc4acdc5cd66118d9291a"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pdfium/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "700265239dde66cfa5b71ec4904fd8e3ea286900fe1575abe8cd17519b7e591c",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "755f345e97620c63b3866fe10f223f8f68dfe8bd09ced41b6c05aa6fc7cf02c8"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pymupdf/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640-p0001-table_cv-2210e109f565.png",
+      "sha256": "c59747911b05bb5808f66bf34c48cfbc8c4539c9c02b4011f76fb0c97e61ee95",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "50c8bd15c8708defbd6060829ab649ca5d9b574998f900c4915286d96cf44325"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pdfium/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214-p0001-review-aca4b146fa7c.png",
+      "sha256": "5e9444e127a74994fca741f27241fd2154cf866007fbf78e609e3704c871cdfe",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pdfium-review.manifest.json",
+      "manifest_sha256": "9f5bb19bf40347967320c63be3ba357d5972d9ee837df971bdc3aac7f6c03530"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pymupdf/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214-p0001-review-475627c054b1.png",
+      "sha256": "bf3dfa886b32ae8c8e6920e0eeb399ff9fbce6b0cdeb752a8590309e8ee79881",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pymupdf-review.manifest.json",
+      "manifest_sha256": "9f544bb155ad9a510aa21ab18defd66c42b76b236fa0500034b496982c2a25be"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pdfium/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f-p0001-review-1a85543d4a05.png",
+      "sha256": "4ec2280a6eb2cfe8dcf8fb84f96e119ccbf86cc3a4602ec67fdc12a68e6f9988",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pdfium-review.manifest.json",
+      "manifest_sha256": "aa927ca52c8cfbf38dbbbec8759a2a066b8c46462c87906e55c1bf935dcb69ca"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pymupdf/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f-p0001-review-280ea5efa7ba.png",
+      "sha256": "e2ed2ea9aa322926e64209072d8fc6e871ff3c37ad5251d4724b74b976b9229e",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pymupdf-review.manifest.json",
+      "manifest_sha256": "0d47e5cfecdead63ca0ab0e87c36e851a4073d75453b7e59d47f150498ed2c10"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "f08799a5fa1505d0038aff52f44909e7ca8926192ede1a96c087388bf0c28278",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "8b68289c0fcdb05cde62ef23de02cef326595ae58a0d19864d03aa5257f07821"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "cf2121325b07ad7964a60678f71c4c886e6f0138c3b0e7b130d3b404b2ee36a3",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "ba7d0f2dc5d37ff72517390d4d62737f464065a9289b010b9b6775cc9c49cb64"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-table_cv-d8d58dd96a4f.png",
+      "sha256": "f79a6010bf6038a7150996f265918eb3137ed745221b161751f297183d480443",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "4ce5bc7d17380055629b2654ef9cccfac92a83ff9d8d29a32c251a21070fad55"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-table_cv-55f1338e0d09.png",
+      "sha256": "c6912c9d20c7f4d48a78845faa1363395c8e8697815e6fafc34818f754a69410",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "b63756e32d945bfa2bc9f0611c753b8b87d8d3cc268c1d841aa9c3036b646871"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pdfium/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512-p0001-table_cv-b2e5085170de.png",
+      "sha256": "4e005238ba5a7fdad6b99557881323cc829e856a1f623f2f4973bba7323dadb7",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "40481dc2b131e5e55479f0e59c66897cb60fcb25ab5d47d90bd43a2298ee97dc"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pymupdf/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512-p0001-table_cv-d171768ad6f8.png",
+      "sha256": "a00fcc5c543ce1254daf54b5b17b8803cf92ea60107593916b6ede329e408aba",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "78e81b096acbd27e322c4fbc9d2f2079b392e827c32f736a04c062f12c50cc8c"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pdfium/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8-p0001-table_cv-d8d58dd96a4f.png",
+      "sha256": "a23a47deaa08e523172699360b6bd6f89a4c48943cb2b6c6f612f01743f4edf0",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "8b97108c82259229db9cd3ac353bbb8eed04c22a60b4b3657030dae9ca4f4720"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pymupdf/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8-p0001-table_cv-55f1338e0d09.png",
+      "sha256": "6735df7b4d4e1b3eae74553ae20a64e6d7223617ed76ed59dc4cbc9a377c8b37",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "09b285e768d52dc034f8f3b2e3a85f64e95e0b5b5e43ee59dddb645641c66cff"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pdfium/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "231a23d990431a685ca81530a1a2e9e4fbf5ba775d0aa009a6cb501d71849aef",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "08023e50c0374e05db36af38fa05b5c69b76bcd403c101fd9d97370615d2d0a0"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pymupdf/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d-p0001-table_cv-2210e109f565.png",
+      "sha256": "d6da75f442641bb177627f960c0e6b3784c896deaa76358290e4c21561e542a2",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "b792fa0048d67a8239fd9471e791266627712510c115c5f8f6eb44a4934110dc"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pdfium/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053-p0001-review-06abebb71cac.png",
+      "sha256": "745168495a3a08cda26d46dca6244b89f56fe8c8e0596046630ea68d5582d5c3",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pdfium-review.manifest.json",
+      "manifest_sha256": "0ab28321ecdbc1179ee89083fc60c68e04f43b52e3b56a25f11632b6f1349e2e"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pymupdf/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053-p0001-review-1fd0375e6fc4.png",
+      "sha256": "f1c21a6f53963b8d355048595091ce067bb1fd74c35e4d216949aa400820fd49",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pymupdf-review.manifest.json",
+      "manifest_sha256": "eecf4519c2bcf46a5c3c42db1d869a479f75eea7d7d27c29b6b7a1bb2c85caa1"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "3ded125a60d12cccf1e838628ebda4f67b496a8cb1d1ce6edd34c62d723ea124",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "d44f0a668671e4d74f1eaf6ba6e8b23221c022b6f3709a230ac052f68a565eeb"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "a3bec776e31c44b7a67fc3a9ee55cdfcff95fd4f7cd0df2fd3129e410b3fc232",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "87bdb5b893bc605a2ac8c2801fd900a828ac26bc948d5ae4b428cfe56f652ff6"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-table_cv-d8d58dd96a4f.png",
+      "sha256": "adfc8ee28c29f57b6d0f6060d35f62e55d5dbf0783837c88cf6573f05ab83104",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "4a4a1b6db799932128c60b0c0d61f4c297d320b6bd66ad69c05ae496bc1f4797"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-table_cv-55f1338e0d09.png",
+      "sha256": "b3970a3e8a940599658875a91d53a2bd88acdd97bc66a93e875a1ed5781611e3",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "62392ced964a7f1e06cc19b2ca8f9af6e6a027a9b808730c942ee0febf35822f"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pdfium/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b-p0001-ocr_layout-221e1ed1f953.png",
+      "sha256": "83ec3ceea7cb83a11c6e482fbe79e989b48e1df99801e122f5454295f0a08542",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "a035532a4b32b3bb549bce03f2c98cd58d6a7d0f5983f1f381ca3c0128f3e603"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pymupdf/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b-p0001-ocr_layout-9d0a65a19645.png",
+      "sha256": "ffc9af9cd03454192d2a3ed4957f3c6f45d0927d9e91f12cdb8ddd2938fb4fe0",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "2d7eaf55da09aed3108410a54577e04c7fccd3c2ad9aadccfca55cbd899b6f3d"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-ocr_layout-564c93260f15.png",
+      "sha256": "b38837ef9ab8d9e976ee12a411c23e1a3190590bb26ad32823d46470afad0dbf",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium-ocr_layout.manifest.json",
+      "manifest_sha256": "2c0488285171901a28ab46b24e15008aa53a9f817b899b0e97514089370b4cf2"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-ocr_layout-32050979ab9e.png",
+      "sha256": "a19401c33ae1680a5e9c301703e75dd51dcdc81642af7c46a61054313ded0da2",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf-ocr_layout.manifest.json",
+      "manifest_sha256": "fa235e431bd39765bf62ad360fedbdfe8d587f88ddd0212d701b030f7aeaf7f5"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-table_cv-897184302010.png",
+      "sha256": "5b0bf7653a8aeb77de82f6eed1a3698f5420c8afe95a1809eaef09a1068fb76c",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "e3c5273074d56cc2f4f67e923b9a56b7ee120cad2d4f2eab1d60e8acb3cb31f6"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-table_cv-aaa5489738ae.png",
+      "sha256": "0adb889cfd9b1a1d4723c49fbab79ba2e8a77306f382b4cf0b5976ce76193e47",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "3be4a30a4d0969ac1f24398eec9fb1406451c9f008875455abcc030b7d0176e3"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pdfium/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb-p0001-review-3c876829244e.png",
+      "sha256": "aa0438bd97b19b79ccbe4856406bb98d76b9d919d2e4a28024e2f712260e70c0",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pdfium-review.manifest.json",
+      "manifest_sha256": "b337e1b60cb42ec8cd7720656d477d84abb78ed90d3a1394d2047e4cc5097631"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pymupdf/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb-p0001-review-db7c2cb29e84.png",
+      "sha256": "fe992be58b04912276a4a66d726098eb2a43d33380d60344a6148b2a7e28c7d0",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pymupdf-review.manifest.json",
+      "manifest_sha256": "c09db3852c2d4bdc0a5c34526b1375915f0e216c742456d839855ac36952f269"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pdfium/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61-p0001-table_cv-a509cd7c4c50.png",
+      "sha256": "695f03cc34d63198516132a21cee883d8285bb452bc68fc8d7c6a683ad2bf89a",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pdfium-table_cv.manifest.json",
+      "manifest_sha256": "9f407aa0def77d39e34b609b15a293ef9d780426e82828c52290b9bcd561ca0b"
+    },
+    {
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pymupdf/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61-p0001-table_cv-2210e109f565.png",
+      "sha256": "4845d1e69b77cabf7bff5a3e4c4631ce40a29cd052d20df3aacfadd58592d133",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pymupdf-table_cv.manifest.json",
+      "manifest_sha256": "8258273cf8ff324285a14b17c78eb218f14621fcfb89a834164a4e10da9969c1"
+    }
+  ],
+  "original_input_files_reverified_unchanged": 9,
+  "all_original_metric_rows_reproduced": 35,
+  "all_rows_still_outside_original_tolerances": 35,
+  "holdout_governance_concern": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/holdout-access-concern.json"
+}

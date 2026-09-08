@@ -1,0 +1,12 @@
+{
+  "gold_dataset": "gold/pdf/v1/dataset.json",
+  "rule_source": "gold/pdf/v1/README.md:11-13",
+  "heldout_source_sha256": "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be",
+  "heldout_family": "fdot-sr789-roundabout-ucm",
+  "original_735_contains_holdout_page_1": true,
+  "outlier": false,
+  "ledger_source": "gold/pdf/v1/holdout-access.jsonl",
+  "735_specific_access_entry_located": false,
+  "preflight_access": "The complete dataset.json was read while locating split metadata and therefore also exposed its embedded labels. No held-out source image was opened or newly rendered, no gold scoring or tuning was performed, and no reference or access ledger was modified.",
+  "required_followup": "The #447 owner must resolve and record this access/governance concern before a new holdout-inclusive measurement; this report does not create a fresh generalization claim."
+}

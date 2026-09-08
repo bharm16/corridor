@@ -1,0 +1,4145 @@
+{
+  "comparison_pillow": "12.3.0",
+  "comparisons_completed": 35,
+  "comparisons_requested": 35,
+  "environment": {
+    "UV_NO_SYNC": "1",
+    "UV_OFFLINE": "1",
+    "workers": 2
+  },
+  "failures": [],
+  "holdout_scope": "None of these 35 outlier comparisons uses the gold/pdf/v1 FDOT holdout document. The earlier metadata/embedded-label access concern remains recorded in the separate triage receipt.",
+  "implementation_git_blobs": {
+    "src/corridor/render_profiles.py": "7a9e5f612e104aaa35aa715edb851702c078b609",
+    "src/corridor/render_rasterizer_comparison.py": "ef33721960e5f3f096541bcadf40ed3940f569d4",
+    "workers/render/legacy_pymupdf.py": "45c742f89d2f3d994d3ad0a557fef91cb8eed0b2",
+    "workers/render/raster.py": "7e49fe6feeaac6f51be7d8b65701365bf429185f",
+    "workers/render/render_worker.py": "49924ed87a0f697a55f68d2f170ed62b2ca67fc5"
+  },
+  "implementation_sha256": {
+    "src/corridor/render_profiles.py": "c66dc54031b2480206307dfd14762c43f3c8549d73569aa148b951bbc1b9ade7",
+    "src/corridor/render_rasterizer_comparison.py": "786f09c2f9926752fcfb832fb52b240c99c7d758ada1fd14467e4e36022921e7",
+    "workers/render/legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+    "workers/render/raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+    "workers/render/render_worker.py": "cfce9fbdba01d0076555d064e29d0db2f110c1fb9ee60c751191b1bfeca5aa9c"
+  },
+  "library_versions": {
+    "pdfium": {
+      "numpy": "2.5.2",
+      "opencv": "5.0.0",
+      "pdfium": "153.0.7999.0",
+      "pillow": "12.3.0",
+      "pypdfium2": "5.13.0"
+    },
+    "pymupdf": {
+      "numpy": "2.5.2",
+      "opencv": "5.0.0",
+      "pillow": "12.3.0",
+      "pymupdf": "1.28.2"
+    }
+  },
+  "manifest_serialization": "Complete RenderDerivative.model_dump(mode=json), retained separately. The public API removes its temporary IPC JSON; these are complete returned semantic manifests, not claimed copies of those temporary bytes.",
+  "metrics_matching_primary_exactly": 35,
+  "new_rasters_and_complete_manifests": 70,
+  "new_within_original_tolerances": 0,
+  "observations": [
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.012309491978609626,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999752204144138,
+            "replacement_covered_by_legacy": 0.9450124368200689
+          },
+          "ink_iou": 0.8888098918083462,
+          "ink_pixels": {
+            "legacy": 201779,
+            "replacement": 225942
+          },
+          "mean_absolute_difference": 0.003792557932263815
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.012309491978609626,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999752204144138,
+            "replacement_covered_by_legacy": 0.9450124368200689
+          },
+          "ink_iou": 0.8888098918083462,
+          "ink_pixels": {
+            "legacy": 201779,
+            "replacement": 225942
+          },
+          "mean_absolute_difference": 0.003792557932263815
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pdfium/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470-p0001-review-3c876829244e.png",
+          "sha256": "8cbcc6352e8ae2a8dc581a03fccaf3231896ebf6dc275008b7292db6e6f0da88"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470/pymupdf/0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470-p0001-review-db7c2cb29e84.png",
+          "sha256": "b99dd378fcee366013f9f56e836c71567fc5f6084d9040d7239df7fdf25fb751"
+        }
+      },
+      "source_sha256": "0c0cde2d5fd9ad53d886b33206d485770e5438d4b45ca7622fe81e41ebcee470",
+      "title": "Utility conflict exhibit (draft)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance",
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06585757575757575,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995660679209418,
+            "replacement_covered_by_legacy": 0.9696248023254874
+          },
+          "ink_iou": 0.6592917426683931,
+          "ink_pixels": {
+            "legacy": 993243,
+            "replacement": 1113573
+          },
+          "mean_absolute_difference": 0.02156375543205993
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance",
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06585757575757575,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995660679209418,
+            "replacement_covered_by_legacy": 0.9696248023254874
+          },
+          "ink_iou": 0.6592917426683931,
+          "ink_pixels": {
+            "legacy": 993243,
+            "replacement": 1113573
+          },
+          "mean_absolute_difference": 0.02156375543205993
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "1f49a486b20351790fefb7e7ac4574c6328d55eaa7f7739e4d5a3e1a14b8db45"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "732565513392975580f4a353fa21f1d86fc902ac9212b8d867b25e2b51a71fc9"
+        }
+      },
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "title": "Appendix U3 utility listing \u2014 power"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.014132620320855615,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.993780457352627,
+            "replacement_covered_by_legacy": 0.9694077019767124
+          },
+          "ink_iou": 0.7508059319947407,
+          "ink_pixels": {
+            "legacy": 776906,
+            "replacement": 894212
+          },
+          "mean_absolute_difference": 0.014132620320855615
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.014132620320855615,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.993780457352627,
+            "replacement_covered_by_legacy": 0.9694077019767124
+          },
+          "ink_iou": 0.7508059319947407,
+          "ink_pixels": {
+            "legacy": 776906,
+            "replacement": 894212
+          },
+          "mean_absolute_difference": 0.014132620320855615
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pdfium/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-table_cv-d8d58dd96a4f.png",
+          "sha256": "b0972fed8a66c7322156c0eeb2c17e17e1912693b77cff888825a071b9e127b0"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228/pymupdf/1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228-p0001-table_cv-55f1338e0d09.png",
+          "sha256": "b282ab27274b5a0642b84c2a7884c32d5fc585cb3eb79450a7a898c39dca30e1"
+        }
+      },
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "title": "Appendix U3 utility listing \u2014 power"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              5.5732023836554815e-05,
+              -7.212379214562023e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -5.573202068392356e-05,
+              7.212379458174441e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              5.5732023836554815e-05,
+              -7.212379214562023e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -5.573202068392356e-05,
+              7.212379458174441e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00367961972667855,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9730818730281128,
+            "replacement_covered_by_legacy": 0.9813245663459277
+          },
+          "ink_iou": 0.844371509994421,
+          "ink_pixels": {
+            "legacy": 184151,
+            "replacement": 182807
+          },
+          "mean_absolute_difference": 0.00367961972667855
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00367961972667855,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9730818730281128,
+            "replacement_covered_by_legacy": 0.9813245663459277
+          },
+          "ink_iou": 0.844371509994421,
+          "ink_pixels": {
+            "legacy": 184151,
+            "replacement": 182807
+          },
+          "mean_absolute_difference": 0.00367961972667855
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pdfium/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5-p0001-table_cv-b2e5085170de.png",
+          "sha256": "6ceef0f3a4088042a72fe544bce7874d46b07f684300172915855f2bbb09e6dd"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5/pymupdf/1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5-p0001-table_cv-d171768ad6f8.png",
+          "sha256": "6bc01852e90f0334c330bdd43775fd57fc0d7175a3825a4f2d835cf8f070160f"
+        }
+      },
+      "source_sha256": "1cbb3116146a8b3a9230ae91792a5936fc8746f26c5d9e037f7a6395d72b29d5",
+      "title": "Exhibit \u2014 CenterPoint Elec Transmission"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379469358207e-05,
+              -5.573202053919243e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.212379225745793e-05,
+              5.57320236918237e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379469358207e-05,
+              -5.573202053919243e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.212379225745793e-05,
+              5.57320236918237e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.002101010101010101,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9871893341062242,
+            "replacement_covered_by_legacy": 0.969360879865532
+          },
+          "ink_iou": 0.7820539687627125,
+          "ink_pixels": {
+            "legacy": 69005,
+            "replacement": 75557
+          },
+          "mean_absolute_difference": 0.002101010101010101
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.002101010101010101,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9871893341062242,
+            "replacement_covered_by_legacy": 0.969360879865532
+          },
+          "ink_iou": 0.7820539687627125,
+          "ink_pixels": {
+            "legacy": 69005,
+            "replacement": 75557
+          },
+          "mean_absolute_difference": 0.002101010101010101
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pdfium/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "095bf40346a2d3611888fcee4293f2eca6fc0f88657520cbe17e1a086132bb7d"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730/pymupdf/1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730-p0001-table_cv-2210e109f565.png",
+          "sha256": "69a446c4df1fe1485c72ccfa4f7fa9e4132cd25bff3f98e0fc7e620a23d80fff"
+        }
+      },
+      "source_sha256": "1fe01e060cf2bc5d437075e5acdb4b5807ba16ab71710eec22ae5f50379fb730",
+      "title": "Exhibit \u2014 TNMP"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.07503743315508021,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999901546525085,
+            "replacement_covered_by_legacy": 0.9999771552429174
+          },
+          "ink_iou": 0.7929923525372503,
+          "ink_pixels": {
+            "legacy": 1117279,
+            "replacement": 1094343
+          },
+          "mean_absolute_difference": 0.025436055130311185
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.07503743315508021,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999901546525085,
+            "replacement_covered_by_legacy": 0.9999771552429174
+          },
+          "ink_iou": 0.7929923525372503,
+          "ink_pixels": {
+            "legacy": 1117279,
+            "replacement": 1094343
+          },
+          "mean_absolute_difference": 0.025436055130311185
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-ocr_layout-090777c0ea72.png",
+          "sha256": "09328b3797a6a4e6582b150be1e184357b8825c176fd0e963860c8d8b19901e9"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-ocr_layout-0599ca59db0c.png",
+          "sha256": "1e6dc40143416b5be0b5c39e8c99f56d51a875266440c14ec089b10dce3545ac"
+        }
+      },
+      "source_sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+      "title": "Utility Inventory Matrix (6/20/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.07478850267379679,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 1.0,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.6670071860730493,
+          "ink_pixels": {
+            "legacy": 391373,
+            "replacement": 556719
+          },
+          "mean_absolute_difference": 0.03703137988885394
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.07478850267379679,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 1.0,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.6670071860730493,
+          "ink_pixels": {
+            "legacy": 391373,
+            "replacement": 556719
+          },
+          "mean_absolute_difference": 0.03703137988885394
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pdfium/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-review-06abebb71cac.png",
+          "sha256": "66f592ce1eec0c81067eab4abffed35d113a7fe38169ecc7e82ad50c2bf71d83"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c/pymupdf/329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c-p0001-review-1fd0375e6fc4.png",
+          "sha256": "d20311b8eb16f323912953c17148380ddb5ae56f79f88a4b37d6b61cfaafc1fd"
+        }
+      },
+      "source_sha256": "329ab37f3fbcd2f1f95feeeadba6fbff965c909dd5f34a15392c54990d9d9e6c",
+      "title": "Utility Inventory Matrix (6/20/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.04835811051693405,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999616317535608,
+            "replacement_covered_by_legacy": 0.9796585887965353
+          },
+          "ink_iou": 0.7101591698127525,
+          "ink_pixels": {
+            "legacy": 834023,
+            "replacement": 968861
+          },
+          "mean_absolute_difference": 0.014499004345647945
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.04835811051693405,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999616317535608,
+            "replacement_covered_by_legacy": 0.9796585887965353
+          },
+          "ink_iou": 0.7101591698127525,
+          "ink_pixels": {
+            "legacy": 834023,
+            "replacement": 968861
+          },
+          "mean_absolute_difference": 0.014499004345647945
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pdfium/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "d696e7f0cec69abd748571d022e2e075911afeabc3ce9d599201cfa6315a06a2"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361/pymupdf/36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "daceff950f567cedc528dff836ac65861fd7afd350dcd2dfc738da87b7e8cb2a"
+        }
+      },
+      "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "title": "Appendix U3 utility listing \u2014 sewer"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance",
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06432816399286988,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999410031898965,
+            "replacement_covered_by_legacy": 0.9649680457152572
+          },
+          "ink_iou": 0.6587544874069933,
+          "ink_pixels": {
+            "legacy": 983104,
+            "replacement": 1129426
+          },
+          "mean_absolute_difference": 0.020689990563070148
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance",
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06432816399286988,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999410031898965,
+            "replacement_covered_by_legacy": 0.9649680457152572
+          },
+          "ink_iou": 0.6587544874069933,
+          "ink_pixels": {
+            "legacy": 983104,
+            "replacement": 1129426
+          },
+          "mean_absolute_difference": 0.020689990563070148
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "5e8a6e784e0803a0e4c3586ac2640b0f32f258b7811fc8d9a712209dfee3fdd5"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "6b192d4b21831fa3b4684a44b064768e1ba408b91f92cdb5342a92ae9f318e71"
+        }
+      },
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "title": "Appendix U3 utility listing \u2014 water"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.015809863339275105,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9907903677186893,
+            "replacement_covered_by_legacy": 0.9694737708693509
+          },
+          "ink_iou": 0.7442477859094063,
+          "ink_pixels": {
+            "legacy": 855083,
+            "replacement": 959601
+          },
+          "mean_absolute_difference": 0.0158098633392751
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.015809863339275105,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9907903677186893,
+            "replacement_covered_by_legacy": 0.9694737708693509
+          },
+          "ink_iou": 0.7442477859094063,
+          "ink_pixels": {
+            "legacy": 855083,
+            "replacement": 959601
+          },
+          "mean_absolute_difference": 0.0158098633392751
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pdfium/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-table_cv-d8d58dd96a4f.png",
+          "sha256": "078672ddcaa8890168cf491c3196cefbb0ca7cd62bf7ca424d193ec26adda021"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c/pymupdf/3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c-p0001-table_cv-55f1338e0d09.png",
+          "sha256": "874875e2a524bd87c880139fd2fa28c1083c1c1dcd390712d3f315ef36be81a2"
+        }
+      },
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "title": "Appendix U3 utility listing \u2014 water"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.04563885918003565,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999027386368333,
+            "replacement_covered_by_legacy": 0.9623523929551063
+          },
+          "ink_iou": 0.6824869582110418,
+          "ink_pixels": {
+            "legacy": 411263,
+            "replacement": 472115
+          },
+          "mean_absolute_difference": 0.016172476786317617
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.04563885918003565,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999027386368333,
+            "replacement_covered_by_legacy": 0.9623523929551063
+          },
+          "ink_iou": 0.6824869582110418,
+          "ink_pixels": {
+            "legacy": 411263,
+            "replacement": 472115
+          },
+          "mean_absolute_difference": 0.016172476786317617
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pdfium/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602-p0001-ocr_layout-b32b9eca1e66.png",
+          "sha256": "490dac83f08eb808decd494827447f72cf1483951a40cf4287199e9da16ab179"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602/pymupdf/3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602-p0001-ocr_layout-1e2836c3b3d6.png",
+          "sha256": "dce7a177a99145a356485f8a34c3821e50a6c48eff9ee5eb2b9a4ce7110e2f7b"
+        }
+      },
+      "source_sha256": "3ed84037c176f422236cbf3c61d96f94b6b29bf3437d3bc75d5a74787d843602",
+      "title": "Utilities ITS Transtar"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379469358207e-05,
+              -5.573202053919243e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.212379225745793e-05,
+              5.57320236918237e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379469358207e-05,
+              -5.573202053919243e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.212379225745793e-05,
+              5.57320236918237e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.002467379679144385,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9246512931940842,
+            "replacement_covered_by_legacy": 0.874592621561726
+          },
+          "ink_iou": 0.6210785655625514,
+          "ink_pixels": {
+            "legacy": 42801,
+            "replacement": 46026
+          },
+          "mean_absolute_difference": 0.002467379679144385
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.002467379679144385,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9246512931940842,
+            "replacement_covered_by_legacy": 0.874592621561726
+          },
+          "ink_iou": 0.6210785655625514,
+          "ink_pixels": {
+            "legacy": 42801,
+            "replacement": 46026
+          },
+          "mean_absolute_difference": 0.002467379679144385
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pdfium/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "41a595baf435969cf388d65a56cd43c6eb33c7e3a3a066e0ddd21f30110a4eb6"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af/pymupdf/40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af-p0001-table_cv-2210e109f565.png",
+          "sha256": "a4d6537388f28b77afcd0b20322ad60e17fbc7dc8b95f3f14a23faa0d9a6aac8"
+        }
+      },
+      "source_sha256": "40aa9b5aea732484b867ae9c3dfda023becb0932eff63497d4c8fdaa4f20a7af",
+      "title": "Harris County MOU"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.9999619231140549,
+              0.008726529782285282,
+              -0.008726529782285282,
+              0.9999619231140549,
+              14.44732217035078,
+              -11.06349861060424
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999619231140549,
+              -0.008726529782285282,
+              0.008726529782285282,
+              0.9999619231140549,
+              -14.350226111190578,
+              11.189152334223326
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 0.49999967247977395
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.9999619231140549,
+              0.008726529782285282,
+              -0.008726529782285282,
+              0.9999619231140549,
+              14.44732217035078,
+              -11.06349861060424
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999619231140549,
+              -0.008726529782285282,
+              0.008726529782285282,
+              0.9999619231140549,
+              -14.350226111190578,
+              11.189152334223326
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 0.49999967247977395
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.005148187759952466,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9600464351359195,
+            "replacement_covered_by_legacy": 0.9636548321563316
+          },
+          "ink_iou": 0.6535099295374747,
+          "ink_pixels": {
+            "legacy": 103370,
+            "replacement": 103370
+          },
+          "mean_absolute_difference": 0.005148187759952466
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.005148187759952466,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9600464351359195,
+            "replacement_covered_by_legacy": 0.9636548321563316
+          },
+          "ink_iou": 0.6535099295374747,
+          "ink_pixels": {
+            "legacy": 103370,
+            "replacement": 103370
+          },
+          "mean_absolute_difference": 0.005148187759952466
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pdfium/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "caa3d3e8e749763aba2b7687b3ca5781fb1f33fcf55bee66e56cd049f07d81a8"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56/pymupdf/41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56-p0001-table_cv-2210e109f565.png",
+          "sha256": "91a8bdb470005215c8b28682cbd3c4e359df64faa2fe573a5e3fd752f3358905"
+        }
+      },
+      "source_sha256": "41c779e29f41ed465c23e34775b57c8bd7f709543a1affb78a3bd901167e8e56",
+      "title": "METRO Master Agreement for Transitways"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.010970320855614973,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999841650633793,
+            "replacement_covered_by_legacy": 0.9799149418769493
+          },
+          "ink_iou": 0.9533394776801565,
+          "ink_pixels": {
+            "legacy": 252606,
+            "replacement": 264525
+          },
+          "mean_absolute_difference": 0.0034062273251546605
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.010970320855614973,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999841650633793,
+            "replacement_covered_by_legacy": 0.9799149418769493
+          },
+          "ink_iou": 0.9533394776801565,
+          "ink_pixels": {
+            "legacy": 252606,
+            "replacement": 264525
+          },
+          "mean_absolute_difference": 0.0034062273251546605
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pdfium/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675-p0001-review-06abebb71cac.png",
+          "sha256": "41a9a6a1dec75997a39022ca049b96acf2eeced5e9df4172db676e6294604e3b"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675/pymupdf/46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675-p0001-review-1fd0375e6fc4.png",
+          "sha256": "cd8f362b96c478ec928e18f82d553fefacf619bfd56b356ab02523e5db466b5e"
+        }
+      },
+      "source_sha256": "46e7915e6dd257823eee4de56a75181ab446e5c07ff4cec88832a4f7b8915675",
+      "title": "SUE Quality Level C Utility Verification Data"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.9998157129123416,
+              0.019197401219596302,
+              -0.019197401219596302,
+              0.9998157129123416,
+              31.91067804909834,
+              -24.17261286034895
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9998157129123416,
+              -0.019197401219596302,
+              0.019197401219596302,
+              0.9998157129123416,
+              -31.440745975569378,
+              24.780760249621725
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 1.099997640119554
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.9998157129123416,
+              0.019197401219596302,
+              -0.019197401219596302,
+              0.9998157129123416,
+              31.91067804909834,
+              -24.17261286034895
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9998157129123416,
+              -0.019197401219596302,
+              0.019197401219596302,
+              0.9998157129123416,
+              -31.440745975569378,
+              24.780760249621725
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 1.099997640119554
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.0007176470588235295,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9489194499017681,
+            "replacement_covered_by_legacy": 0.9504132231404959
+          },
+          "ink_iou": 0.6603678083347393,
+          "ink_pixels": {
+            "legacy": 14761,
+            "replacement": 14762
+          },
+          "mean_absolute_difference": 0.0007176470588235293
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.0007176470588235295,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9489194499017681,
+            "replacement_covered_by_legacy": 0.9504132231404959
+          },
+          "ink_iou": 0.6603678083347393,
+          "ink_pixels": {
+            "legacy": 14761,
+            "replacement": 14762
+          },
+          "mean_absolute_difference": 0.0007176470588235293
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pdfium/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "efefc4aed425b9d44021c764e96e0624b5395213e492f2152412c53467716ec1"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9/pymupdf/509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9-p0001-table_cv-2210e109f565.png",
+          "sha256": "e56883e9727eabe835e622d4ba21dfaed402ed067356cc5e1b6937900728453d"
+        }
+      },
+      "source_sha256": "509e7b0db0c852ededa211305f3cedc0a95d18ec0a2664214300d8cac33844f9",
+      "title": "City of Houston Parking Agreement"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 22753410,
+          "differing_pixel_fraction": 0.06935386827732634,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995991386641698,
+            "replacement_covered_by_legacy": 0.99875488604403
+          },
+          "ink_iou": 0.8087162103655378,
+          "ink_pixels": {
+            "legacy": 2422284,
+            "replacement": 2674454
+          },
+          "mean_absolute_difference": 0.02478737757135666
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 22753410,
+          "differing_pixel_fraction": 0.06935386827732634,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995991386641698,
+            "replacement_covered_by_legacy": 0.99875488604403
+          },
+          "ink_iou": 0.8087162103655378,
+          "ink_pixels": {
+            "legacy": 2422284,
+            "replacement": 2674454
+          },
+          "mean_absolute_difference": 0.02478737757135666
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-ocr_layout-862638b39b96.png",
+          "sha256": "dc6e35cfac1baf075df6c9aa4c6054bb122c84c40535c504965b76c4f81d91a9"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-ocr_layout-2bf8d8697fb1.png",
+          "sha256": "af0a65b09f26188eede8ea3a28cb4720dae941bba886a6d5ba2190bb51cbabba"
+        }
+      },
+      "source_sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+      "title": "Utility Conflict Matrix (7/22/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 10114332,
+          "differing_pixel_fraction": 0.07125255528491649,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999964199857874,
+            "replacement_covered_by_legacy": 0.9999302780968641
+          },
+          "ink_iou": 0.7424954432074349,
+          "ink_pixels": {
+            "legacy": 1117314,
+            "replacement": 1176101
+          },
+          "mean_absolute_difference": 0.03411563500422266
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 10114332,
+          "differing_pixel_fraction": 0.07125255528491649,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999964199857874,
+            "replacement_covered_by_legacy": 0.9999302780968641
+          },
+          "ink_iou": 0.7424954432074349,
+          "ink_pixels": {
+            "legacy": 1117314,
+            "replacement": 1176101
+          },
+          "mean_absolute_difference": 0.03411563500422266
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pdfium/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-review-0c7171720113.png",
+          "sha256": "5a4c6d372f6bc3511f6a24c2ca878228668163720a4714be7fb1c025691d0087"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8/pymupdf/56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8-p0001-review-bfb0c8453c1d.png",
+          "sha256": "ccfb31fe695e814fe6ed2d9784386379960da8576a1684b58d12c3afd6e0983d"
+        }
+      },
+      "source_sha256": "56863e91788fabf0e7c4973ca96297eaa82294a8005f37f9c62fb02ba2b920b8",
+      "title": "Utility Conflict Matrix (7/22/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.00829451871657754,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999731429466664,
+            "replacement_covered_by_legacy": 0.9795632557905506
+          },
+          "ink_iou": 0.9326396036786919,
+          "ink_pixels": {
+            "legacy": 223405,
+            "replacement": 238492
+          },
+          "mean_absolute_difference": 0.0026081430219146483
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.00829451871657754,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999731429466664,
+            "replacement_covered_by_legacy": 0.9795632557905506
+          },
+          "ink_iou": 0.9326396036786919,
+          "ink_pixels": {
+            "legacy": 223405,
+            "replacement": 238492
+          },
+          "mean_absolute_difference": 0.0026081430219146483
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pdfium/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac-p0001-review-3c876829244e.png",
+          "sha256": "8d65549f19422b6263f4c27768eb64fbac15d8e56a7ba8a6f8fdb66f291005ea"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac/pymupdf/5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac-p0001-review-db7c2cb29e84.png",
+          "sha256": "f5c40c64859f8d604a53f25e045b63e12eb72f6a36f13307243198f2b23bd025"
+        }
+      },
+      "source_sha256": "5800c44d691c94e5e8852b9cb3fa1d9ad4cfe8c49eb7e575553b81289266b3ac",
+      "title": "Appendix U8 conceptual utility relocations"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 18262656,
+          "differing_pixel_fraction": 0.05351034373094472,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.988040660814507,
+            "replacement_covered_by_legacy": 0.9902548668479209
+          },
+          "ink_iou": 0.7864155166472159,
+          "ink_pixels": {
+            "legacy": 1704442,
+            "replacement": 1836096
+          },
+          "mean_absolute_difference": 0.02447192055014707
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 18262656,
+          "differing_pixel_fraction": 0.05351034373094472,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.988040660814507,
+            "replacement_covered_by_legacy": 0.9902548668479209
+          },
+          "ink_iou": 0.7864155166472159,
+          "ink_pixels": {
+            "legacy": 1704442,
+            "replacement": 1836096
+          },
+          "mean_absolute_difference": 0.02447192055014707
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pdfium/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733-p0001-review-aca4b146fa7c.png",
+          "sha256": "96a2403703e3ba99e157884675d85b63a53922825c38f684b678010a695ad343"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733/pymupdf/6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733-p0001-review-475627c054b1.png",
+          "sha256": "a4c48ca88bac526a5283157dbc9d686dddb966a53b7c6f5876593f68df1d71ad"
+        }
+      },
+      "source_sha256": "6ec69c56d79ccfcb3fb1a53dfaba446952bfd0df0d4d47b75255af5065976733",
+      "title": "Reference Information Documents (RID) Index"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.9999984769652196,
+              -0.001745298610872265,
+              0.001745298610872265,
+              0.9999984769652196,
+              -2.877800838594222,
+              2.2277687362498044
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999984769652197,
+              0.0017452986108722653,
+              -0.0017452986108722653,
+              0.9999984769652197,
+              2.881684577284176,
+              -2.222742721474571
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.09999829515999181
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.9999984769652196,
+              -0.001745298610872265,
+              0.001745298610872265,
+              0.9999984769652196,
+              -2.877800838594222,
+              2.2277687362498044
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999984769652197,
+              0.0017452986108722653,
+              -0.0017452986108722653,
+              0.9999984769652197,
+              2.881684577284176,
+              -2.222742721474571
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.09999829515999181
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.0051734997029114676,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9803909481509793,
+            "replacement_covered_by_legacy": 0.9773316378930894
+          },
+          "ink_iou": 0.7642500514442291,
+          "ink_pixels": {
+            "legacy": 162221,
+            "replacement": 163576
+          },
+          "mean_absolute_difference": 0.0051734997029114676
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.0051734997029114676,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9803909481509793,
+            "replacement_covered_by_legacy": 0.9773316378930894
+          },
+          "ink_iou": 0.7642500514442291,
+          "ink_pixels": {
+            "legacy": 162221,
+            "replacement": 163576
+          },
+          "mean_absolute_difference": 0.0051734997029114676
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pdfium/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "700265239dde66cfa5b71ec4904fd8e3ea286900fe1575abe8cd17519b7e591c"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640/pymupdf/7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640-p0001-table_cv-2210e109f565.png",
+          "sha256": "c59747911b05bb5808f66bf34c48cfbc8c4539c9c02b4011f76fb0c97e61ee95"
+        }
+      },
+      "source_sha256": "7aaf091c7c741c153ea2b5fe94da6b7569b5826f60686b9fd0c2aa4b40668640",
+      "title": "City of Houston MOU"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 18262656,
+          "differing_pixel_fraction": 0.04757544576210602,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.999815086102687,
+            "replacement_covered_by_legacy": 0.9988810200697195
+          },
+          "ink_iou": 0.8359759102522953,
+          "ink_pixels": {
+            "legacy": 1741351,
+            "replacement": 1891008
+          },
+          "mean_absolute_difference": 0.020397203011477866
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 18262656,
+          "differing_pixel_fraction": 0.04757544576210602,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.999815086102687,
+            "replacement_covered_by_legacy": 0.9988810200697195
+          },
+          "ink_iou": 0.8359759102522953,
+          "ink_pixels": {
+            "legacy": 1741351,
+            "replacement": 1891008
+          },
+          "mean_absolute_difference": 0.020397203011477866
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pdfium/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214-p0001-review-aca4b146fa7c.png",
+          "sha256": "5e9444e127a74994fca741f27241fd2154cf866007fbf78e609e3704c871cdfe"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214/pymupdf/a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214-p0001-review-475627c054b1.png",
+          "sha256": "bf3dfa886b32ae8c8e6920e0eeb399ff9fbce6b0cdeb752a8590309e8ee79881"
+        }
+      },
+      "source_sha256": "a702ab935f4f3cd8bc958aca80ac00a1374b88fe307623c94a8b5fbcb8b30214",
+      "title": "Reference Information Documents (RID) Index (8/14/2026)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.04931042780748663,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 1.0,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.6695046841258627,
+          "ink_pixels": {
+            "legacy": 175677,
+            "replacement": 242579
+          },
+          "mean_absolute_difference": 0.02115961832861487
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.04931042780748663,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 1.0,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.6695046841258627,
+          "ink_pixels": {
+            "legacy": 175677,
+            "replacement": 242579
+          },
+          "mean_absolute_difference": 0.02115961832861487
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pdfium/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f-p0001-review-1a85543d4a05.png",
+          "sha256": "4ec2280a6eb2cfe8dcf8fb84f96e119ccbf86cc3a4602ec67fdc12a68e6f9988"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f/pymupdf/aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f-p0001-review-280ea5efa7ba.png",
+          "sha256": "e2ed2ea9aa322926e64209072d8fc6e871ff3c37ad5251d4724b74b976b9229e"
+        }
+      },
+      "source_sha256": "aba736901ce9a3b664f87e7345a710161b5f1be0201f3064a81acb8d0eba987f",
+      "title": "Utilities Storm Drain"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.03587991681521093,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9985227213118008,
+            "replacement_covered_by_legacy": 0.9761085730660328
+          },
+          "ink_iou": 0.7504000448845101,
+          "ink_pixels": {
+            "legacy": 705351,
+            "replacement": 792167
+          },
+          "mean_absolute_difference": 0.012205790080738178
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.03587991681521093,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9985227213118008,
+            "replacement_covered_by_legacy": 0.9761085730660328
+          },
+          "ink_iou": 0.7504000448845101,
+          "ink_pixels": {
+            "legacy": 705351,
+            "replacement": 792167
+          },
+          "mean_absolute_difference": 0.012205790080738178
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "f08799a5fa1505d0038aff52f44909e7ca8926192ede1a96c087388bf0c28278"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "cf2121325b07ad7964a60678f71c4c886e6f0138c3b0e7b130d3b404b2ee36a3"
+        }
+      },
+      "source_sha256": "af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44",
+      "title": "Utility Conflict Matrix (2/23/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.013754070112893643,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.981351342616208,
+            "replacement_covered_by_legacy": 0.9766527756773258
+          },
+          "ink_iou": 0.7206437668276164,
+          "ink_pixels": {
+            "legacy": 711633,
+            "replacement": 714132
+          },
+          "mean_absolute_difference": 0.013754070112893643
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.013754070112893643,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.981351342616208,
+            "replacement_covered_by_legacy": 0.9766527756773258
+          },
+          "ink_iou": 0.7206437668276164,
+          "ink_pixels": {
+            "legacy": 711633,
+            "replacement": 714132
+          },
+          "mean_absolute_difference": 0.013754070112893643
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pdfium/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-table_cv-d8d58dd96a4f.png",
+          "sha256": "f79a6010bf6038a7150996f265918eb3137ed745221b161751f297183d480443"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44/pymupdf/af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44-p0001-table_cv-55f1338e0d09.png",
+          "sha256": "c6912c9d20c7f4d48a78845faa1363395c8e8697815e6fafc34818f754a69410"
+        }
+      },
+      "source_sha256": "af86a0b7b778fa7e029b1083bc9f9c56c34a005074edc20c7b9458c65fe8ac44",
+      "title": "Utility Conflict Matrix (2/23/2025)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              5.5732023836554815e-05,
+              -7.212379214562023e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -5.573202068392356e-05,
+              7.212379458174441e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              5.5732023836554815e-05,
+              -7.212379214562023e-05
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -5.573202068392356e-05,
+              7.212379458174441e-05
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00771146761734997,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9752638375562186,
+            "replacement_covered_by_legacy": 0.9822575066813394
+          },
+          "ink_iou": 0.8138870565290963,
+          "ink_pixels": {
+            "legacy": 314398,
+            "replacement": 318050
+          },
+          "mean_absolute_difference": 0.00771146761734997
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00771146761734997,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9752638375562186,
+            "replacement_covered_by_legacy": 0.9822575066813394
+          },
+          "ink_iou": 0.8138870565290963,
+          "ink_pixels": {
+            "legacy": 314398,
+            "replacement": 318050
+          },
+          "mean_absolute_difference": 0.00771146761734997
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pdfium/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512-p0001-table_cv-b2e5085170de.png",
+          "sha256": "4e005238ba5a7fdad6b99557881323cc829e856a1f623f2f4973bba7323dadb7"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512/pymupdf/c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512-p0001-table_cv-d171768ad6f8.png",
+          "sha256": "a00fcc5c543ce1254daf54b5b17b8803cf92ea60107593916b6ede329e408aba"
+        }
+      },
+      "source_sha256": "c14cb3940120205130899071f903b09e00870f1b0d4f67b0a44ad763bb43f512",
+      "title": "Exhibit \u2014 CenterPoint Elec Transmission"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.013425074272133096,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9820934355858323,
+            "replacement_covered_by_legacy": 0.9774167501310942
+          },
+          "ink_iou": 0.7375579170872395,
+          "ink_pixels": {
+            "legacy": 754081,
+            "replacement": 741833
+          },
+          "mean_absolute_difference": 0.013425074272133096
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.013425074272133096,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9820934355858323,
+            "replacement_covered_by_legacy": 0.9774167501310942
+          },
+          "ink_iou": 0.7375579170872395,
+          "ink_pixels": {
+            "legacy": 754081,
+            "replacement": 741833
+          },
+          "mean_absolute_difference": 0.013425074272133096
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pdfium/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8-p0001-table_cv-d8d58dd96a4f.png",
+          "sha256": "a23a47deaa08e523172699360b6bd6f89a4c48943cb2b6c6f612f01743f4edf0"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8/pymupdf/cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8-p0001-table_cv-55f1338e0d09.png",
+          "sha256": "6735df7b4d4e1b3eae74553ae20a64e6d7223617ed76ed59dc4cbc9a377c8b37"
+        }
+      },
+      "source_sha256": "cfded966dd3395e4a1d87370c8da496844e05df499ac786440459fd926ae0db8",
+      "title": "Utility Conflict Matrix (2/13/2026)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.9999904807592214,
+              -0.004363300464237056,
+              0.004363300464237056,
+              0.9999904807592214,
+              -7.187308733998386,
+              5.578914839186991
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999904807592215,
+              0.004363300464237057,
+              -0.004363300464237057,
+              0.9999904807592215,
+              7.211582797983762,
+              -5.547501344617684
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.24999949461722082
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.9999862922570737,
+              -0.005235961989010651,
+              0.005235961989010651,
+              0.9999862922570737,
+              -8.621859909636534,
+              6.698469311816984
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999862922570737,
+              0.005235961989010651,
+              -0.005235961989010651,
+              0.9999862922570737,
+              8.656814654098573,
+              -6.6532337601602265
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.29999989443629715
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00516660724896019,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9653554673403103,
+            "replacement_covered_by_legacy": 0.9633406216155466
+          },
+          "ink_iou": 0.6351621240601504,
+          "ink_pixels": {
+            "legacy": 96985,
+            "replacement": 97874
+          },
+          "mean_absolute_difference": 0.00516660724896019
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 1.4345511756381475,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.00516660724896019,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9653554673403103,
+            "replacement_covered_by_legacy": 0.9633406216155466
+          },
+          "ink_iou": 0.6351621240601504,
+          "ink_pixels": {
+            "legacy": 96985,
+            "replacement": 97874
+          },
+          "mean_absolute_difference": 0.00516660724896019
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 1.4345511756381475,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pdfium/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "231a23d990431a685ca81530a1a2e9e4fbf5ba775d0aa009a6cb501d71849aef"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d/pymupdf/d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d-p0001-table_cv-2210e109f565.png",
+          "sha256": "d6da75f442641bb177627f960c0e6b3784c896deaa76358290e4c21561e542a2"
+        }
+      },
+      "source_sha256": "d0f1a75d3592e370ede51da7feb45fb307b03a0bfc92bcd9ae93e3ab37dea53d",
+      "title": "METRO Transitway at US 59 Eastex Freeway"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.0713114973262032,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999962881990713,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.7112196682304878,
+          "ink_pixels": {
+            "legacy": 269411,
+            "replacement": 340454
+          },
+          "mean_absolute_difference": 0.029113273566110934
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "mean_absolute_difference_above_tolerance"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 3740000,
+          "differing_pixel_fraction": 0.0713114973262032,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999962881990713,
+            "replacement_covered_by_legacy": 1.0
+          },
+          "ink_iou": 0.7112196682304878,
+          "ink_pixels": {
+            "legacy": 269411,
+            "replacement": 340454
+          },
+          "mean_absolute_difference": 0.029113273566110934
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pdfium/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053-p0001-review-06abebb71cac.png",
+          "sha256": "745168495a3a08cda26d46dca6244b89f56fe8c8e0596046630ea68d5582d5c3"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053/pymupdf/d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053-p0001-review-1fd0375e6fc4.png",
+          "sha256": "f1c21a6f53963b8d355048595091ce067bb1fd74c35e4d216949aa400820fd49"
+        }
+      },
+      "source_sha256": "d459d8c5c675a11ceb1d8381ca9b79f8357a88f2e8d548419f710b57d7e92053",
+      "title": "Utility Conflict Matrix (draft, 10/21/2024)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06610421865715983,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995369762475725,
+            "replacement_covered_by_legacy": 0.97242705680105
+          },
+          "ink_iou": 0.6778771835558378,
+          "ink_pixels": {
+            "legacy": 1012907,
+            "replacement": 1219819
+          },
+          "mean_absolute_difference": 0.019953923549217666
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.06610421865715983,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995369762475725,
+            "replacement_covered_by_legacy": 0.97242705680105
+          },
+          "ink_iou": 0.6778771835558378,
+          "ink_pixels": {
+            "legacy": 1012907,
+            "replacement": 1219819
+          },
+          "mean_absolute_difference": 0.019953923549217666
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "3ded125a60d12cccf1e838628ebda4f67b496a8cb1d1ce6edd34c62d723ea124"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "a3bec776e31c44b7a67fc3a9ee55cdfcff95fd4f7cd0df2fd3129e410b3fc232"
+        }
+      },
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "title": "Appendix U3 utility listing \u2014 communications"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.999999999999999,
+              4.371138995127343e-08,
+              -4.371138995127343e-08,
+              0.999999999999999,
+              7.212379596756299e-05,
+              -0.00011146404272706606
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9999999999999991,
+              -4.3711389951273436e-08,
+              4.3711389951273436e-08,
+              0.9999999999999991,
+              -7.21237910953147e-05,
+              0.00011146404587969733
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 2.5044781608585254e-06
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.015575163398692811,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.988852816583849,
+            "replacement_covered_by_legacy": 0.9732677784279109
+          },
+          "ink_iou": 0.7580185827106017,
+          "ink_pixels": {
+            "legacy": 911441,
+            "replacement": 992959
+          },
+          "mean_absolute_difference": 0.015575163398692811
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.015575163398692811,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.988852816583849,
+            "replacement_covered_by_legacy": 0.9732677784279109
+          },
+          "ink_iou": 0.7580185827106017,
+          "ink_pixels": {
+            "legacy": 911441,
+            "replacement": 992959
+          },
+          "mean_absolute_difference": 0.015575163398692811
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pdfium/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-table_cv-d8d58dd96a4f.png",
+          "sha256": "adfc8ee28c29f57b6d0f6060d35f62e55d5dbf0783837c88cf6573f05ab83104"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db/pymupdf/d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db-p0001-table_cv-55f1338e0d09.png",
+          "sha256": "b3970a3e8a940599658875a91d53a2bd88acdd97bc66a93e875a1ed5781611e3"
+        }
+      },
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "title": "Appendix U3 utility listing \u2014 communications"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.007906238859180036,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999018645731109,
+            "replacement_covered_by_legacy": 0.974642089924437
+          },
+          "ink_iou": 0.7798802328444467,
+          "ink_pixels": {
+            "legacy": 183420,
+            "replacement": 199701
+          },
+          "mean_absolute_difference": 0.0026452362145095707
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.007906238859180036,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999018645731109,
+            "replacement_covered_by_legacy": 0.974642089924437
+          },
+          "ink_iou": 0.7798802328444467,
+          "ink_pixels": {
+            "legacy": 183420,
+            "replacement": 199701
+          },
+          "mean_absolute_difference": 0.0026452362145095707
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pdfium/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b-p0001-ocr_layout-221e1ed1f953.png",
+          "sha256": "83ec3ceea7cb83a11c6e482fbe79e989b48e1df99801e122f5454295f0a08542"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b/pymupdf/e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b-p0001-ocr_layout-9d0a65a19645.png",
+          "sha256": "ffc9af9cd03454192d2a3ed4957f3c6f45d0927d9e91f12cdb8ddd2938fb4fe0"
+        }
+      },
+      "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "title": "Appendix U3 utility listing \u2014 Olympic Pipeline"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.04075888294711824,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995753825889531,
+            "replacement_covered_by_legacy": 0.9774722732312635
+          },
+          "ink_iou": 0.6890635834443359,
+          "ink_pixels": {
+            "legacy": 576990,
+            "replacement": 687242
+          },
+          "mean_absolute_difference": 0.012941114722775622
+        },
+        "legacy_page_origin_shortfall": true,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 11962.0,
+          "names_equal": true,
+          "page_origin_y_delta": 11962
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.04075888294711824,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9995753825889531,
+            "replacement_covered_by_legacy": 0.9774722732312635
+          },
+          "ink_iou": 0.6890635834443359,
+          "ink_pixels": {
+            "legacy": 576990,
+            "replacement": 687242
+          },
+          "mean_absolute_difference": 0.012941114722775622
+        },
+        "legacy_page_origin_shortfall": true,
+        "profile": "ocr_layout",
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "transforms": {
+          "max_forward_delta": 11962.0,
+          "names_equal": true,
+          "page_origin_y_delta": 11962
+        },
+        "within_tolerance": false
+      },
+      "profile": "ocr_layout",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-ocr_layout-564c93260f15.png",
+          "sha256": "b38837ef9ab8d9e976ee12a411c23e1a3190590bb26ad32823d46470afad0dbf"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf-ocr_layout.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-ocr_layout-32050979ab9e.png",
+          "sha256": "a19401c33ae1680a5e9c301703e75dd51dcdc81642af7c46a61054313ded0da2"
+        }
+      },
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "title": "Appendix U2 existing utility listing"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              1.0,
+              0.0,
+              -0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "geometry_change": true,
+            "inverse": [
+              1.0,
+              -0.0,
+              0.0,
+              1.0,
+              -0.0,
+              0.0
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 0.0
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              1.0,
+              0.0,
+              -0.0,
+              1.0,
+              0.0,
+              0.0
+            ],
+            "geometry_change": true,
+            "inverse": [
+              1.0,
+              -0.0,
+              0.0,
+              1.0,
+              -0.0,
+              0.0
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": 0.0
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.010041235888294711,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9998844759164376,
+            "replacement_covered_by_legacy": 0.9799509411704787
+          },
+          "ink_iou": 0.7285424460639667,
+          "ink_pixels": {
+            "legacy": 467435,
+            "replacement": 608657
+          },
+          "mean_absolute_difference": 0.010041235888294713
+        },
+        "legacy_page_origin_shortfall": true,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 11962.0,
+          "names_equal": true,
+          "page_origin_y_delta": 11962
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 16830000,
+          "differing_pixel_fraction": 0.010041235888294711,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9998844759164376,
+            "replacement_covered_by_legacy": 0.9799509411704787
+          },
+          "ink_iou": 0.7285424460639667,
+          "ink_pixels": {
+            "legacy": 467435,
+            "replacement": 608657
+          },
+          "mean_absolute_difference": 0.010041235888294713
+        },
+        "legacy_page_origin_shortfall": true,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 11962.0,
+          "names_equal": true,
+          "page_origin_y_delta": 11962
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pdfium/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-table_cv-897184302010.png",
+          "sha256": "5b0bf7653a8aeb77de82f6eed1a3698f5420c8afe95a1809eaef09a1068fb76c"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a/pymupdf/e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a-p0001-table_cv-aaa5489738ae.png",
+          "sha256": "0adb889cfd9b1a1d4723c49fbab79ba2e8a77306f382b4cf0b5976ce76193e47"
+        }
+      },
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "title": "Appendix U2 existing utility listing"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [],
+        "pymupdf": []
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.005765374331550802,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999724239867194,
+            "replacement_covered_by_legacy": 0.9591771630855356
+          },
+          "ink_iou": 0.9278918197680386,
+          "ink_pixels": {
+            "legacy": 181317,
+            "replacement": 194352
+          },
+          "mean_absolute_difference": 0.0023884832756632065
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 200,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 7480000,
+          "differing_pixel_fraction": 0.005765374331550802,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.9999724239867194,
+            "replacement_covered_by_legacy": 0.9591771630855356
+          },
+          "ink_iou": 0.9278918197680386,
+          "ink_pixels": {
+            "legacy": 181317,
+            "replacement": 194352
+          },
+          "mean_absolute_difference": 0.0023884832756632065
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "review",
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "transforms": {
+          "max_forward_delta": 0.0,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "review",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pdfium-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pdfium/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb-p0001-review-3c876829244e.png",
+          "sha256": "aa0438bd97b19b79ccbe4856406bb98d76b9d919d2e4a28024e2f712260e70c0"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pymupdf-review.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb/pymupdf/ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb-p0001-review-db7c2cb29e84.png",
+          "sha256": "fe992be58b04912276a4a66d726098eb2a43d33380d60344a6148b2a7e28c7d0"
+        }
+      },
+      "source_sha256": "ee1d40ef3859b1a7be00cd16e08915238c3a3c4ad4275fa0eea22f668dd6eadb",
+      "title": "Utility conflict exhibit (final)"
+    },
+    {
+      "all_recorded_metrics_match_exactly": true,
+      "deskew": {
+        "pdfium": [
+          {
+            "forward": [
+              0.9998476955640354,
+              -0.017452383083347945,
+              0.017452383083347945,
+              0.9998476955640354,
+              -28.602243931669257,
+              22.503090750610202
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9998476955640355,
+              0.01745238308334795,
+              -0.01745238308334795,
+              0.9998476955640355,
+              28.990620243378917,
+              -22.000486111927117
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.9999986617142298
+            }
+          }
+        ],
+        "pymupdf": [
+          {
+            "forward": [
+              0.9998766330677598,
+              -0.015707280002612366,
+              0.015707280002612366,
+              0.9998766330677598,
+              -25.759719165704094,
+              20.23033744152717
+            ],
+            "geometry_change": true,
+            "inverse": [
+              0.9998766330677599,
+              0.01570728000261237,
+              -0.01570728000261237,
+              0.9998766330677599,
+              26.074304842916654,
+              -19.82322656513445
+            ],
+            "name": "deskew",
+            "parameters": {
+              "angle_degrees": -0.8999978620760771
+            }
+          }
+        ]
+      },
+      "historical_primary_pixel_hashes": "not recorded; new pixel hashes cannot be compared with primary #735 raster identities",
+      "new_observation": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.007779916815210933,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.8414597181024964,
+            "replacement_covered_by_legacy": 0.8339733138836452
+          },
+          "ink_iou": 0.47849637955343843,
+          "ink_pixels": {
+            "legacy": 92374,
+            "replacement": 93232
+          },
+          "mean_absolute_difference": 0.007779916815210932
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 2.8425247659651625,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "page_number": 1,
+      "prior": {
+        "dpi": 300,
+        "exceeded": [
+          "ink_placed_more_than_a_pixel_apart"
+        ],
+        "geometry": {
+          "crop_box_equal": true,
+          "media_box_equal": true,
+          "raster_height_delta": 0,
+          "raster_width_delta": 0,
+          "rotation_equal": true
+        },
+        "image": {
+          "compared_pixels": 8415000,
+          "differing_pixel_fraction": 0.007779916815210933,
+          "ink_coverage_within_1px": {
+            "legacy_covered_by_replacement": 0.8414597181024964,
+            "replacement_covered_by_legacy": 0.8339733138836452
+          },
+          "ink_iou": 0.47849637955343843,
+          "ink_pixels": {
+            "legacy": 92374,
+            "replacement": 93232
+          },
+          "mean_absolute_difference": 0.007779916815210932
+        },
+        "legacy_page_origin_shortfall": false,
+        "profile": "table_cv",
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "transforms": {
+          "max_forward_delta": 2.8425247659651625,
+          "names_equal": true,
+          "page_origin_y_delta": 0
+        },
+        "within_tolerance": false
+      },
+      "profile": "table_cv",
+      "rasters": {
+        "pdfium": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pdfium-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pdfium/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61-p0001-table_cv-a509cd7c4c50.png",
+          "sha256": "695f03cc34d63198516132a21cee883d8285bb452bc68fc8d7c6a683ad2bf89a"
+        },
+        "pymupdf": {
+          "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pymupdf-table_cv.manifest.json",
+          "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61/pymupdf/fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61-p0001-table_cv-2210e109f565.png",
+          "sha256": "4845d1e69b77cabf7bff5a3e4c4631ce40a29cd052d20df3aacfadd58592d133"
+        }
+      },
+      "source_sha256": "fb748d4ac7fbede15d56e8d12906416d1dd881f0701a321559d4a18be6b46f61",
+      "title": "City of Houston Signal Agreement (executed)"
+    }
+  ],
+  "observed_at": "2026-09-08T08:26:12.242209+00:00",
+  "primary_receipt_path": "/Users/bryceharmon/Desktop/corridor/artifacts/render-rasterizer-comparison/735-corpus-render-comparison.json",
+  "primary_receipt_sha256": "188b5cc91aae22f63efe753872b40426f13770535b862bae7c10d6f2598a347d",
+  "profile_bundle_sha256": "63fef79a098b37c6e454d705be409132aad059914cf2536f0bacd049fab01696",
+  "schema_version": "corridor.render-outlier-reconstruction.v1",
+  "scope": "New observations of exactly the 35 historical #735 outlier comparisons, not historical raster bytes, a broad corpus scan, a gold evaluation, or a production qualification.",
+  "seconds": 57.148,
+  "source_access": "Local registered original PDF bytes only; all 28 source digests verified before and after rendering; no download, model/OCR/provider, database or reference-ledger operation.",
+  "status": "complete",
+  "tolerances_unchanged": {
+    "ink_coverage_within_1px": 0.98,
+    "mean_absolute_difference": 0.02,
+    "raster_pixels": 1
+  }
+}

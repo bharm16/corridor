@@ -1,0 +1,64 @@
+{
+  "files": [
+    {
+      "bytes": 13128,
+      "path": "citation-census.json",
+      "sha256": "0a6d5e46b1565c03dc65af64e72ca0d7979b604e70141b491f271d61eaac15bc",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-citation-census/census-20260908T084651Z/receipt.json"
+    },
+    {
+      "bytes": 2029,
+      "path": "citation-census.md",
+      "sha256": "780fd423738c6d3cbf8385c2fe26f22e17e2472d417f61747ee87776b3f11b21",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-citation-census/census-20260908T084651Z/report.md"
+    },
+    {
+      "bytes": 171616,
+      "path": "raster-reconstruction.json",
+      "sha256": "2c477c94f916ddb789681078a1e668388decbc392d909004ba9c53186b3107e4",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/receipt.json"
+    },
+    {
+      "bytes": 3412,
+      "path": "raster-inspection.md",
+      "sha256": "d9f76ea7c8cf1a3e062bc537f4a4cd1898ff4aafcbf1c336a7d70fd75c135b75",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/inspection-v2.md"
+    },
+    {
+      "bytes": 93075,
+      "path": "raster-inspection.json",
+      "sha256": "44a9ef91939a8eff58b46594a2f568bf71d68a8be55e58f5e742eaac52823a7b",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/inspection-v2.json"
+    },
+    {
+      "bytes": 53222,
+      "path": "raster-completion.json",
+      "sha256": "dd96a955090c6046e346dea3bcb8a931dfe971cd0b324fd8fb70df2d3e0d91e6",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/reconstructed-735-20260908T082515Z/completion.json"
+    },
+    {
+      "bytes": 9226,
+      "path": "raster-outliers.csv",
+      "sha256": "e7becfb4d4eefe58900248e0fee3ffccd37aaf76d399ad7acf9870ebe0ec50aa",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/outliers.csv"
+    },
+    {
+      "bytes": 890,
+      "path": "holdout-access-concern.json",
+      "sha256": "c190634e8f761fb2b2422535ba8ec5a3c08af3fbf5e055cc758cc6ab4da41ff6",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-render-preflight/retained-735-20260908T081734Z/holdout-access-concern.json"
+    }
+  ],
+  "limitations": [
+    "Copied reports and receipts retain original bytes and their local evidence paths.",
+    "Seventy reconstructed rasters and full per-raster manifests remain external Class B evidence, indexed by their recorded hashes.",
+    "A zero-row local citation census is not customer-history proof.",
+    "All 35 original raster outliers still fail the unchanged tolerances.",
+    "No fresh provider or independent full-chain quality observation was made."
+  ],
+  "production_selection": "not_requested_or_performed",
+  "qualification_status": "not_qualified",
+  "recorded_at": "2026-09-08T08:59:17.634297+00:00",
+  "schema_version": "corridor.pipeline-qualification-preflight.v1",
+  "source_root": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727"
+}
