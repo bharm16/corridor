@@ -1,0 +1,30 @@
+{
+  "all_runtime_files_unchanged": true,
+  "files": {
+    "src/corridor/access.py": "2a9b85b9a11c23158ae01667588a11fa7e79e48cee91c25d38a05837c33f2838",
+    "src/corridor/extraction_run_queries.py": "1c181d21ff7f58092e371c58be268d1d60c51003cd5ce444f126ea229f3db4f3",
+    "src/corridor/extraction_runs.py": "1de59c50ad32c1af303bcb1f2e657171ab462ad71e9f19c909a3089ec6b93c1e",
+    "src/corridor/extractor_lineage.py": "222ad63689a602f82edd37a8033543e164848350dc19d4305f1e16b42d58038e",
+    "src/corridor/fact_types.py": "08ea0325a06c6cd859444fe4669ad89ccc00334bff56dade070164488ede3a09",
+    "src/corridor/facts.py": "a05345a66199093618eaca0e60d9d09dfb191009c097e5dddcbe037549d524c9",
+    "src/corridor/materializer.py": "9d7405650dbb4481a45d430b12e9402ee09e17726c903cfec07b29bf9998bfa4",
+    "src/corridor/migrations/baseline_versions/b2d5f8a1c4e7_source_append_commands.py": "d80f92cac3753f52fca4a9e9a12e60cdcd96730ba0ec0e8ebeb6a4e3465dacb0",
+    "src/corridor/native_matrix.py": "3842b380d30e7078ce7d9061b0bba15515106b193b1f6aac9bc934e262328cc5",
+    "src/corridor/native_matrix_bindings.py": "1482ceb0fc0840c91398f768cf1bc338dac32d60fb1bd3522a0710824bcae9ab",
+    "src/corridor/native_pipeline.py": "ea8346b89fb38f98a566f4d0fd745b2777cdc386717776822d9820aee78b9ff0",
+    "src/corridor/page_inventory.py": "57ca502f50b6d8608ee84d167ae69f8e9e8afd29a6945cd26393ad804e3b8ccb",
+    "src/corridor/pdf_evaluation.py": "4b59058f5d6d2e361d8d6f36dfebdaa2d3a5cd3de0a36506e74a2657a42357a8",
+    "src/corridor/pipeline_comparison.py": "a14d11c1bcd2d7f9b82ad3fb94b1e28d20eda179b69366e496fb2838d249fea9",
+    "src/corridor/pipeline_contracts.py": "1bbf724264d332ad96cae73b25b8cd76fca64f72f0f5d36c6c3015dae3a3235b",
+    "src/corridor/pipeline_qualification.py": "382f11deaed4e25cff4b0e981a27baf356e9f88bfd59fc57eb003eee8e3b7bcc",
+    "src/corridor/reader_segments.py": "737782506d420bcb263adb3cddb287962ab74e467aad9b6c06b8468ead842946",
+    "src/corridor/render_profiles.py": "7b3e5a7ab8dee9552444219885449349cd2dad538a1c1c63fcb5cf40e0e754ab",
+    "src/corridor/source_append.py": "fa7bc8aa2b7960087e1e0210cf349472ccfb3524003e8d4443f43242bb25a25b",
+    "src/corridor/token_layers.py": "6f1e58307d033f09ab34e358925f1024c2d521aa8dfe53be47203e09d51759d2",
+    "uv.lock": "d69ce36f54ba9e96fe2624b86d9f38d5e19634883a2c77bae8b10cd09a2086fc",
+    "workers/render/raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+    "workers/render/render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+    "workers/render/uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+  },
+  "revision": "d0eb8ce9f8fe9e98b47ed7012033d603800a4346"
+}

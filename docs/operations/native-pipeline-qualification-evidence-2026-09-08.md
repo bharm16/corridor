@@ -76,6 +76,17 @@ The runtime files and Git revision were verified unchanged before and after
 execution. This first receipt remains bound to `6d6ffc4`; subsequent gate
 review corrections are not retroactively included in it.
 
+After both independent re-reviews passed, the [corrected core observation](../../artifacts/pipeline-qualification/retained-shadow-d0eb8ce-v2/summary.json)
+at `d0eb8ce` repeated all fourteen observations with the same complete
+466-row/2,466-Fact population, field outcomes, repeatability and retained-row
+results. Full-reading parity remains false, the gate remains incomplete, and
+no provider call or selection occurred. Its exact source files and Git revision
+were unchanged throughout execution. The command took 283.69 seconds; 1,228
+samples recorded a maximum summed process-tree RSS of 1,104,688 KiB (about
+1.05 GiB), subject to the same limits above. This is a second local observation,
+not a claim of a performance improvement. The final test-count and evidence
+commits preserve this exact measured code identity rather than relabeling it.
+
 ## Raster failures and actual transform differences
 
 The reconstruction covers 35 comparisons from 28 original, digest-matched
