@@ -41,6 +41,20 @@ def test_every_source_module_opens_with_its_reason_for_existing():
     assert missing == []
 
 
+def test_control_plane_metadata_has_no_customer_content_relations():
+    """The external receipt store cannot acquire a Project Record relation."""
+    from corridor.control_plane_schema import CONTROL_PLANE_METADATA
+    from corridor.models import Base
+
+    tables = CONTROL_PLANE_METADATA.tables
+    assert set(tables) == {
+        "control_plane.customer_environments", "control_plane.destruction_receipts",
+    }
+    assert {table.name for table in tables.values()}.isdisjoint(Base.metadata.tables)
+    assert all(foreign_key.column.table.metadata is CONTROL_PLANE_METADATA for table in tables.values() for foreign_key in table.foreign_keys)
+    assert all(not column.name.endswith(("_json", "_bytes", "_text")) for table in tables.values() for column in table.columns)
+
+
 def test_no_module_silently_replaces_a_top_level_interface_name():
     duplicates: dict[str, list[str]] = {}
     for path in _module_paths():

@@ -79,6 +79,10 @@ from corridor.candidate_statement_facts import (
 )
 from corridor.db import WebSession as SessionFactory
 from corridor.db import WorkerSession as MachineSessionFactory
+from corridor.web.customer_routing import (
+    customer_session, set_customer_cookie, clear_customer_cookie,
+    needs_customer_sign_in, clear_invalid_customer_cookies,
+)
 from corridor.object_storage import ObjectStore, content_store
 from corridor.operational_health import ComponentHealth, runtime_report, serving_report
 from corridor import telemetry
@@ -563,8 +567,8 @@ _WORK_REASON_COPY = {
     ),
 }
 
-def get_session():
-    with SessionFactory() as session:
+def get_session(request: Request):
+    with customer_session(request, SessionFactory) as session:
         yield session
 
 
@@ -605,10 +609,10 @@ def get_session():
 # list reads is revoked.
 
 
-def get_machine_session():
+def get_machine_session(request: Request):
     """A session held by the operations capability, not the human web role."""
 
-    with MachineSessionFactory() as session:
+    with customer_session(request, MachineSessionFactory, capability="worker") as session:
         yield session
 
 
@@ -2612,17 +2616,19 @@ def root(request: Request, session: Session = Depends(get_session)):
 @app.get("/sign-in", response_class=HTMLResponse)
 def sign_in_form(request: Request, next: str = "", session: Session = Depends(get_session)):
     """The passwordless entry point; no identity is revealed here."""
-    if auth.load_session(request, session) is not None:
+    if not needs_customer_sign_in(request) and auth.load_session(request, session) is not None:
         return RedirectResponse("/", status_code=303)
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "sign_in.html",
         {"next": _safe_next(next), "sent": False, "throttled": False},
     )
+    return clear_invalid_customer_cookies(request, response)
 
 
 def _deliver_sign_in_link(
-    sender: auth.EmailSender, email: str, link: str, raw_token: str
+    sender: auth.EmailSender, email: str, link: str, raw_token: str,
+    request: Request,
 ) -> None:
     """Send the link, and let no outcome reach the caller.
 
@@ -2645,7 +2651,9 @@ def _deliver_sign_in_link(
 
     retired = False
     try:
-        with SessionFactory() as session:
+        # The originating request keeps the trusted customer route. A failed
+        # delivery must retire its token in that same database (#656).
+        with customer_session(request, SessionFactory) as session:
             retired = access.retire_undelivered_sign_in_token(session, raw_token)
             session.commit()
     except Exception:  # noqa: BLE001 - the response is already sent
@@ -2693,7 +2701,7 @@ def request_sign_in(
             {"next": _safe_next(next), "sent": False, "throttled": True},
             status_code=429,
         )
-        return response
+        return clear_invalid_customer_cookies(request, response)
     access.record_attempt(session, access.ISSUE_IP, scope)
     if normalized:
         access.record_attempt(session, access.ISSUE_EMAIL, normalized)
@@ -2715,14 +2723,15 @@ def request_sign_in(
             # is exactly what this endpoint's identical answer exists to
             # prevent, and it would undo it through the side door.
             background.add_task(
-                _deliver_sign_in_link, sender, normalized, link, issued.raw_token
+                _deliver_sign_in_link, sender, normalized, link, issued.raw_token, request
             )
     session.commit()
-    return TEMPLATES.TemplateResponse(
+    response = TEMPLATES.TemplateResponse(
         request,
         "sign_in.html",
         {"next": _safe_next(next), "sent": True, "throttled": False},
     )
+    return clear_invalid_customer_cookies(request, response)
 
 
 @app.get("/sign-in/consume")
@@ -2740,16 +2749,18 @@ def consume_sign_in(
     scope = auth.client_scope(request)
     if access.over_limit(session, access.CONSUME_IP, scope, access.MAX_CONSUME_PER_IP):
         session.commit()
-        return TEMPLATES.TemplateResponse(
+        response = TEMPLATES.TemplateResponse(
             request, "sign_in_invalid.html", {}, status_code=429
         )
+        return clear_invalid_customer_cookies(request, response)
     access.record_attempt(session, access.CONSUME_IP, scope)
     consumed = access.consume_sign_in_token(session, token)
     if consumed is None:
         session.commit()
-        return TEMPLATES.TemplateResponse(
+        response = TEMPLATES.TemplateResponse(
             request, "sign_in_invalid.html", {}, status_code=400
         )
+        return clear_invalid_customer_cookies(request, response)
     new_session = access.create_web_session(
         session,
         principal=consumed.principal,
@@ -2757,6 +2768,7 @@ def consume_sign_in(
     )
     response = RedirectResponse(_safe_next(consumed.redirect_path or "/"), status_code=303)
     auth.set_session_cookies(response, new_session)
+    set_customer_cookie(response, new_session.raw_session_id)
     session.commit()
     return response
 
@@ -2773,6 +2785,7 @@ def sign_out(
     session.commit()
     response = RedirectResponse("/sign-in", status_code=303)
     auth.clear_session_cookies(response)
+    clear_customer_cookie(response)
     return response
 
 

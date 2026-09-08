@@ -28,6 +28,16 @@ class Settings(BaseSettings):
     worker_db_password: str = Field(
         default="corridor_worker", validation_alias="CORRIDOR_WORKER_DB_PASSWORD"
     )
+    # #656: no derivation from DATABASE_URL. The owner/operations URLs are
+    # supplied only to bounded operations commands; web and worker receive the
+    # separate resolver login, which can execute one scoped lookup function.
+    control_plane_database_url: str = Field(default="", repr=False)
+    control_plane_operations_database_url: str = Field(default="", repr=False)
+    control_plane_resolver_database_url: str = Field(default="", repr=False)
+    customer_id: str = Field(default="", validation_alias="CORRIDOR_CUSTOMER_ID")
+    customer_environment_id: str = Field(default="", validation_alias="CORRIDOR_CUSTOMER_ENVIRONMENT_ID")
+    deployment_id: str = Field(default="", validation_alias="CORRIDOR_DEPLOYMENT_ID")
+    customer_routing_key: str = Field(default="", repr=False, validation_alias="CORRIDOR_CUSTOMER_ROUTING_KEY")
     # Content-addressed store written by `make corpus`. The queue resolves a
     # Document back to its PDF from here to compute quote highlights, and product
     # intake stages an uploaded file's exact bytes here before confirmation.

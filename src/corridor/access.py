@@ -924,6 +924,10 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
 )
 
 AUTHORIZATION_INPUT_RELATIONS: dict[str, str] = {
+    "customer_environment_binding": (
+        "immutable deployment/customer identity only; routing checks it before "
+        "sign-in, customer content or project membership is read (#656)"
+    ),
     "person_identities": (
         "identity, not project data; the sign-in path reads it before any "
         "project is named"

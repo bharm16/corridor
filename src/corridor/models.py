@@ -261,6 +261,18 @@ class Base(DeclarativeBase):
     pass
 
 
+class CustomerEnvironmentBinding(Base):
+    """Immutable local identity checked before customer content is reachable."""
+
+    __tablename__ = "customer_environment_binding"
+    __table_args__ = (CheckConstraint("singleton", name="ck_customer_environment_singleton"),)
+
+    singleton: Mapped[bool] = mapped_column(Boolean, primary_key=True, default=True)
+    customer_id: Mapped[str] = mapped_column(String(128))
+    environment_id: Mapped[str] = mapped_column(String(128))
+    deployment_id: Mapped[str] = mapped_column(String(128))
+
+
 class ClassBRetentionMixin:
     """Explicit TTL state shared only by intermediary assistant receipts."""
 

@@ -18,6 +18,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.orm import sessionmaker
 
 from corridor.config import settings
+from corridor.customer_routing_runtime import configured_customer_router
 
 
 def capability_url(configured: str, login: str, password: str) -> str:
@@ -51,4 +52,12 @@ web_engine = create_engine(WEB_DATABASE_URL)
 WebSession = sessionmaker(bind=web_engine)
 
 worker_engine = create_engine(WORKER_DATABASE_URL)
-WorkerSession = sessionmaker(bind=worker_engine)
+LocalWorkerSession = sessionmaker(bind=worker_engine)
+
+
+def WorkerSession():
+    """Every deployed worker session rechecks its configured customer route."""
+    router = configured_customer_router()
+    if router is None:
+        return LocalWorkerSession()
+    return router.open_session(router.identity, capability="worker")

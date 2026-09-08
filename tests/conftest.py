@@ -11,6 +11,7 @@ runs continue to use the configured development database.
 from __future__ import annotations
 
 import ast
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 import fcntl
 import os
@@ -359,6 +360,61 @@ def runtime_database():
         reuse_migrated_template=True,
     ) as database:
         yield database
+
+
+@pytest.fixture(scope="module")
+def customer_environment_databases():
+    """Two customer databases and an independently removable control-plane DB.
+
+    Only this harness provisions databases. Exiting a customer context performs
+    the actual DROP DATABASE used by the external-custody proof (#656).
+    """
+    from corridor.m8_acceptance_database import provision_disposable_postgres
+
+    source = _configured_database_url()
+    admin = _validated_admin_url(source).set(database="postgres")
+    name = f"{DATABASE_PREFIX}{new_worker_run_id()}_gw0"
+    _create_database(admin, name)
+    control_engine = create_engine(admin.set(database=name), poolclass=NullPool)
+
+    @contextmanager
+    def customer():
+        with provision_disposable_postgres(
+            source, repo_root=ROOT, error_cls=RuntimeError,
+            database_prefix="corridor_customer_test_", reuse_migrated_template=True,
+        ) as database:
+            yield database
+
+    try:
+        with ExitStack() as stack:
+            yield control_engine, stack.enter_context(customer()), customer
+    finally:
+        control_engine.dispose()
+        _drop_databases(admin, (name,))
+
+
+@pytest.fixture(scope="module")
+def control_plane_capabilities(customer_environment_databases):
+    """Real scoped logins, isolated from the shared customer runtime roles."""
+    from corridor.control_plane_schema import initialize_control_plane
+
+    owner, _, _ = customer_environment_databases
+    initialize_control_plane(owner)
+    names = ["corridor_cp_test_" + uuid4().hex[:12] for _ in range(2)]
+    engines = []
+    try:
+        for name, role in zip(names, ("corridor_control_operations", "corridor_control_resolver")):
+            with owner.begin() as connection:
+                connection.execute(text(f"create role {name} login password 'control-proof-password' nosuperuser nocreatedb nocreaterole nobypassrls"))
+                connection.execute(text(f"grant {role} to {name}"))
+            engines.append(create_engine(owner.url.set(username=name, password="control-proof-password"), poolclass=NullPool, hide_parameters=True))
+        yield tuple(engines)
+    finally:
+        for engine in engines:
+            engine.dispose()
+        with owner.begin() as connection:
+            for name in names:
+                connection.execute(text(f"drop role if exists {name}"))
 
 
 def _xdist_is_enabled(config) -> bool:

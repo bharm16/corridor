@@ -68,7 +68,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "4ec5e6779c9c18350506ea9d910634b3ed143e34dc6abada532bcf39af9b7ea6"
+    "69729ab45bf352f6f1e46d79c5470fb7e20a81ed979761ff871489a03f1db294"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -249,6 +249,13 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_SECURED
         upgraded_public = _public_relation_grants(database.session_factory)
         with database.session_factory() as session:
+            # #656 adds only the local identity attestation here. The control
+            # plane is a separately installed database, never a customer table.
+            assert session.scalar(text("select count(*) from public.customer_environment_binding")) == 0
+            assert session.scalar(text("select to_regnamespace('control_plane')")) is None
+            for role in ("corridor_web", "corridor_worker"):
+                assert session.scalar(text("select has_table_privilege(:role, 'public.customer_environment_binding', 'SELECT')"), {"role": role}) is True
+                assert session.scalar(text("select has_table_privilege(:role, 'public.customer_environment_binding', 'INSERT')"), {"role": role}) is False
             row = session.get(SourceSegment, segment_id)
             assert (row.id, row.project_id, row.document_id, row.kind, row.exact_text,
                     row.content_sha256, row.ordinal, row.page_no, row.start_offset,

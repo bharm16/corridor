@@ -39,6 +39,15 @@ test-focused:
 	$(if $(strip $(ARGS)),,$(error ARGS must name at least one test seam))
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
+.PHONY: control-plane
+# Separate PostgreSQL operations registry and external receipts (#656).
+# Requires explicit role-specific URLs; never uses a default customer URL.
+#   make control-plane ARGS="initialize"
+#   make control-plane ARGS="register --file environment-registration.json"
+# Full input/custody contract: docs/operations/customer-environments.md.
+control-plane:
+	uv run python -m corridor.control_plane_cli $(ARGS)
+
 # Broad developer gate. Run after a broad change, not after every edit.
 # This is the non-slow subset of test-full; do not run both on one revision.
 test:
