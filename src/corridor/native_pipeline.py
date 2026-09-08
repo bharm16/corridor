@@ -175,7 +175,7 @@ class PipelineShadowResult:
     extraction: NativeMatrixExtraction | None
 
 
-def _artifact(session, document, path: Path, kind: str) -> dict:
+def _artifact(session, document, path: Path, kind: str, expected_sha256: str) -> dict:
     retention_kind = {
         "pipeline_geometry_render": "page_render", "pipeline_routed_crop": "page_render",
         "pipeline_model_context": "copied_prompt_context", "pipeline_model_observations": "unselected_model_response",
@@ -184,6 +184,8 @@ def _artifact(session, document, path: Path, kind: str) -> dict:
         session, project_id=document.project_id, kind=retention_kind, path=path,
         terminal_at=datetime.now(timezone.utc),
     )
+    if record.content_sha256 != expected_sha256:
+        raise NativeMatrixRefused("pipeline artifact changed between producing and registering its bytes")
     return {"artifact_id": record.id, "sha256": record.content_sha256, "kind": kind,
             "retention": "class_b"}
 
@@ -262,7 +264,7 @@ def _run_native_matrix_shadow(
             )
             manifest = derivative.model_dump(mode="json")
             manifest.pop("artifact_path")
-            artifacts.append(_artifact(session, document, derivative.artifact_path, "pipeline_geometry_render"))
+            artifacts.append(_artifact(session, document, derivative.artifact_path, "pipeline_geometry_render", derivative.artifact_sha256))
             crops = []
             for region in routes[number].regions:
                 cropped = crop_routed_region(
@@ -271,7 +273,7 @@ def _run_native_matrix_shadow(
                 crop_record = cropped.model_dump(mode="json")
                 crop_record["derivative"].pop("artifact_path")
                 crops.append(crop_record)
-                artifacts.append(_artifact(session, document, cropped.derivative.artifact_path, "pipeline_routed_crop"))
+                artifacts.append(_artifact(session, document, cropped.derivative.artifact_path, "pipeline_routed_crop", cropped.derivative.artifact_sha256))
             rendered.append({"page": number, "derivative": manifest, "crops": crops})
         chain["geometry"] = rendered
         stage = "measured_model_context"
@@ -279,7 +281,8 @@ def _run_native_matrix_shadow(
         chain["model_context"] = {str(n): {"dpi": 110, "sha256": sha256(image.read_bytes()).hexdigest(),
                                               "operation": "fresh_measured_pdfium_render"}
                                   for n, image in images.items()}
-        artifacts.extend(_artifact(session, document, image, "pipeline_model_context") for image in images.values())
+        artifacts.extend(_artifact(session, document, image, "pipeline_model_context", chain["model_context"][str(number)]["sha256"])
+                         for number, image in images.items())
         # A failed canonical readback cannot leave a newly appended source run
         # behind without its observation. Existing exact-key retries remain.
         with session.begin_nested():
@@ -307,8 +310,9 @@ def _run_native_matrix_shadow(
         canonical.update(pages=[], rows=[], facts=[])
         extraction = None
     raw_path = output / "model-observations.json"
-    raw_path.write_text(canonical_text({"plan": plan.model_dump(mode="json"), "calls": observer.observations, "refusal": raw_refusal}))
-    artifacts.append(_artifact(session, document, raw_path, "pipeline_model_observations"))
+    raw_bytes = canonical_text({"plan": plan.model_dump(mode="json"), "calls": observer.observations, "refusal": raw_refusal}).encode()
+    raw_path.write_bytes(raw_bytes)
+    artifacts.append(_artifact(session, document, raw_path, "pipeline_model_observations", sha256(raw_bytes).hexdigest()))
     # Elapsed time and request/answer identity are separate: rerunning the same
     # retained inputs should not compare a duration or a new provider ID.
     chain["model_observations"] = [{
@@ -345,6 +349,7 @@ def _run_native_matrix_shadow(
         "started_at": started_at,
         "project_id": document.project_id, "configuration_sha256": configuration_sha256,
         "scope_sha256": scope.identity, "scope": scope.model_dump(mode="json"),
+        "scope_text": canonical_text(scope.model_dump(mode="json")),
         "source_sha256": document.sha256, "plan": plan.model_dump(mode="json"),
         "disposition": disposition, "outcome": outcome, "chain": chain, "input_sha256": content_digest(chain),
         "output": canonical, "output_sha256": content_digest(canonical),

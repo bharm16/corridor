@@ -10257,7 +10257,7 @@ create table public.pipeline_configurations (
     )
 );
 create function public.validate_pipeline_receipt() returns trigger language plpgsql as $$
-declare body jsonb;
+declare body jsonb; scope_text text;
 begin
     if tg_op <> 'INSERT' then
         raise exception 'pipeline evidence and selections are append-only' using errcode='23514';
@@ -10270,12 +10270,30 @@ begin
        or body ->> 'scope_sha256' is distinct from new.scope_sha256 then
         raise exception 'pipeline receipt identity or binding differs' using errcode='23514';
     end if;
+    if tg_table_name in ('pipeline_observations', 'pipeline_qualifications', 'pipeline_selections') then
+        scope_text := body ->> 'scope_text';
+        if scope_text is null
+           or encode(sha256(convert_to(scope_text, 'UTF8')), 'hex') is distinct from new.scope_sha256
+           or jsonb_typeof(scope_text::jsonb) is distinct from 'object'
+           or scope_text::jsonb is distinct from body -> 'scope' then
+            raise exception 'pipeline parsed scope differs from its exact digest-bound bytes' using errcode='23514';
+        end if;
+    end if;
     if tg_table_name = 'pipeline_qualifications' then
-        if body ->> 'status' is distinct from new.status then
-            raise exception 'pipeline gate status differs from its receipt' using errcode='23514';
+        if body ->> 'status' is distinct from new.status
+           or jsonb_typeof(body -> 'missing') is distinct from 'array'
+           or jsonb_typeof(body -> 'failed') is distinct from 'array' then
+            raise exception 'pipeline gate needs its status and typed missing/failed evidence arrays' using errcode='23514';
+        end if;
+        if exists (select 1 from jsonb_array_elements(body -> 'missing') member where jsonb_typeof(member) <> 'string')
+           or exists (select 1 from jsonb_array_elements(body -> 'failed') member where jsonb_typeof(member) <> 'string')
+           or (new.status = 'passed' and (body -> 'missing' is distinct from '[]'::jsonb
+                                        or body -> 'failed' is distinct from '[]'::jsonb)) then
+            raise exception 'passing pipeline gate cannot omit or retain unmet evidence' using errcode='23514';
         end if;
     elsif tg_table_name = 'pipeline_comparisons' then
-        if body ->> 'kind' is distinct from new.kind then
+        if body ->> 'kind' is distinct from new.kind
+           or jsonb_typeof(body -> 'passed') is distinct from 'boolean' then
             raise exception 'pipeline comparison kind differs from its receipt' using errcode='23514';
         end if;
     elsif tg_table_name = 'pipeline_observations' then
@@ -10315,14 +10333,17 @@ begin
         raise exception 'pipeline selection predecessor changed' using errcode='40001';
     end if;
     select * into qualification from public.pipeline_qualifications where id = new.qualification_id;
-    if qualification.id is null or qualification.status <> 'passed'
-       or qualification.receipt_text::jsonb ->> 'status' <> 'passed'
-       or qualification.receipt_text::jsonb -> 'missing' <> '[]'::jsonb
-       or qualification.receipt_text::jsonb -> 'failed' <> '[]'::jsonb
-       or qualification.project_id <> new.project_id
-       or qualification.configuration_sha256 <> new.configuration_sha256
-       or qualification.scope_sha256 <> new.scope_sha256
-       or qualification.receipt_text::jsonb #>> '{scope,deployment}' <> new.deployment
+    if qualification.id is null or qualification.status is distinct from 'passed'
+       or qualification.receipt_text::jsonb ->> 'status' is distinct from 'passed'
+       or qualification.receipt_text::jsonb -> 'missing' is distinct from '[]'::jsonb
+       or qualification.receipt_text::jsonb -> 'failed' is distinct from '[]'::jsonb
+       or qualification.project_id is distinct from new.project_id
+       or qualification.configuration_sha256 is distinct from new.configuration_sha256
+       or qualification.scope_sha256 is distinct from new.scope_sha256
+       or qualification.receipt_text::jsonb #>> '{scope,deployment}' is distinct from new.deployment
+       or body -> 'scope' is distinct from qualification.receipt_text::jsonb -> 'scope'
+       or body ->> 'qualification_sha256' is distinct from qualification.receipt_sha256
+       or (body ?& array['previous_selection_id', 'actor', 'reason', 'enabled', 'qualification_id']) is not true
        or new.actor !~ '^[a-z][a-z0-9._-]{1,31}:[^[:space:]]+$'
        or lower(substring(new.actor from position(':' in new.actor) + 1)) in ('agent', 'demo', 'extractor', 'reviewer', 'system')
        or length(trim(new.reason)) = 0
@@ -10371,9 +10392,9 @@ def _create_pipeline_qualification_schema() -> None:
             create trigger {table}_immutable before insert or update or delete on public.{table}
                 for each row execute function public.validate_pipeline_receipt();
             alter table public.{table} enable row level security;
-            create policy {table}_project on public.{table} to corridor_web
+            create policy p_{table}_project_partition on public.{table} to corridor_web
                 using (project_id = any(public.current_project_partition()));
-            create policy {table}_worker on public.{table} to corridor_worker using (true);
+            create policy p_{table}_unpartitioned on public.{table} to corridor_worker using (true);
         """)
     op.execute(PIPELINE_SELECTION_GUARD)
     for table in PIPELINE_TABLES:

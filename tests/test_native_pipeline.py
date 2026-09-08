@@ -159,6 +159,7 @@ def _gate_fixture(session, project, source, tmp_path, *, purpose="synthetic_vali
     for attempt in (1, 2):
         body = {"project_id": project.id, "configuration_sha256": configuration.configuration_sha256,
                 "scope_sha256": scope.identity, "scope": scope.model_dump(mode="json"), "source_sha256": document.sha256,
+                "scope_text": canonical_text(scope.model_dump(mode="json")),
                 "plan": {**_plan(mode).model_dump(mode="json"), "qualification_policy_sha256": policy.identity},
                 "disposition": "completed", "outcome": {"disposition": "completed"},
                 "started_at": datetime.now(timezone.utc).isoformat(), "input_sha256": "a" * 64,
@@ -323,3 +324,46 @@ def test_same_reader_source_reference_is_not_independent_field_gold(session, pro
     compared = pipeline_receipt(record_quality(session, fixture[2][0].id, reference_path=other, actor="pipeline:test-recorder"))
     assert compared["passed"] and compared["source_only_authoring"]
     assert not compared["independent_reference"] and not compared["synthetic_reference"]
+
+
+@pytest.mark.parametrize("actor", [":", "pipeline:", ":subject", "x:subject", "pipe line:subject"])
+def test_measurement_actor_requires_a_real_namespace_and_subject(session, project, matrix_source, tmp_path, actor):
+    fixture = _gate_fixture(session, project, matrix_source, tmp_path)
+    with pytest.raises(PipelineQualificationRefused, match="actor"):
+        record_repeatability(session, fixture[2][0].id, fixture[2][1].id, actor=actor)
+
+
+def test_quality_refuses_file_change_between_scoring_and_registration(session, project, matrix_source, tmp_path, monkeypatch):
+    fixture = _gate_fixture(session, project, matrix_source, tmp_path)
+    path = tmp_path / "racy-reference.json"
+    path.write_bytes((tmp_path / "authored-reference.json").read_bytes())
+    import corridor.pipeline_qualification as qualification
+    register = qualification.register_processing_artifact
+
+    def swap(scoped, **kwargs):
+        if kwargs["path"] == path:
+            path.write_bytes(path.read_bytes() + b"\n")
+        return register(scoped, **kwargs)
+
+    before = session.scalar(select(func.count()).select_from(PipelineComparison))
+    monkeypatch.setattr(qualification, "register_processing_artifact", swap)
+    with pytest.raises(PipelineQualificationRefused, match="changed between scoring"), session.begin_nested():
+        record_quality(session, fixture[2][0].id, reference_path=path, actor="pipeline:test-recorder")
+    assert session.scalar(select(func.count()).select_from(PipelineComparison)) == before
+
+
+def test_numeric_evidence_refuses_file_change_at_registration(session, project, matrix_source, tmp_path, monkeypatch):
+    fixture = _gate_fixture(session, project, matrix_source, tmp_path)
+    path = fixture[-1][0][1]
+    import corridor.pipeline_qualification as qualification
+    register = qualification.register_processing_artifact
+
+    def swap(scoped, **kwargs):
+        if kwargs["path"] == path:
+            path.write_bytes(path.read_bytes() + b"\n")
+        return register(scoped, **kwargs)
+
+    monkeypatch.setattr(qualification, "register_processing_artifact", swap)
+    with pytest.raises(PipelineQualificationRefused, match="changed between measurement"), session.begin_nested():
+        _qualify(session, fixture)
+    assert session.scalar(select(func.count()).select_from(PipelineQualification)) == 0

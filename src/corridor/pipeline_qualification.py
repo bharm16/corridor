@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 from pathlib import Path
+import re
 from typing import Iterable
 
 from sqlalchemy import select, text
@@ -29,6 +30,7 @@ from corridor.retention import register_processing_artifact
 
 
 POLICY_VERSION = "native-matrix-qualification-v1"
+_MEASUREMENT_ACTOR = re.compile(r"[a-z][a-z0-9._-]{1,31}:[^\s]+")
 
 
 class PipelineQualificationRefused(ValueError):
@@ -57,7 +59,7 @@ def _measurement_actor(session: Session, actor: HumanPrincipal | str) -> str:
     _maintenance_capability(session)
     if isinstance(actor, HumanPrincipal):
         return require_human_principal(actor).subject
-    if not isinstance(actor, str) or ":" not in actor or any(character.isspace() for character in actor):
+    if not isinstance(actor, str) or _MEASUREMENT_ACTOR.fullmatch(actor) is None:
         raise PipelineQualificationRefused("measurement actor must be an explicit namespaced service or human identity")
     return actor
 
@@ -69,6 +71,23 @@ def pipeline_receipt(row) -> dict:
             or record["configuration_sha256"] != row.configuration_sha256
             or record["scope_sha256"] != row.scope_sha256):
         raise PipelineQualificationRefused("pipeline receipt bytes or scope binding differ")
+    if isinstance(row, (PipelineObservation, PipelineQualification, PipelineSelection)):
+        try:
+            scope = PipelineScope.model_validate(record["scope"])
+        except (KeyError, ValueError) as exc:
+            raise PipelineQualificationRefused("pipeline receipt has no valid declared scope") from exc
+        if scope.identity != row.scope_sha256:
+            raise PipelineQualificationRefused("parsed pipeline scope differs from its stored digest")
+        if "scope_text" in record and record["scope_text"] != canonical_text(scope.model_dump(mode="json")):
+            raise PipelineQualificationRefused("pipeline scope bytes differ from the parsed scope")
+    if isinstance(row, PipelineQualification):
+        if (record.get("status") != row.status
+                or any(not isinstance(record.get(name), list) or any(not isinstance(value, str) for value in record[name])
+                       for name in ("missing", "failed"))
+                or (row.status == "passed" and (record["missing"] or record["failed"]))):
+            raise PipelineQualificationRefused("pipeline gate requires typed missing/failed evidence lists and its exact status")
+    if isinstance(row, PipelineComparison) and (record.get("kind") != row.kind or type(record.get("passed")) is not bool):
+        raise PipelineQualificationRefused("pipeline comparison kind or result is malformed")
     return record
 
 
@@ -96,6 +115,8 @@ def register_qualification_policy(
 
 
 def _append(session, model, record: dict, **columns):
+    if "scope" in record:
+        record = {**record, "scope_text": canonical_text(record["scope"])}
     serialized = canonical_text(record)
     row = model(
         project_id=record["project_id"], configuration_sha256=record["configuration_sha256"],
@@ -187,10 +208,13 @@ def record_quality(
         session, project_id=observation.project_id, kind="evaluation_working_data",
         path=path, terminal_at=datetime.now(timezone.utc),
     )
+    reference_digest = sha256(reference_bytes).hexdigest()
+    if artifact.content_sha256 != reference_digest:
+        raise PipelineQualificationRefused("quality reference changed between scoring and artifact registration")
     return _append(session, PipelineComparison, {
         **_comparison_record(observation, actor_subject, "quality"),
         "observation_id": observation.id, "observation_sha256": observation.receipt_sha256,
-        "source_sha256": observed["source_sha256"], "reference_sha256": sha256(reference_bytes).hexdigest(),
+        "source_sha256": observed["source_sha256"], "reference_sha256": reference_digest,
         "reference_origin": origin, "reference_artifact_id": artifact.id,
         "source_only_authoring": source_authored, "independent_reference": independent,
         "synthetic_reference": synthetic_reference, "comparison": comparison,
@@ -277,11 +301,12 @@ def record_qualification(
     bound_digests = sorted(row.receipt_sha256 for row in observations.values())
     for item, artifact_path in evidence:
         item = MeasuredEvidence.model_validate(item.model_dump())
+        artifact_bytes = Path(artifact_path).read_bytes()
         if (item.configuration_sha256 != first.configuration_sha256 or item.scope_sha256 != scope.identity
                 or sorted(item.observation_sha256s) != bound_digests
-                or sha256(Path(artifact_path).read_bytes()).hexdigest() != item.artifact_sha256):
+                or sha256(artifact_bytes).hexdigest() != item.artifact_sha256):
             raise PipelineQualificationRefused("numeric measurement is not bound to these exact observation/configuration/scope/artifact bytes")
-        artifact_record = json.loads(Path(artifact_path).read_bytes())
+        artifact_record = json.loads(artifact_bytes)
         if artifact_record.get("measurement") != item.model_dump(mode="json", exclude={"artifact_sha256"}):
             raise PipelineQualificationRefused("numeric value or denominator differs from its retained measurement artifact")
         if item.name in measured:
@@ -290,6 +315,8 @@ def record_qualification(
             session, project_id=first.project_id, kind="evaluation_working_data",
             path=artifact_path, terminal_at=datetime.now(timezone.utc),
         )
+        if artifact.content_sha256 != item.artifact_sha256:
+            raise PipelineQualificationRefused("numeric evidence changed between measurement and artifact registration")
         measured[item.name] = {**item.model_dump(mode="json"), "artifact_id": artifact.id}
     configuration = json.loads(session.get_one(PipelineConfiguration, first.configuration_sha256).configuration_text)
     policy_sha = configuration.get("qualification_policy_sha256")
@@ -381,6 +408,7 @@ def selected_pipeline_configuration(
     gate = pipeline_receipt(gate_row)
     scope = PipelineScope.model_validate(record["scope"])
     if (gate_row.status != "passed" or gate["status"] != "passed"
+            or record["scope"] != gate["scope"] or gate_row.scope_sha256 != selection.scope_sha256
             or gate_row.receipt_sha256 != record["qualification_sha256"]
             or selection.configuration_sha256 != configuration_sha256
             or document.sha256 not in scope.source_sha256s or document.doc_type != "matrix"
