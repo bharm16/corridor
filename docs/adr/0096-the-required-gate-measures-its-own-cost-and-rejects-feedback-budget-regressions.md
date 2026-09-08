@@ -91,12 +91,21 @@ allocation imbalance within the existing nine test runners. The latter
 recorded 1,231 ordinary case-seconds and 362 slow case-seconds; its slowest
 ordinary command took 154.3 seconds while the slow complement took 91.3.
 The complete gate remained over budget at 208.1 seconds after bounded fixture
-work was reduced. Seven ordinary runners and two slow runners allocate the
-same capacity in proportion to that measured work. Total test jobs, package
+work was reduced. A seven/two trial in run `34286519239` brought the ordinary
+command to 113.5 seconds but crowded indivisible slow modules into a
+166.6-second command. Six ordinary and three slow runners balance those
+constraints within the same capacity. Total test jobs, package
 downloads, two workers per runner, the `worksteal`/`loadfile` distinction,
 complete test coverage, and every feedback threshold remain unchanged. The
 required gate measures and accepts or rejects this allocation through the
 same receipts; reallocating workers does not grant a budget exception.
+
+Slow commands also use `--no-loadscope-reorder`. The pinned xdist scheduler
+otherwise replaces the supplied measured-duration order with case-count order,
+so an expensive one-case replay can be postponed behind cheap many-case files.
+A tiny real two-worker regression demonstrates that reversal and verifies
+that the measured file priorities reach both workers. File grouping and
+fixture isolation remain unchanged.
 
 The complete 1,018-Fact workbook replay belongs to the required slow complement,
 matching the declared slow marker's real-corpus scope. Its existing extraction,

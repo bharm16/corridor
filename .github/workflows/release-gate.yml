@@ -156,10 +156,9 @@ jobs:
     # Every file lands in exactly one shard. Each private runner has two
     # cores and uses two xdist workers; the ordinary suite uses worksteal.
     # scripts/test_shard.py proves the exact cover (ADR-0096).
-    # Seven ordinary plus two slow keeps the measured nine-test-job ceiling.
-    # Receipts showed 1231 ordinary case-seconds against 362 slow ones; the
-    # previous five/four allocation left slow runners idle on the critical
-    # path. Reallocate existing capacity without adding package downloads.
+    # Six ordinary plus three slow keeps the measured nine-test-job ceiling.
+    # Five/four left ordinary work on the critical path; seven/two crowded
+    # indivisible slow modules. Reallocate without adding package downloads.
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
     outputs:
@@ -169,11 +168,10 @@ jobs:
       pytest_4: ${{ steps.measure.outputs.pytest_4 }}
       pytest_5: ${{ steps.measure.outputs.pytest_5 }}
       pytest_6: ${{ steps.measure.outputs.pytest_6 }}
-      pytest_7: ${{ steps.measure.outputs.pytest_7 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -196,7 +194,7 @@ jobs:
       # the reason each piece is still there (#595).
       - run: scripts/ci_environment.sh
       - id: measure
-        run: make test-shard SHARDS=7 SHARD=${{ matrix.shard }}
+        run: make test-shard SHARDS=6 SHARD=${{ matrix.shard }}
   slow:
     # Keep each module on one worker: loadfile avoids repeating its expensive
     # acceptance fixtures across processes. Full coverage is unchanged.
@@ -205,10 +203,11 @@ jobs:
     outputs:
       slow_1: ${{ steps.measure.outputs.slow_1 }}
       slow_2: ${{ steps.measure.outputs.slow_2 }}
+      slow_3: ${{ steps.measure.outputs.slow_3 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2]
+        shard: [1, 2, 3]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -226,7 +225,7 @@ jobs:
       # See the pytest job: the same setup, for the same measured reason.
       - run: scripts/ci_environment.sh
       - id: measure
-        run: make test-slow-shard SHARDS=2 SHARD=${{ matrix.shard }}
+        run: make test-slow-shard SHARDS=3 SHARD=${{ matrix.shard }}
   migration:
     # The migration-adjacent path set the retired `migration-test.yml`
     # trigger carried, now asked of the classifier instead.
@@ -327,7 +326,7 @@ jobs:
           CORRIDOR_PYTEST_RECEIPTS: ${{ toJSON(needs.pytest.outputs) }}
           CORRIDOR_SLOW_RECEIPTS: ${{ toJSON(needs.slow.outputs) }}
           CORRIDOR_MIGRATION_RECEIPTS: ${{ toJSON(needs.migration.outputs) }}
-          PYTEST_SHARDS: "7"
-          SLOW_SHARDS: "2"
+          PYTEST_SHARDS: "6"
+          SLOW_SHARDS: "3"
           MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}
         run: python3 scripts/ci_feedback.py finish

@@ -65,6 +65,11 @@ def pytest_command(suite: str, files: list[str], workers: int, junit: Path) -> l
         # Each migration case owns a distinct disposable database, so fresh
         # installation and supported-upgrade proofs can run independently.
         command += ["-n", str(workers), "--dist", "worksteal"]
+    if suite == "slow":
+        # partition() already puts the measured expensive files first.
+        # xdist's default scope sort uses case counts instead, postponing a
+        # costly one-case replay behind cheap many-case files.
+        command.append("--no-loadscope-reorder")
     command += ["-m", {"pytest": "not slow", "slow": "slow and not migration", "migration": "migration"}[suite]]
     return command + ["--durations=25", "--durations-min=1.0", f"--junitxml={junit}", *files]
 

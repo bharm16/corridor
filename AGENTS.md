@@ -73,8 +73,8 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
 - **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
   every pull request.** It runs `make check` unconditionally, and the same
   tests `make test` and the non-migration `make test-slow` select, partitioned
-  by `make test-shard` across seven runners and `make test-slow-shard` across
-  two, unless every changed file is documentation. These are the same nine
+  by `make test-shard` across six runners and `make test-slow-shard` across
+  three, unless every changed file is documentation. These are the same nine
   test runners, allocated from measured workload (ADR-0096). `make check` owns
   `test_architecture.py` and `test_source_scan_support.py`; behavior shards
   omit those two files so each required proof runs once. Every other behavior
@@ -140,7 +140,8 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   Changing the budget requires a new ADR, not a threshold increase to clear CI.
 - **Match workers to the runner and fixtures.** Private Linux CI uses two
   xdist workers per runner. Ordinary tests use `worksteal`; slow tests use
-  `loadfile` so each module fixture is built once. Local `TEST_WORKERS` may be
+  `loadfile` with `--no-loadscope-reorder` so each module fixture is built once
+  and measured file order survives xdist's default case-count sort. Local `TEST_WORKERS` may be
   overridden for the machine. The migration target runs its owning file
   on two workers against the disposable databases that those tests create.
 
