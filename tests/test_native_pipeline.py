@@ -42,6 +42,9 @@ PROTECTED_MODELS = (
 
 def _protected_rows(session):
     """Read every protected row and column, without project or ORM-cache filtering."""
+    # Core column selects do not autoflush pending ORM writes. Include those
+    # writes in both snapshots so returning with queued side effects also fails.
+    session.flush()
     return {
         model.__tablename__: deepcopy([
             dict(row) for row in session.execute(
@@ -88,6 +91,27 @@ def preexisting_pipeline_state(session, project, matrix_source, tmp_path):
         expected_selection_id=None,
     )
     return request, selection
+
+
+@pytest.mark.parametrize("operation", ["insert", "update", "delete"])
+def test_protected_snapshot_includes_pending_orm_changes(session, project, preexisting_pipeline_state, operation):
+    before = _protected_rows(session)
+    existing = preexisting_pipeline_state[0]
+    if operation == "insert":
+        pending = RecordInclusionRequest(project_id=project.id, dirty_seq=1,
+                                         reconciled_seq=0, last_reason="Unflushed new request")
+        session.add(pending)
+        assert pending in session.new
+    elif operation == "update":
+        existing.dirty_seq += 1
+        existing.last_reason = "Unflushed changed request"
+        assert existing in session.dirty
+    else:
+        session.delete(existing)
+        assert existing in session.deleted
+    # Deliberately no explicit or query-triggered flush in the injection.
+    with pytest.raises(AssertionError, match="record_inclusion_requests changed"):
+        _assert_protected_rows_unchanged(session, before)
 
 
 def _plan(mode="synthetic", *, source=None):
