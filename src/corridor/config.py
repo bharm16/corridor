@@ -114,6 +114,17 @@ class Settings(BaseSettings):
         default="development", validation_alias="CORRIDOR_ENVIRONMENT"
     )
 
+    # Whether native page text and the native Token Layer come from the
+    # paired-rendition reader (ADR-0094, #733) instead of the incumbent
+    # engine. Off is the incumbent path, unchanged; on is the whole switch,
+    # so a deployment that wants the replacement changes this one value and
+    # nothing else. It stays off here because merging an adapter is not
+    # selecting it: #447 owns native selection, and a production default
+    # moves by that decision, never because an implementation landed.
+    native_reader_token_layer: bool = Field(
+        default=False, validation_alias="CORRIDOR_NATIVE_READER_TOKEN_LAYER"
+    )
+
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     # Recorded on every candidate. Changing this without an eval run makes

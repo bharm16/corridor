@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
+.PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval minutes report
 
 TEST_WORKERS ?= 4
 
@@ -448,6 +448,18 @@ pdf-pairs-measure:
 #   make pdf-reader-gold-eval ARGS="--output out/pdf-reader/gold-v1 --include-holdout --holdout-actor <actor> --holdout-reason <reason>"
 pdf-reader-gold-eval:
 	uv run python -m corridor_pdf_reader.gold_evaluation $(ARGS)
+
+# The prose-locator regression (#733): take every PDF prose Source Segment the
+# production segmentation appends for the registered corpus, re-verify each
+# against the page text the reader-backed native adapter would write, and
+# write a receipt carrying the configuration identity. Each segment is
+# recorded as verified unchanged, verified through the stated compatibility
+# path, or incompatible; an explained mismatch is recorded as incompatible.
+# An explicit experiment outside pytest and CI. It reads the content store
+# read-only and writes nothing into it, and takes several minutes:
+#   make prose-locator-regression ARGS="--output artifacts/pdf-reader-native-layer/733-prose-locator-regression.json"
+prose-locator-regression:
+	uv run python scripts/prose_locator_regression.py $(ARGS)
 
 # ---- The Textract adapter (#732) ---------------------------------------------
 # Replay retained Textract responses through the adapter's normalizer, twice

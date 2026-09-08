@@ -4,6 +4,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.ingest import ingest_document
 from corridor.models import (
@@ -12,6 +13,12 @@ from corridor.models import (
     PageProcessingFailure,
     PageRenderDerivative,
     Project,
+    TokenLayerManifest,
+)
+from corridor.token_layers import (
+    READER_ENGINE,
+    load_token_layer,
+    page_text_projection,
 )
 
 from pdf_fixture_support import PdfFixture, scan_image
@@ -700,3 +707,94 @@ def test_a_missing_store_file_without_a_recorded_sha_still_raises(
             doc_type="matrix",
             images_dir=tmp_path / "images",
         )
+
+
+# ---- the reader-backed native layer (#733) ---------------------------------
+
+
+def _native_layers(session, document_id):
+    return session.scalars(
+        select(TokenLayerManifest)
+        .where(
+            TokenLayerManifest.document_id == document_id,
+            TokenLayerManifest.origin == "native",
+        )
+        .order_by(TokenLayerManifest.page_no)
+    ).all()
+
+
+def test_the_native_layer_stays_the_incumbent_until_the_adapter_is_enabled(
+    session, project, pdf, tmp_path
+):
+    """No merge moves a production default; #447 owns native selection."""
+
+    assert settings.native_reader_token_layer is False
+    doc = ingest(session, project, pdf, tmp_path / "images")
+
+    layers = _native_layers(session, doc.id)
+    assert [layer.page_no for layer in layers] == [1, 2]
+    assert {layer.engine_json["engine"] for layer in layers} == {"pymupdf"}
+
+
+def test_the_enabled_adapter_supplies_the_page_text_and_the_native_layer(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    monkeypatch.setattr(settings, "native_reader_token_layer", True)
+
+    doc = ingest(session, project, pdf, tmp_path / "images")
+
+    layers = _native_layers(session, doc.id)
+    assert [layer.page_no for layer in layers] == [1, 2]
+    assert {layer.engine_json["engine"] for layer in layers} == {READER_ENGINE}
+    pages = session.scalars(
+        select(DocPage).where(DocPage.document_id == doc.id).order_by(DocPage.page_no)
+    ).all()
+    for page, manifest in zip(pages, layers, strict=True):
+        # The page string is the projection over the layer that was retained,
+        # not a second reading of the PDF (ADR-0073).
+        projection = page_text_projection(load_token_layer(manifest))
+        assert page.text.rstrip("\n") == projection
+    assert "AT&T Texas" in pages[0].text
+    assert "1149+00" in pages[1].text
+
+
+def test_enabling_the_adapter_changes_the_text_and_the_layer_and_nothing_else(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    """The adapter supplies page text and the native token layer.
+
+    The Page Inventory and the routing decision are read from the incumbent
+    on both settings, because the reader's inventory is #734's and a routing
+    change here would move the OCR boundary with it.
+    """
+
+    incumbent = ingest(session, project, pdf, tmp_path / "incumbent")
+    inventories = [
+        (page.inventory_json, page.routing_json, page.text_source)
+        for page in session.scalars(
+            select(DocPage)
+            .where(DocPage.document_id == incumbent.id)
+            .order_by(DocPage.page_no)
+        ).all()
+    ]
+
+    other = Project(slug="reader-adapter", name="Reader adapter", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    monkeypatch.setattr(settings, "native_reader_token_layer", True)
+    replacement = ingest_document(
+        session,
+        project_id=other.id,
+        path=pdf,
+        doc_type="matrix",
+        images_dir=tmp_path / "replacement",
+    )
+
+    assert [
+        (page.inventory_json, page.routing_json, page.text_source)
+        for page in session.scalars(
+            select(DocPage)
+            .where(DocPage.document_id == replacement.id)
+            .order_by(DocPage.page_no)
+        ).all()
+    ] == inventories

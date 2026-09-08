@@ -633,6 +633,11 @@ ENGINE_SCAN_ROOTS = ("src/corridor", "workers/render", "tests", "scripts")
 PYMUPDF_PACKAGES = frozenset({"fitz", "pymupdf"})
 TESSERACT_PACKAGES = frozenset({"pytesseract"})
 ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
+    # A historical prose locator is a pair of offsets into the page text the
+    # incumbent engine produced, so replaying one requires that engine. The
+    # regression is a one-time migration measurement outside the product; the
+    # line goes when the rebinding it measures is recorded (#733, #741).
+    ("scripts/prose_locator_regression.py", ("pymupdf",)),
     ("src/corridor/extract_matrix.py", ("pymupdf",)),
     ("src/corridor/geometry.py", ("pymupdf",)),
     ("src/corridor/gold.py", ("pymupdf",)),

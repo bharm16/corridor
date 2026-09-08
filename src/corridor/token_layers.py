@@ -18,6 +18,31 @@ probability. The OCR engine is pinned as an engine — executable version,
 traineddata filenames and digests, language, OEM/PSM, DPI, preprocessing
 profile, render profile, and adapter version — not as a Python package, so a
 layer is reproducible from what it records.
+
+ADR-0094 replaces the native engine, and #733 adds the second native adapter
+here rather than beside it: `read_native_token_layers` reads the same page
+through the imported paired-rendition reader and returns a layer with its own
+engine identity — the reader's name, the pypdfium2/PDFium versions, its
+measured engine and DPI, the imported commit, and a new adapter version. The
+two native adapters are two engines, never one engine's two versions, so a
+re-read writes a new layer beside the earlier one and rewrites no history.
+`corridor.config.settings.native_reader_token_layer` selects which one ingest
+calls; it is off, because merging an adapter is not selecting it (#447).
+
+The reader enters PDFium through `PdfiumExecutor` — one spawned process per
+document — and not through the cheaper in-process `pdfium_entry`. PDFium is
+not safe to call from two threads of one process at a time, and ingest runs
+in a threaded worker: `pdfium_entry` would refuse the second document
+outright with `PdfiumConcurrencyError`, which is the right answer for a
+diagnostic and the wrong one for a pipeline that must parse two documents at
+once. The cost is a process spawn per document, paid once, not per page.
+
+`page_text_projection` is the other half of ADR-0073's sentence. `DocPage.text`
+stops being a native-vs-OCR winner and becomes a rebuildable projection over
+the native layer: the tokens carry their line and their order, so the page
+string is a function of the retained artifact alone and needs neither the PDF
+nor the reader to rebuild. It is not offered for the incumbent's layer, whose
+page text was a separate call the layer cannot reproduce.
 """
 
 from __future__ import annotations
@@ -25,10 +50,12 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 import shutil
+import statistics
 import subprocess
-from typing import Literal, Protocol
+from typing import Any, Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
@@ -42,10 +69,18 @@ from corridor.object_storage import content_store
 from corridor.render_profiles import RenderDerivative
 from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
+from corridor_pdf_reader.execution import MEASURED_DPI, PdfiumExecutor
+from corridor_pdf_reader.provenance import SOURCE_COMMIT
 
 
 NATIVE_ADAPTER_VERSION = "native-pymupdf-v1"
 OCR_ADAPTER_VERSION = "ocr-tesseract-v1"
+# The reader-backed native adapter (#733). The engine name is the imported
+# package, not one of its libraries: pypdfium2 supplies the glyphs and pypdf
+# the structure tree, and it is the reader's own assembly of the two that a
+# layer records.
+READER_ENGINE = "corridor-pdf-reader"
+READER_NATIVE_ADAPTER_VERSION = "native-reader-v1"
 TESSERACT_OEM = 3
 TESSERACT_PSM = 6
 
@@ -189,6 +224,238 @@ def extract_native_token_layer(
         tokens=tuple(tokens),
         quality=quality,
     )
+
+
+
+def read_native_token_layers(
+    path: Path | str,
+    *,
+    source_sha256: str,
+    executor: PdfiumExecutor | None = None,
+) -> tuple[TokenLayer, ...]:
+    """One native token layer per page, read through the paired-rendition reader.
+
+    The whole document is read in one isolated child process, because the
+    isolation unit is the PDFium call and a per-page process would pay the
+    spawn on every page for nothing. A page that draws no glyphs still gets a
+    layer, with no tokens; a page missing from the result would be a silent
+    hole, and ingest refuses one.
+    """
+
+    result = (executor or PdfiumExecutor()).read_document(Path(path))
+    identity = reader_native_engine_identity(result)
+    return tuple(
+        _reader_native_token_layer(page, identity=identity, source_sha256=source_sha256)
+        for page in result["pages"]
+    )
+
+
+def reader_native_engine_identity(result: dict[str, Any]) -> EngineIdentity:
+    """What produced these tokens, pinned to the imported reader's own run.
+
+    The reader reports the pypdfium2 and PDFium versions of the process that
+    read the page, so the identity is taken from the result rather than from
+    an installed distribution's metadata: a layer records the engine that read
+    it. The imported commit and the measured engine and DPI complete the
+    configuration, which is what #731 measures and #447 selects.
+    """
+
+    return EngineIdentity(
+        origin="native",
+        engine=READER_ENGINE,
+        engine_version=f"pypdfium2-{result['version']}+PDFium-{result['native_version']}",
+        adapter_version=READER_NATIVE_ADAPTER_VERSION,
+        dpi=MEASURED_DPI,
+        configuration={
+            "reader_engine": result["engine"],
+            "source_commit": SOURCE_COMMIT,
+        },
+    )
+
+
+def _reader_native_token_layer(
+    page: dict[str, Any], *, identity: EngineIdentity, source_sha256: str
+) -> TokenLayer:
+    # A line the reader assembles from whitespace alone contributes no words,
+    # and a line index with no token would make the projection guess at a gap
+    # it cannot see. Such a line is dropped here, so every recorded line index
+    # holds at least one token and the projection is exact over the artifact.
+    lines = [line for line in _reader_word_lines(page["characters"]["value"]) if line]
+    tokens: list[Token] = []
+    for line_no, line in enumerate(lines):
+        for raw_text, box, object_id in line:
+            tokens.append(
+                Token(
+                    ordinal=len(tokens),
+                    origin="native",
+                    raw_text=raw_text,
+                    normalized_text=normalize(raw_text),
+                    polygon_pdf=_rect_from_points(*box),
+                    block=object_id,
+                    line=line_no,
+                )
+            )
+    projected = "\n".join(" ".join(word for word, _, _ in line) for line in lines)
+    return TokenLayer(
+        page_no=page["number"],
+        origin="native",
+        source_sha256=source_sha256,
+        identity=identity,
+        tokens=tuple(tokens),
+        quality={
+            "token_count": len(tokens),
+            "line_count": len(lines),
+            "rotation_degrees": int(page["geometry"]["rotation"]),
+            "clipped_runs": len(page.get("clipped", {}).get("value", [])),
+            # The projection is the page string ingest writes, so whether it
+            # reproduces the reader's own page text is a fact about this
+            # layer, recorded rather than assumed.
+            "projection_matches_reader_text": projected == page["text"]["value"],
+        },
+    )
+
+
+def page_text_projection(layer: TokenLayer) -> str:
+    """Rebuild a page's text from a reader-backed native layer (ADR-0073).
+
+    Tokens carry their line and their order, so the page string is a function
+    of the retained artifact and nothing else — no PDF, no reader, no second
+    reading. Lines are joined by a newline and tokens within a line by a
+    space, which is the reader's own page-text shape.
+
+    The incumbent's layer is refused rather than approximated: its page text
+    came from a separate call whose whitespace and block order the word boxes
+    do not carry, so a projection over it would be a new reading wearing an
+    old reading's name.
+    """
+
+    if layer.origin != "native" or layer.identity.engine != READER_ENGINE:
+        raise ValueError(
+            "page text projects only over a reader-backed native token layer"
+        )
+    lines: dict[int, list[str]] = {}
+    for token in layer.tokens:
+        lines.setdefault(token.line if token.line is not None else 0, []).append(
+            token.raw_text
+        )
+    return "\n".join(" ".join(lines[key]) for key in sorted(lines))
+
+
+def _reader_word_lines(
+    characters: list[dict[str, Any]],
+) -> list[list[tuple[str, list[float], int]]]:
+    """The reader's characters as lines of words, each with its display box.
+
+    This is `replacement.layout.ordered_text`'s own assembly — the same
+    rotation, the same line grouping, the same degenerate-metrics and
+    overlapping-whitespace rules, the same word boundaries — stopped one step
+    earlier, at the words, instead of joining them into a string. Keeping the
+    two in step is what lets the page text be a projection over the tokens
+    rather than a second reading beside them, and
+    `quality.projection_matches_reader_text` records the agreement page by
+    page. The reader itself reports `words` as unsupported, so there is no
+    word API to call instead.
+    """
+
+    characters = [c for c in characters if c["text"] not in ("\r", "\n", "\t")]
+    visible = [c for c in characters if c["text"].strip()]
+    if not visible:
+        return []
+    angle = statistics.mode(round(c.get("angle", 0) / 90) * 90 % 360 for c in visible)
+    radians = math.radians(-angle)
+    cosine, sine = math.cos(radians), math.sin(radians)
+    placed: list[tuple[list[float], dict[str, Any]]] = []
+    for character in characters:
+        box = character["display_box"]
+        points = [
+            (x * cosine - y * sine, x * sine + y * cosine)
+            for x in (box[0], box[2])
+            for y in (box[1], box[3])
+        ]
+        upright = [
+            min(point[0] for point in points),
+            min(point[1] for point in points),
+            max(point[0] for point in points),
+            max(point[1] for point in points),
+        ]
+        if character["text"].isspace() and upright[2] - upright[0] <= 0.2:
+            continue
+        placed.append((upright, character))
+    if not placed:
+        return []
+    height = statistics.median(max(1, box[3] - box[1]) for box, _ in placed)
+    lines: list[list[tuple[list[float], dict[str, Any]]]] = []
+    for box, character in sorted(
+        placed, key=lambda item: ((item[0][1] + item[0][3]) / 2, item[0][0])
+    ):
+        centre = (box[1] + box[3]) / 2
+        if not lines or abs(centre - sum(lines[-1][0][0][1::2]) / 2) > max(
+            1, height * 0.35
+        ):
+            lines.append([])
+        lines[-1].append((box, character))
+    return [_line_words(line, height) for line in lines]
+
+
+def _line_words(
+    line: list[tuple[list[float], dict[str, Any]]], height: float
+) -> list[tuple[str, list[float], int]]:
+    ink = [box for box, character in line if not character["text"].isspace()]
+    degenerate_metrics = bool(ink) and statistics.median(
+        box[3] - box[1] for box in ink
+    ) < 0.1
+    # Some bindings insert a second "space" overlapping the next glyph. Keep
+    # real whitespace advances; discard these overlapping placeholders.
+    line = [
+        (box, character)
+        for box, character in line
+        if degenerate_metrics
+        or not character["text"].isspace()
+        or not any(
+            max(0, min(box[2], other[2]) - max(box[0], other[0]))
+            > (box[2] - box[0]) * 0.5
+            for other in ink
+        )
+    ]
+    words: list[tuple[str, list[float], int]] = []
+    text = ""
+    word_box: list[float] | None = None
+    object_id = 0
+    previous: list[float] | None = None
+
+    def close() -> None:
+        nonlocal text, word_box
+        if text and word_box is not None:
+            words.append((text, word_box, object_id))
+        text, word_box = "", None
+
+    for box, character in sorted(line, key=lambda item: item[0][0]):
+        boundary = character.get("break_before")
+        if boundary is True or (
+            boundary is None
+            and not degenerate_metrics
+            and previous
+            and box[0] - previous[2] > max(0.5, height * 0.18)
+        ):
+            close()
+        if character["text"].isspace():
+            close()
+        else:
+            display = character["display_box"]
+            if word_box is None:
+                word_box = list(display)
+                object_id = int(character.get("object_id", 0))
+            else:
+                word_box = [
+                    min(word_box[0], display[0]),
+                    min(word_box[1], display[1]),
+                    max(word_box[2], display[2]),
+                    max(word_box[3], display[3]),
+                ]
+            text += character["text"]
+        previous = box
+    close()
+    return words
 
 
 class OcrRequest(TokenModel):

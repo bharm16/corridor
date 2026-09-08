@@ -123,6 +123,12 @@ PRODUCTION_IMPORTERS = {
         "PdfiumExecutor process per draft because the draft runs on a web "
         "thread; a suggestion the person confirms elsewhere, not a record fact"
     ),
+    "src/corridor/token_layers.py": (
+        "the replacement native Token Layer is PDFium's glyphs assembled by the "
+        "reader itself, read in one PdfiumExecutor process per document because "
+        "ingest runs in a threaded worker; disabled by default, and selection "
+        "for the record stays with #447"
+    ),
     "src/corridor/web/queue.py": (
         "quote highlights on the review page are PDFium text-search boxes under "
         "pdfium_entry; best effort, degrading to an unmarked page"
