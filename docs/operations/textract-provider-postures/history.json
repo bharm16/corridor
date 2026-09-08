@@ -1,0 +1,14 @@
+{
+  "kind": "textract-provider-posture-history",
+  "postures": [
+    {
+      "identity": "aws-textract-analyze-document-tables-posture-1",
+      "document": "docs/operations/textract-provider-postures/aws-textract-analyze-document-tables-posture-1.md",
+      "digest": "1a222e3c92be1777921f1201bc2c993389cc237c924e9f8e9b557a1537322b3f",
+      "status": "proposed",
+      "superseded_by": "aws-textract-analyze-document-tables-posture-2",
+      "recorded_on": "2026-09-08",
+      "reason": "#732 requires verified effective Textract opt-out and workload permissions; native geometry assistance gains an explicit purpose."
+    }
+  ]
+}
