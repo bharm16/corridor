@@ -16,6 +16,7 @@ from sqlalchemy import select
 
 from corridor.due_work_cli import main
 from corridor.models import DueWorkSchedule, Project
+from corridor.object_storage import LocalFilesystemStore
 
 
 class ControlledClock:
@@ -370,7 +371,47 @@ def test_supervisor_honors_shutdown_before_taking_work(runtime_database, capsys)
         stop_requested=lambda: True,
         wait=lambda _seconds: pytest.fail("stopped supervisor must not wait"),
     ) == 0
-    assert _payload(capsys) == {"command": "supervise", "completed_cycles": 0}
+    assert _payload(capsys) == {
+        "command": "supervise", "completed_cycles": 0, "owner": "runtime:cli-worker"
+    }
+
+
+def test_worker_health_uses_the_real_database_and_object_store(
+    runtime_database, tmp_path, capsys
+):
+    assert main(
+        ["health"], session_factory=runtime_database.session_factory,
+        store=LocalFilesystemStore(tmp_path),
+    ) == 0
+    report = _payload(capsys)
+    assert report["status"] == "ok"
+    assert report["role"] == "worker"
+    assert {item["component"] for item in report["checks"]} == {
+        "application", "database", "object_storage", "worker_heartbeat"
+    }
+    assert main(
+        ["health"], session_factory=runtime_database.session_factory,
+        store=LocalFilesystemStore(tmp_path / "missing"),
+    ) == 1
+    degraded = _payload(capsys)
+    assert degraded["status"] == "degraded"
+    assert {item["component"] for item in degraded["checks"] if not item["healthy"]} == {
+        "object_storage"
+    }
+
+
+def test_supervisor_generates_a_distinct_runtime_owner_for_each_process(capsys):
+    owners = []
+    for _ in range(2):
+        assert main(
+            ["supervise", "--poll-seconds=5"],
+            session_factory=lambda: pytest.fail("stopped supervisor opened a database"),
+            stop_requested=lambda: True,
+            wait=lambda _seconds: pytest.fail("stopped supervisor waited"),
+        ) == 0
+        owners.append(_payload(capsys)["owner"])
+    assert all(owner.startswith("runtime:") for owner in owners)
+    assert len(set(owners)) == 2
 
 
 def _pilot_schedule_argv(command: str, project_slug: str, *extra: str) -> list[str]:

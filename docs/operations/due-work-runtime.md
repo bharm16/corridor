@@ -18,10 +18,31 @@ using the exact Makefile example. Missing or unsupported cadence, timezone,
 missed-run, retention, retry, lease, deadline, concurrency, model, notification,
 scope, or version data is refused before the job is enabled.
 
-Run `make due-work ARGS="supervise --owner=runtime:<worker-id>
---poll-seconds=5"` in a process separate from the web server. `tick`,
+Release preparation (#690) is declared per project and runs on request. Run
+this through the worker capability with the actual synthetic project slug and
+an hour-aligned UTC start time before exercising the deployed preparation path:
+
+```bash
+make due-work ARGS="configure-release-preparation <project-slug> --configuration-version=release-preparation-v1 --starts-at=<UTC-hour> --cadence=on_request --timezone=UTC --missed-run-policy=every_occurrence --retention-days=365 --max-attempts=3 --backoff-seconds=60 --claim-ttl-seconds=900 --deadline-seconds=600 --concurrency-limit=1 --model-token-budget=0 --notification-budget=0"
+```
+
+The request, attempt, and terminal receipt prove execution. A configured
+declaration or a healthy idle supervisor alone does not.
+
+Run `make due-work ARGS="supervise --poll-seconds=5"` in a process separate
+from the web server. Each invocation generates a distinct runtime owner;
+`--owner=runtime:<worker-id>` remains available for an explicitly named
+operator process. Never give two live processes the same owner. `tick`,
 `run-once`, `recover`, and `status` expose the same stored interfaces for bounded
 operations and diagnosis.
+
+`make due-work ARGS=health` checks the worker database, object storage, and
+the existing durable heartbeat reading, and exits nonzero when degraded. It
+does not add heartbeat rows or customer decisions. The ECS worker service
+invokes the same command through the image entrypoint, because ECS health
+checks receive the task definition's environment rather than the URL PID 1
+composed. Its 120-second shutdown allowance lets the supervisor stop claiming
+work; any unfinished lease follows the existing recovery contract.
 
 Connected TxDOT document discovery uses `txdot-rid-box-v1`. Its declaration
 names the official RID page and one exact visible link such as `Utilities`.

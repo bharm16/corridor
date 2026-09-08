@@ -173,6 +173,7 @@ def test_the_delegated_boundary_permits_what_the_tasks_actually_do(
         "ecr:GetAuthorizationToken",
         "ecr:PutImage",
         "ecs:RunTask",
+        "ecs:StopTask",
         "ecs:UpdateService",
         "s3:GetObject",
         "s3:PutObject",

@@ -2,7 +2,9 @@
 
 import json
 import importlib.util
+import os
 from pathlib import Path
+import subprocess
 from types import SimpleNamespace
 
 import pytest
@@ -37,6 +39,43 @@ def test_migration_parallelizes_only_the_migration_file(tmp_path):
     pytest_arguments = command[3:]
     assert pytest_arguments[pytest_arguments.index("-m") + 1] == "migration"
     assert command[-1] == files[0]
+
+
+def test_slow_runner_preserves_measured_order_when_case_counts_differ(tmp_path):
+    """A one-case expensive file must start before a later many-case file.
+
+    The shard already orders files by measured work. Exercise the actual
+    installed xdist scheduler: its default case-count sort discards that
+    priority even though the command line has the right order.
+    """
+    (tmp_path / "pytest.ini").write_text("[pytest]\nmarkers = slow: synthetic scheduler case\n")
+    (tmp_path / "conftest.py").write_text(
+        "import os\nfrom pathlib import Path\n"
+        "def pytest_runtest_setup(item):\n"
+        "    first = Path('first-' + os.environ['PYTEST_XDIST_WORKER'])\n"
+        "    if not first.exists():\n"
+        "        first.write_text(item.path.name)\n"
+    )
+    priority = ["test_priority_a.py", "test_priority_b.py"]
+    for name in priority:
+        (tmp_path / name).write_text(
+            "import pytest\npytestmark = pytest.mark.slow\n"
+            "def test_one():\n    assert True\n"
+        )
+    (tmp_path / "test_many.py").write_text(
+        "import pytest\npytestmark = pytest.mark.slow\n"
+        "@pytest.mark.parametrize('value', range(10))\n"
+        "def test_many(value):\n    assert value >= 0\n"
+    )
+    files = [*priority, "test_many.py"]
+    command = gate.pytest_command("slow", files, 2, tmp_path / "scheduler.xml")
+    environment = dict(os.environ)
+    environment.pop("PYTEST_ADDOPTS", None)
+    result = subprocess.run(
+        command, cwd=tmp_path, env=environment, text=True, capture_output=True, timeout=20
+    )
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert {path.read_text() for path in tmp_path.glob("first-gw*")} == set(priority)
 
 
 def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp_path, monkeypatch):

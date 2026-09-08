@@ -15,6 +15,7 @@ from aws_cdk.assertions import Match, Template
 
 from corridor_infra.account_foundation_stack import CorridorAccountFoundationStack
 from corridor_infra.application_stack import CorridorApplicationStack
+from corridor_infra.control_plane_stack import CorridorControlPlaneStack
 from corridor_infra.data_stack import CorridorDataStack
 from corridor_infra.network_stack import CorridorNetworkStack
 
@@ -43,13 +44,17 @@ def _app_context() -> dict:
 
 
 def _build(**overrides):
-    """Build the four stacks, so a test can vary one input and assert on it."""
+    """Build all stacks; preserve the existing four-item fixture interface."""
     app = cdk.App(context=_app_context())
     foundation = CorridorAccountFoundationStack(
         app, "F", env=ENV,
         github_repo="bharm16/corridor", github_environment="nonproduction",
     )
     network = CorridorNetworkStack(app, "N", env=ENV)
+    control = CorridorControlPlaneStack(
+        app, "C", env=ENV, vpc=network.vpc,
+        database_security_group=network.control_db_sg,
+    )
     data = CorridorDataStack(
         app, "D", env=ENV, vpc=network.vpc, database_security_group=network.db_sg
     )
@@ -63,6 +68,12 @@ def _build(**overrides):
         artifact_bucket=data.artifact_bucket,
         web_db_secret=data.web_db_secret,
         worker_db_secret=data.worker_db_secret,
+        control_database=control.database,
+        control_operations_secret=control.operations_secret,
+        control_resolver_secret=control.resolver_secret,
+        customer_routing_secret=data.customer_routing_secret,
+        customer_id="synthetic-a", customer_environment_id="synthetic-nonproduction",
+        deployment_id="corridor-nonproduction", data_class="synthetic",
         image_tag="0123456789abcdef0123456789abcdef01234567",
         web_desired_count=0,
         certificate_arn=DUMMY_CERT,
@@ -85,6 +96,10 @@ def stacks():
         github_environment="nonproduction",
     )
     network = CorridorNetworkStack(app, "N", env=ENV)
+    control = CorridorControlPlaneStack(
+        app, "C", env=ENV, vpc=network.vpc,
+        database_security_group=network.control_db_sg,
+    )
     data = CorridorDataStack(
         app, "D", env=ENV, vpc=network.vpc, database_security_group=network.db_sg
     )
@@ -101,6 +116,12 @@ def stacks():
         artifact_bucket=data.artifact_bucket,
         web_db_secret=data.web_db_secret,
         worker_db_secret=data.worker_db_secret,
+        control_database=control.database,
+        control_operations_secret=control.operations_secret,
+        control_resolver_secret=control.resolver_secret,
+        customer_routing_secret=data.customer_routing_secret,
+        customer_id="synthetic-a", customer_environment_id="synthetic-nonproduction",
+        deployment_id="corridor-nonproduction", data_class="synthetic",
         image_tag="0123456789abcdef0123456789abcdef01234567",
         web_desired_count=0,
         certificate_arn=DUMMY_CERT,
@@ -111,6 +132,7 @@ def stacks():
         "foundation": Template.from_stack(foundation),
         "network": Template.from_stack(network),
         "data": Template.from_stack(data),
+        "control": Template.from_stack(control),
         "application": Template.from_stack(application),
     }
 
@@ -128,6 +150,54 @@ def test_web_service_starts_at_zero(stacks):
     stacks["application"].has_resource_properties(
         "AWS::ECS::Service", {"DesiredCount": 0}
     )
+
+
+def test_worker_service_runs_the_existing_supervisor_with_its_own_health_check(stacks):
+    template = stacks["application"].to_json()
+    services = {
+        key: value["Properties"]
+        for key, value in template["Resources"].items()
+        if value["Type"] == "AWS::ECS::Service"
+    }
+    worker = [value for key, value in services.items() if key.startswith("WorkerService")]
+    assert len(worker) == 1, "preparation requests need a resident worker service"
+    assert worker[0]["DesiredCount"] == 0
+    assert worker[0]["EnableExecuteCommand"] is False
+    task_id = worker[0]["TaskDefinition"]["Ref"]
+    task = template["Resources"][task_id]["Properties"]
+    container = task["ContainerDefinitions"][0]
+    assert container["Command"] == [
+        "python", "-m", "corridor.due_work_cli", "supervise", "--poll-seconds=5"
+    ]
+    assert container["HealthCheck"]["Command"] == [
+        "CMD", "python", "/opt/corridor/scripts/container_entrypoint.py",
+        "python", "-m", "corridor.due_work_cli", "health",
+    ]
+    assert container["StopTimeout"] == 120
+    assert template["Outputs"]["WorkerServiceName"]["Value"]
+    for service in services.values():
+        runtime_task = template["Resources"][service["TaskDefinition"]["Ref"]]["Properties"]
+        assert all(item.get("HealthCheck") for item in runtime_task["ContainerDefinitions"]
+                   if item.get("Essential", True)), "runtime health cannot remain UNKNOWN"
+
+
+def test_serving_requires_a_worker_and_the_worker_has_an_operational_alarm():
+    with pytest.raises(ValueError, match="workerDesiredCount"):
+        _build(web_desired_count=1, worker_desired_count=0)
+    _, _, _, application = _build(web_desired_count=1, worker_desired_count=1)
+    template = Template.from_stack(application)
+    template.resource_count_is("AWS::ECS::Service", 2)
+    alarms = template.find_resources("AWS::CloudWatch::Alarm")
+    worker_alarms = [value["Properties"] for key, value in alarms.items()
+                     if key.startswith("WorkerMissingTasksAlarm")]
+    assert len(worker_alarms) == 1
+    alarm = worker_alarms[0]
+    assert alarm["Threshold"] == 1
+    assert alarm["EvaluationPeriods"] == 3
+    metrics = [item["MetricStat"]["Metric"] for item in alarm["Metrics"] if "MetricStat" in item]
+    assert {metric["MetricName"] for metric in metrics} == {"DesiredTaskCount", "RunningTaskCount"}
+    assert all({d["Name"] for d in metric["Dimensions"]} == {"ClusterName", "ServiceName"}
+               for metric in metrics)
 
 
 # --- database exposure -------------------------------------------------
@@ -348,6 +418,82 @@ def test_web_and_batch_receive_only_their_own_login(stacks):
             assert "WebDbSecret" not in document, logical_id
 
 
+def test_control_plane_state_survives_the_customer_destruction_unit(stacks):
+    control = stacks["control"].find_resources("AWS::RDS::DBInstance")
+    customer = stacks["data"].find_resources("AWS::RDS::DBInstance")
+    assert len(control) == len(customer) == 1
+    control_database = next(iter(control.values()))
+    customer_database = next(iter(customer.values()))
+    assert control_database["Properties"]["DBInstanceIdentifier"] == "corridor-nonprod-control"
+    assert control_database["Properties"]["DBInstanceIdentifier"] != customer_database["Properties"]["DBInstanceIdentifier"]
+    assert control_database["DeletionPolicy"] == "Retain"
+    assert control_database["UpdateReplacePolicy"] == "Retain"
+    assert control_database["Properties"]["DeletionProtection"] is True
+    assert control_database["Properties"]["BackupRetentionPeriod"] == 7
+    assert control_database["Properties"]["DeleteAutomatedBackups"] is False
+    assert control_database["Properties"]["PubliclyAccessible"] is False
+    assert control_database["Properties"]["StorageEncrypted"] is True
+    assert "ArtifactBucket" not in json.dumps(stacks["control"].to_json())
+
+
+def test_runtime_has_only_control_resolver_and_its_own_customer_secret(stacks):
+    roles = {}
+    for task in stacks["application"].find_resources("AWS::ECS::TaskDefinition").values():
+        container = task["Properties"]["ContainerDefinitions"][0]
+        environment = {entry["Name"]: entry["Value"] for entry in container["Environment"]}
+        roles[environment["CORRIDOR_TASK_ROLE"]] = {entry["Name"] for entry in container["Secrets"]}
+        assert environment["CORRIDOR_CUSTOMER_ID"] == "synthetic-a"
+        assert environment["CORRIDOR_CUSTOMER_ENVIRONMENT_ID"] == "synthetic-nonproduction"
+        assert environment["CORRIDOR_DEPLOYMENT_ID"] == "corridor-nonproduction"
+        assert environment["CORRIDOR_DEPLOYMENT_DATA_CLASS"] == "synthetic"
+    resolver = {"CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD"}
+    assert roles["web"] == resolver | {"CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_CUSTOMER_ROUTING_KEY"}
+    assert roles["batch"] == resolver | {"CORRIDOR_WORKER_DB_PASSWORD"}
+    assert roles["migration"] == resolver | {
+        "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
+        "CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_WORKER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
+    }
+
+
+def test_only_migration_may_fetch_control_owner_and_operations_credentials(stacks):
+    for policy in stacks["application"].find_resources("AWS::IAM::Policy").values():
+        statement = json.dumps(policy["Properties"]["PolicyDocument"])
+        if "ControlDatabaseSecret" in statement or "ControlOperationsSecret" in statement:
+            assert "MigrationExecutionRole" in json.dumps(policy["Properties"]["Roles"])
+
+
+def test_migration_runs_bounded_configuration_before_runtime_activation(stacks):
+    tasks = stacks["application"].find_resources("AWS::ECS::TaskDefinition")
+    migration = next(task for name, task in tasks.items() if name.startswith("Migration"))
+    assert migration["Properties"]["ContainerDefinitions"][0]["Command"] == [
+        "python", "-m", "corridor.deployment_bootstrap", "configure",
+    ]
+
+
+@pytest.mark.parametrize("field", ["customer_id", "customer_environment_id", "deployment_id"])
+def test_deployment_requires_explicit_stable_customer_identity(field):
+    with pytest.raises(ValueError, match="explicit stable identifier"):
+        _build(**{field: ""})
+
+
+def test_nonproduction_stack_cannot_silently_become_a_customer_activation():
+    with pytest.raises(ValueError, match="explicitly be synthetic"):
+        _build(data_class="customer")
+
+
+def test_customer_signing_key_and_control_logins_are_generated_separately(stacks):
+    customer_secrets = stacks["data"].find_resources("AWS::SecretsManager::Secret")
+    routing = next(secret for name, secret in customer_secrets.items() if name.startswith("CustomerRoutingSecret"))
+    assert routing["Properties"]["GenerateSecretString"]["PasswordLength"] >= 32
+    logins = {
+        json.loads(secret["Properties"]["GenerateSecretString"].get("SecretStringTemplate", "{}")).get("username")
+        for secret in stacks["control"].find_resources("AWS::SecretsManager::Secret").values()
+    }
+    assert logins == {"corridor_control_owner", "corridor_control_operator", "corridor_control_runtime"}
+
+
 # --- runtime shape -----------------------------------------------------
 def test_single_ecr_repository(stacks):
     stacks["application"].resource_count_is("AWS::ECR::Repository", 1)
@@ -387,6 +533,10 @@ def test_env_and_secret_names_exist_in_corridor_config():
         "CORRIDOR_DB_ADMIN_USERNAME",
         "CORRIDOR_DB_ADMIN_PASSWORD",
         "CORRIDOR_TASK_ROLE",
+        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
+        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
+        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
     }
 
     assert "CORRIDOR_WEB_DB_PASSWORD" in readable
@@ -409,6 +559,11 @@ def test_no_task_sets_an_unreadable_corridor_variable(stacks):
         "CORRIDOR_DB_HOST", "CORRIDOR_DB_PORT", "CORRIDOR_DB_NAME",
         "CORRIDOR_DB_ADMIN_USERNAME", "CORRIDOR_DB_ADMIN_PASSWORD",
         "CORRIDOR_TASK_ROLE",
+        "CORRIDOR_CONTROL_DB_HOST", "CORRIDOR_CONTROL_DB_PORT", "CORRIDOR_CONTROL_DB_NAME",
+        "CORRIDOR_CONTROL_OWNER_DB_USERNAME", "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME", "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
+        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+        "CORRIDOR_DEPLOYMENT_DATA_CLASS",
     }
     allowed = aliases | plain | entrypoint_inputs
 
@@ -488,8 +643,7 @@ def test_the_bootstrap_placeholder_tag_is_refused():
 
 # --- readiness ---------------------------------------------------------
 def test_the_load_balancer_checks_readyz_not_health(stacks):
-    """/health returns 503 on a stale worker heartbeat and this environment
-    runs no resident worker, so checking it would deregister a healthy task."""
+    """Worker failure must not deregister the UI that shows its retained status."""
     stacks["application"].has_resource_properties(
         "AWS::ElasticLoadBalancingV2::TargetGroup",
         {"HealthCheckPath": "/readyz", "Port": 8412},
@@ -519,14 +673,26 @@ def test_migration_receives_both_runtime_passwords(stacks):
         "CORRIDOR_DB_ADMIN_PASSWORD",
         "CORRIDOR_WEB_DB_PASSWORD",
         "CORRIDOR_WORKER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OWNER_DB_USERNAME",
+        "CORRIDOR_CONTROL_OWNER_DB_PASSWORD",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_USERNAME",
+        "CORRIDOR_CONTROL_OPERATIONS_DB_PASSWORD",
+        "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME",
+        "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
     }
 
 
 def test_web_and_batch_still_receive_only_their_own_login(stacks):
     template = stacks["application"].to_json()["Resources"]
     expected = {
-        "Web": {"CORRIDOR_WEB_DB_PASSWORD"},
-        "Batch": {"CORRIDOR_WORKER_DB_PASSWORD"},
+        "Web": {
+            "CORRIDOR_WEB_DB_PASSWORD", "CORRIDOR_CUSTOMER_ROUTING_KEY",
+            "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME", "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+        },
+        "Batch": {
+            "CORRIDOR_WORKER_DB_PASSWORD", "CORRIDOR_CONTROL_RESOLVER_DB_USERNAME",
+            "CORRIDOR_CONTROL_RESOLVER_DB_PASSWORD",
+        },
     }
     for role, wanted in expected.items():
         task = [

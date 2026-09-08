@@ -3,33 +3,43 @@
 Account `810100779593`, region `us-east-2`. Serves #601 (account and deployment
 identity) and #489 (synthetic environment foundation).
 
-**Status: not deployed.** The CDK in [`infra/`](../../infra) synthesizes and
-passes its tests; no AWS resource has been created.
+**Status: deployment and restore acceptance remain open.** The CDK in
+[`infra/`](../../infra) defines the environment; synthesis is not evidence that
+it is running. #489 closes only after the synthetic deployment and the restore
+rehearsal below have retained receipts.
 
 ## Prerequisites that block the first deploy
 
-These are account facts, verified read-only on 2026-09-04. Each must be true
-before `cdk bootstrap`:
+The 2026-09-08 read-only refresh authenticated as
+`arn:aws:iam::810100779593:user/bryceharmon` using the local `corridor` profile.
+It found no Corridor/CDKToolkit stacks, Corridor RDS instance, OIDC provider,
+deployment roles under `/corridor/nonproduction/`, ACM certificate, SES
+identity, or Route 53 hosted zone in the intended scope. GitHub returned no
+environments for `bharm16/corridor`. The existing
+`corridor-textract-rung-9593` bucket is historical provider work, not the
+application environment. Do not recreate the account or repurpose that bucket.
 
 | Prerequisite | State | Who |
 |---|---|---|
 | Root MFA enabled | done | — |
 | No root or IAM access keys | done | — |
-| **MFA on `bryceharmon`** | **missing** | you, console |
+| MFA on `bryceharmon` | done; enabled 2026-09-04 | — |
 | **Delete unused `bryce` user** | **exists, console access** | you, console |
 | **Account password policy** | **not set** | you, console |
 | **Cost Explorer enabled** | **not enabled** | you, console (root must first activate IAM billing access) |
-| **Budget + alerts** | **none** | you, console |
+| **Budget + alerts** | **no budgets returned** | you, console |
 | **ACM certificate for the ALB** | **none** | you |
 | **Public hostname** (`corridor:publicHostname`) | **none** | you, Route 53 or your DNS |
 | **SES sender identity** (`corridor:signInSender`) | **none** | you, SES console |
 | **Bootstrap policies created** | written, not created | you, one `aws iam create-policy` each |
 | Container image | built and smoke-tested in CI | done |
-| RDS minor version still offered | verify | `aws rds describe-db-engine-versions --engine postgres --engine-version 16` |
+| RDS minor version still offered | 16.14 returned available in `us-east-2` | verified 2026-09-08 |
 
-`bryceharmon` holds `AdministratorAccess` through the `Admin` group and has no
-MFA device. It is acceptable as a *temporary bootstrap identity* once MFA is
-on; it should not remain the permanent administrative path.
+The 2026-09-04 review recorded `AdministratorAccess` through the `Admin` group
+for `bryceharmon`; that group's policies were not re-audited in this refresh.
+MFA is now configured, and both IAM users and root have no access keys. Use
+the MFA-protected identity only for bootstrap; deployed work uses the separate
+short-lived workload and GitHub identities.
 
 ### The image
 
@@ -52,7 +62,7 @@ credentials, requires `sslmode=verify-full` against the bundled trust store,
 drops the raw passwords the role no longer needs, and `execvpe`s the command
 from the task definition without a shell.
 
-Which URL it sets is the boundary. `Settings` reads `DATABASE_URL`,
+Which URL it sets is the database capability boundary. `Settings` reads `DATABASE_URL`,
 `WEB_DATABASE_URL` and `WORKER_DATABASE_URL` separately, and
 `db.capability_url` derives a capability URL from the owner's only when that
 capability's own URL is empty. Leaking `DATABASE_URL` into a runtime container
@@ -93,12 +103,11 @@ before inviting anyone else, or their links will be rejected.
 
 ### The ALB certificate
 
-Without `corridor:certificateArn` in context, the stack synthesizes an **HTTP**
-listener and no redirect. That is deliberate: an HTTPS listener cannot
-synthesize without a certificate, and silently shipping plaintext as though it
-were intended would be worse than failing visibly here. Issue an ACM
-certificate, set the context value, and the stack switches to 443 with a 80→443
-redirect and `TLS13_RES`.
+Without `corridor:certificateArn`, the stack creates **no listener** and
+refuses a positive web desired count. The application stays unreachable.
+Supply a certificate and its public hostname to enable 443 with an 80→443
+redirect and `TLS13_RES`. The protected deployment workflow validates those
+inputs and the SES sender before obtaining AWS credentials.
 
 ## The deployment-branch policy is load-bearing
 
@@ -125,6 +134,7 @@ deployment:
 | Deployment branches and tags | **Selected branches**, `main` only | The only thing that stops an unreviewed branch obtaining the role |
 | Required reviewers | at least one person | A human sees the dispatch before the token is issued |
 | Environment variables | `CORRIDOR_CERTIFICATE_ARN`, `CORRIDOR_PUBLIC_HOSTNAME`, `CORRIDOR_SIGN_IN_SENDER` | Deployment configuration, not secrets |
+| Synthetic identity variables | `CORRIDOR_CUSTOMER_ID`, `CORRIDOR_CUSTOMER_ENVIRONMENT_ID`, `CORRIDOR_DEPLOYMENT_ID`, `CORRIDOR_DEPLOYMENT_DATA_CLASS=synthetic` | Stable registry/database identities; deployment ID is never the commit SHA |
 | Environment secrets | none | The account holds no long-lived AWS credential |
 
 "Selected branches: `main`" is the load-bearing one. Without it, every other
@@ -132,11 +142,13 @@ control in this document is enforced by a file the requester can edit.
 
 ## Deployment order
 
-Nothing below has been run.
+Complete and retain each step's actual outcome. These instructions are not
+execution receipts.
 
 1. Complete every prerequisite above, including the hostname, certificate and
    verified SES sender.
-2. Review the PR; run `pytest infra/tests` and `cdk synth --strict`.
+2. Review the PR; run `make test-infra` and `cdk synth --strict` using the
+   locked toolchain described in [`infra/README.md`](../../infra/README.md).
 3. Create the two bootstrap policies, then bootstrap with them. See
    [`infra/bootstrap/README.md`](../../infra/bootstrap/README.md) for the exact
    commands. Bootstrap creates an asset bucket, an ECR repository, an SSM
@@ -145,8 +157,8 @@ Nothing below has been run.
    role). Omitting `--cloudformation-execution-policies` is what silently gives
    that execution role `AdministratorAccess`, so it is passed explicitly along
    with `--custom-permissions-boundary`.
-4. Deploy `CorridorAccountFoundation` locally. This creates the OIDC provider
-   and `corridor-nonprod-deploy`.
+4. Deploy `CorridorAccountFoundation` locally. This creates the OIDC provider,
+   `corridor-nonprod-cdk-deploy` and `corridor-nonprod-app-release`.
 5. Create the GitHub `nonproduction` environment with protection rules. The
    role's trust subject is
    `repo:bharm16/corridor:environment:nonproduction`, so the environment's
@@ -155,21 +167,121 @@ Nothing below has been run.
 7. Record account id, region, and role ARN on #601 — **identifiers only, never
    a secret.** That satisfies #601's checklist.
 8. From GitHub Actions, dispatch `diff` for each stack and read it, then
-   dispatch `deploy`: `CorridorNetwork`, then `CorridorData`, then
-   `CorridorApplication` (web desired count 0). They are separate dispatches on
+   dispatch `deploy`: `CorridorNetwork`, then `CorridorData` and
+   `CorridorControlPlane`, then
+   `CorridorApplication` (web and worker desired counts 0). They are separate dispatches on
    purpose -- an environment approval granted before a job produces its diff
    approves nothing.
-9. Build and push the image; run the migration task (`alembic upgrade head`),
-   which creates the `corridor_web` and `corridor_worker` roles from the
-   baseline migration.
-10. Scale web to 1; confirm `GET /health` through the ALB.
-11. Run the batch task for the rehearsal; return it to 0.
-12. Rehearse the RDS point-in-time restore #489 requires.
+9. Dispatch `app-release` for an exact merged commit with both desired counts
+   zero. The existing Migration task runs `make deployment-bootstrap
+   ARGS=configure`'s CLI: initialize the separate control plane and its scoped
+   logins, run the customer Alembic migration, bind the customer database,
+   register or verify its immutable route, and check the supplied credentials.
+   A new route stays disabled; retries preserve operator state. Customer
+   Project Record data never belongs in the control-plane database.
+10. Inspect and explicitly enable the synthetic route using
+    [the customer-environment operations commands](../operations/customer-environments.md).
+    Run them as a one-off released Migration task with container override
+    `MigrationContainer`, environment `CORRIDOR_MIGRATION_MODE=operations`,
+    and command `python -m corridor.control_plane_cli inspect <environment-id>`
+    (then the explicit `state` command with the intended enabled and hold
+    flags). Operations mode composes only the operations URL and strips all
+    customer, owner and resolver credentials before executing the command.
+    Inspect and preserve any hold; it is independent of serving access.
+    Then dispatch `app-release` with both desired counts set to 1.
+    It registers digest-bound task revisions, drains web and worker
+    (including live tasks from the retained Batch family), runs the migration
+    as the schema writer and requires the route already enabled, starts the
+    worker, verifies it, then starts web.
+    The worker runs the existing Due Work supervisor and receives only its
+    own database capability. Its ECS health command checks the database,
+    object storage and durable heartbeat. The release refuses rollback,
+    missing image-digest evidence, or a different active revision.
+11. Confirm `/livez` and `/readyz` through the configured hostname and the
+    worker's ECS health result. The restricted web capability cannot serve
+    machine routes such as `/health`; do not inject the worker credential
+    into web to make that route pass.
+    Deliver and use a real sign-in link to the declared synthetic test
+    recipient. Before requesting preparation for the synthetic project, run
+    its explicit `configure-release-preparation` declaration through the
+    worker capability (the retained Batch task). The existing supervisor
+    requires a declared handler; a healthy idle process alone does not
+    establish that preparation can execute. The complete command is in the
+    [Due Work runbook](../operations/due-work-runtime.md).
+    Run the synthetic source → Review → preparation → authorized
+    package workflow, retain the preparation attempt and Due Work receipt,
+    and verify object dereferencing with the runtime roles. Record the image
+    digest, task ARNs, customer/environment binding, and exact receipt IDs.
+12. Rehearse the RDS point-in-time restore below. A successful migration,
+    task rollout or HTTP probe alone does not close #489.
+
+If migration or rollout fails, both services remain stopped. Inspect the
+migration task's exit status and retained logs, repair the failure, and rerun
+the release of the same commit. An already-published immutable image is reused
+only after verifying its revision label. Do not restart an old image against
+a changed schema as an automatic recovery step.
+
+### Required point-in-time restore rehearsal
+
+Use synthetic data only and a distinct temporary RDS instance. Keep the
+control-plane receipt store outside the customer environment being restored
+or destroyed.
+
+1. Create a synthetic project and known content-addressed objects; record
+   exact accepted state, object identities and digests, source RDS instance,
+   database name, image digest and migration head.
+2. Wait until the intended restore point is within RDS's available recovery
+   window and record its UTC timestamp.
+3. Change the source database afterward and retain both the earlier and
+   later observed states. The states must differ: an unchanged source does
+   not prove point-in-time recovery.
+4. Restore that timestamp into a new instance using
+   `aws rds restore-db-instance-to-point-in-time`, with the intended isolated
+   subnet group and security groups. Never substitute an in-place restore.
+5. Connect to the restored endpoint with TLS verification. Prove the earlier
+   state is present and the later mutation is absent; record both results.
+6. Reconcile all restored object references with the retained S3 namespace
+   and verify their exact bytes/digests through the normal storage interface.
+7. Provision an empty, temporary **rehearsal control-plane database** on the
+   retained control-plane instance, with separate operations and resolver
+   logins. Point only the rehearsal processes at it. Preserve the three
+   customer/environment/deployment IDs in the restored database's immutable
+   `customer_environment_binding`; do not invent new IDs, rewrite that row,
+   or change the primary registry's endpoint.
+   Supply those original IDs, the **restored** customer endpoint and its
+   runtime credentials, the temporary control-plane URLs, and the retained
+   object namespace to `make deployment-bootstrap ARGS=configure`. Its empty
+   registry can register the restored endpoint under the preserved IDs, and
+   the bootstrap verifies the existing attestation before migration. Enable
+   that rehearsal registry entry through the explicit operations command;
+   then use `configure --require-enabled` to prove both routed capabilities.
+   Run the synthetic workflow only through these isolated processes and
+   retain its receipts. Production processes retain their primary resolver
+   URLs and routes throughout. The local bootstrap fixture proves that a
+   matching retained attestation works with a fresh registry; it does not
+   substitute for this actual RDS restore.
+8. Retain the restore receipt externally, including the source and target
+   instance IDs, restore timestamp, both state observations, object check
+   results, workflow receipts and cleanup outcome.
+9. Delete only the named temporary restored instance and the temporary
+   rehearsal control-plane database/logins. Preserve the primary control
+   plane and externally retained receipt. Record the temporary resources'
+   final absence and any remaining snapshots or backup expiration. A failed
+   cleanup remains outstanding in the receipt.
+
+No restore receipt has been recorded here. #514 later consumes external
+disposition receipts; this rehearsal does not claim customer destruction or
+customer activation.
 
 ## Cost
 
 Unit prices pulled from the AWS Price List API for `us-east-2` on 2026-09-04.
 Public IPv4 is AWS's published `$0.005` per address-hour, not from that pull.
+These are historical planning figures. A serving release now requires the
+worker as well as web, so it uses the **Both running** column; the web-only
+column is no longer a supported release configuration. The separate
+control-plane store is not included in this older estimate. Refresh the total
+and approve the budget under #601 before deployment.
 
 | Item | Unit | Idle (web 1, batch 0) | Both running |
 |---|---|---:|---:|
@@ -188,9 +300,10 @@ Scaling web to 0 as well leaves the ALB, its two addresses, RDS, secrets and
 storage: **≈ $42/month**. RDS and the ALB are the floor; they do not go away
 when the services stop.
 
-A $50 budget would alert immediately at the idle baseline. A **$100 monthly
-budget** with alerts at 50%, 80% and 100% actual plus 100% forecast is the
-honest shape. Budgets alert; they do not cap spend.
+The earlier $100 monthly example excluded the control plane and is not an
+approved budget for this topology. #601 must record the selected amount and
+actual/forecast alerts after updating the estimate. Budgets alert; they do
+not cap spend.
 
 ## What is deliberately not here
 

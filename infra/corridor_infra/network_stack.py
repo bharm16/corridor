@@ -166,6 +166,19 @@ class CorridorNetworkStack(Stack):
                 source, ec2.Port.tcp(5432), f"PostgreSQL from the {label} tasks"
             )
 
+        self.control_db_sg = ec2.SecurityGroup(
+            self, "ControlDatabaseSecurityGroup", vpc=self.vpc,
+            description="Independent control-plane PostgreSQL, named task groups only.",
+            allow_all_outbound=False,
+        )
+        for source, label in (
+            (self.web_sg, "web resolver"), (self.batch_sg, "worker resolver"),
+            (self.migration_sg, "bounded operations"),
+        ):
+            self.control_db_sg.add_ingress_rule(
+                source, ec2.Port.tcp(5432), f"Control-plane PostgreSQL from {label}",
+            )
+
         NagSuppressions.add_resource_suppressions(
             self.alb_sg,
             [

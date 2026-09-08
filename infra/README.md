@@ -4,16 +4,19 @@ AWS CDK v2 (Python) for Corridor's nonproduction environment in `us-east-2`.
 Isolated from the application: `aws-cdk-lib` is **not** in Corridor's
 `pyproject.toml`, and nothing in `src/corridor` imports from here.
 
-Nothing in this directory has been deployed. No AWS resource has been created.
+These definitions do not establish deployment completion. #489 remains open
+until the synthetic environment runs and its point-in-time restore receipt is
+retained; #601 supplies the verified account and deployment inputs.
 
 ## Stacks
 
 | Stack | Holds | Deployed by |
 |---|---|---|
-| `CorridorAccountFoundation` | CloudTrail trail + audit buckets, GitHub OIDC provider, `corridor-nonprod-deploy` role | locally, once |
+| `CorridorAccountFoundation` | CloudTrail trail + audit buckets, GitHub OIDC provider, separate CDK and application-release roles | locally, once |
 | `CorridorNetwork` | VPC, subnets, flow logs, all security groups | GitHub Actions |
 | `CorridorData` | RDS PostgreSQL 16, artifact bucket, secrets. **Stateful** | GitHub Actions |
-| `CorridorApplication` | ECR, ECS cluster, three task shapes, ALB | GitHub Actions |
+| `CorridorControlPlane` | Separate RDS database and owner/operations/resolver credentials. **Stateful, outside customer destruction** | GitHub Actions |
+| `CorridorApplication` | ECR, ECS cluster, web and Due Work services, migration task, ALB | GitHub Actions |
 
 `CorridorData` sets `termination_protection=True`, the database is
 `RemovalPolicy.SNAPSHOT` with deletion protection, and every bucket is
@@ -31,10 +34,18 @@ uv sync --frozen                          # its own locked project, not Corridor
 npm ci                                    # the CDK CLI, pinned in package-lock.json
 export PATH="$PWD/.venv/bin:$PATH"
 
-uv run python -m pytest tests -q          # 77 assertions
+cd ..
+make test-infra                          # synthesized-template assertions
+cd infra
 ./node_modules/.bin/cdk synth --strict --quiet \
   --context corridor:certificateArn=<acm-arn> \
-  --context corridor:imageTag=<commit-sha>
+  --context corridor:publicHostname=<hostname> \
+  --context corridor:signInSender=<verified-sender> \
+  --context corridor:imageTag=<commit-sha> \
+  --context corridor:customerId=<synthetic-customer-id> \
+  --context corridor:customerEnvironmentId=<synthetic-environment-id> \
+  --context corridor:deploymentId=<stable-deployment-id> \
+  --context corridor:dataClass=synthetic
 ```
 
 `infra/` is its own uv project with its own `uv.lock`, and the CDK CLI is
@@ -51,7 +62,7 @@ is active would let a compromised release use it.
 They assert on synthesized CloudFormation, not on the Python, so they fail on
 the template that would actually deploy:
 
-- no NAT Gateway; the S3 gateway endpoint exists; web service starts at 0
+- no NAT Gateway; the S3 gateway endpoint exists; both services start at 0
 - RDS is not public, is encrypted, retains on delete, has 7-day backups
 - nothing opens 5432 to a CIDR; only ports 80/443 accept `0.0.0.0/0`
 - every bucket blocks all public access; the artifact bucket is versioned
@@ -94,17 +105,33 @@ the batch commands are entry points in the same package. No separate build
 context exists, so two repositories would publish identical bytes twice and let
 web and batch drift onto different revisions.
 
-**No worker service.** There is no long-running worker in the repository: no
-`make worker`, no consumer loop, and `worker_database_url` is read only in
-`src/corridor/db.py`. The worker is a *database capability*, so it is a task
-definition run on demand. #489's replica-safe leases are the prerequisite for
-promoting it to a service.
+**The worker service runs the existing Due Work supervisor.** Its command is
+`python -m corridor.due_work_cli supervise --poll-seconds=5`. Each process
+generates its own `runtime:` owner identity; durable claims and receipts govern
+retries and recovery. The existing Batch task definition, credentials, and
+roles are retained. The ECS health check runs `make due-work ARGS=health`'s
+CLI through the container entrypoint so it receives the worker credential,
+checks the database and object store, and reads the durable worker heartbeat.
+ECS replaces unhealthy tasks; a CloudWatch alarm also detects fewer running
+workers than the service requests, using service and cluster dimensions only.
+Both services start at zero. The application release drains both before
+migration and verifies both revisions and image digests before reporting a
+release. A serving web deployment requires a running worker.
 
-**No `OPENAI_API_KEY` secret, and no application/session secret.**
+**The customer routing key is a real runtime contract.** #656 requires a
+separate random key to bind the browser session to its customer environment.
+`CorridorData` generates that secret and only the web task receives it. Both
+runtime tasks receive the scoped control-plane resolver login, never its owner
+or operations credential. The existing Migration task initializes and binds
+both databases through `make deployment-bootstrap ARGS=configure`; a missing
+registry entry is created disabled. Explicit control-plane operations enable
+the route after inspection. Ordinary releases preserve enabled, hold and
+connector state, and refuse a disabled route before starting services.
+
+**No `OPENAI_API_KEY` secret.**
 `openai_api_key` defaults to empty in `config.py` and the deterministic UCM
-path calls no model. Corridor's `Settings` has no session or signing-secret
-field at all -- there is no `app_secret`, `session_secret` or `secret_key` --
-so creating one would invent a contract the application does not have.
+path calls no model. Model-backed source paths remain separately configured
+and authorized.
 
 **Environment variable names are asserted against `config.py`.** `Settings`
 has no `env_prefix`: a field with a `validation_alias` uses that alias, and a

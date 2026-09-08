@@ -22,12 +22,10 @@ one secret per runtime login. The web and batch tasks are never given the
 master credential -- that is what keeps "the migration job is the only schema
 writer" (#489) a real boundary rather than a convention.
 
-There is deliberately no OPENAI_API_KEY secret, and no application/session
-secret either. `openai_api_key` defaults to empty in config.py and the
-deterministic UCM path calls no model; and Corridor's Settings has no session
-or signing-secret field at all -- grep finds no app_secret, session_secret or
-secret_key. Creating either would be inventing a contract the application does
-not have.
+There is no OPENAI_API_KEY secret: the deterministic UCM path calls no model.
+#656 adds a per-customer signing key that binds the authenticated browser
+session to its registered customer environment. It belongs to this customer's
+destruction unit, unlike the separate retained control-plane database.
 """
 
 from aws_cdk import (
@@ -163,6 +161,15 @@ class CorridorDataStack(Stack):
         # CORRIDOR_WORKER_DB_PASSWORD.
         self.web_db_secret = self._login_secret("WebDbSecret", "corridor_web")
         self.worker_db_secret = self._login_secret("WorkerDbSecret", "corridor_worker")
+        self.customer_routing_secret = secretsmanager.Secret(
+            self, "CustomerRoutingSecret",
+            secret_name="corridor/nonprod/customer-routing-key",
+            description="Signs customer identity bound to an opaque browser session.",
+            generate_secret_string=secretsmanager.SecretStringGenerator(
+                password_length=64, exclude_punctuation=True,
+            ),
+            removal_policy=RemovalPolicy.RETAIN,
+        )
 
         NagSuppressions.add_resource_suppressions(
             access_logs,
@@ -223,6 +230,14 @@ class CorridorDataStack(Stack):
                     }
                 ],
             )
+        NagSuppressions.add_resource_suppressions(self.customer_routing_secret, [{
+            "id": "AwsSolutions-SMG4", "reason": (
+                "This signing key rotates by an explicit deployment operation, "
+                "which invalidates existing customer cookies and requires sign-in. "
+                "An automatic database-password rotation Lambda cannot coordinate "
+                "that application key change across web tasks."
+            ),
+        }])
 
         # The group must exist before RDS starts exporting into it.
         self.database.node.add_dependency(postgres_logs)

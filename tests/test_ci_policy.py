@@ -21,9 +21,9 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = "release-gate.yml"
-# Every gate job that installs packages. The account's measured ceiling is
-# concurrent package downloads, not runners (#548, #595).
-DOWNLOADING_JOB_COUNT = 11
+# Ten test runners plus check and migration. Keep the capacity trial explicit;
+# the required timing receipts assess it against the unchanged ADR-0096 budget.
+DOWNLOADING_JOB_COUNT = 12
 
 
 def _workflow(name: str) -> dict:
@@ -269,12 +269,11 @@ def test_the_classifier_is_the_in_repository_script_reading_full_history():
 
 
 def test_the_added_jobs_download_no_packages():
-    """Job count is the account's measured ceiling, so it may not creep.
+    """Package concurrency is explicit, so it may not grow unnoticed.
 
     `classify` and `release-gate` are new, but they run alone at either end
-    of the gate and install nothing, so the number of jobs competing for
-    package downloads is the eleven the three predecessor workflows already
-    ran (#548, #595).
+    of the gate and install nothing. The 2026-09-08 capacity trial adds one
+    ordinary runner to the prior eleven downloading jobs (ADR-0096).
     """
 
     jobs = _workflow(GATE)["jobs"]
@@ -300,7 +299,7 @@ def test_the_added_jobs_download_no_packages():
 def test_every_gate_job_runs_the_one_concurrent_setup_step():
     """Per-job setup is one step because the gate takes a max, not a mean.
 
-    The wall clock is the slowest of nine test jobs, so each run samples the
+    The wall clock is the slowest required job, so each run samples the
     worst setup draw taken in it. Over the twelve pull-request runs after the
     five-way split, the job that decided the wall clock spent a median of 60s
     outside its test command against a fleet-wide per-job median of 38s — it
@@ -498,8 +497,8 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
 def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_command():
     """Metadata transport must not fail a completed test job or alter its partition."""
     commands = {
-        "pytest": "make test-shard SHARDS=5 SHARD=${{ matrix.shard }}",
-        "slow": "make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}",
+        "pytest": "make test-shard SHARDS=7 SHARD=${{ matrix.shard }}",
+        "slow": "make test-slow-shard SHARDS=3 SHARD=${{ matrix.shard }}",
         "migration": "make test-migrations",
     }
     for suite, command in commands.items():

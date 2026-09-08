@@ -40,7 +40,10 @@ def project(session):
 
 def make_pdf(path, lines):
     fixture = PdfFixture()
-    page = fixture.add_page()
+    # Size this synthetic canvas to its authored lines. Full-page whitespace
+    # added rendering cost to every manifest/navigation test without adding
+    # a document behavior assertion.
+    page = fixture.add_page(height=max(180, 120 + 30 * len(lines)))
     for i, line in enumerate(lines):
         page.text((72, 100 + 30 * i), line)
     return fixture.save(path)

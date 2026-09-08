@@ -258,7 +258,7 @@ class CorridorAccountFoundationStack(Stack):
         self.release_role.add_to_policy(
             iam.PolicyStatement(
                 sid="RunAndUpdateOnlyCorridorsOwnCluster",
-                actions=["ecs:RunTask", "ecs:UpdateService"],
+                actions=["ecs:RunTask", "ecs:UpdateService", "ecs:StopTask"],
                 resources=["*"],
                 conditions={"ArnEquals": {"ecs:cluster": cluster_arn}},
             )

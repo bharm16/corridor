@@ -13,6 +13,7 @@ from.
 
 from __future__ import annotations
 
+from copy import deepcopy
 from dataclasses import replace
 from datetime import date, datetime, timezone
 from hashlib import sha256
@@ -524,91 +525,50 @@ def test_the_input_declaration_binds_every_input_one_issue_shares(
     assert payload["enabled_feature_flags"] == ["release_candidate"]
 
 
-@pytest.mark.parametrize(
-    "mutate",
-    [
-        pytest.param(
-            lambda p: p.update(accepted_revision_id=p["accepted_revision_id"] + 1),
-            id="accepted_revision",
-        ),
-        pytest.param(
-            lambda p: p.update(previous_authorized_package={"package_id": 7}),
-            id="previous_package",
-        ),
-        pytest.param(
-            lambda p: p.update(source_cutoff="2026-03-09T06:00:00+00:00"),
-            id="source_cutoff",
-        ),
-        pytest.param(
-            lambda p: p["coverage"].update(content_sha256="0" * 64), id="coverage"
-        ),
-        pytest.param(
-            lambda p: p["issue_profile"].update(version=2), id="issue_profile_version"
-        ),
-        pytest.param(
-            lambda p: p["issue_profile"].update(content_sha256="0" * 64),
-            id="issue_profile_digest",
-        ),
-        pytest.param(
-            lambda p: p["output_template"].update(content_sha256="0" * 64),
-            id="output_template",
-        ),
-        pytest.param(
-            lambda p: p["field_mapping"].update(content_sha256="0" * 64),
-            id="field_mapping",
-        ),
-        pytest.param(
-            lambda p: p["configured_artifact_types"].append("chase_list"),
-            id="artifact_types",
-        ),
-        pytest.param(
-            lambda p: p["renderers"][0].update(renderer_version="v99"),
-            id="renderer_version",
-        ),
-        pytest.param(lambda p: p.update(code_revision="git:other"), id="code_revision"),
-        pytest.param(
-            lambda p: p.update(product_revision="2027.01"), id="product_revision"
-        ),
-        pytest.param(
-            lambda p: p["enabled_feature_flags"].append("another"),
-            id="feature_flags",
-        ),
-        pytest.param(
-            lambda p: p["derived_state"].update(unread_source_count=1),
-            id="coverage_state",
-        ),
-        pytest.param(
-            lambda p: p["derived_state"]["unmet_coverage"].append("unmet"),
-            id="unmet_coverage",
-        ),
-        pytest.param(
-            lambda p: p["derived_state"]["blocked_decisions"].append(
-                {"delta_id": 1, "policy": "resolve_before_issue:v1", "selector": "x"}
-            ),
-            id="blocked_decision",
-        ),
-        pytest.param(
-            lambda p: p["derived_state"].update(reading_identity="0" * 64),
-            id="frozen_reading",
-        ),
-    ],
-)
 def test_a_changed_value_in_any_bound_input_produces_a_different_candidate(
-    session, adopted, store, mutate
+    session, adopted, store
 ):
-    """One digest over the whole declaration, so nothing can move unnoticed."""
+    """Each of the 17 input mutations changes one real bound declaration.
+
+    Binding requires one adoption. The mutations are independent dictionary
+    operations, so each starts from a fresh copy without adopting again.
+    """
+
+    mutations = (
+        ("accepted_revision", lambda p: p.update(accepted_revision_id=p["accepted_revision_id"] + 1)),
+        ("previous_package", lambda p: p.update(previous_authorized_package={"package_id": 7})),
+        ("source_cutoff", lambda p: p.update(source_cutoff="2026-03-09T06:00:00+00:00")),
+        ("coverage", lambda p: p["coverage"].update(content_sha256="0" * 64)),
+        ("issue_profile_version", lambda p: p["issue_profile"].update(version=2)),
+        ("issue_profile_digest", lambda p: p["issue_profile"].update(content_sha256="0" * 64)),
+        ("output_template", lambda p: p["output_template"].update(content_sha256="0" * 64)),
+        ("field_mapping", lambda p: p["field_mapping"].update(content_sha256="0" * 64)),
+        ("artifact_types", lambda p: p["configured_artifact_types"].append("chase_list")),
+        ("renderer_version", lambda p: p["renderers"][0].update(renderer_version="v99")),
+        ("code_revision", lambda p: p.update(code_revision="git:other")),
+        ("product_revision", lambda p: p.update(product_revision="2027.01")),
+        ("feature_flags", lambda p: p["enabled_feature_flags"].append("another")),
+        ("coverage_state", lambda p: p["derived_state"].update(unread_source_count=1)),
+        ("unmet_coverage", lambda p: p["derived_state"]["unmet_coverage"].append("unmet")),
+        ("blocked_decision", lambda p: p["derived_state"]["blocked_decisions"].append(
+            {"delta_id": 1, "policy": "resolve_before_issue:v1", "selector": "x"}
+        )),
+        ("frozen_reading", lambda p: p["derived_state"].update(reading_identity="0" * 64)),
+    )
 
     _configure(session, adopted, artifacts=[WEEKLY])
     bound = _bind(session, adopted)
     original = bound.candidate_identity
 
-    payload = bound.as_input_payload()
-    mutate(payload)
-    changed = sha256(
-        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    original_payload = bound.as_input_payload()
+    for name, mutate in mutations:
+        payload = deepcopy(original_payload)
+        mutate(payload)
+        changed = sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
 
-    assert changed != original
+        assert changed != original, f"mutating {name} did not change candidate identity"
 
 
 def test_the_content_digest_additionally_binds_the_ordered_artifact_set(

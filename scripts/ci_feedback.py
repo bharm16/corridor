@@ -122,7 +122,10 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
             detail = detail.replace("\x1b", "\\x1b")
             print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. The current-run budget remains enforced.")
             return None
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    # The ten-run history window is I/O-bound metadata, not test execution.
+    # Eight bounded readers avoid serial waves of independent job/log calls
+    # without increasing the runner or package-download count.
+    with ThreadPoolExecutor(max_workers=8) as executor:
         reports = [report for report in executor.map(available_report, candidates) if report is not None]
     return sorted(reports, key=lambda report: (int(report["expected"]["run_id"]), report["expected"]["run_attempt"]), reverse=True)
 
@@ -195,10 +198,18 @@ def finish(repository: str, run_id: str) -> int:
     elif os.environ["MIGRATION_REQUIRED"] != "false":
         raise EvidenceError("migration requirement must be true or false")
     expected = {"run_id": run_id, "run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]), "head_sha": os.environ["GITHUB_SHA"], "suites": suites}
-    run = github(f"repos/{repository}/actions/runs/{run_id}")
+    # These independent read-only inputs need not add their network latency.
+    # Validate the same completed values, and measure through the decision
+    # after every fetch finishes; no setup or metadata time is subtracted.
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        run_future = executor.submit(github, f"repos/{repository}/actions/runs/{run_id}")
+        jobs_future = executor.submit(run_jobs, repository, run_id)
+        history_future = executor.submit(previous_reports, repository, run_id)
+        run = run_future.result()
+        jobs = jobs_future.result()
+        history = history_future.result()
     if run["status"] != "in_progress" or run["run_attempt"] != expected["run_attempt"]:
         raise EvidenceError("feedback is not observing the current running attempt")
-    jobs = run_jobs(repository, run_id)
     latest = {}
     for job in jobs:
         if job["name"] not in latest or job["run_attempt"] > latest[job["name"]]["run_attempt"]:
@@ -207,7 +218,6 @@ def finish(repository: str, run_id: str) -> int:
     if any(name not in latest or latest[name]["conclusion"] != "success" for name in names):
         raise EvidenceError("required test jobs did not all succeed")
     receipts = receipts_from_outputs(suites)
-    history = previous_reports(repository, run_id)
     now = datetime.now(timezone.utc).isoformat()
     report = aggregate_receipts(receipts, expected, verified_gate_seconds(receipts, run, jobs, now))
     required_files = set(test_files())

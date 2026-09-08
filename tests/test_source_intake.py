@@ -67,7 +67,8 @@ def _matrix_pdf(marker: str = "AT&T Texas (SWBT)") -> bytes:
     """A synthetic matrix PDF. Exercises the pipeline only, never a quality claim."""
 
     fixture = PdfFixture()
-    page = fixture.add_page()
+    # The intake proof needs the authored content, not a full sheet of blank raster.
+    page = fixture.add_page(height=180)
     page.text((72, 100), "Utility Conflict Matrix — segment 3C2")
     page.text(
         (72, 130),

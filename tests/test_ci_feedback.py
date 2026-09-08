@@ -6,6 +6,7 @@ import json
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
+from threading import Barrier
 
 import pytest
 
@@ -137,6 +138,32 @@ def test_history_uses_completed_attempt_time_and_validated_job_log_weights(monke
     ]
 
 
+def test_history_reads_the_bounded_window_without_serial_waves(monkeypatch):
+    runs = [_run(run) for run in range(100, 108)]
+    summaries, logs = {}, {}
+    for run in runs:
+        jobs = _jobs(run["created_at"], run["updated_at"])
+        for index, job in enumerate(jobs):
+            job["id"] = run["id"] * 10 + index
+        summaries[run["id"]] = jobs
+        logs[jobs[-1]["id"]] = _log(ci.REPORT_MARKER, _report(run=run["id"]))
+    _history_api(monkeypatch, runs, summaries, logs)
+    github = ci.github
+    started = Barrier(8, timeout=1)
+
+    def concurrent_history(path, **kwargs):
+        if "/jobs?filter=all" in path:
+            started.wait()
+        return github(path, **kwargs)
+
+    monkeypatch.setattr(ci, "github", concurrent_history)
+    reports = ci.previous_reports("owner/repo", "200")
+    assert [report["expected"]["run_id"] for report in reports] == [
+        str(run) for run in range(107, 99, -1)
+    ]
+    assert all(ci.validate_report(report) for report in reports)
+
+
 def test_history_ignores_newer_runs_forks_cancelled_runs_and_old_unmeasured_jobs(monkeypatch):
     measured = _run()
     summaries = {100: [{"id": 14, "name": "release-gate", "run_attempt": 1,
@@ -256,6 +283,33 @@ def test_finish_uses_job_outputs_without_fetching_unpublished_current_logs(tmp_p
     assert "Current gate:" in summary.read_text()
     assert not any(path.endswith("/logs") for path in calls)
     assert not any("artifact" in path for path in calls)
+
+
+def test_finish_fetches_independent_metadata_together_before_validating(monkeypatch, capsys):
+    """Run status, job inventory and completed history are independent reads."""
+    _finish_api(monkeypatch)
+    github, run_jobs = ci.github, ci.run_jobs
+    started = Barrier(3, timeout=1)
+
+    def current_run(path, **kwargs):
+        if path.endswith("/runs/100"):
+            started.wait()
+        return github(path, **kwargs)
+
+    def current_jobs(*args):
+        started.wait()
+        return run_jobs(*args)
+
+    def history(*_args):
+        started.wait()
+        return []
+
+    monkeypatch.setattr(ci, "github", current_run)
+    monkeypatch.setattr(ci, "run_jobs", current_jobs)
+    monkeypatch.setattr(ci, "previous_reports", history)
+    assert ci.finish("owner/repo", "100") == 0
+    output = capsys.readouterr().out
+    assert ci.validate_report(ci.logged_json(output.encode(), ci.REPORT_MARKER))
 
 
 def test_finish_refuses_missing_malformed_failed_or_incomplete_current_proof(monkeypatch, capsys):
