@@ -101,6 +101,14 @@ COMPATIBLE = OUTCOMES[1:3]
 INCOMPATIBLE = OUTCOMES[3:]
 
 
+# What an incompatible segment's own stored text carries. Neither trait
+# reclassifies it — a segment counted incompatible stays incompatible — but
+# together they say which reading difference put it there, in numbers rather
+# than in a sample: a span the incumbent wrapped where the replacement does
+# not, and a soft hyphen the replacement resolves to a hyphen-minus.
+INCOMPATIBLE_TRAITS = ("contains_line_break", "contains_soft_hyphen")
+
+
 @dataclass
 class Counts:
     pages: int = 0
@@ -108,6 +116,9 @@ class Counts:
     documents: int = 0
     outcomes: dict[str, int] = field(
         default_factory=lambda: {outcome: 0 for outcome in OUTCOMES}
+    )
+    incompatible_traits: dict[str, int] = field(
+        default_factory=lambda: {trait: 0 for trait in INCOMPATIBLE_TRAITS}
     )
 
     def add(self, other: "Counts") -> None:
@@ -118,6 +129,8 @@ class Counts:
         self.documents += other.documents
         for outcome, value in other.outcomes.items():
             self.outcomes[outcome] += value
+        for trait, value in other.incompatible_traits.items():
+            self.incompatible_traits[trait] += value
 
     def as_json(self) -> dict:
         segments = sum(self.outcomes.values())
@@ -134,6 +147,7 @@ class Counts:
             ),
             "incompatible": sum(self.outcomes[k] for k in INCOMPATIBLE),
             "by_outcome": dict(self.outcomes),
+            "incompatible_traits": dict(self.incompatible_traits),
         }
 
 
@@ -221,6 +235,11 @@ def measure_document(
             segment, historical.get(segment.page_no), replacement.get(segment.page_no)
         )
         counts.outcomes[outcome] += 1
+        if outcome in INCOMPATIBLE:
+            if "\n" in segment.exact_text:
+                counts.incompatible_traits["contains_line_break"] += 1
+            if "\u00ad" in segment.exact_text:
+                counts.incompatible_traits["contains_soft_hyphen"] += 1
         if outcome in INCOMPATIBLE and len(samples) < 40:
             samples.append(
                 {
