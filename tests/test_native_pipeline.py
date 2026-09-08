@@ -639,11 +639,12 @@ def test_an_acceptance_never_becomes_a_passing_gate(session, project, matrix_sou
         limits=("The 5.1% unrebindable prose locators stay exactly as measured.",),
         words="I accept this on the measured evidence.", accepted_on="2026-09-08")
     before = pipeline_receipt(gate)
+    gates = session.scalar(select(func.count()).select_from(PipelineQualification))
     record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
     session.expire_all()
     reread = session.get_one(PipelineQualification, gate.id)
     assert reread.status == "incomplete" and pipeline_receipt(reread) == before
-    assert session.scalar(select(func.count()).select_from(PipelineQualification)) == 1
+    assert session.scalar(select(func.count()).select_from(PipelineQualification)) == gates
 
 
 def test_no_automated_path_can_grant_itself_an_acceptance(session, project, matrix_source):
@@ -695,14 +696,16 @@ def test_an_acceptance_must_bind_what_it_accepts(session, project, matrix_source
     else:
         project.is_synthetic = False
         session.flush()
+    before = session.scalar(select(func.count()).select_from(PipelineAcceptance))
     with pytest.raises(PipelineQualificationRefused):
         record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
-    assert session.scalar(select(func.count()).select_from(PipelineAcceptance)) == 0
+    assert session.scalar(select(func.count()).select_from(PipelineAcceptance)) == before
 
 
 def test_selection_stands_on_exactly_one_basis_and_a_failing_gate_still_refuses(
     session, project, matrix_source, tmp_path,
 ):
+    selections = session.scalar(select(func.count()).select_from(PipelineSelection))
     fixture = _gate_fixture(session, project, matrix_source, tmp_path, purpose="prospective_production", mode="retained_replay")
     incomplete = _qualify(session, fixture)
     assert incomplete.status == "incomplete"
@@ -716,7 +719,7 @@ def test_selection_stands_on_exactly_one_basis_and_a_failing_gate_still_refuses(
                                   reason="Two bases at once", expected_selection_id=None)
     with pytest.raises(PipelineQualificationRefused, match="exactly one basis"):
         select_qualified_pipeline(session, actor=ACTOR, reason="No basis at all", expected_selection_id=None)
-    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == 0
+    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == selections
 
 
 def test_an_acceptance_settles_only_whether_the_configuration_is_good_enough(
@@ -791,6 +794,7 @@ def test_a_selected_pipeline_runs_a_fresh_observation_through_its_authorized_bou
     selected = select_qualified_pipeline(session, acceptance_id=recorded.id, actor=ACTOR,
         reason="Accepted on the evidence already measured (ADR-0095)", expected_selection_id=None)
     _assert_protected_rows_unchanged(session, protected_before, new_selection_ids=(selected.id,))
+    after_selection = _protected_rows(session)
     result = run_selected_native_matrix(
         session, document, deployment=scope.deployment, client=client, plan=plan,
         source_path=matrix_source.path, output_dir=tmp_path / "selected",
@@ -804,14 +808,14 @@ def test_a_selected_pipeline_runs_a_fresh_observation_through_its_authorized_bou
     assert record["metrics"]["handling_minutes"] is None
     # The accepted record is untouched: an acceptance settles whether the
     # configuration is good enough, never what it may write (ADR-0095).
-    assert session.scalar(select(func.count()).select_from(ActiveExtractionRun)) == 0
-    assert session.scalar(select(func.count()).select_from(RecordInclusionRequest)) == 1
+    _assert_protected_rows_unchanged(session, after_selection)
 
 
 def test_a_selected_run_the_boundary_does_not_cover_sends_nothing(
     session, project, matrix_source, tmp_path,
 ):
     document = _document(session, project, matrix_source)
+    observations = session.scalar(select(func.count()).select_from(PipelineObservation))
     scope = _scope(matrix_source, purpose="prospective_production")
     client = _boundary(matrix_source, _ForbiddenTransport())
     from corridor.native_pipeline import native_pipeline_configuration
@@ -840,4 +844,4 @@ def test_a_selected_run_the_boundary_does_not_cover_sends_nothing(
             plan=stale, source_path=matrix_source.path, output_dir=tmp_path / "uncovered",
             document_label=matrix_source.path.name)
     assert not (tmp_path / "uncovered").exists()
-    assert session.scalar(select(func.count()).select_from(PipelineObservation)) == 0
+    assert session.scalar(select(func.count()).select_from(PipelineObservation)) == observations

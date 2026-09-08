@@ -74,11 +74,14 @@ def test_acceptance_cli_records_the_maintainers_own_words_and_selects_on_them(
                 session_factory=runtime_database.session_factory) == 0
     recorded = json.loads(capsys.readouterr().out)
     assert recorded["basis"] == "maintainer_acceptance" and "status" not in recorded
+    # The next act needs this row's identity, so the command prints it.
+    assert isinstance(recorded["acceptance_id"], int)
     assert recorded["actor"] == "local:test-maintainer"
     assert recorded["words"].startswith("I accept the replacement")
     assert recorded["limits"] and recorded["evidence"][0]["name"] == "paired-rendition exact gate"
+    identity = recorded["acceptance_id"]
     with runtime_database.session_factory() as session:
-        identity = session.scalar(select(PipelineAcceptance.id))
+        assert session.scalar(select(PipelineAcceptance.id)) == identity
         assert session.scalar(select(func.count()).select_from(PipelineQualification)) == 0
     assert main(["select", "--acceptance", str(identity), "--initial",
                  "--actor", "local:test-maintainer",
@@ -87,6 +90,8 @@ def test_acceptance_cli_records_the_maintainers_own_words_and_selects_on_them(
     selection = json.loads(capsys.readouterr().out)
     assert selection["basis"] == "maintainer_acceptance" and selection["acceptance_id"] == identity
     assert selection["qualification_id"] is None
+    # A later rollback names this selection as its expected predecessor.
+    assert isinstance(selection["selection_id"], int)
     with runtime_database.session_factory() as session:
         assert session.scalar(select(func.count()).select_from(PipelineSelection)) == 1
         assert session.scalar(select(func.count()).select_from(ActiveExtractionRun)) == 0

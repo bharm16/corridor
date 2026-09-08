@@ -126,10 +126,11 @@ def test_sql_refuses_an_acceptance_that_wears_a_gate_or_omits_its_own_fields(
 ):
     _, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
     body = _acceptance_body(project, acceptance.configuration_sha256, scope, **overrides)
+    before = session.scalar(select(func.count()).select_from(PipelineAcceptance))
     with pytest.raises(DBAPIError), session.begin_nested():
         _insert_acceptance(session, project, acceptance.configuration_sha256, body,
                            actor=body.get("actor"))
-    assert session.scalar(select(func.count()).select_from(PipelineAcceptance)) == 0
+    assert session.scalar(select(func.count()).select_from(PipelineAcceptance)) == before
 
 
 def _selection_row(project, basis_row, scope, record, **columns):
@@ -181,7 +182,8 @@ def test_sql_refuses_an_acceptance_selection_that_is_not_the_acceptance_it_names
         record["scope_text"] = canonical_text(widened)
     else:
         record["basis"] = "qualification"
+    before = session.scalar(select(func.count()).select_from(PipelineSelection))
     with pytest.raises(DBAPIError), session.begin_nested():
         session.add(_selection_row(project, accepted, scope, record, **columns))
         session.flush()
-    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == 0
+    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == before

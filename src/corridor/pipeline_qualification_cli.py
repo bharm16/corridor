@@ -180,7 +180,10 @@ def _maintenance(args, session_factory) -> int:
     actor = HumanPrincipal(args.actor) if args.command in {"policy", "accept", "select"} else args.actor
     with session_factory() as session, session.begin():
         if args.command == "accept":
-            result = pipeline_receipt(_acceptance(session, args, actor))
+            # The row's own identity is what the next act names, so print it
+            # beside the receipt rather than sending the maintainer to SQL.
+            recorded = _acceptance(session, args, actor)
+            result = {"acceptance_id": recorded.id, **pipeline_receipt(recorded)}
         elif args.command == "policy":
             policy = QualificationPolicy.model_validate_json(args.policy.read_text())
             row = register_qualification_policy(session, policy, actor=actor, contract_paths=args.contract)
@@ -199,9 +202,11 @@ def _maintenance(args, session_factory) -> int:
                 observation_ids=args.observation, repeatability_ids=args.repeatability,
                 quality_ids=args.quality, evidence=evidence, actor=actor))
         else:
-            result = pipeline_receipt(select_qualified_pipeline(session, args.qualification,
+            selected = select_qualified_pipeline(session, args.qualification,
                 acceptance_id=args.acceptance, actor=actor, reason=args.reason,
-                expected_selection_id=args.expected_selection, enabled=not args.disable))
+                expected_selection_id=args.expected_selection, enabled=not args.disable)
+            # A later rollback or restore names this row as its predecessor.
+            result = {"selection_id": selected.id, **pipeline_receipt(selected)}
         print(canonical_text(result))
     return 0
 
