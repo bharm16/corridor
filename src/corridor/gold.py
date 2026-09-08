@@ -30,6 +30,9 @@ from corridor.eval import (
     REQUIRED_COLUMNS,
     SPENT_MEASUREMENT_ARTIFACTS,
 )
+from corridor.reference_methods import (
+    LEGACY_METHOD, NATIVE_METHOD, SPENT_SOURCE_HASHES, is_digest, reference_method,
+)
 from corridor.geometry import page_tables, row_quote
 from corridor.models import Candidate, DocPage, Document, Project
 from corridor.storage import stored_file
@@ -399,7 +402,10 @@ GOLD_DIR = Path("gold")
 WORKSHEET_DIR = Path("out/gold")
 
 
-def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, Path]:
+def machine_gold_paths(
+    slug: str, *, directory: Path = GOLD_DIR,
+    method: str = MACHINE_REFERENCE_METHOD, method_version: str = MACHINE_REFERENCE_METHOD_VERSION,
+) -> tuple[Path, Path]:
     """Where a machine reference and its limitations sidecar are written.
 
     `<slug>.machine.csv`, never `<slug>.csv`. The hand-authored name is
@@ -407,7 +413,9 @@ def machine_gold_paths(slug: str, *, directory: Path = GOLD_DIR) -> tuple[Path, 
     set is a ceiling, and letting it claim the name a person's labelling
     would use is how a ceiling gets read as a floor.
     """
-    return directory / f"{slug}.machine.csv", directory / f"{slug}.machine.md"
+    contract = reference_method(method, method_version)
+    stem = slug if contract == LEGACY_METHOD else f"{slug}.{contract.name}-v{contract.version}"
+    return directory / f"{stem}.machine.csv", directory / f"{stem}.machine.md"
 
 
 def machine_reference_scope_path(reference_path: Path | str) -> Path:
@@ -420,7 +428,9 @@ class SpentHoldout(Exception):
 
 
 def assert_machine_reference_authoring_allowed(
-    slug: str, *, directory: Path = GOLD_DIR
+    slug: str, *, directory: Path = GOLD_DIR,
+    method: str = MACHINE_REFERENCE_METHOD, method_version: str = MACHINE_REFERENCE_METHOD_VERSION,
+    document_sha256s: tuple[str, ...] = (),
 ) -> None:
     """Refuse to regenerate a spent or complete machine reference.
 
@@ -430,12 +440,15 @@ def assert_machine_reference_authoring_allowed(
     available.
     """
     historical = SPENT_MEASUREMENT_ARTIFACTS.get(slug)
-    if historical is not None:
+    if historical is not None or SPENT_SOURCE_HASHES.intersection(document_sha256s):
         raise SpentHoldout(
             f"{slug} is a spent holdout; preserve its historical measurement "
-            f"at {historical} and do not regenerate its machine reference"
+            f"at {historical or SPENT_MEASUREMENT_ARTIFACTS['wsdot-9540']} "
+            "and do not regenerate its machine reference"
         )
-    csv_path, sidecar = machine_gold_paths(slug, directory=directory)
+    csv_path, sidecar = machine_gold_paths(
+        slug, directory=directory, method=method, method_version=method_version,
+    )
     scope_path = machine_reference_scope_path(csv_path)
     if all(path.exists() for path in (csv_path, sidecar, scope_path)):
         raise SpentHoldout(
@@ -481,7 +494,9 @@ def machine_reference_artifacts(
     directory: Path = GOLD_DIR,
 ) -> tuple[tuple[Path, bytes], ...]:
     """Deterministic bytes for the three immutable machine-reference artifacts."""
-    csv_path, sidecar = machine_gold_paths(slug, directory=directory)
+    csv_path, sidecar = machine_gold_paths(
+        slug, directory=directory, method=gold.method, method_version=gold.method_version,
+    )
     csv_bytes = gold_csv(gold).encode()
     sidecar_bytes = render_machine_gold(gold).encode()
     scope_bytes = (
@@ -502,7 +517,12 @@ def publish_machine_reference(
     publisher=None,
 ) -> tuple[Path, Path, Path]:
     """Publish immutable machine-reference artifacts with retry-safe recovery."""
-    assert_machine_reference_authoring_allowed(slug, directory=directory)
+    if slug != gold.project:
+        raise ValueError("machine reference publication cannot rename its project")
+    assert_machine_reference_authoring_allowed(
+        slug, directory=directory, method=gold.method, method_version=gold.method_version,
+        document_sha256s=tuple(document.sha256 for document in gold.documents),
+    )
     artifacts = machine_reference_artifacts(slug, gold, directory=directory)
     for path, _payload in artifacts:
         path.parent.mkdir(parents=True, exist_ok=True)
@@ -531,30 +551,59 @@ def main(argv: list[str]) -> int:
 
     from corridor.db import WorkerSession as SessionFactory
 
-    if not argv:
-        print("usage: python -m corridor.gold <slug> [--author]", file=sys.stderr)
-        return 2
+    import argparse
 
-    slug = argv[0]
-    author = "--author" in argv[1:]
+    parser = argparse.ArgumentParser(description="Prepare diagnostics or manage immutable machine references")
+    parser.add_argument("slug")
+    operation = parser.add_mutually_exclusive_group()
+    operation.add_argument("--author", action="store_true")
+    operation.add_argument("--replay", type=Path, help="verify a native reference against its recorded source/configuration")
+    parser.add_argument("--method", choices=[LEGACY_METHOD.name, NATIVE_METHOD.name])
+    parser.add_argument("--method-version", default="1", choices=["1"])
+    parser.add_argument("--directory", type=Path, default=GOLD_DIR)
+    parser.add_argument("--reference-manifest", type=Path)
+    try:
+        args = parser.parse_args(argv)
+    except SystemExit as exc:
+        return int(exc.code)
+    if args.method and not args.author:
+        print("--method selects authoring only; replay reads its recorded manifest", file=sys.stderr)
+        return 2
+    if args.reference_manifest and not args.replay:
+        print("--reference-manifest requires --replay", file=sys.stderr)
+        return 2
+    slug, author = args.slug, args.author
     with SessionFactory() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)
             return 1
 
+        if args.replay:
+            try:
+                result = replay_machine_reference(session, project.id, args.replay,
+                                                  manifest_path=args.reference_manifest)
+            except (ValueError, LookupError, SpentHoldout) as exc:
+                print(str(exc), file=sys.stderr)
+                return 1
+            print(json.dumps(result, sort_keys=True))
+            return 0
+
         if author:
             # The amended path (#81): a machine-authored gold set, stamped
             # as the ceiling it is. Never overwrites a hand-authored
             # gold/<slug>.csv — the stricter artifact keeps its name.
             try:
-                gold = author_machine_gold(session, project.id)
-            except SpentHoldout as exc:
+                gold = author_machine_gold(
+                    session, project.id, directory=args.directory,
+                    method=args.method or LEGACY_METHOD.name, method_version=args.method_version,
+                )
+            except (SpentHoldout, ValueError, LookupError) as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
             try:
-                csv_path, sidecar, scope_path = publish_machine_reference(slug, gold)
-            except SpentHoldout as exc:
+                csv_path, sidecar, scope_path = publish_machine_reference(slug, gold, directory=args.directory)
+            except (SpentHoldout, ValueError) as exc:
                 print(str(exc), file=sys.stderr)
                 return 1
             labelled = sum(1 for r in gold.rows if r.critical)
@@ -671,9 +720,15 @@ class MachineGold:
     empty_slots: int
     page_images: tuple[MachineGoldPageImage, ...]
     documents: tuple[MachineGoldDocument, ...] = ()
+    method: str = MACHINE_REFERENCE_METHOD
+    method_version: str = MACHINE_REFERENCE_METHOD_VERSION
+    authoring_json: str | None = None
 
 
-def author_machine_gold(session: Session, project_id: int) -> MachineGold:
+def author_machine_gold(
+    session: Session, project_id: int, *, directory: Path = GOLD_DIR,
+    method: str = MACHINE_REFERENCE_METHOD, method_version: str = MACHINE_REFERENCE_METHOD_VERSION,
+) -> MachineGold:
     """A gold set from the independent grid reading (#81 as amended).
 
     No model and no extractor column mapping: the resolution group is
@@ -695,6 +750,14 @@ def author_machine_gold(session: Session, project_id: int) -> MachineGold:
     ).all()
     if not documents:
         raise LookupError(f"no matrix document in {project.slug}")
+
+    contract = reference_method(method, method_version)
+    assert_machine_reference_authoring_allowed(
+        project.slug, directory=directory, method=method, method_version=method_version,
+        document_sha256s=tuple(document.sha256 for document in documents),
+    )
+    if contract == NATIVE_METHOD:
+        return _author_native_documents(project, documents)
 
     rows: list[MachineGoldRow] = []
     retired = empty_slots = 0
@@ -862,22 +925,46 @@ def machine_reference_scope(gold: MachineGold, reference_bytes: bytes) -> dict:
     """Bind a machine reference to its author-time method and document set."""
     if not gold.documents:
         raise ValueError("machine reference scope requires document identities")
-    return {
+    contract = reference_method(gold.method, gold.method_version)
+    scope = {
         "schema_version": MACHINE_REFERENCE_SCOPE_SCHEMA,
         "project": gold.project,
-        "method": MACHINE_REFERENCE_METHOD,
-        "method_version": MACHINE_REFERENCE_METHOD_VERSION,
+        "method": contract.name,
+        "method_version": contract.version,
         "reference_sha256": hashlib.sha256(reference_bytes).hexdigest(),
         "documents": [
             {"sha256": document.sha256, "filename": document.filename}
             for document in sorted(gold.documents, key=lambda item: item.sha256)
         ],
-        "limitations": list(MACHINE_REFERENCE_LIMITATIONS),
+        "limitations": list(contract.limitations),
         "manifest_provenance": {"kind": "author_time"},
     }
+    if contract == NATIVE_METHOD:
+        from corridor.reference_methods import validate_native_authoring
+
+        provenance = json.loads(gold.authoring_json) if gold.authoring_json is not None else None
+        scope["native_authoring"] = validate_native_authoring(
+            provenance, tuple(document.sha256 for document in gold.documents),
+        )
+    return scope
 
 
 def render_machine_gold(gold: MachineGold) -> str:
+    contract = reference_method(gold.method, gold.method_version)
+    if contract == NATIVE_METHOD:
+        return "\n".join([
+            f"# Machine reference — {gold.project}", "",
+            f"Method: `{contract.name}` version `{contract.version}`.", "",
+            *contract.limitations, "",
+            f"- reference rows: {len(gold.rows)}",
+            f"- critical: {sum(row.critical == 'yes' for row in gold.rows)} yes / "
+            f"{sum(row.critical == 'no' for row in gold.rows)} no / "
+            f"{sum(row.critical == '' for row in gold.rows)} blank",
+            f"- excluded: {gold.retired} retired rows, {gold.empty_slots} empty slots",
+            "", "Sources and exact reader/recipe identities are in the adjacent scope manifest.",
+            "No model mapping or proposal population supplied this enumeration.", "",
+            *(f"- {document.filename}: `{document.sha256}`" for document in gold.documents),
+        ]) + "\n"
     labelled = sum(1 for r in gold.rows if r.critical)
     yes = sum(1 for r in gold.rows if r.critical == "yes")
     lines = [
@@ -911,6 +998,82 @@ def render_machine_gold(gold: MachineGold) -> str:
             f"`{page.image_path or 'no image'}`"
         )
     return "\n".join(lines) + "\n"
+
+
+def _author_native_documents(project: Project, documents) -> MachineGold:
+    from corridor.native_reference import authoring_identity, read_reference_document
+
+    provenance = authoring_identity()
+    rows, readings, images = [], [], []
+    retired = empty_slots = 0
+    documents = sorted(documents, key=lambda document: document.sha256)
+    for document in documents:
+        path = stored_file(document)
+        if path is None:
+            raise LookupError(f"no stored file for {document.filename}")
+        result = read_reference_document(Path(path), document.sha256)
+        rows.extend(MachineGoldRow(*row) for row in result.rows)
+        readings.append(json.loads(result.reading_json))
+        images.extend(MachineGoldPageImage(document.filename, page, None) for page in result.pages)
+        retired += result.retired
+        empty_slots += result.empty_slots
+    if authoring_identity() != provenance:
+        raise ValueError("native reference recipe changed during authoring")
+    return MachineGold(
+        project.slug, ", ".join(document.filename for document in documents),
+        tuple(rows), retired, empty_slots, tuple(images),
+        tuple(MachineGoldDocument(document.sha256, document.filename) for document in documents),
+        method=NATIVE_METHOD.name, method_version=NATIVE_METHOD.version,
+        authoring_json=json.dumps({**provenance, "readings": readings}, sort_keys=True),
+    )
+
+
+def replay_machine_reference(
+    session: Session, project_id: int, reference_path: Path | str,
+    *, manifest_path: Path | str | None = None,
+) -> dict:
+    """Read-only regeneration of a recorded native recipe; never publish over it."""
+    from corridor.eval import NothingToMeasure, verified_machine_reference_scope
+
+    project = session.get(Project, project_id)
+    if project is None:
+        raise LookupError(f"no project {project_id}")
+    reference_path = Path(reference_path)
+    manifest_path = Path(manifest_path) if manifest_path else machine_reference_scope_path(reference_path)
+    payload = json.loads(manifest_path.read_text())
+    raw_documents = payload.get("documents") if isinstance(payload, dict) else None
+    if not isinstance(raw_documents, list) or not raw_documents or any(
+        not isinstance(item, dict) or not is_digest(item.get("sha256")) for item in raw_documents
+    ):
+        raise ValueError("machine-reference replay manifest has malformed document scope")
+    hashes = tuple(item["sha256"] for item in raw_documents)
+    if project.slug in SPENT_MEASUREMENT_ARTIFACTS or SPENT_SOURCE_HASHES.intersection(hashes):
+        raise SpentHoldout("spent WSDOT 9540 references cannot be regenerated or rescored")
+    documents = tuple(session.scalars(select(Document).where(
+        Document.project_id == project_id, Document.sha256.in_(hashes),
+    )).all())
+    reference_bytes = reference_path.read_bytes()
+    try:
+        scope = verified_machine_reference_scope(
+            manifest_path, reference_path=reference_path, reference_bytes=reference_bytes,
+            project_slug=project.slug, documents=documents,
+        )
+    except NothingToMeasure as exc:
+        raise ValueError(str(exc)) from exc
+    if scope.method != NATIVE_METHOD.name:
+        raise ValueError("legacy reference has no recorded reader configuration; load its retained CSV instead")
+    from corridor.native_reference import authoring_identity
+
+    recorded = scope.native_authoring
+    if any(recorded[key] != value for key, value in authoring_identity().items()):
+        raise ValueError("recorded native reference recipe/configuration is unavailable")
+    actual = _author_native_documents(project, documents)
+    if json.dumps(json.loads(actual.authoring_json), sort_keys=True) != json.dumps(recorded, sort_keys=True):
+        raise ValueError("native reference source/reader configuration or result changed")
+    if gold_csv(actual).encode() != reference_bytes:
+        raise ValueError("native reference enumeration does not replay byte for byte")
+    return {"method": scope.method, "method_version": scope.method_version,
+            "reference_sha256": scope.sha256, "rows": len(actual.rows), "replayed": True}
 
 
 if __name__ == "__main__":
