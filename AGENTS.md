@@ -135,7 +135,7 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   xdist workers per runner. Ordinary tests use `worksteal`; slow tests use
   `loadfile` so each module fixture is built once. Local `TEST_WORKERS` may be
   overridden for the machine. The migration target runs its owning file
-  serially against the disposable databases that those tests create.
+  on two workers against the disposable databases that those tests create.
 
 - A merge to `main` does not repeat that suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate

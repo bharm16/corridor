@@ -457,7 +457,7 @@ def test_each_gate_uses_the_scheduler_appropriate_to_its_fixture_cost():
         assert f"--suite {suite}" in recipe
         assert "--shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)" in recipe
     assert (
-        "scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 1"
+        "scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 2"
         in _make_recipe("test-migrations")
     )
 

@@ -36,7 +36,7 @@ check:
 # Tight loop for the exact seam; PostgreSQL starts only on a database connection.
 # Example: make test-focused ARGS="tests/test_work_list.py::test_name"
 test-focused:
-	@if [ -z "$(strip $(ARGS))" ]; then echo 'ARGS must name at least one test seam' >&2; exit 2; fi
+	$(if $(strip $(ARGS)),,$(error ARGS must name at least one test seam))
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 # Broad developer gate. Run after a broad change, not after every edit.
