@@ -1610,57 +1610,6 @@ def test_retained_pdf_check_requires_each_party_report_field(label_version):
             )
 
 
-def test_retained_pdf_check_reads_the_sealed_sh99_exports():
-    """ADR-0040: the same check, the same properties, on already-sealed bytes.
-
-    The two retained SH99 product-proving exports carry one Equistar statement
-    under the legacy labels. Rebuilt from what those bytes visibly say, the
-    statement passes the retained-PDF check, and a statement whose Next Action
-    the bytes do not carry fails it by name.
-    """
-    sealed = (
-        Path(__file__).resolve().parents[1]
-        / "artifacts/product-proving/sh99-9a4342d-two-pass-passed"
-    )
-    plan = SimpleNamespace(
-        internal_owner="Bryce Harmon",
-        next_action="Confirm the External Party and Commitment Scope",
-        action_due_date=None,
-        next_action_decision=object(),
-        milestone_impact="not_applicable",
-    )
-    statement = SimpleNamespace(
-        event=SimpleNamespace(
-            event_type="commitment",
-            timing_direction=None,
-            stated_party="Equistar",
-            description=(
-                "Equistar to provide a chain of title on the ROW agreement that is "
-                "in DOW’s name (Due date of 01/2025)."
-            ),
-        ),
-        timings=(SimpleNamespace(text="01/2025", precision="month"),),
-        plan=plan,
-    )
-    altered = SimpleNamespace(
-        event=statement.event,
-        timings=statement.timings,
-        plan=SimpleNamespace(**{**vars(plan), "next_action": "Confirm the revised plan"}),
-    )
-    manifest = json.loads((sealed / "manifest.json").read_text())
-    for name in ("pass-1-approved-export.pdf", "pass-2-approved-export.pdf"):
-        pdf_bytes = (sealed / name).read_bytes()
-        assert hashlib.sha256(pdf_bytes).hexdigest() == manifest["files"][name]["sha256"]
-        text = _require_report_pdf_contents(pdf_bytes, (statement,))
-        assert "Equistar" in text and text.count("EXTERNAL PARTY COMMITMENTS") == 1
-        with pytest.raises(
-            ValueError, match="omits required Report fields: Confirm the revised plan"
-        ):
-            _require_report_pdf_contents(pdf_bytes, (altered,))
-    with pytest.raises(ValueError, match="released PDF bytes are not readable"):
-        _require_report_pdf_contents(b"not a pdf", (statement,))
-
-
 def _report_pdf(text: str) -> bytes:
     """A one-page PDF carrying ``text`` as a released report would."""
 

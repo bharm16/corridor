@@ -26,6 +26,8 @@ from typing import Any
 import pytest
 import yaml
 
+from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+
 from corridor_pdf_reader import provenance
 from corridor_pdf_reader.textract import remap as imported_remap
 from corridor_pdf_reader.textract.blocks import METHOD
@@ -745,9 +747,7 @@ PRODUCTION_ROOTS = (REPO_ROOT / "src" / "corridor", REPO_ROOT / "workers" / "ren
 
 def _python_files(root: Path):
     """Every module under the root but hidden directories (a worker's own .venv) and this guard."""
-    for path in sorted(root.rglob("*.py")):
-        if any(part.startswith(".") or part == "__pycache__" for part in path.relative_to(REPO_ROOT).parts):
-            continue
+    for path in python_files(root):
         if path == Path(__file__).resolve():
             continue
         yield path
@@ -756,7 +756,7 @@ def _python_files(root: Path):
 def _network_module_imports(path: Path) -> list[str]:
     """Import statements that reach the imported client, transport, harness driver or semantics runner."""
     found = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+    for node in read_python(path).nodes:
         if isinstance(node, ast.Import):
             for alias in node.names:
                 if alias.name == "corridor_pdf_reader.textract" or any(alias.name.startswith(f"corridor_pdf_reader.textract.{name}") for name in NETWORK_MODULES):
@@ -793,7 +793,7 @@ def test_only_the_boundary_imports_the_imported_client_or_transport():
 def _textract_client_constructions(path: Path) -> list[int]:
     """Lines that build a boto3 client for the service: `<session or boto3>.client("textract", ...)`."""
     lines = []
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+    for node in read_python(path).nodes:
         if not isinstance(node, ast.Call) or not isinstance(node.func, ast.Attribute) or node.func.attr != "client":
             continue
         names = [arg.value for arg in node.args[:1] if isinstance(arg, ast.Constant)]
@@ -864,7 +864,7 @@ def test_only_the_named_caller_imports_the_adapter_and_no_production_module_the_
         for path in _python_files(root):
             relative = str(path.relative_to(REPO_ROOT))
             source = path.read_text(encoding="utf-8")
-            for node in ast.walk(ast.parse(source, filename=str(path))):
+            for node in read_python(path).nodes:
                 names = []
                 if isinstance(node, ast.Import):
                     names = [alias.name for alias in node.names]
@@ -884,7 +884,7 @@ def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
     imported = set()
     for relative in ADAPTER_CALLERS:
         path = REPO_ROOT / relative
-        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+        for node in read_python(path).nodes:
             if isinstance(node, ast.Import):
                 imported.update(alias.name for alias in node.names if _reaches_textract(alias.name))
             elif isinstance(node, ast.ImportFrom) and node.module and _reaches_textract(node.module):

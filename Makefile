@@ -1,6 +1,9 @@
-.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
+.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-shard test-slow-shard test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
 
 TEST_WORKERS ?= 4
+TEST_TIMEOUT_SECONDS ?= 600
+FOCUSED_TEST_TIMEOUT_SECONDS ?= 30
+LOCAL_BROAD_REASON ?=
 
 # Which engine-absent proof `make test-engine-absent` runs: imports, collect
 # or the complete suite.
@@ -28,75 +31,58 @@ check:
 	uv run ruff check src/corridor_pdf_reader
 	uv run mypy src/corridor_pdf_reader
 	uv run python -m compileall -q src/corridor
-	uv run pytest tests/test_architecture.py -q
+	uv run pytest tests/test_architecture.py tests/test_source_scan_support.py infra/tests/test_workflow_ordering.py -q
 
-# Tight PostgreSQL-backed loop for the exact seam being changed.
+# Tight loop for the exact seam; PostgreSQL starts only on a database connection.
 # Example: make test-focused ARGS="tests/test_work_list.py::test_name"
 test-focused:
 	@if [ -z "$(strip $(ARGS))" ]; then echo 'ARGS must name at least one test seam' >&2; exit 2; fi
-	uv run pytest -n 1 --dist loadfile $(ARGS)
+	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 # Broad developer gate. Run after a broad change, not after every edit.
 # This is the non-slow subset of test-full; do not run both on one revision.
 test:
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow"
+	uv run python scripts/run_local_tests.py --suite test --timeout-seconds $(TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n $(TEST_WORKERS) --dist worksteal -m "not slow"
 
 # Complete manual/scheduled gate. PR workflows use the scoped gates below.
 test-full:
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal
+	uv run python scripts/run_local_tests.py --suite full --timeout-seconds $(TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n $(TEST_WORKERS) --dist worksteal
 
 # Exhaustive non-migration complement to test.
 test-slow:
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration"
+	uv run python scripts/run_local_tests.py --suite slow --timeout-seconds $(TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration"
 
-# One balanced slice of the non-slow suite. CI runs the slices as a matrix so
-# each lands on its own runner: the gate is CPU-bound on a four-core runner,
-# so redistributing between workers on one machine cannot help and more
-# actual CPU can (#548). `--durations` prints where a shard's time went, so a
-# slow CI run can be read from its own log.
+# One balanced slice of the non-slow suite. Private Linux CI runners have
+# two cores; CI sets TEST_WORKERS=2 while local machines may use more.
+# Every file belongs to one shard. The wrapper records JUnit and elapsed-time
+# receipts under out/test-feedback and uses the CI-provided timing weights.
 test-shard:
 	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
 	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
-	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD)); \
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
-	  --durations=25 --durations-min=1.0 $$files; \
-	status=$$?; \
-	if [ $$status -eq 5 ]; then \
-	  echo "shard $(SHARD) holds no matching tests"; exit 0; fi; \
-	exit $$status
+	uv run python scripts/run_test_gate.py --suite pytest --shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)
 
-# One balanced slice of the exhaustive non-migration complement, sharded for
-# the same reason as test-shard.
+# Keep each slow module on one worker so expensive module fixtures run once.
+# The ordinary suite retains worksteal to rebalance independently cheap tests.
 test-slow-shard:
 	@if [ -z "$(strip $(SHARD))" ] || [ -z "$(strip $(SHARDS))" ]; then \
 	  echo 'SHARD and SHARDS are required' >&2; exit 2; fi
-	@files=$$(uv run python scripts/test_shard.py --shards $(SHARDS) --shard $(SHARD) --slow); \
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
-	  --durations=25 --durations-min=1.0 $$files; \
-	status=$$?; \
-	if [ $$status -eq 5 ]; then \
-	  echo "shard $(SHARD) holds no slow tests"; exit 0; fi; \
-	exit $$status
+	uv run python scripts/run_test_gate.py --suite slow --shards $(SHARDS) --shard $(SHARD) --workers $(TEST_WORKERS)
 
-# Per-file timing for the feedback budget (#548). Writes a JUnit report so a
-# revision can be compared against its base branch before any test is cut, and
-# so the shard partition is recomputed from measured seconds:
+# Optional local diagnosis. Required CI already publishes measured per-file
+# timings and feeds them into the next run; routine changes need no separate
+# whole-suite timing pass or duration-only follow-up PR (ADR-0096).
 #   make test-timing
 #   uv run python scripts/test_timing.py out/timing/non-slow.xml
-#   uv run python scripts/test_timing.py out/timing/non-slow.xml --write tests/durations.json
+# Bootstrap weights can still be refreshed explicitly with --write.
 test-timing:
 	@mkdir -p out/timing
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
+	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "not slow" \
 	  --durations=50 --durations-min=0.5 --junitxml=out/timing/non-slow.xml
 
-# The same measurement for the slow gate. `tests/durations-slow.json` had no
-# producer, so it went stale and the balancer counted ten unrecorded files as
-# imaginary average work — which is how one slow shard ran no tests (#548):
-#   make test-slow-timing
-#   uv run python scripts/test_timing.py out/timing/slow.xml --write tests/durations-slow.json
+# Optional measurement of the slow complement, with its actual scheduler.
 test-slow-timing:
 	@mkdir -p out/timing
-	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
+	CORRIDOR_LOCAL_BROAD_REASON=performance-investigation uv run pytest -n $(TEST_WORKERS) --dist loadfile -m "slow and not migration" \
 	  --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
 
 # Prove the retirement, not merely describe it: build a second environment
@@ -121,13 +107,14 @@ image-engine-audit:
 retained-citation-inventory:
 	uv run python scripts/retained_citation_inventory.py
 
-# Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
+# The migration file owns disposable databases. Run it directly and serially
+# instead of importing the whole tree and starting a redundant xdist worker.
 test-migrations:
-	uv run pytest -n 1 --dist loadfile -m migration
+	uv run python scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 1
 
 # Single-process fallback for debugger use and scheduler diagnosis.
 test-serial:
-	uv run pytest
+	uv run python scripts/run_local_tests.py --suite full --timeout-seconds $(TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- $(ARGS)
 
 # Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for
 # unchanged sources; a source whose bytes changed keeps both revisions.

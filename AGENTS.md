@@ -17,23 +17,65 @@ and need `OPENAI_API_KEY` in `.env`.
 
 ## Testing
 
-Use non-overlapping gates appropriate to the exact revision
+Run test targets directly and wait for their process/session exit status.
+`make test-focused`, `make test`, `make test-slow`, and `make test-full` stream
+pytest output and record running/completed state plus the actual exit code in
+`out/test-results/<suite>.json`. Use that receipt for background monitoring.
+Pytest summaries may contain skip and warning counts; never wait for a text
+pattern such as `passed in`, or pipe live test output through `grep`/`head`.
+Focused commands stop after 30 seconds by default; choose a smaller seam, or
+set `FOCUSED_TEST_TIMEOUT_SECONDS` for a justified diagnostic. Broad diagnostics
+stop after ten minutes (`TEST_TIMEOUT_SECONDS`). A stale monitor is not a reason to
+launch a second suite: inspect the receipt and the existing process first.
+
+**Local full-suite execution is blocked by default**, including raw unscoped
+pytest. `LOCAL_BROAD_REASON=failure-reproduction` is for an observed failure
+that cannot be reproduced with focused tests; `performance-investigation` is
+for an explicitly requested suite-performance diagnosis. These are the only
+local exceptions. Routine implementation, intermediate commits, reviews,
+documentation, and pre-push reassurance are not reasons to run a local broad
+suite. GitHub CI is the automatic broad gate.
+
+Use non-overlapping gates appropriate to the changed behavior
 ([ADR-0065](docs/adr/0065-test-gates-preserve-feedback-without-weakening-release-proof.md),
 as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md),
-[ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md)
-and [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-with-a-fail-closed-summary.md)):
+[ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md),
+[ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-with-a-fail-closed-summary.md)
+and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects-feedback-budget-regressions.md)):
 
-- During implementation, run `make check` and `make test-focused ARGS="..."`
-  for the changed seam. Do not run the broad suite after every edit.
-- Use `make test` after a broad change or before pushing when local broad
-  feedback is useful.
+- **Documentation-only edits: run `make check`.** It requires no database or
+  CDK toolchain; CI skips infrastructure installation and synthesis too.
+  Existing behavior-test results remain valid when only documentation changes;
+  rerun the documentation checks, not PostgreSQL suites.
+- **Batch related edits before validation.** A file edit, plan step, or local
+  commit is not a testing checkpoint. Finish the coherent behavior change,
+  then run its smallest meaningful focused check. Run again only after a
+  relevant behavior change, a failure, or a concrete unresolved concern.
+  A plan's verification step may be inspection or a static check; it does not
+  automatically mean pytest. Pure focused tests require no database.
+- Real-corpus bulk replays belong in the slow complement. Keep the ordinary
+  developer loop on bounded synthetic examples. Retain and disclose existing
+  corpus-availability skips; a skipped source-specific replay is not proof
+  of that source. Run it once where its retained input is available.
+- **One agent owns validation for a worktree.** Implementation workers report
+  the checks their changes need; the coordinator combines overlapping checks
+  into one run. Other agents review the results rather than launching copies.
+  Keep intermediate commits local and push the reviewed change for its CI gate.
+- **PR CI owns the complete release proof.** After focused checks pass, push
+  for that proof. Use a local broad diagnostic only under the explicit
+  exceptions above; it is not a prerequisite to CI or a loop to repeat after
+  every edit.
 - **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
   every pull request.** It runs `make check` unconditionally, and the same
   tests `make test` and the non-migration `make test-slow` select, partitioned
   by `make test-shard` across five runners and `make test-slow-shard` across
-  four, unless every changed file is documentation. No test is deselected by
-  path: the full suites stay required and parallelism keeps the wall clock
-  inside the feedback budget (ADR-0088).
+  four, unless every changed file is documentation. `make check` owns
+  `test_architecture.py` and `test_source_scan_support.py`; behavior shards
+  omit those two files so each required proof runs once. Every other behavior
+  test remains required (ADR-0088, ADR-0096).
+- The independent `check` job runs CDK assertions and synthesis only when
+  `scripts/classify_ci_change.py` identifies an infrastructure input. Pure
+  workflow and deployment-runbook assertions stay in unconditional `make check`.
 - **The `release-gate` job is the required status, and it fails closed.** It
   runs under `always()`, and matches every job result against what
   `scripts/classify_ci_change.py` asked for: `success` where the classifier
@@ -41,7 +83,9 @@ and [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-
   `failure`, a `cancelled`, an unexpected `skipped`, or an inconsistent
   classifier/job pair fails it. **Never rewrite it as `success or skipped ->
   pass`** — that is how a behavior job skipped by a broken condition reports
-  green (ADR-0093).
+  green (ADR-0093). After these result checks, the same required job validates
+  every timing receipt and enforces `tests/feedback-budget.json`. Missing,
+  duplicate, stale, or failed receipts fail the gate (ADR-0096).
 - **Path scoping lives on the jobs, never on a trigger.** A workflow skipped
   by a trigger-level path filter leaves its checks *pending*, and a required
   check that never reports blocks the pull request forever. A job skipped by
@@ -74,16 +118,22 @@ and [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-
   The gate's wall clock is the slowest of its nine jobs, so it samples the
   worst setup draw taken in the run rather than the average one: serial setup
   steps add their draws, concurrent ones do not (#595).
-- The partition comes from `tests/durations.json` and `tests/durations-slow.json`.
-  Regenerate both after any change that moves the numbers — a file missing
-  from them is weighted as *average*, not free, which unbalances the gate:
-
-  ```bash
-  make test-timing            # writes out/timing/non-slow.xml
-  uv run python scripts/test_timing.py out/timing/non-slow.xml --write tests/durations.json
-  make test-slow-timing       # writes out/timing/slow.xml
-  uv run python scripts/test_timing.py out/timing/slow.xml --write tests/durations-slow.json
-  ```
+- **CI measures and reuses its own timings.** Every required test job uploads
+  JUnit and a receipt; the summary publishes the `test-feedback` artifact.
+  The next run uses one shared snapshot of validated reports for shard weights.
+  `tests/durations*.json` are bootstrap weights. Routine changes do not require
+  local full-suite timing reruns or duration-only follow-up PRs. Use
+  `make test-timing` or `make test-slow-timing` only to diagnose a local cost.
+- **Read the feedback report when the budget fails.** It records current gate
+  time, rolling median/p90, migration time, and the expensive files. Repair the
+  measured cost and rerun the affected seam; the next required CI run measures
+  the revision. An under-budget repair may pass despite slow historical runs.
+  Changing the budget requires a new ADR, not a threshold increase to clear CI.
+- **Match workers to the runner and fixtures.** Private Linux CI uses two
+  xdist workers per runner. Ordinary tests use `worksteal`; slow tests use
+  `loadfile` so each module fixture is built once. Local `TEST_WORKERS` may be
+  overridden for the machine. The migration target runs its owning file
+  serially against the disposable databases that those tests create.
 
 - A merge to `main` does not repeat that suite.
 - Deliver changes to `main` through a PR; direct pushes have no duplicate
@@ -95,8 +145,9 @@ and [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-
 - `make test-full` is the complete manual and weekly scheduled gate,
   `.github/workflows/full-suite.yml`. It has no `pull_request` trigger and is
   not part of ordinary PR or post-merge CI.
-- Any source or test change invalidates an earlier result. Rerun the smallest
-  affected seam, then the scoped gate for the revised change.
+- Source or test changes invalidate results for the affected behavior. Rerun
+  that seam locally and let required CI prove the revised behavior. Changes
+  limited to documentation do not invalidate earlier behavior-test results.
 
 ## Architecture
 

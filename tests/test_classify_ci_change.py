@@ -1,11 +1,10 @@
 """The CI classifier decides which gates a pull request must run.
 
-Every fixture drives the real seam: a throwaway git repository, a real
-commit, and the script invoked exactly as `release-gate.yml` invokes it. A
-list of strings handed straight to ``classify`` would not prove the half of
-this that matters most -- that a rename reaches the classifier under *both*
-names, so moving a runtime prompt into a documentation directory cannot make
-its executable path vanish (#697).
+Public-seam cases use a throwaway git repository and invoke the script exactly
+as `release-gate.yml` does. They prove that a rename reaches the classifier
+under both names, so moving an executable input into documentation cannot make
+its original path vanish (#697). Additional path-boundary cases call classify
+directly; they add coverage without repeating Git setup for every filename.
 """
 
 from __future__ import annotations
@@ -121,6 +120,7 @@ def test_a_documentation_only_change_runs_check_alone(repository: Path):
     assert _classified(repository) == {
         "behavior_required": "false",
         "migration_required": "false",
+        "infrastructure_required": "false",
     }
 
 
@@ -130,6 +130,7 @@ def test_a_readme_change_runs_check_alone(repository: Path):
     assert _classified(repository) == {
         "behavior_required": "false",
         "migration_required": "false",
+        "infrastructure_required": "false",
     }
 
 
@@ -146,6 +147,7 @@ def test_a_runtime_prompt_change_runs_the_behavior_suites(repository: Path):
     assert _classified(repository) == {
         "behavior_required": "true",
         "migration_required": "false",
+        "infrastructure_required": "false",
     }
 
 
@@ -155,6 +157,7 @@ def test_an_ordinary_source_change_runs_the_behavior_suites(repository: Path):
     assert _classified(repository) == {
         "behavior_required": "true",
         "migration_required": "false",
+        "infrastructure_required": "false",
     }
 
 
@@ -168,6 +171,7 @@ def test_a_migration_change_runs_the_behavior_and_migration_gates(repository: Pa
     assert _classified(repository) == {
         "behavior_required": "true",
         "migration_required": "true",
+        "infrastructure_required": "false",
     }
 
 
@@ -179,6 +183,7 @@ def test_a_workflow_change_runs_the_behavior_and_migration_gates(repository: Pat
     assert _classified(repository) == {
         "behavior_required": "true",
         "migration_required": "true",
+        "infrastructure_required": "true",
     }
 
 
@@ -191,6 +196,7 @@ def test_documentation_beside_code_runs_the_behavior_suites(repository: Path):
     assert _classified(repository) == {
         "behavior_required": "true",
         "migration_required": "false",
+        "infrastructure_required": "false",
     }
 
 
@@ -305,3 +311,52 @@ def test_a_star_does_not_cross_a_path_separator():
 
     assert not module.is_migration_adjacent("tests/nested/test_migration_x.py")
     assert module.is_migration_adjacent("tests/test_migration_x.py")
+
+
+@pytest.mark.parametrize("path", [
+    "infra/corridor_infra/application_stack.py",
+    "infra/tests/test_stacks.py",
+    "infra/cdk.context.json",
+    "infra/uv.lock",
+    "infra/package-lock.json",
+    "src/corridor/config.py",
+    "scripts/container_entrypoint.py",
+    "scripts/register_ecs_release_task_definitions.py",
+    ".github/scripts/validate-deployment-config.sh",
+    "Dockerfile",
+    ".dockerignore",
+    "docker-compose.yml",
+    "pyproject.toml",
+    "uv.lock",
+    "workers/render/pyproject.toml",
+    "workers/render/uv.lock",
+    "alembic.ini",
+    "Makefile",
+])
+def test_infrastructure_and_its_external_inputs_run_cdk_checks(path: str):
+    classification = _module().classify([path])
+
+    assert classification.infrastructure_required
+    assert classification.behavior_required
+
+
+@pytest.mark.parametrize("path", [
+    "docs/deployment/nonproduction-aws.md",
+    "docs/adr/0088-example.md",
+    "src/corridor/facts.py",
+    "tests/test_facts.py",
+    "prompts/agreement_v3.md",
+])
+def test_unrelated_changes_skip_cdk_without_narrowing_behavior(path: str):
+    classification = _module().classify([path])
+
+    assert not classification.infrastructure_required
+    assert classification.behavior_required == (not path.startswith("docs/"))
+
+
+def test_an_infrastructure_input_renamed_into_docs_still_runs_cdk(repository: Path):
+    _write(repository, "infra/app.py", "infrastructure source\n")
+    _commit(repository, "add infrastructure")
+    _git(repository, "mv", "infra/app.py", "docs/old-app.py")
+
+    assert _classified(repository)["infrastructure_required"] == "true"

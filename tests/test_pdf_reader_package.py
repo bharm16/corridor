@@ -22,6 +22,7 @@ import tomllib
 
 import pytest
 from test_architecture import PYMUPDF_PACKAGES, TESSERACT_PACKAGES
+from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
 
 from corridor_pdf_reader import provenance
 
@@ -100,7 +101,7 @@ def test_the_loop_log_only_grows():
 
 def _imported_names(path: Path) -> set[str]:
     names: set[str] = set()
-    for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+    for node in read_python(path).nodes:
         if isinstance(node, ast.Import):
             names.update(alias.name for alias in node.names)
         elif isinstance(node, ast.ImportFrom) and node.module:
@@ -114,6 +115,11 @@ def _imported_names(path: Path) -> set[str]:
 # import accounting, not production selection. A module leaves it only when
 # its imports leave; an unlisted importer always fails this guard.
 PRODUCTION_IMPORTERS = {
+    "src/corridor/ingest.py": (
+        "one measured isolated reading supplies both native tokens and page "
+        "inventory when both adapters are selected, preserving each output "
+        "and the authenticated reading identity"
+    ),
     "src/corridor/extractor_lineage.py": (
         "the explicitly named native matrix configuration binds the unchanged "
         "measured prompt and strict schema; configuration capture never calls "
@@ -194,7 +200,7 @@ def test_no_production_module_imports_the_reader_package():
 
     offenders = []
     for root in PRODUCTION_ROOTS:
-        for path in sorted(root.rglob("*.py")):
+        for path in python_files(root):
             names = _imported_names(path)
             if any(name == "corridor_pdf_reader" or name.startswith("corridor_pdf_reader.") for name in names):
                 offenders.append(str(path.relative_to(REPO_ROOT)))
@@ -211,7 +217,7 @@ def test_the_package_never_imports_pymupdf_or_tesseract():
     # guard would count as a use of it.
     forbidden = set(PYMUPDF_PACKAGES) | set(TESSERACT_PACKAGES)
     offenders = []
-    for path in sorted(PACKAGE_ROOT.rglob("*.py")):
+    for path in python_files(PACKAGE_ROOT):
         names = {name.split(".")[0] for name in _imported_names(path)}
         if names & forbidden:
             offenders.append(str(path.relative_to(REPO_ROOT)))
@@ -254,7 +260,7 @@ def test_the_imported_defaults_are_the_measured_ones():
     mentions = [
         str(path.relative_to(PACKAGE_ROOT))
         for directory in ("replacement", "bootstrap")
-        for path in sorted((PACKAGE_ROOT / directory).rglob("*.py"))
+        for path in python_files(PACKAGE_ROOT / directory)
         if "rescue" in path.read_text(encoding="utf-8").lower()
     ]
     assert mentions == []

@@ -35,9 +35,11 @@ from corridor.facts import (
     ClosureFactValue,
     FACT_TYPE_CONTRACTS,
     FactReplayMismatch,
+    FactValidationError,
     correct_fact,
     proposal_input_snapshots,
     replay_fact,
+    replay_spreadsheet_facts,
 )
 from corridor.ingest import ingest_document
 from corridor.row_accounting import RowAccounting
@@ -778,6 +780,9 @@ def test_structured_satellites_extract_replay_include_and_project_current_and_as
     assert closure_value.closure_kind == "source_marked_resolved"
     assert closure_value.successor_dependency_id is None
     assert closure_value.governing_source_segment_ids
+    assert replay_spreadsheet_facts(session, document, (applies_to, closure), path) == (
+        AppliesToFactValue(dependency_ids=(targets[0].id, targets[1].id)), closure_value,
+    )
 
     [candidate] = candidates
     candidate.state = "accepted"
@@ -948,9 +953,12 @@ def test_every_structured_cell_fact_replays_from_its_exact_cell(
 
 
 @needs_corpus
+@pytest.mark.slow
 def test_real_dev_corpus_matrix_yields_every_queryable_replayable_cell_fact(
     session, project, tmp_path, monkeypatch
 ):
+    import corridor.source_segments as source_segments
+
     sheet = conflict_sheet(read_workbook(REAL_WORKBOOK))
     external_org_column = next(
         index for index, field in sheet.mapping.items() if field == "external_org"
@@ -967,7 +975,16 @@ def test_real_dev_corpus_matrix_yields_every_queryable_replayable_cell_fact(
     )
     session.flush()
     document = _ingest(session, project, REAL_WORKBOOK, tmp_path)
+    original_load = source_segments.load_workbook
+    workbook_opens = []
+
+    def counted_load(*args, **kwargs):
+        workbook_opens.append(1)
+        return original_load(*args, **kwargs)
+
+    monkeypatch.setattr(source_segments, "load_workbook", counted_load)
     run, candidates = _complete_extraction(session, document, monkeypatch)
+    assert len(workbook_opens) == 1
     facts = session.scalars(select(Fact).order_by(Fact.id)).all()
 
     assert len(candidates) == 68
@@ -1017,9 +1034,14 @@ def test_real_dev_corpus_matrix_yields_every_queryable_replayable_cell_fact(
         station_to.text_value,
         replay_fact(session, document, station_to, REAL_WORKBOOK),
     ) == ("station_to", "UCM-Conflict List!76", "-", "-")
-    assert len(
-        [replay_fact(session, document, fact, REAL_WORKBOOK) for fact in facts]
-    ) == 1018
+    workbook_opens.clear()
+    replayed = replay_spreadsheet_facts(session, document, iter(facts), REAL_WORKBOOK)
+    assert len(replayed) == 1018
+    assert replayed == tuple(
+        fact.date_value if fact.date_value is not None else fact.text_value
+        for fact in facts
+    )
+    assert len(workbook_opens) == 1
 
     dependencies = []
     for ordinal, candidate in enumerate(candidates, 1):
@@ -1053,8 +1075,9 @@ def test_real_dev_corpus_matrix_yields_every_queryable_replayable_cell_fact(
     assert {value.fact_type for value in as_of} == expected_types
 
 
+@pytest.mark.parametrize("batch", [False, True])
 def test_fact_replay_fails_closed_when_materialized_value_does_not_reproduce(
-    session, project, tmp_path, monkeypatch
+    session, project, tmp_path, monkeypatch, batch,
 ):
     path = _workbook(
         tmp_path,
@@ -1063,11 +1086,85 @@ def test_fact_replay_fails_closed_when_materialized_value_does_not_reproduce(
     )
     document = _ingest(session, project, path, tmp_path)
     _complete_extraction(session, document, monkeypatch)
-    fact = session.scalars(select(Fact).order_by(Fact.id)).first()
+    facts = session.scalars(select(Fact).order_by(Fact.id)).all()
+    fact = facts[-1]
     fact.text_value = "9999+99"
 
     with pytest.raises(FactReplayMismatch, match="does not reproduce"):
-        replay_fact(session, document, fact, path)
+        if batch:
+            replay_spreadsheet_facts(session, document, iter(facts), path)
+        else:
+            replay_fact(session, document, fact, path)
+
+
+def test_spreadsheet_fact_batch_refuses_source_changes_before_returning(
+    session, project, tmp_path, monkeypatch,
+):
+    import corridor.facts as fact_replay
+    from corridor.source_segments import SourceDocumentDigestMismatch
+
+    path = _workbook(
+        tmp_path, "batch.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    _complete_extraction(session, document, monkeypatch)
+    facts = session.scalars(select(Fact).order_by(Fact.id)).all()
+    original_transform = fact_replay.validated_scalar_value
+    calls = []
+
+    def change_source_after_first_value(contract, exact):
+        value = original_transform(contract, exact)
+        if not calls:
+            path.write_bytes(path.read_bytes() + b"changed during batch")
+        calls.append(exact)
+        return value
+
+    monkeypatch.setattr(fact_replay, "validated_scalar_value", change_source_after_first_value)
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        replay_spreadsheet_facts(session, document, iter(facts), path)
+    assert len(calls) == len(facts)
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        replay_fact(session, document, facts[0], path)
+
+
+def test_scoped_spreadsheet_append_refuses_changed_snapshot_before_appending_facts(
+    session, project, tmp_path, monkeypatch,
+):
+    import corridor.extract_sheet as extract_sheet
+    import corridor.source_segments as source_segments
+    from corridor.source_segments import SourceDocumentDigestMismatch
+
+    path = _workbook(
+        tmp_path, "append-snapshot.xlsx",
+        [["UC-1", "CenterPoint", "Electric", "1149+00", "1150+00", "Pole"]],
+    )
+    document = _ingest(session, project, path, tmp_path)
+    monkeypatch.setattr(extract_sheet, "stored_file", lambda value: str(path))
+    candidates = extract_document(session, document)
+    original_load = source_segments.load_workbook
+
+    def change_source_after_snapshot_decode(*args, **kwargs):
+        book = original_load(*args, **kwargs)
+        path.write_bytes(path.read_bytes() + b"changed during append validation")
+        return book
+
+    monkeypatch.setattr(source_segments, "load_workbook", change_source_after_snapshot_decode)
+    with pytest.raises(SourceDocumentDigestMismatch, match="registered Document digest"):
+        _append_request(session, document, candidates)
+    assert session.scalars(select(ExtractionRun)).all() == []
+    assert session.scalars(select(Fact)).all() == []
+    assert session.scalars(select(SourceFactAppendReceipt)).all() == []
+
+
+@pytest.mark.parametrize("document_id,project_id", [(2, 1), (1, 2)])
+def test_spreadsheet_fact_batch_refuses_a_fact_from_another_document_or_project(
+    tmp_path, document_id, project_id,
+):
+    document = Document(id=1, project_id=1, sha256="0" * 64)
+    fact = Fact(document_id=document_id, project_id=project_id)
+    with pytest.raises(FactValidationError, match="another Document"):
+        replay_spreadsheet_facts(None, document, iter([fact]), tmp_path / "absent.xlsx")
 
 
 def test_database_rejects_fact_source_from_another_rendition(

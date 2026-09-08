@@ -28,6 +28,7 @@ jobs:
       DATABASE_URL: postgresql+psycopg://corridor:corridor@localhost:5433/corridor
       CORRIDOR_HUMAN_PRINCIPAL: local:ci
       CORRIDOR_LEGACY_DEV_LOGIN: "1"
+      TEST_WORKERS: "2"
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v6

@@ -4,6 +4,8 @@ domain: testing
 scope: current product
 amends:
   - ADR-0088
+amended_by:
+  - ADR-0096
 migration: the coordinator still has to add `release-gate` to the "main release gate" ruleset as a required context, confirm it reports on the latest commit, and only then remove the now-redundant `check` context (#697).
 ---
 

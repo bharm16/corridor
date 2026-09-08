@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
+from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
 
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -19,13 +20,13 @@ SOURCE_ROOT = REPO_ROOT / "src" / "corridor"
 def _module_paths() -> tuple[Path, ...]:
     return tuple(
         path
-        for path in sorted(SOURCE_ROOT.rglob("*.py"))
+        for path in python_files(SOURCE_ROOT)
         if path.name != "__init__.py" and "migrations" not in path.parts
     )
 
 
 def _tree(path: Path) -> ast.Module:
-    return ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+    return read_python(path).tree
 
 
 def _module_name(path: Path) -> str:
@@ -62,7 +63,7 @@ def test_no_module_silently_replaces_a_top_level_interface_name():
 def test_source_modules_do_not_import_another_module_private_implementation():
     private_imports: list[str] = []
     for path in _module_paths():
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if not isinstance(node, ast.ImportFrom):
                 continue
             if not node.module or not node.module.startswith("corridor."):
@@ -81,7 +82,7 @@ def test_source_module_dependencies_are_acyclic():
     paths = {_module_name(path): path for path in _module_paths()}
     dependencies: dict[str, set[str]] = {name: set() for name in paths}
     for name, path in paths.items():
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if not isinstance(node, ast.ImportFrom):
                 continue
             if not node.module or not node.module.startswith("corridor."):
@@ -137,7 +138,7 @@ def _internal_dependencies() -> dict[str, set[str]]:
     paths = {_module_name(path): path for path in _module_paths()}
     dependencies: dict[str, set[str]] = {name: set() for name in paths}
     for name, path in paths.items():
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if isinstance(node, ast.ImportFrom) and node.module:
                 if node.module.startswith("corridor."):
                     dependency = node.module.removeprefix("corridor.")
@@ -193,7 +194,7 @@ def test_only_the_materializer_constructs_a_materialized_value():
     for path in _module_paths():
         if path.name == "materializer.py":
             continue
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
@@ -267,7 +268,7 @@ ACCEPTED_AUTHORITY_MODELS = frozenset(
 def test_only_the_declared_seam_calls_an_accepted_authority_command():
     callers: dict[str, set[str]] = defaultdict(set)
     for path in _module_paths():
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if (
                 isinstance(node, ast.Attribute)
                 and isinstance(node.value, ast.Name)
@@ -289,7 +290,7 @@ def test_no_application_module_constructs_an_accepted_authority_row():
     for path in _module_paths():
         if path.name == "models.py":
             continue
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if (
                 isinstance(node, ast.Call)
                 and isinstance(node.func, ast.Name)
@@ -378,7 +379,7 @@ def test_no_application_module_binds_the_schema_owner_credential():
     """
 
     offenders = []
-    for path in sorted((REPO_ROOT / "src" / "corridor").rglob("*.py")):
+    for path in python_files(REPO_ROOT / "src" / "corridor"):
         if path.name == "db.py":
             continue
         source = path.read_text(encoding="utf-8")
@@ -523,7 +524,7 @@ def test_only_the_storage_interface_builds_a_path_into_the_content_store():
     for path in _module_paths():
         if path.name == "object_storage.py":
             continue
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if (
                 isinstance(node, ast.Attribute)
                 and node.attr == "corpus_store"
@@ -557,7 +558,7 @@ def test_store_deletion_is_permitted_only_by_retention():
     for path in _module_paths():
         if path.name == "object_storage.py":
             continue
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if not isinstance(node, ast.Call):
                 continue
             callee = node.func
@@ -587,7 +588,7 @@ def test_a_push_binding_is_established_only_by_the_credential_boundary():
     for path in _module_paths():
         if path.name == "push_intake.py":
             continue
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if not isinstance(node, ast.Call):
                 continue
             callee = node.func
@@ -611,7 +612,7 @@ def test_the_render_worker_has_no_database_or_storage_dependency():
     worker = REPO_ROOT / "workers" / "render"
     imported = set()
     for module in sorted(worker.glob("*.py")):
-        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
+        for node in read_python(module).nodes:
             if isinstance(node, ast.Import):
                 imported.update(alias.name.split(".")[0] for alias in node.names)
             elif isinstance(node, ast.ImportFrom) and node.module:
@@ -663,7 +664,7 @@ ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = (
 )
 
 
-def _engines_used(tree: ast.Module) -> frozenset[str]:
+def _engines_used(nodes: tuple[ast.AST, ...]) -> frozenset[str]:
     """The engines one module depends on.
 
     PyMuPDF is an import of `pymupdf` or its `fitz` alias. Tesseract is an
@@ -675,7 +676,7 @@ def _engines_used(tree: ast.Module) -> frozenset[str]:
     """
 
     docstrings: set[ast.Constant] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         if not isinstance(
             node, (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
         ):
@@ -688,7 +689,7 @@ def _engines_used(tree: ast.Module) -> frozenset[str]:
         ):
             docstrings.add(first.value)
     engines: set[str] = set()
-    for node in ast.walk(tree):
+    for node in nodes:
         packages: set[str] = set()
         if isinstance(node, ast.Import):
             packages = {alias.name.split(".")[0] for alias in node.names}
@@ -718,14 +719,11 @@ def _engine_uses() -> dict[str, frozenset[str]]:
 
     uses: dict[str, frozenset[str]] = {}
     for root in ENGINE_SCAN_ROOTS:
-        for path in sorted((REPO_ROOT / root).rglob("*.py")):
+        for path in python_files(REPO_ROOT / root):
             relative = path.relative_to(REPO_ROOT)
-            if any(
-                part.startswith(".") or part == "__pycache__"
-                for part in relative.parts
-            ) or path == Path(__file__).resolve():
+            if path == Path(__file__).resolve():
                 continue
-            engines = _engines_used(_tree(path))
+            engines = _engines_used(read_python(path).nodes)
             if engines:
                 uses[relative.as_posix()] = engines
     return uses
@@ -746,7 +744,7 @@ def test_the_engine_scanner_sees_every_form_of_dependency():
     }
 
     assert {
-        source: set(_engines_used(ast.parse(source))) for source in cases
+        source: set(_engines_used(tuple(ast.walk(ast.parse(source))))) for source in cases
     } == cases
 
 
@@ -1092,7 +1090,7 @@ def _audit_record_calls() -> tuple[tuple[str, ast.Call], ...]:
     calls = []
     for path in _module_paths():
         module = _module_name(path)
-        for node in ast.walk(_tree(path)):
+        for node in read_python(path).nodes:
             if not isinstance(node, ast.Call):
                 continue
             function = node.func
