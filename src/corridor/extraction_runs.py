@@ -57,6 +57,7 @@ from corridor.source_segments import (
     append_ingested_source_segments,
     dereference_source_segment,
 )
+from corridor.prose_spans import prose_segment_filter
 
 
 class SourceFactAppendConflict(ValueError):
@@ -468,7 +469,7 @@ def _record_extraction_run(
             select(SourceSegment.id)
             .where(
                 SourceSegment.document_id == document.id,
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
             )
             .limit(1)
         )

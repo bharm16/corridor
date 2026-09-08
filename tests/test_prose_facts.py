@@ -33,6 +33,7 @@ from corridor.facts import (
     replay_fact,
 )
 from corridor.ingest import ingest_document
+from corridor.prose_spans import is_prose_segment, prose_segment_filter
 from corridor.models import (
     Candidate,
     DependencyEvent,
@@ -159,7 +160,7 @@ def test_scoped_append_creates_pending_statement_wording_with_role_tagged_spans(
         ]
         assert len({source.source_segment_id for source in sources}) == 1
         segment = session.get(SourceSegment, sources[0].source_segment_id)
-        assert segment.kind == "prose_span"
+        assert is_prose_segment(segment)
         assert segment.exact_text == STATEMENT
         assert replay_fact(session, document, fact, path) == STATEMENT
         other_path = _minutes_pdf(
@@ -180,7 +181,7 @@ def test_scoped_append_creates_pending_statement_wording_with_role_tagged_spans(
             select(SourceSegment)
             .where(
                 SourceSegment.document_id == other_document.id,
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
             )
             .order_by(SourceSegment.ordinal)
         ).first()

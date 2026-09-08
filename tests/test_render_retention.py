@@ -169,11 +169,8 @@ def test_deleting_every_render_leaves_citations_verifiable_and_regenerable(
 
 
 def test_every_render_and_raw_ocr_intermediary_is_class_b_by_construction(
-    session, project, tmp_path, monkeypatch
+    session, project, tmp_path
 ):
-    monkeypatch.setattr(
-        "corridor.ingest._ocr_region", lambda *_a, **_k: "CENTERPOINT ENERGY"
-    )
     pdf = _scanned_pdf(tmp_path)
     document = ingest_document(
         session,
@@ -213,12 +210,11 @@ def test_every_render_and_raw_ocr_intermediary_is_class_b_by_construction(
 
 
 def test_an_open_processing_failure_keeps_its_render_and_raw_ocr_reachable(
-    session, project, tmp_path, monkeypatch
+    session, project, tmp_path
 ):
-    def failed_ocr(*_args, **_kwargs):
-        raise RuntimeError("tesseract unavailable")
-
-    monkeypatch.setattr("corridor.ingest._ocr_region", failed_ocr)
+    # No customer authorization exists, so the OCR-routed page is refused at
+    # the outbound boundary and the refusal is the open Processing Failure
+    # this test needs (#732, #741).
     pdf = _scanned_pdf(tmp_path)
     document = ingest_document(
         session,

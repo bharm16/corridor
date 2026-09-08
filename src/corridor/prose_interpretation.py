@@ -44,6 +44,7 @@ from corridor.typed_output import (
     strict_output_schema,
     validate_typed_output,
 )
+from corridor.prose_spans import prose_segment_filter
 
 
 PROMPT_VERSION = "prose_interpretation_v1"
@@ -137,7 +138,7 @@ def interpret_prose_document(
             select(SourceSegment)
             .where(
                 SourceSegment.document_id == document.id,
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
             )
             .order_by(SourceSegment.ordinal)
         ).all()

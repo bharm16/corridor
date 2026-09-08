@@ -29,7 +29,7 @@ from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
 from corridor.source_segments import dereference_source_segment
-from corridor.token_layers import load_token_layer
+from corridor.token_layers import READER_ENGINE, load_token_layer
 
 from pdf_fixture_support import PdfFixture
 
@@ -89,7 +89,7 @@ def test_native_token_layer_persists_with_pinning_and_is_class_b(
     assert native, "a text page persists a native token layer manifest"
     manifest = native[0]
     assert manifest.token_count > 0
-    assert manifest.engine_json["engine"] == "pymupdf"
+    assert manifest.engine_json["engine"] == READER_ENGINE
     assert manifest.engine_json["adapter_version"]
     assert manifest.source_sha256 == document.sha256
 

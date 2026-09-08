@@ -1,4 +1,4 @@
-.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
+.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
 
 TEST_WORKERS ?= 4
 
@@ -523,17 +523,6 @@ native-matrix-replay:
 pipeline-qualification:
 	uv run python scripts/pipeline_qualification.py $(ARGS)
 
-# The prose-locator audit (#733, clarified by #736): reconstruct historical
-# prose spans from registered corpus bytes and compare exact text with the
-# native reader projection. This does not query persisted Source Segments or
-# customer citations. Text matches are candidates; physical location remains
-# unresolved without an independent occurrence-bound source anchor. The receipt
-# separates exact-text recovery from source-location proof and pins the code.
-# An explicit experiment outside pytest and CI. It reads the content store
-# read-only and writes nothing into it, and takes several minutes:
-#   make prose-locator-regression ARGS="--output out/prose-locators/<new-run>.json"
-prose-locator-regression:
-	uv run python scripts/prose_locator_regression.py $(ARGS)
 
 # ---- The Textract adapter (#732) ---------------------------------------------
 # Replay retained Textract responses through the adapter's normalizer, twice

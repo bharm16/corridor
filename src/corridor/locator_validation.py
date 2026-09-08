@@ -33,6 +33,7 @@ from typing import Protocol
 
 from corridor.models import Document, SourceSegment
 from corridor.source_segments import (
+    FreshReadingUnavailable,
     SourceSegmentIntegrityError,
     dereference_source_segment,
     replay_recorded_verbal_statement,
@@ -40,11 +41,22 @@ from corridor.source_segments import (
 from corridor.verify import quote_appears_on
 
 # The stored identifiers ADR-0082 fixed. They stay machine words: the customer
-# labels for the same three states live in ``presentation.py``.
+# labels live in ``presentation.py``.
 VALID = "valid"
 INVALID = "invalid"
 NOT_CHECKED = "not_checked"
-LOCATOR_VALIDATION_STATUSES = (VALID, INVALID, NOT_CHECKED)
+# The fourth state, added by #741. A retained ``prose_span`` locator is a pair
+# of offsets into the page string the retired incumbent reader produced, so no
+# reader now in the product can return to that location, and
+# ``source_segments`` refuses with ``FreshReadingUnavailable`` rather than with
+# an integrity error. Without this state the refusal would fall through to
+# ``invalid``, and every retained prose citation would read as *Not found at
+# cited location* -- an assertion about the source that nothing here made. The
+# truthful answer is that the check could not be run, which is also not
+# ``not_checked``: there is a cited location, it is recorded, and the reason it
+# was not replayed is that its reader is gone (ADR-0094, ADR-0095).
+NOT_RE_READABLE = "not_re_readable"
+LOCATOR_VALIDATION_STATUSES = (VALID, INVALID, NOT_CHECKED, NOT_RE_READABLE)
 
 
 class StoredLocatorCheck(Protocol):
@@ -62,10 +74,19 @@ def source_segment_locator_validation_status(
     from the registered Document; a wrong Document, a locator that no longer
     exists, a moved span, or a digest that disagrees is ``invalid``.  The
     answer is mechanical: the same bytes and the same locator always give it.
+
+    ``not_re_readable`` when the reader that established the locator is no
+    longer in the product (#741).  That is not ``invalid``: nothing opened the
+    page, so nothing can say the passage is not at its cited location.  What a
+    retained citation is verified by instead is
+    ``retained_history.replay_retained_reading``, which proves its words and
+    its registered bytes from their own digests.
     """
 
     try:
         dereference_source_segment(document, segment, path)
+    except FreshReadingUnavailable:
+        return NOT_RE_READABLE
     except SourceSegmentIntegrityError:
         return INVALID
     return VALID

@@ -23,7 +23,10 @@ This module deliberately imports no reader.  ``fresh_original_location_reading``
 imports its owner inside the call, so an environment without that reader
 raises ``FreshReadingUnavailable`` here instead of making the retained-history
 contract itself unimportable.  ``tests/test_retained_history.py`` holds that
-module scope stays reader-free.
+module scope stays reader-free.  The exception itself lives in
+``source_segment_errors`` beside the integrity errors it is deliberately not
+one of, so that ``source_segments`` can raise it directly for a locator scheme
+whose reader has left (#741) without the two modules importing each other.
 
 What was tried, and rejected.  Rebinding the historical locators onto the
 replacement reader's coordinates would have let one contract serve both.  The
@@ -47,6 +50,7 @@ from pathlib import Path
 
 from corridor.models import Document, SourceSegment
 from corridor.source_segment_errors import (
+    FreshReadingUnavailable,
     SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
     SourceSegmentLocatorMismatch,
@@ -121,19 +125,6 @@ APPEND_ONLY_RULE = (
     "written onto it: the retained Source Segment is immutable in the database, "
     "and a later correction is a further appended record, not an edit."
 )
-
-
-class FreshReadingUnavailable(RuntimeError):
-    """The reader that established this locator is not installed here."""
-
-    def __init__(self, locator_scheme: str, missing: str | None) -> None:
-        super().__init__(
-            f"a {locator_scheme} locator can only be re-read at its original "
-            f"location by the reader that established it, and "
-            f"{missing or 'that reader'} is not available here"
-        )
-        self.locator_scheme = locator_scheme
-        self.missing = missing
 
 
 @dataclass(frozen=True)

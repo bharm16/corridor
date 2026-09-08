@@ -81,6 +81,7 @@ from corridor.source_segments import (
     replay_recorded_verbal_statement,
 )
 from corridor.statement_values import StatementTiming
+from corridor.prose_spans import PROSE_SEGMENT_KINDS, is_prose_segment, prose_segment_filter
 
 
 @dataclass(frozen=True)
@@ -440,21 +441,17 @@ def append_statement_wording_facts(
             select(SourceSegment)
             .where(
                 SourceSegment.document_id == document.id,
-                SourceSegment.kind == "prose_span",
+                prose_segment_filter(SourceSegment),
             )
             .order_by(SourceSegment.ordinal)
         ).all()
     )
-    if not segments and session.scalar(
-        select(SourceSegment.id).where(
-            SourceSegment.document_id == document.id,
-            SourceSegment.kind == "pdf_span",
-        ).limit(1)
-    ) is not None:
-        raise FactValidationError(
-            "native Minutes statement mapping is not selected; "
-            "source-class and full-chain qualification remain required (#447)"
-        )
+    # This refused when a document had only the reader's spans, because the
+    # incumbent's were the selected ones and #447 owned the act of changing
+    # that. #447 recorded the maintainer's acceptance as a selection basis
+    # (ADR-0095) and #741 removed the incumbent, so there is no unselected
+    # second path left to refuse in favour of: the reader's page spans are the
+    # exact Minutes spans a statement resolves against.
     by_page_and_text: dict[tuple[int, str], list[SourceSegment]] = {}
     segment_by_id = {segment.id: segment for segment in segments}
     for segment in segments:
@@ -635,7 +632,9 @@ def _is_statement_wording_candidate(candidate: Candidate) -> bool:
     )
 
 
-_STATEMENT_SOURCE_KINDS = frozenset({"recorded_verbal_statement", "prose_span"})
+_STATEMENT_SOURCE_KINDS = frozenset(
+    {"recorded_verbal_statement", *PROSE_SEGMENT_KINDS}
+)
 
 
 def _statement_source_run_identity(segment: SourceSegment) -> dict[str, object]:
@@ -662,7 +661,7 @@ def _certify_statement_source_segment(segment: SourceSegment) -> None:
 
     if segment.kind == "recorded_verbal_statement":
         replay_recorded_verbal_statement(segment)
-    elif segment.kind == "prose_span":
+    elif is_prose_segment(segment):
         if sha256(segment.exact_text.encode("utf-8")).hexdigest() != (
             segment.content_sha256
         ):
@@ -1347,7 +1346,18 @@ def replay_fact(
         if contract is None:
             raise FactValidationError(f"unknown Fact type {fact.fact_type!r}")
         segments = tuple(session.get(SourceSegment, source.source_segment_id) for source in sources)
-        if any(segment is not None and segment.kind in {"pdf_cell", "pdf_span"} for segment in segments):
+        # The native replay below is the matrix mapping's: value and context
+        # cells of one sealed reading, in the order that mapping produced them
+        # (#737, #758). A statement Fact is a different contract with a
+        # different role shape -- it is document-less and human-attributed --
+        # and its value source is a prose span, which since #741 is a
+        # `pdf_span` on the page stream rather than the retired reader's
+        # `prose_span`. Sending it into the matrix replay would fail it on the
+        # roles rather than on anything about the reading.
+        if contract.subject_kind != "statement_candidate" and any(
+            segment is not None and segment.kind in {"pdf_cell", "pdf_span"}
+            for segment in segments
+        ):
             return _replay_native_fact(session, document, fact, sources, segments, path, native_reading)
         roles = {source.role for source in sources}
         if roles != contract.required_roles:

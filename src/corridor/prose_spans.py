@@ -10,6 +10,41 @@ from dataclasses import dataclass
 import re
 
 
+# The two locator schemes a page of exact prose has ever been recorded under.
+# ``prose_span`` is the retired reader's: page number and a pair of offsets
+# into the page string that reader produced. ``pdf_span`` on the ``page``
+# stream is the paired-rendition reader's, over the page text projection of
+# the reading it retained, cut by the same ``page_prose_ranges`` boundaries
+# below (ADR-0094, #736). #741 removed the writer of the first; both are read,
+# because a retained citation is still cited.
+PROSE_SEGMENT_KINDS: tuple[str, ...] = ("prose_span", "pdf_span")
+PROSE_PAGE_STREAM = "page"
+
+
+def is_prose_segment(segment) -> bool:
+    """Whether one Source Segment is an exact prose span of a page.
+
+    A ``pdf_span`` on the ``clipped`` stream is a reading of a clipped region
+    rather than of the page, so it is not prose in this sense and never
+    answers a prose query.
+    """
+
+    if segment.kind == "prose_span":
+        return True
+    return segment.kind == "pdf_span" and segment.span_stream == PROSE_PAGE_STREAM
+
+
+def prose_segment_filter(model):
+    """The same rule as a SQLAlchemy predicate over a ``SourceSegment`` entity."""
+
+    from sqlalchemy import and_, or_
+
+    return or_(
+        model.kind == "prose_span",
+        and_(model.kind == "pdf_span", model.span_stream == PROSE_PAGE_STREAM),
+    )
+
+
 @dataclass(frozen=True)
 class NumberedActionSpan:
     """One numbered Action Item with the marker excluded from exact wording."""

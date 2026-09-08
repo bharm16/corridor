@@ -84,6 +84,7 @@ from corridor.report_release import (
     ExternalReportReleaseHistory,
     external_report_release_history,
 )
+from corridor.prose_spans import is_prose_segment
 
 
 # How many accepted values are shown with their full evidence at once. The
@@ -615,7 +616,7 @@ def _locator(segment: SourceSegment) -> str:
 
     if segment.kind == "spreadsheet_cell":
         return f"sheet {segment.sheet_name}, cell {segment.cell_range}"
-    if segment.kind == "prose_span":
+    if is_prose_segment(segment):
         return (
             f"page {segment.page_no}, "
             f"characters {segment.start_offset}–{segment.end_offset}"

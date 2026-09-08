@@ -25,7 +25,7 @@ from sqlalchemy.orm import Session
 from corridor import extract_minutes_v4 as v4
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
-from corridor.source_segments import NumberedActionSpan, numbered_action_spans
+from corridor.prose_spans import NumberedActionSpan, numbered_action_spans
 from corridor.verify import literal_quote_on_page
 
 

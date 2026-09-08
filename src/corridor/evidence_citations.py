@@ -32,6 +32,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.models import EvidenceLink, EvidenceLinkSource, SourceSegment
+from corridor.prose_spans import prose_segment_filter
 
 
 @dataclass(frozen=True)
@@ -137,7 +138,7 @@ def citable_segment_for_quote(
         select(SourceSegment)
         .where(
             SourceSegment.document_id == document_id,
-            SourceSegment.kind == "prose_span",
+            prose_segment_filter(SourceSegment),
             SourceSegment.page_no == page_no,
             SourceSegment.exact_text == quote,
         )

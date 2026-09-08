@@ -89,9 +89,9 @@ def reader_decision(**overrides: Any) -> PageRoutingDecision:
 # --- the route is the only door -------------------------------------------------
 
 
-def test_the_scanned_path_is_not_selected_by_default():
-    """Merging an adapter is not selecting it: the incumbent path stays the default."""
-    assert settings.textract_scanned_reading is False
+def test_the_scanned_path_has_no_setting_because_it_has_no_alternative():
+    """The incumbent local engine the setting chose instead is gone (#741)."""
+    assert not hasattr(settings, "textract_scanned_reading")
 
 
 def test_an_ocr_region_of_a_reader_decision_is_routed_to_textract():

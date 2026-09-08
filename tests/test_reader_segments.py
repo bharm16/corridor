@@ -31,7 +31,13 @@ from corridor.reader_segments import (
     select_pdf_cell_segment,
 )
 from corridor.render_profiles import render_page_derivative
-from corridor.source_append import append_source_segments
+from corridor.source_append import SegmentValues, append_source_segments
+from corridor.locator_validation import (
+    NOT_RE_READABLE,
+    source_segment_locator_validation_status,
+)
+from corridor.retained_history import FreshReadingUnavailable
+from corridor.source_segment_errors import SourceSegmentIntegrityError
 from corridor.source_segments import (
     SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
@@ -251,7 +257,6 @@ def test_selected_native_ingest_never_creates_new_incumbent_spans(
     session, project, tmp_path, monkeypatch
 ):
     path = native_pdf(tmp_path)
-    monkeypatch.setattr(settings, "native_reader_token_layer", True)
     document = ingest_document(
         session,
         project_id=project.id,
@@ -267,31 +272,71 @@ def test_selected_native_ingest_never_creates_new_incumbent_spans(
     for span in segments:
         if span.kind == "pdf_span" and span.span_stream == "page":
             assert page.text[span.start_offset : span.end_offset] == span.exact_text
-    assert Settings().native_reader_token_layer is False
 
 
-def test_historical_deref_dispatches_to_the_old_reading_only(
+def _retained_prose_span(session, document, *, exact_text, page_no, start, end):
+    """A retained ``prose_span`` citation, as the retired reading recorded it.
+
+    Ingest no longer writes this kind: a PDF is read by the paired-rendition
+    reader and its segments are ``pdf_span``/``pdf_cell`` (#736, #741). The
+    rows written before that are still in the database and still cited, so a
+    test about them seeds one rather than asking today's ingest to produce
+    what it can no longer produce.
+    """
+
+    (segment,) = append_source_segments(
+        session,
+        project_id=document.project_id,
+        document_id=document.id,
+        recorded_verbal_origin_id=None,
+        segments=[
+            SegmentValues(
+                kind="prose_span",
+                exact_text=exact_text,
+                content_sha256=sha256(exact_text.encode("utf-8")).hexdigest(),
+                ordinal=1,
+                page_no=page_no,
+                start_offset=start,
+                end_offset=end,
+            )
+        ],
+    )
+    return segment
+
+
+def test_a_retained_prose_locator_refuses_by_name_and_never_reaches_the_new_reader(
     session, project, tmp_path, monkeypatch
 ):
+    """The offsets belong to a reading that is gone, and no reader inherits them.
+
+    This used to dereference through the incumbent, which is exactly what
+    ``dereference_source_segment`` cannot do now (#741). The one thing it must
+    never do instead is answer with the replacement reader: the two readings do
+    not share a coordinate system, so the same offsets name a different place.
+    So it refuses, and names the reader it needed.
+    """
+
     path = native_pdf(tmp_path)
-    doc = ingest_document(
-        session,
-        project_id=project.id,
-        path=path,
-        doc_type="minutes",
-        images_dir=tmp_path / "legacy",
+    doc = registered(session, project, path)
+    legacy = _retained_prose_span(
+        session, doc, exact_text="Owner", page_no=1, start=0, end=5
     )
-    legacy = session.scalar(
-        select(SourceSegment).where(
-            SourceSegment.document_id == doc.id, SourceSegment.kind == "prose_span"
-        )
-    )
-    monkeypatch.setattr(settings, "native_reader_token_layer", True)
     monkeypatch.setattr(
         "corridor.token_layers.PdfiumExecutor.read_document",
         lambda *a, **k: pytest.fail("new reader used old offset"),
     )
-    assert dereference_source_segment(doc, legacy, path) == legacy.exact_text
+
+    with pytest.raises(FreshReadingUnavailable, match="pymupdf is not available"):
+        dereference_source_segment(doc, legacy, path)
+
+    # And it is not an integrity failure, which is what would make the Source
+    # Passage Check call the passage Not found at cited location.
+    with pytest.raises(FreshReadingUnavailable) as raised:
+        dereference_source_segment(doc, legacy, path)
+    assert not isinstance(raised.value, SourceSegmentIntegrityError)
+    assert (
+        source_segment_locator_validation_status(doc, legacy, path) == NOT_RE_READABLE
+    )
 
 
 def test_native_deref_refuses_wrong_digest_reader_or_location(
@@ -567,9 +612,18 @@ def test_native_locator_follows_actual_nonzero_deskew_pixels(
         assert min(ink.tobytes()) < 80
 
 
-def test_native_only_statement_handoff_fails_explicitly_without_changing_legacy(
+def test_statement_wording_must_resolve_to_one_exact_reader_span(
     session, project, tmp_path
 ):
+    """The reader's page spans are what a statement resolves against now.
+
+    This used to refuse the handoff outright, because the incumbent's spans
+    were the selected ones and #447 owned changing that. #447 recorded the
+    maintainer's acceptance (ADR-0095) and #741 removed the incumbent, so the
+    only refusal left is the real one: wording that does not resolve to one
+    exact span.
+    """
+
     from corridor.facts import append_statement_wording_facts
     from corridor.materializer import FactValidationError
     from corridor.models import Candidate, ExtractionRun
@@ -597,7 +651,7 @@ def test_native_only_statement_handoff_fails_explicitly_without_changing_legacy(
     )
     # Test the public handoff before any unmapped Candidate is materialized.
     with pytest.raises(
-        FactValidationError, match="native Minutes statement mapping is not selected"
+        FactValidationError, match="must resolve to one exact prose span"
     ):
         append_statement_wording_facts(session, doc, ExtractionRun(), (candidate,))
 

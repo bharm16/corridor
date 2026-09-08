@@ -27,6 +27,7 @@ from corridor.locator_validation import (
     INVALID,
     LOCATOR_VALIDATION_STATUSES,
     NOT_CHECKED,
+    NOT_RE_READABLE,
     VALID,
     cited_passage_locator_validation_status,
     evidence_link_locator_validation_status,
@@ -34,7 +35,8 @@ from corridor.locator_validation import (
     recorded_verbal_statement_locator_validation_status,
     source_segment_locator_validation_status,
 )
-from corridor.models import Project, SourceSegment
+from corridor.models import Document, Project, SourceSegment
+from corridor.source_append import SegmentValues, append_source_segments
 from corridor.presentation import (
     documentation_review_label,
     field_label,
@@ -187,7 +189,7 @@ def test_bytes_that_are_not_the_registered_document_are_invalid(
     )
 
 
-def test_a_prose_span_locator_validates_against_the_registered_pdf(
+def test_a_pdf_span_locator_validates_against_the_registered_pdf(
     session, project, tmp_path
 ):
     path = tmp_path / "coordination-minutes.pdf"
@@ -209,6 +211,81 @@ def test_a_prose_span_locator_validates_against_the_registered_pdf(
         source_segment_locator_validation_status(document, segment, path)
         for segment in segments
     } == {VALID}
+
+
+def _retained_prose_citation(session, project, tmp_path):
+    """A registered Document and one ``prose_span`` written by the retired reader."""
+
+    path = tmp_path / "retained-minutes.pdf"
+    fixture = PdfFixture()
+    fixture.add_page().text((72, 72), "Equistar will submit the signed exhibit.")
+    fixture.save(path)
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(path.read_bytes()).hexdigest(),
+        filename=path.name,
+        doc_type="minutes",
+    )
+    session.add(document)
+    session.flush()
+    words = "Equistar will submit the signed exhibit."
+    (segment,) = append_source_segments(
+        session,
+        project_id=project.id,
+        document_id=document.id,
+        recorded_verbal_origin_id=None,
+        segments=[
+            SegmentValues(
+                kind="prose_span",
+                exact_text=words,
+                content_sha256=sha256(words.encode("utf-8")).hexdigest(),
+                ordinal=1,
+                page_no=1,
+                start_offset=0,
+                end_offset=len(words),
+            )
+        ],
+    )
+    return document, segment, path
+
+
+def test_a_retained_prose_citation_is_not_re_readable_and_never_invalid(
+    session, project, tmp_path
+):
+    """The reader that wrote this locator left the product (#741, ADR-0094).
+
+    A ``prose_span`` is a pair of offsets into the page string the retired
+    reader produced, so no reader here can say whether that location still
+    yields these words. What the check must not do is call the passage
+    ``invalid``: that word means the locator was replayed and did not reach the
+    passage, which is a statement about the source, and nothing replayed it.
+    """
+
+    document, segment, path = _retained_prose_citation(session, project, tmp_path)
+
+    assert source_segment_locator_validation_status(document, segment, path) == (
+        NOT_RE_READABLE
+    )
+    assert source_segment_locator_validation_status(document, segment, path) != INVALID
+
+    # Everything the check can still establish without a reader, it still
+    # establishes. A retained citation whose stored words no longer match the
+    # digest recorded with them is an integrity failure that no page needed to
+    # be opened to find, and it stays ``invalid``.
+    segment.exact_text = "Equistar will submit something else."
+    assert source_segment_locator_validation_status(document, segment, path) == INVALID
+
+
+def test_the_not_re_readable_state_is_labelled_without_claiming_a_check(
+    session, project, tmp_path
+):
+    assert source_passage_check_label(NOT_RE_READABLE) == (
+        "Cited location cannot be re-read"
+    )
+    assert NOT_RE_READABLE in LOCATOR_VALIDATION_STATUSES
+    # The compatibility projection stays exactly ``status == valid``: a
+    # passage nobody could re-read is not a verified one.
+    assert evidence_link_verified(NOT_RE_READABLE) is False
 
 
 def test_a_recorded_verbal_statement_validates_on_its_own_digest():
@@ -261,7 +338,13 @@ def test_verified_is_exactly_the_projection_of_a_valid_status():
     assert evidence_link_verified(VALID) is True
     assert evidence_link_verified(INVALID) is False
     assert evidence_link_verified(NOT_CHECKED) is False
-    assert set(LOCATOR_VALIDATION_STATUSES) == {VALID, INVALID, NOT_CHECKED}
+    assert evidence_link_verified(NOT_RE_READABLE) is False
+    assert set(LOCATOR_VALIDATION_STATUSES) == {
+        VALID,
+        INVALID,
+        NOT_CHECKED,
+        NOT_RE_READABLE,
+    }
 
     with pytest.raises(ValueError, match="unknown locator validation status"):
         evidence_link_verified("passed")
@@ -461,10 +544,14 @@ def test_the_flag_is_presented_as_the_source_passage_check_with_its_state():
     """
 
     assert label("source_passage_check") == "Source passage check"
-    assert [source_passage_check_label(s) for s in (VALID, INVALID, NOT_CHECKED)] == [
+    assert [
+        source_passage_check_label(s)
+        for s in (VALID, INVALID, NOT_CHECKED, NOT_RE_READABLE)
+    ] == [
         "Found at cited location",
         "Not found at cited location",
         "No cited location recorded",
+        "Cited location cannot be re-read",
     ]
 
 

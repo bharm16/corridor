@@ -5,22 +5,18 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
-import pymupdf
 import pytest
 from sqlalchemy import select
 
-from corridor.config import Settings, settings
 from corridor.db import Session, engine
 from corridor.models import Document, Project, TokenLayerManifest
 from corridor.render_profiles import render_page_derivative
 from corridor.token_layers import (
+    EngineIdentity,
     READER_ENGINE,
     READER_NATIVE_ADAPTER_VERSION,
-    OcrRequest,
-    TesseractEngine,
     Token,
     TokenLayer,
-    extract_native_token_layer,
     page_text_projection,
     persist_token_layer,
     read_native_token_layers,
@@ -40,89 +36,46 @@ def _native_fixture() -> PdfFixture:
     return fixture
 
 
+# The engine identity a native layer written before #741 carries. It is
+# constructed rather than produced, because the engine that produced it has
+# left the product and its layers have not: a retained manifest still holds
+# these exact words, and the code below has to keep working on them.
+RETAINED_INCUMBENT_IDENTITY = EngineIdentity(
+    origin="native",
+    engine="pymupdf",
+    engine_version="1.28.0",
+    adapter_version="native-pymupdf-v1",
+)
+
+
+def _retained_incumbent_layer(source_sha256: str) -> TokenLayer:
+    """One native layer as the retired engine's adapter wrote them."""
+
+    return TokenLayer(
+        page_no=1,
+        origin="native",
+        source_sha256=source_sha256,
+        identity=RETAINED_INCUMBENT_IDENTITY,
+        tokens=(
+            Token(
+                ordinal=0,
+                origin="native",
+                raw_text="Utility",
+                normalized_text="utility",
+                polygon_pdf={"x0": 60_000, "y0": 80_000, "x1": 96_000, "y1": 91_000},
+                block=0,
+                line=0,
+            ),
+        ),
+        quality={"token_count": 1, "rotation_degrees": 0, "empty_word_tokens": 0},
+    )
+
+
 def _scanned_fixture() -> PdfFixture:
     scan = scan_image(595, 842, dpi=300, lines=(((72, 120), "CENTERPOINT ENERGY", 22),))
     fixture = PdfFixture()
     fixture.add_page().image((0, 0, 595, 842), scan)
     return fixture
-
-
-def test_native_layer_has_positioned_tokens_and_no_confidence(tmp_path):
-    fixture = _native_fixture()
-    pdf = fixture.save(tmp_path / "native.pdf")
-    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    with pymupdf.open(pdf) as document:
-        layer = extract_native_token_layer(
-            document[0], page_no=1, source_sha256=digest
-        )
-
-    assert layer.origin == "native"
-    assert layer.identity.engine == "pymupdf"
-    assert layer.identity.adapter_version
-    assert layer.source_sha256 == digest
-    declared = fixture.pages[0].expected_words
-    assert [token.raw_text for token in layer.tokens] == [
-        word.text for word in declared
-    ]
-    for token, word in zip(layer.tokens, declared, strict=True):
-        assert token.origin == "native"
-        assert token.confidence is None  # native readings are not estimates
-        assert token.normalized_text == token.normalized_text.strip()
-        x0, y0, x1, y1 = word.fixed_point_box()
-        # Horizontal extents follow the AFM advance widths the fixture also
-        # writes into its font, so the reader agrees to the thousandth of a
-        # point. Vertical extents are the reader's substitute-face convention
-        # against the fixture's AFM bounding box: within two points at 11 pt.
-        assert abs(token.polygon_pdf.x0 - x0) <= 1
-        assert abs(token.polygon_pdf.x1 - x1) <= 1
-        assert abs(token.polygon_pdf.y0 - y0) <= 2_000
-        assert abs(token.polygon_pdf.y1 - y1) <= 2_000
-    assert layer.quality["token_count"] == len(layer.tokens) == len(declared)
-    assert layer.quality["rotation_degrees"] == 0
-
-
-def test_ocr_layer_carries_confidence_pdf_and_render_polygons_and_full_pinning(
-    tmp_path,
-):
-    pdf = _scanned_fixture().save(tmp_path / "scanned.pdf")
-    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    derivative = render_page_derivative(
-        pdf_path=pdf,
-        page_number=1,
-        profile_name="ocr_layout",
-        output_dir=tmp_path / "renders",
-    )
-    engine = TesseractEngine()
-    layer = engine.recognize(
-        OcrRequest(
-            page_no=1,
-            source_sha256=digest,
-            image_path=derivative.artifact_path,
-            derivative=derivative,
-        )
-    )
-
-    assert layer.origin == "ocr"
-    assert layer.tokens, "the scanned page yields OCR tokens"
-    assert "CENTERPOINT" in " ".join(t.raw_text for t in layer.tokens).upper()
-
-    # Full engine pinning (AC1): binary version, tessdata digests, parameters.
-    identity = layer.identity
-    assert identity.engine == "tesseract"
-    assert identity.engine_version  # tesseract executable version
-    assert identity.language == "eng"
-    assert identity.oem is not None and identity.psm is not None
-    assert identity.dpi == derivative.dpi
-    assert identity.render_profile_id == derivative.profile_id
-    assert identity.traineddata.get("eng.traineddata")  # filename -> sha256
-    assert all(len(d) == 64 for d in identity.traineddata.values())
-
-    for token in layer.tokens:
-        assert token.origin == "ocr"
-        assert 0.0 <= token.confidence <= 1.0  # a signal, not a probability
-        assert token.polygon_render is not None
-        assert token.polygon_pdf.x1 > token.polygon_pdf.x0
-    assert layer.quality["mean_confidence"] is not None
 
 
 def test_pdf_polygon_maps_inside_the_page_via_the_render_transform(tmp_path):
@@ -148,28 +101,13 @@ def test_pdf_polygon_maps_inside_the_page_via_the_render_transform(tmp_path):
 def test_canonical_serialization_is_deterministic(tmp_path):
     pdf = _native_fixture().save(tmp_path / "native.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    with pymupdf.open(pdf) as document:
-        layer = extract_native_token_layer(
-            document[0], page_no=1, source_sha256=digest
-        )
+    (layer,) = read_native_token_layers(pdf, source_sha256=digest)
     reparsed = TokenLayer.model_validate_json(layer.canonical_bytes())
     assert reparsed.content_sha256 == layer.content_sha256
     assert reparsed.canonical_bytes() == layer.canonical_bytes()
 
 
 # ---- the reader-backed native layer (#733) ---------------------------------
-
-
-def test_the_reader_backed_native_layer_is_disabled_by_default():
-    """Enabling the adapter is one configuration change and nothing else.
-
-    ADR-0094 keeps "we imported it" apart from "it is approved for
-    production": #447 owns native selection, and no merge may move the
-    production default.
-    """
-
-    assert Settings().native_reader_token_layer is False
-    assert settings.native_reader_token_layer is False
 
 
 def test_the_reader_native_layer_carries_its_own_engine_identity(tmp_path):
@@ -241,13 +179,17 @@ def test_page_text_is_a_rebuildable_projection_over_the_reader_native_layer(
 
 
 def test_the_projection_refuses_a_layer_it_did_not_produce(tmp_path):
-    pdf = _native_fixture().save(tmp_path / "native.pdf")
-    digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    with pymupdf.open(pdf) as document:
-        legacy = extract_native_token_layer(document[0], page_no=1, source_sha256=digest)
+    """A retained incumbent layer is readable and is still not a projection.
+
+    Its page text was a separate call the layer cannot reproduce, and that was
+    true before the engine left and is true after. The refusal has to survive
+    the removal, because the layers it refuses did.
+    """
+
+    retained = _retained_incumbent_layer("0" * 64)
 
     with pytest.raises(ValueError):
-        page_text_projection(legacy)
+        page_text_projection(retained)
 
 
 def test_a_reader_layer_is_written_beside_the_earlier_layer_not_over_it(tmp_path):
@@ -261,8 +203,7 @@ def test_a_reader_layer_is_written_beside_the_earlier_layer_not_over_it(tmp_path
     fixture = _native_fixture()
     pdf = fixture.save(tmp_path / "native.pdf")
     digest = hashlib.sha256(pdf.read_bytes()).hexdigest()
-    with pymupdf.open(pdf) as document:
-        legacy = extract_native_token_layer(document[0], page_no=1, source_sha256=digest)
+    legacy = _retained_incumbent_layer(digest)
     (replacement,) = read_native_token_layers(pdf, source_sha256=digest)
 
     assert replacement.content_sha256 != legacy.content_sha256
