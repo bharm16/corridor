@@ -33,13 +33,14 @@ Every mode writes a receipt under `artifacts/pdf-engine-retirement/`.
 from __future__ import annotations
 
 import argparse
-from collections import deque
 import json
 import os
 import re
+import runpy
 import shutil
 import subprocess
 import sys
+import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -128,6 +129,14 @@ def build_environment() -> tuple[dict[str, str], list[str]]:
     if uv is None:
         raise SystemExit("uv is not on PATH")
     env["CORRIDOR_ENGINE_ABSENT_UV"] = uv
+    # Managed Python does not automatically search Homebrew's dylib directory.
+    # Keep WeasyPrint's non-engine libraries available after hiding Homebrew's
+    # executable directory. No executable PATH entry is restored.
+    if sys.platform == "darwin" and "DYLD_FALLBACK_LIBRARY_PATH" not in env:
+        libraries = [str(Path(entry).parent / "lib") for entry in removed
+                     if (Path(entry).parent / "lib/libgobject-2.0.dylib").is_file()]
+        if libraries:
+            env["DYLD_FALLBACK_LIBRARY_PATH"] = os.pathsep.join(libraries)
     return env, removed
 
 
@@ -343,22 +352,25 @@ COLLECT_ERROR = re.compile(r"^ERROR (\S+)", re.MULTILINE)
 
 def run_pytest(env: dict[str, str], arguments: list[str]) -> dict[str, object]:
     uv = env["CORRIDOR_ENGINE_ABSENT_UV"]
-    command = [uv, "run", "--no-sync", "pytest", *arguments]
-    tail = deque(maxlen=40)
-    errors = set()
-    process = subprocess.Popen(command, cwd=REPO_ROOT, env=env, text=True,
-                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
-    assert process.stdout is not None
-    for line in process.stdout:
-        print(line, end="", flush=True)
-        tail.append(line.rstrip())
-        errors.update(COLLECT_ERROR.findall(line))
-    returncode = process.wait()
+    result_dir = REPO_ROOT / "out/test-results"
+    result_dir.mkdir(parents=True, exist_ok=True)
+    junit = result_dir / "engine-absent.xml"
+    junit.unlink(missing_ok=True)
+    command = [uv, "run", "--no-sync", "pytest", *arguments, f"--junitxml={junit}"]
+    lifecycle = result_dir / "engine-absent.json"
+    run_test_command = runpy.run_path(str(REPO_ROOT / "scripts/run_local_tests.py"))["run_test_command"]
+    returncode = run_test_command(command, suite="engine-absent", receipt_path=lifecycle,
+        timeout_seconds=float(os.environ.get("TEST_TIMEOUT_SECONDS", "600")), environment=env)
+    counts = None
+    if junit.exists():
+        suites = ET.parse(junit).getroot()
+        counts = {name: sum(int(suite.get(name, "0")) for suite in suites.iter("testsuite"))
+                  for name in ("tests", "failures", "errors", "skipped")}
     return {
         "command": " ".join(command),
         "returncode": returncode,
-        "errored_paths": sorted(errors),
-        "tail": list(tail),
+        "lifecycle": json.loads(lifecycle.read_text()),
+        "junit_counts": counts,
     }
 
 
@@ -414,6 +426,7 @@ def main() -> int:
         "forbidden_imports": list(FORBIDDEN_IMPORTS),
         "forbidden_executables": list(FORBIDDEN_EXECUTABLES),
         "path_entries_removed": removed,
+        "native_library_path": env.get("DYLD_FALLBACK_LIBRARY_PATH"),
         "prepare": prepared,
         "absence": {
             "test_environment": root_absence,

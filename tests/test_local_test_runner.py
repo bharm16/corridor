@@ -22,7 +22,7 @@ SPEC.loader.exec_module(runner)
 
 def _run(tmp_path, source, timeout=2):
     receipt = tmp_path / "test.json"
-    code = runner._run_child(
+    code = runner.run_test_command(
         [sys.executable, "-c", source], suite="test", receipt_path=receipt,
         timeout_seconds=timeout, heartbeat_seconds=0.05,
     )
@@ -45,6 +45,15 @@ print('a diagnostic on stderr', file=sys.stderr)
     assert receipt["outcome"] == "exited"
     assert receipt["pid"] != os.getpid()
     assert receipt["elapsed_seconds"] < 2
+
+
+def test_owned_command_uses_the_supplied_sanitized_environment(tmp_path, monkeypatch):
+    monkeypatch.setenv("CORRIDOR_TEST_SENTINEL", "host-environment")
+    source = "import os; assert os.environ['CORRIDOR_TEST_SENTINEL'] == 'isolated-environment'"
+    code = runner.run_test_command([sys.executable, "-c", source], suite="engine-absent",
+        receipt_path=tmp_path / "isolated.json", timeout_seconds=2,
+        environment={"CORRIDOR_TEST_SENTINEL": "isolated-environment"})
+    assert code == 0
 
 
 @pytest.mark.parametrize("exit_code", [1, 2, 5])
@@ -134,7 +143,7 @@ def test_start_failure_replaces_stale_success_with_a_known_failure(tmp_path):
     receipt = tmp_path / "test.json"
     receipt.write_text('{"status":"completed","exit_code":0}')
     with pytest.raises(FileNotFoundError):
-        runner._run_child(
+        runner.run_test_command(
             [str(tmp_path / "missing")], suite="test", receipt_path=receipt,
             timeout_seconds=2,
         )
@@ -151,7 +160,7 @@ def test_cli_builds_exactly_one_pytest_child_with_the_same_interpreter(monkeypat
         calls.append((command, kwargs))
         return 5
 
-    monkeypatch.setattr(runner, "_run_child", record)
+    monkeypatch.setattr(runner, "run_test_command", record)
     assert runner.main(["--suite", "focused", "--timeoutseconds", "30", "--",
                         "-n", "1", "tests/test_example.py"]) == 5
     assert calls == [(
@@ -164,7 +173,7 @@ def test_cli_builds_exactly_one_pytest_child_with_the_same_interpreter(monkeypat
 
 def test_an_explicit_diagnostic_failure_limit_is_preserved(monkeypatch):
     commands = []
-    monkeypatch.setattr(runner, "_run_child", lambda command, **kwargs: commands.append(command) or 0)
+    monkeypatch.setattr(runner, "run_test_command", lambda command, **kwargs: commands.append(command) or 0)
     assert runner.main(["--suite", "test", "--diagnostic-reason", "failure-reproduction",
                         "--", "--maxfail=0"]) == 0
     assert commands == [[sys.executable, "-m", "pytest", "--maxfail=0"]]
@@ -181,7 +190,7 @@ def test_broad_local_cli_refuses_before_launch_without_a_diagnostic_reason(
         monkeypatch.setenv("GITHUB_ACTIONS", ci_value)
     # An ambient authorization does not replace the explicit CLI choice.
     monkeypatch.setenv(runner.DIAGNOSTIC_ENV, "failure-reproduction")
-    monkeypatch.setattr(runner, "_run_child", lambda *_args, **_kwargs: pytest.fail("child launched"))
+    monkeypatch.setattr(runner, "run_test_command", lambda *_args, **_kwargs: pytest.fail("child launched"))
     assert runner.main(["--suite", suite, "--", "-n", "2"]) == 2
     assert "make test-focused" in capsys.readouterr().err
 
@@ -190,7 +199,7 @@ def test_broad_local_cli_refuses_before_launch_without_a_diagnostic_reason(
 def test_explicit_diagnostic_cli_launches_once_with_the_chosen_reason(monkeypatch, reason):
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
     calls = []
-    monkeypatch.setattr(runner, "_run_child", lambda command, **kwargs: calls.append(kwargs) or 0)
+    monkeypatch.setattr(runner, "run_test_command", lambda command, **kwargs: calls.append(kwargs) or 0)
     assert runner.main(["--suite", "full", "--diagnostic-reason", reason]) == 0
     assert len(calls) == 1
     assert calls[0]["diagnostic_reason"] == reason
@@ -199,7 +208,7 @@ def test_explicit_diagnostic_cli_launches_once_with_the_chosen_reason(monkeypatc
 def test_ci_broad_cli_launches_once_without_a_local_diagnostic_reason(monkeypatch):
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
     calls = []
-    monkeypatch.setattr(runner, "_run_child", lambda command, **kwargs: calls.append(kwargs) or 0)
+    monkeypatch.setattr(runner, "run_test_command", lambda command, **kwargs: calls.append(kwargs) or 0)
     assert runner.main(["--suite", "test"]) == 0
     assert len(calls) == 1
     assert calls[0]["diagnostic_reason"] is None
@@ -208,7 +217,7 @@ def test_ci_broad_cli_launches_once_without_a_local_diagnostic_reason(monkeypatc
 def test_diagnostic_reason_reaches_only_the_owned_child(monkeypatch, tmp_path):
     monkeypatch.setenv(runner.DIAGNOSTIC_ENV, "parent-value")
     receipt = tmp_path / "test.json"
-    code = runner._run_child(
+    code = runner.run_test_command(
         [sys.executable, "-c", "import os; assert os.environ.get('CORRIDOR_LOCAL_BROAD_REASON') == 'performance-investigation'"],
         suite="test", receipt_path=receipt, timeout_seconds=2,
         diagnostic_reason="performance-investigation",

@@ -1,0 +1,97 @@
+{
+  "audited": {
+    "environments": {
+      "application": {
+        "present": [],
+        "site_packages": "/opt/corridor/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/.venv"
+      },
+      "render_worker": {
+        "present": [],
+        "site_packages": "/opt/corridor/workers/render/.venv/lib/python3.12/site-packages",
+        "virtualenv": "/opt/corridor/workers/render/.venv"
+      }
+    },
+    "executables": {
+      "tesseract": null
+    },
+    "native_matrix_runtime": {
+      "code_revision": "4b230c4d3f5e6b18791efe03884b9fae499f9202",
+      "configuration_sha256": "ef8b2636eacae21879ebcc2c6c3c3078bf9258a65be39a4cee21e49405a8bacc"
+    },
+    "notices": {
+      "declared_files": 25,
+      "files_on_disk": 26,
+      "installed_in_image": {
+        "pdf-oxide": [
+          {
+            "dist_info": "pdf_oxide-0.3.77.dist-info",
+            "licence_files": [
+              "licenses/LICENSE-APACHE",
+              "licenses/LICENSE-MIT",
+              "licenses/NOTICE"
+            ]
+          }
+        ],
+        "pillow": [
+          {
+            "dist_info": "pillow-12.3.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSE"
+            ]
+          }
+        ],
+        "pypdfium2": [
+          {
+            "dist_info": "pypdfium2-5.13.0.dist-info",
+            "licence_files": [
+              "licenses/LICENSES/Apache-2.0.txt",
+              "licenses/LICENSES/BSD-3-Clause.txt",
+              "licenses/LICENSES/CC-BY-4.0.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/abseil.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/agg23.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/fast_float.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/freetype.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/icu.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/lcms.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.ijg",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libjpeg_turbo.md",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libopenjpeg.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libpng.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/libtiff.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/llvm-libc.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium-binaries.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/pdfium.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/simdutf.txt",
+              "licenses/data/linux_arm64/BUILD_LICENSES/zlib.txt"
+            ]
+          }
+        ]
+      },
+      "manifest_present": true,
+      "missing_files": [],
+      "packages": [
+        "pypdfium2",
+        "pdf-oxide",
+        "pillow"
+      ],
+      "root": "/opt/corridor/src/corridor_pdf_reader/replacement/third-party-notices"
+    },
+    "path": "/opt/corridor/.venv/bin:/usr/local/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+    "system_packages": {
+      "tesseract-ocr": null
+    }
+  },
+  "clear_of_retired_engines": true,
+  "findings": [],
+  "image": {
+    "command": "docker build --build-arg GIT_REVISION=4b230c4d3f5e6b18791efe03884b9fae499f9202 -t corridor-engine-audit:local .",
+    "image_id": "sha256:c56dbed52e34ca72050452d1cc89320b91234edd5e2855f8500ea3ecaed91698",
+    "size_bytes": 1932906673,
+    "tag": "corridor-engine-audit:local"
+  },
+  "recorded_at": "2026-09-08T18:51:39.052767+00:00",
+  "revision": "4b230c4d3f5e6b18791efe03884b9fae499f9202",
+  "schema_version": "corridor.built-image-engine-audit.v1",
+  "working_tree_dirty": false
+}

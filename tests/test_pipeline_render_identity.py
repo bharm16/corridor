@@ -1,6 +1,7 @@
 """A corrected worker can coexist with the old pixels in one caller directory."""
 
 from hashlib import sha256
+import os
 import shutil
 
 from corridor.render_profiles import DEFAULT_WORKER_PROJECT, render_page_derivative
@@ -16,7 +17,8 @@ def test_worker_source_identity_separates_pixels_before_rendering(tmp_path, monk
         shutil.copy2(path, worker / path.name)
     # The setup gate installed this exact locked environment. No test may
     # download dependencies for a copied worker project.
-    (worker / ".venv").symlink_to((DEFAULT_WORKER_PROJECT / ".venv").resolve(), target_is_directory=True)
+    environment_name = os.environ.get("UV_PROJECT_ENVIRONMENT", ".venv")
+    (worker / environment_name).symlink_to((DEFAULT_WORKER_PROJECT / environment_name).resolve(), target_is_directory=True)
     monkeypatch.setenv("UV_OFFLINE", "1")
     source_path = worker / "render_worker.py"
     corrected_bytes = source_path.read_bytes()

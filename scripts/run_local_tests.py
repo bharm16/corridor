@@ -77,10 +77,11 @@ def _stop_group(process: subprocess.Popen, signum: int = signal.SIGTERM) -> None
             signal.signal(watched, handler)
 
 
-def _run_child(
+def run_test_command(
     command: list[str], *, suite: str, receipt_path: Path,
     timeout_seconds: float, heartbeat_seconds: float = 5,
     diagnostic_reason: str | None = None,
+    environment: dict[str, str] | None = None,
 ) -> int:
     """Own one child and publish completion without interpreting its text."""
     if not math.isfinite(timeout_seconds) or timeout_seconds <= 0:
@@ -112,7 +113,7 @@ def _run_child(
             previous_handlers[signum] = signal.signal(signum, interrupt)
         # No shell or output pipe: exactly this interpreter runs pytest and
         # the terminal receives progress, warnings, failures and the summary.
-        child_environment = os.environ.copy()
+        child_environment = dict(os.environ if environment is None else environment)
         child_environment.pop(DIAGNOSTIC_ENV, None)
         if diagnostic_reason is not None:
             child_environment[DIAGNOSTIC_ENV] = diagnostic_reason
@@ -194,7 +195,7 @@ def main(argv: list[str] | None = None) -> int:
     if not any(argument == "-x" or argument.startswith("--maxfail") for argument in pytest_args):
         pytest_args = ["-x", *pytest_args]
     try:
-        return _run_child(
+        return run_test_command(
             [sys.executable, "-m", "pytest", *pytest_args], suite=arguments.suite,
             receipt_path=ROOT / "out" / "test-results" / f"{arguments.suite}.json",
             timeout_seconds=arguments.timeout_seconds,

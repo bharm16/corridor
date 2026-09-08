@@ -1,0 +1,123 @@
+{
+  "absence": {
+    "render_worker_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor/workers/render/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor/workers/render/.venv-engine-absent/lib/python3.12/site-packages"
+    },
+    "test_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor/.venv-engine-absent/lib/python3.12/site-packages"
+    }
+  },
+  "forbidden_executables": [
+    "tesseract"
+  ],
+  "forbidden_imports": [
+    "pymupdf",
+    "fitz",
+    "pytesseract"
+  ],
+  "mode": "suite",
+  "passed": false,
+  "path_entries_removed": [
+    "/opt/homebrew/bin"
+  ],
+  "prepare": [
+    {
+      "command": "/opt/homebrew/bin/uv sync --locked --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        " + weasyprint==69.0",
+        " + webencodings==0.5.1",
+        " + werkzeug==3.1.8",
+        " + xmltodict==1.0.4",
+        " + zopfli==0.4.3"
+      ]
+    },
+    {
+      "command": "/opt/homebrew/bin/uv sync --project workers/render --frozen --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Installed 4 packages in 50ms",
+        " + numpy==2.5.2",
+        " + opencv-python-headless==5.0.0.93",
+        " + pillow==12.3.0",
+        " + pypdfium2==5.13.0"
+      ]
+    }
+  ],
+  "recorded_at": "2026-09-08T18:50:19.464558+00:00",
+  "result": {
+    "command": "/opt/homebrew/bin/uv run --no-sync pytest --engine-absent-proof -n 4 --dist worksteal --continue-on-collection-errors",
+    "errored_paths": [],
+    "returncode": 1,
+    "tail": [
+      "    warn(msg)",
+      "",
+      "tests/test_page_inventory.py::test_a_rotated_pages_image_region_names_the_pixels_the_render_shows",
+      "  /Users/bryceharmon/Desktop/corridor/tests/test_page_inventory.py:273: DeprecationWarning: Image.Image.getdata is deprecated and will be removed in Pillow 14 (2027-10-15). Use get_flattened_data instead.",
+      "    dark = sum(1 for pixel in window.getdata() if pixel < 40)",
+      "",
+      "tests/test_policy_tables.py::test_a_run_cannot_name_another_family_s_approval",
+      "tests/test_policy_tables.py::test_an_outcome_cannot_point_at_another_family_s_run",
+      "tests/test_policy_tables.py::test_an_outcome_cannot_lie_about_its_own_family",
+      "  /Users/bryceharmon/Desktop/corridor/tests/test_policy_tables.py:35: SAWarning: transaction already deassociated from connection",
+      "    trans.rollback()",
+      "",
+      "tests/test_intake_hardening.py::test_archive_duplicate_members_refused",
+      "  /Users/bryceharmon/.local/share/uv/python/cpython-3.12.12-macos-aarch64-none/lib/python3.12/zipfile/__init__.py:1624: UserWarning: Duplicate name: 'xl/workbook.xml'",
+      "    return self._open_to_write(zinfo, force_zip64=force_zip64)",
+      "",
+      "-- Docs: https://docs.pytest.org/en/stable/how-to/capture-warnings.html",
+      "=========================== short test summary info ============================",
+      "FAILED tests/test_export.py::test_the_pdf_renders - OSError: cannot load libr...",
+      "FAILED tests/test_operations_checks.py::test_a_sealed_artifact_is_unchanged_by_a_later_configuration",
+      "FAILED tests/test_pipeline_render_identity.py::test_worker_source_identity_separates_pixels_before_rendering",
+      "FAILED tests/test_current_record.py::test_four_reader_surfaces_match_view_fed_frozen_reading",
+      "FAILED tests/test_reader_segments.py::test_challenger_ingest_executes_for_existing_document_and_preserves_history",
+      "FAILED tests/test_event_admission.py::test_replay_cli_keeps_passing_proof_when_suspension_vetoes_activation",
+      "FAILED tests/test_native_matrix.py::test_measured_request_and_scoped_values_account_for_every_detected_body_row",
+      "FAILED tests/test_report_release.py::test_prepared_report_review_names_unknown_scope_statement_and_frozen_source",
+      "FAILED tests/test_report_release.py::test_prepared_report_freezes_unknown_scope_statement_plan_display",
+      "FAILED tests/test_report_release.py::test_prepare_refuses_a_pdf_that_omits_frozen_statement_plan_fields",
+      "FAILED tests/test_report_release.py::test_legacy_prepared_context_keeps_event_wording_without_inventing_a_citation",
+      "FAILED tests/test_report_release.py::test_new_and_legacy_verbal_source_context_hide_the_recorder_identity",
+      "FAILED tests/test_report_release.py::test_legacy_document_only_context_does_not_publish_current_event_wording",
+      "FAILED tests/test_report_release.py::test_released_pdf_remains_retrievable_after_render_run_cleanup",
+      "FAILED tests/test_report_release.py::test_honestly_adverse_content_does_not_block_release",
+      "FAILED tests/test_report_release.py::test_real_renderer_bytes_are_the_bytes_the_release_service_seals",
+      "FAILED tests/test_report_release.py::test_ordinary_report_flow_renders_fixed_pdf_for_review_without_asking_for_an_identity",
+      "FAILED tests/test_report_release.py::test_report_response_render_failure_rolls_back_artifact_and_frontend_receipt",
+      "FAILED tests/test_report_release.py::test_ordinary_review_and_history_name_party_statements_without_raw_event_ids",
+      "FAILED tests/test_report.py::test_dense_external_report_stays_inside_a4_and_keeps_appendix_rows_together",
+      "FAILED tests/test_report.py::test_report_publishes_open_unknown_scope_party_commitments_with_their_plans",
+      "===== 21 failed, 5470 passed, 6 skipped, 14 warnings in 389.48s (0:06:29) ======"
+    ]
+  },
+  "revision": "4b230c4d3f5e6b18791efe03884b9fae499f9202",
+  "schema_version": "corridor.engine-absent-suite.v1",
+  "withheld_distributions": [
+    "pymupdf",
+    "pytesseract"
+  ]
+}

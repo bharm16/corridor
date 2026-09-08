@@ -28,7 +28,7 @@ from corridor.extractor_lineage import (
     usage_snapshot,
     zero_token_usage,
 )
-from corridor.extraction_errors import ExtractionFailed
+from corridor.extraction_errors import ExtractionFailed, NativeObservationFailed
 from corridor.geometry import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.config import settings
@@ -302,6 +302,25 @@ def _register_complete_supersession_set(
     register_supersessions(session, declarations, project_id=project_id)
 
 
+@contextmanager
+def extraction_attempt(session: Session):
+    """Roll back partial reads, while retaining a native terminal refusal.
+
+    Only this narrow failure is already complete: the native runner rolled
+    back partial source writes and persisted its observation/artifacts. Raise
+    it after releasing the savepoint so the caller can record the failed
+    attempt. Unexpected errors and successful-result validation still roll back.
+    """
+    failure = None
+    with session.begin_nested():
+        try:
+            yield
+        except NativeObservationFailed as exc:
+            failure = exc
+    if failure is not None:
+        raise failure
+
+
 class CapturedCandidates(list[Candidate]):
     """Candidates with the native pipeline's already sealed source run."""
 
@@ -425,9 +444,10 @@ def extraction_route(
             )
             if result.extraction is None:
                 outcome = json.loads(result.observation.receipt_text)["outcome"]
-                raise ExtractionFailed(
+                raise NativeObservationFailed(
                     f"native matrix {outcome['disposition']} at {outcome.get('stage')}: "
-                    f"{outcome.get('reason') or outcome.get('type') or 'no source capture'}"
+                    f"{outcome.get('reason') or outcome.get('type') or 'no source capture'}",
+                    observation_id=result.observation.id,
                 )
             doc.extraction_tiers = {"native_matrix_cells": len(result.extraction.mapping.pages)}
             doc.header_disagreements = 0
@@ -498,7 +518,7 @@ def extract_any(
     route = extraction_route(document, client=client)
     usage_before = usage_snapshot(route.usage_client)
     try:
-        with session.begin_nested():
+        with extraction_attempt(session):
             candidates = route.extract(session, document)
             record_routed_run(
                 session,

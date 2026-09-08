@@ -18,7 +18,10 @@ the same prompt version. `--redo` appends a new run with a new attempt key.
 The native pipeline owns the atomic Source Fact append and its Extraction Run.
 The outer project, single-document and acceptance adapters carry that exact
 run through; they do not append it again. Successful zero-row readings retain
-the same ownership. Selection authorizes source capture only. Both the old
+the same ownership. A native refusal keeps its terminal observation and
+registered artifacts alongside the failed attempt. Unexpected errors and
+invalid successful results still roll back the whole attempt. Selection
+authorizes source capture only. Both the old
 challenger marker and the deployed native marker remain excluded from legacy
 Current Production Run selection and automatic Record Inclusion.
 
@@ -86,6 +89,13 @@ verifies engine/import/executable absence, and runs the complete suite. Its
 dedicated pytest flag is refused in the ordinary environment and rechecks
 both isolated environments before entering the suite. The regular local broad
 guard remains in force.
+
+The acceptance reuses the ordinary runner's process-group deadline and
+`out/test-results/engine-absent.json` running/completed receipt. Its default
+deadline is 600 seconds; `TEST_TIMEOUT_SECONDS` controls it. The final retained
+receipt includes that lifecycle and JUnit counts. On macOS the harness keeps
+`uv` and WeasyPrint's native library discovery available without restoring a
+PATH directory that contains the retired executable.
 
 `tests/test_matrix_retirement_e2e.py` carries the public WSDOT 9540 gas PDF and
 its frozen mapping answer, so CI can ingest, extract and cite it without an

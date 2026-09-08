@@ -52,7 +52,7 @@ from corridor.models import (
     PipelineObservation,
     Project,
 )
-from corridor.pipeline import ExtractionRoute, record_routed_run
+from corridor.pipeline import ExtractionRoute, extraction_attempt, record_routed_run
 from corridor.row_accounting import RowAccountingFailure
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -253,7 +253,7 @@ def extract_project(
             # A savepoint, so a document that raises partway through leaves
             # no half-extracted Candidates behind — which is what the skip
             # on the next run depends on being impossible.
-            with session.begin_nested():
+            with extraction_attempt(session):
                 candidates = route.extract(session, document)
                 run = record_routed_run(
                     session,

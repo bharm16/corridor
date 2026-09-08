@@ -12,7 +12,7 @@ from pathlib import Path
 
 from corridor.config import Settings
 from corridor.native_provider_boundary import (
-    Budget, CustomerAuthorization, ExperimentScope, RequestBoundary,
+    Budget, CustomerAuthorization, ExperimentScope, NativeProviderRefused, RequestBoundary,
     live_transport, open_native_provider_boundary,
 )
 from corridor.pipeline_contracts import ObservationPlan, content_digest
@@ -61,10 +61,14 @@ def configured_native_matrix_runtime(settings: Settings) -> NativeMatrixRuntime:
     for name in sets:
         authorization[name] = frozenset(authorization[name])
     record = record_type(**authorization)
-    transport = live_transport(settings.openai_api_key, settings.openai_base_url)
+    request = RequestBoundary(**raw["request"])
+    if settings.openai_base_url != request.base_url:
+        raise NativeProviderRefused("provider-endpoint-mismatch",
+            detail="the transport endpoint differs from the authorized request")
+    transport = live_transport(settings.openai_api_key, request.base_url)
     try:
         client = open_native_provider_boundary(
-            record, RequestBoundary(**raw["request"]), transport=transport,
+            record, request, transport=transport,
             budget=Budget(**raw["budget"]), source_sha256s=frozenset(raw["source_sha256s"]),
             campaign=raw["campaign"],
         )

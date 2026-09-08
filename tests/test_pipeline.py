@@ -115,6 +115,81 @@ def test_out_of_scope_matrix_fails_before_rendering_or_mapping(
     assert not runtime.output_dir.exists()
 
 
+def test_refused_native_attempt_preserves_its_observation_and_artifacts(
+    session, project, matrix_source, tmp_path,
+):
+    from dataclasses import replace
+    from pathlib import Path
+    from sqlalchemy import func, select
+    from corridor.extract_project import extract_project
+    from corridor.models import Candidate, ExtractionRun, Fact, PipelineObservation, ProcessingArtifact
+    from corridor.object_storage import store_bytes
+
+    source = replace(matrix_source, answers=({**matrix_source.answers[0], "header_row": None},))
+    store_bytes(source.path.read_bytes(), sha256=source.reading.rendition_sha256, suffix=".pdf")
+    _document(session, project, source)
+    runtime, _ = select_native_runtime(session, project, source, tmp_path / "refused")
+    [outcome] = extract_project(session, project, commit=False,
+        select_route=lambda doc: extraction_route(doc, native_runtime=runtime))
+    assert outcome.status == "failed"
+    assert session.scalar(select(func.count()).select_from(PipelineObservation)) == 1
+    assert session.scalar(select(func.count()).select_from(ExtractionRun)) == 1
+    assert session.scalar(select(func.count()).select_from(Candidate)) == 0
+    assert session.scalar(select(func.count()).select_from(Fact)) == 0
+    artifacts = session.scalars(select(ProcessingArtifact)).all()
+    assert artifacts and all(Path(artifact.storage_path).is_file() for artifact in artifacts)
+
+
+def test_runtime_rejects_a_transport_endpoint_outside_its_authorized_request(tmp_path, monkeypatch):
+    import json
+    import pytest
+    from corridor.config import Settings
+    from corridor.native_matrix_runtime import configured_native_matrix_runtime
+    from corridor.native_provider_boundary import NativeProviderRefused
+    from test_native_provider_boundary import SOURCE, _experiment, _request
+
+    runtime_file = tmp_path / "runtime.json"
+    runtime_file.write_text(json.dumps({
+        "deployment": "development", "authorization": _experiment().as_dict(),
+        "request": _request().as_dict(), "source_sha256s": [SOURCE], "campaign": "endpoint-test",
+        "budget": {"max_calls": 1, "max_pages": 1, "max_total_tokens": 10000},
+    }))
+    def forbidden(*args):
+        pytest.fail("endpoint mismatch reached transport construction")
+    monkeypatch.setattr("corridor.native_matrix_runtime.live_transport", forbidden)
+    settings = Settings(_env_file=None, openai_base_url="https://unapproved.invalid/v1",
+        CORRIDOR_NATIVE_MATRIX_RUNTIME_FILE=str(runtime_file))
+    with pytest.raises(NativeProviderRefused, match="endpoint"):
+        configured_native_matrix_runtime(settings)
+
+
+def test_rejected_native_result_rolls_back_the_successful_capture(
+    session, project, matrix_source, tmp_path,
+):
+    from dataclasses import replace
+    import pytest
+    from sqlalchemy import func, select
+    from corridor.extract_project import extract_project
+    from corridor.models import Candidate, ExtractionRun, Fact, PipelineObservation
+    from corridor.object_storage import store_bytes
+
+    store_bytes(matrix_source.path.read_bytes(), sha256=matrix_source.reading.rendition_sha256, suffix=".pdf")
+    document = _document(session, project, matrix_source)
+    runtime, _ = select_native_runtime(session, project, matrix_source, tmp_path / "rejected")
+    route = extraction_route(document, native_runtime=runtime)
+    def incorrect_result(db, document):
+        candidates = route.extract(db, document)
+        candidates[0].model = "wrong-model"
+        return candidates
+    broken = replace(route, extract=incorrect_result)
+    with pytest.raises(ValueError, match="Candidate model"):
+        extract_project(session, project, commit=False, select_route=lambda doc: broken)
+    for model in (Candidate, Fact, PipelineObservation):
+        assert session.scalar(select(func.count()).select_from(model)) == 0
+    [run] = session.scalars(select(ExtractionRun)).all()
+    assert run.outcome == "failed"
+
+
 def test_unselected_matrix_is_a_recorded_processing_failure(
     session, project, matrix_source,
 ):

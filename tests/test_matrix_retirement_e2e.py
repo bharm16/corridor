@@ -37,8 +37,9 @@ FIXTURES = Path(__file__).parent / "fixtures/native-matrix-retirement"
 pytestmark = pytest.mark.slow
 
 
+@pytest.mark.parametrize("provider_refuses", [False, True])
 def test_corpus_ingest_selected_extraction_and_retained_citation_without_engines(
-    session, project, tmp_path, monkeypatch, capsys,
+    session, project, tmp_path, monkeypatch, capsys, provider_refuses,
 ):
     retained = json.loads((FIXTURES / "retained-request.json").read_text())
     source = FIXTURES / retained["source"]
@@ -62,7 +63,11 @@ def test_corpus_ingest_selected_extraction_and_retained_citation_without_engines
     cite_source_segments(session, link, (old,))
     original = evidence_quotation(session, link)
 
-    transport = RecordingTransport([_body(retained["answer"], response_id="test-replay-not-a-provider-observation")])
+    from corridor.native_provider_boundary import TransportOutcome
+
+    response = (TransportOutcome(status=403, error="test provider refusal") if provider_refuses else
+                _body(retained["answer"], response_id="test-replay-not-a-provider-observation"))
+    transport = RecordingTransport([response])
     transport.close = lambda: None
     monkeypatch.setattr("corridor.native_matrix_runtime.live_transport", lambda *args: transport)
     record = _experiment(dataset=project.slug, source_sha256s=frozenset({document.sha256}))
@@ -107,9 +112,23 @@ def test_corpus_ingest_selected_extraction_and_retained_citation_without_engines
         try:
             with production_extraction_routes() as select_route:
                 [outcome] = extract_project(session, project, select_route=select_route, commit=False)
-            assert outcome.status == "extracted", outcome.detail
         finally:
             session.execute(text("reset role"))
+    if provider_refuses:
+        from corridor.models import Candidate, Fact, ProcessingArtifact
+
+        assert outcome.status == "failed"
+        [run] = session.scalars(select(ExtractionRun)).all()
+        [observation] = session.scalars(select(PipelineObservation)).all()
+        assert run.outcome == "failed" and observation.extraction_run_id is None
+        assert str(observation.id) in run.error_detail
+        assert session.scalar(select(func.count()).select_from(ProcessingArtifact)) > 0
+        assert session.scalar(select(func.count()).select_from(Fact)) == 0
+        assert session.scalar(select(func.count()).select_from(Candidate)) == 0
+        assert len(transport.payloads) == 1
+        assert evidence_quotation(session, link) == original
+        return
+    assert outcome.status == "extracted", outcome.detail
     assert outcome.rows == retained["expected_candidates"]
     assert outcome.effective_prompt_version == "matrix_structure_ids_v1"
     assert session.scalar(select(func.count()).select_from(ExtractionRun)) == 1
