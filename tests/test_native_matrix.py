@@ -12,9 +12,19 @@ import pytest
 from sqlalchemy import select
 
 from corridor.config import Settings
+from corridor.admission import load_project
 from corridor.current_record import read_current_project_record
 from corridor.db import Session, engine
-from corridor.extraction_runs import SourceFactAppendConflict
+from corridor.extraction_runs import (
+    SourceFactAppendConflict,
+    current_active_run_declaration,
+    declare_active_run,
+    declare_active_run_by_policy,
+    declare_single_run_documents,
+    declare_single_run_documents_by_policy,
+    is_completed_run,
+    record_extraction_run,
+)
 from corridor.facts import proposal_input_snapshots, replay_fact
 from corridor.models import (
     ActiveExtractionRun,
@@ -37,6 +47,7 @@ from corridor.native_matrix import (
     render_native_matrix_context,
 )
 from corridor.native_matrix_bindings import NativeMatrixRefused, bind_native_matrix
+from corridor.principals import HumanPrincipal
 from corridor.reader_segments import (
     NativeCellIndex,
     append_native_segments,
@@ -526,6 +537,78 @@ def test_new_mapping_owns_new_facts_while_exact_mapping_retries_keep_their_run(
         for link in session.scalars(select(ExtractedProposalFact)).all()
     }
     assert proposal_input_snapshots(session, first.run) == first_snapshots
+    assert read_current_project_record(session, project.id) == ()
+
+
+@pytest.mark.parametrize("native_runs", [1, 2])
+def test_ordinary_load_keeps_completed_challengers_out_of_selection_and_ambiguity(
+    session, project, matrix_source, native_runs,
+):
+    document = _document(session, project, matrix_source)
+    captured = _extract(session, document, matrix_source, idempotency_key=None)
+    if native_runs == 2:
+        changed = _answer()
+        changed["mapping_confidence"] = 0.75
+        _extract(session, document, matrix_source, idempotency_key=None,
+                 client=RecordedStructureClient(matrix_source, answers=[changed]))
+
+    loaded = load_project(session, project.id)
+
+    assert is_completed_run(captured.run)
+    assert loaded.declared_documents == 0 and loaded.ambiguous_documents == []
+    assert loaded.admitted_count == 0
+    assert session.get(ActiveExtractionRun, document.id) is None
+    assert current_active_run_declaration(session, document.id) is None
+    assert declare_single_run_documents_by_policy(session, project.id).declared == []
+    assert declare_single_run_documents(
+        session, project.id, principal=HumanPrincipal("local:native-test-operator"),
+    ) == []
+    assert read_current_project_record(session, project.id) == ()
+
+
+@pytest.mark.parametrize("already_active", [False, True])
+def test_challenger_does_not_obstruct_or_replace_an_eligible_incumbent(
+    session, project, matrix_source, already_active,
+):
+    document = _document(session, project, matrix_source)
+    incumbent = record_extraction_run(
+        session, document, prompt_version="legacy_matrix_fixture", candidate_count=0,
+        page_errors=0, candidates=(), allow_unsealed_legacy=True,
+    )
+    if already_active:
+        declare_active_run(session, document.id, incumbent.id,
+                           principal=HumanPrincipal("local:native-test-operator"))
+        session.flush()
+    captured = _extract(session, document, matrix_source, idempotency_key=None)
+
+    loaded = load_project(session, project.id)
+    session.flush()
+
+    assert loaded.declared_documents == (0 if already_active else 1)
+    assert loaded.ambiguous_documents == []
+    assert session.get(ActiveExtractionRun, document.id).extraction_run_id == incumbent.id
+    assert current_active_run_declaration(session, document.id).extraction_run_id == incumbent.id
+    assert is_completed_run(captured.run)
+    assert read_current_project_record(session, project.id) == ()
+
+
+@pytest.mark.parametrize("actor", ["policy", "human"])
+def test_shared_production_declaration_refuses_challenger_only_configuration(
+    session, project, matrix_source, actor,
+):
+    document = _document(session, project, matrix_source)
+    captured = _extract(session, document, matrix_source)
+
+    with pytest.raises(ValueError, match="challenger-only"):
+        if actor == "policy":
+            declare_active_run_by_policy(session, document.id, captured.run.id)
+        else:
+            declare_active_run(session, document.id, captured.run.id,
+                               principal=HumanPrincipal("local:native-test-operator"))
+
+    assert is_completed_run(captured.run)
+    assert session.get(ActiveExtractionRun, document.id) is None
+    assert current_active_run_declaration(session, document.id) is None
     assert read_current_project_record(session, project.id) == ()
 
 

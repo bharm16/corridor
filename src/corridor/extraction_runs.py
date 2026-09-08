@@ -705,6 +705,18 @@ def candidate_input_snapshot(candidate: Candidate) -> dict:
     }
 
 
+def _production_selection_eligible(session: Session, run: ExtractionRun) -> bool:
+    """Honor a configuration's explicit exclusion without changing completion.
+
+    #737 captures a completed challenger for measurement. Its configuration
+    says it cannot become Current Production Run; #447 owns a later qualified
+    configuration. Existing legacy configurations retain their selection rules.
+    """
+    configuration = extractor_configuration(session, run)
+    controls = (configuration or {}).get("request_controls") or {}
+    return controls.get("selection") != "explicit_challenger_only"
+
+
 def declare_active_run(
     session: Session,
     document_id: int,
@@ -774,6 +786,11 @@ def _declare(
         raise ValueError("extraction run does not belong to the document")
     if run.outcome != "completed" or run.page_errors != 0:
         raise ValueError("only a completed extraction run can be active")
+    if not _production_selection_eligible(session, run):
+        raise ValueError(
+            "this extractor configuration is challenger-only; production "
+            "selection requires a qualified configuration under #447"
+        )
 
     current = session.get(
         ActiveExtractionRun,
@@ -836,7 +853,7 @@ class MultipleRunsNeedExplicitChoice(ValueError):
 def declare_single_run_documents(
     session: Session, project_id: int, *, principal: HumanPrincipal
 ) -> list[ExtractionRun]:
-    """Declare the only completed run of every undeclared document.
+    """Declare the only eligible completed run of every undeclared document.
 
     One operator command, one stated intent, one honest per-run receipt
     (docs/sh99-date-rehearsal.md): the SH 99 event stream spans over a
@@ -859,6 +876,8 @@ def declare_single_run_documents(
     runs_by_document: dict[int, list[ExtractionRun]] = {}
     registry_ids: dict[int, str] = {}
     for run, document in rows:
+        if not _production_selection_eligible(session, run):
+            continue
         runs_by_document.setdefault(document.id, []).append(run)
         # registry_id is nullable for legacy and ad-hoc documents; the
         # refusal must still name them.
@@ -905,7 +924,7 @@ class MechanicalDeclarations:
 def declare_single_run_documents_by_policy(
     session: Session, project_id: int
 ) -> MechanicalDeclarations:
-    """Name the only reading every undeclared document has.
+    """Name the only eligible reading every undeclared document has.
 
     The human form of this refuses as a whole when any document is
     ambiguous, because it answers an operator's stated intent to declare
@@ -913,6 +932,8 @@ def declare_single_run_documents_by_policy(
     (ADR-0029), so it declares what is unambiguous and reports what is
     not — the ambiguous document waits for a human to choose its run,
     and every other document's conflicts reach the list meanwhile.
+    Challenger-only configurations participate in neither selection nor the
+    ambiguity calculation, so measurement cannot obstruct an incumbent run.
     """
     lock_project(session, project_id)
 
@@ -926,6 +947,8 @@ def declare_single_run_documents_by_policy(
     runs_by_document: dict[int, list[ExtractionRun]] = {}
     registry_ids: dict[int, str] = {}
     for run, document in rows:
+        if not _production_selection_eligible(session, run):
+            continue
         runs_by_document.setdefault(document.id, []).append(run)
         registry_ids[document.id] = (
             document.registry_id or document.filename or f"document {document.id}"
