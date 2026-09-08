@@ -124,3 +124,49 @@ class MeasuredEvidence(PipelineContract):
     method: str = Field(min_length=1)
     artifact_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
     measurement: Literal["measured", "estimated"] = "measured"
+
+
+class AcceptedEvidence(PipelineContract):
+    """One named, reachable thing the maintainer actually read before deciding.
+
+    A reference that cannot be followed is not evidence, so the name, the
+    reachable reference and what it says are all required. ADR-0095 keeps
+    these separate from the limits below: what was measured and what that
+    measurement does not establish never merge into one sentence.
+    """
+
+    name: str = Field(min_length=1)
+    reference: str = Field(min_length=1)
+    summary: str = Field(min_length=1)
+
+
+class MaintainerAcceptance(PipelineContract):
+    """ADR-0095's selection basis: a maintainer accepting measured evidence.
+
+    This is not a gate result and carries no status, missing or failed member.
+    An incomplete qualification stays incomplete in its own receipt; this
+    record says something different, in its own words, with its own limits.
+    """
+
+    schema_version: Literal["maintainer-acceptance-v1"] = "maintainer-acceptance-v1"
+    decision: str = Field(min_length=1)
+    configuration_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    implementation_revision: str = Field(pattern=r"^[0-9a-f]{40}$")
+    scope_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    evidence: tuple[AcceptedEvidence, ...] = Field(min_length=1)
+    limits: tuple[str, ...] = Field(min_length=1)
+    words: str = Field(min_length=1)
+    accepted_on: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+
+    @model_validator(mode="after")
+    def distinct_and_stated(self):
+        names = [item.name for item in self.evidence]
+        if len(set(names)) != len(names):
+            raise ValueError("acceptance repeats an evidence name")
+        if any(not value.strip() for value in self.limits) or len(set(self.limits)) != len(self.limits):
+            raise ValueError("every limit must be stated once, plainly")
+        return self
+
+    @property
+    def identity(self) -> str:
+        return content_digest(self.model_dump(mode="json"))

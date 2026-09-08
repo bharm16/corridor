@@ -858,6 +858,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "pipeline_observations",
         "pipeline_comparisons",
         "pipeline_qualifications",
+        "pipeline_acceptances",
         "pipeline_selections",
         "candidates",
         "connector_checkpoint_advances",

@@ -12,21 +12,21 @@ from sqlalchemy.exc import DBAPIError
 from corridor.admission import load_project
 from corridor.config import Settings
 from corridor.models import (
-    ActiveExtractionRun, Dependency, Fact, FactDisposition, PipelineComparison,
-    PipelineObservation, PipelineQualification, PipelineSelection, ProcessingArtifact,
-    Project, RecordInclusionRequest, RevisionReconciliationRequest,
+    ActiveExtractionRun, Dependency, Document, Fact, FactDisposition, PipelineAcceptance,
+    PipelineComparison, PipelineObservation, PipelineQualification, PipelineSelection,
+    ProcessingArtifact, Project, RecordInclusionRequest, RevisionReconciliationRequest,
 )
 from corridor.native_pipeline import (
     RecordedPipelineClient, register_pipeline_configuration, run_native_matrix_shadow,
     run_selected_native_matrix,
 )
-from corridor.pipeline_contracts import MeasuredEvidence, MetricRequirement, ObservationPlan, PipelineScope, QualificationPolicy, canonical_text, content_digest
+from corridor.pipeline_contracts import AcceptedEvidence, MaintainerAcceptance, MeasuredEvidence, MetricRequirement, ObservationPlan, PipelineScope, QualificationPolicy, canonical_text, content_digest
 from corridor.pipeline_qualification import (
-    PipelineQualificationRefused, pipeline_receipt, record_quality, record_qualification,
-    record_repeatability, select_qualified_pipeline, selected_pipeline_configuration,
-    register_qualification_policy,
+    PipelineQualificationRefused, pipeline_receipt, record_acceptance, record_quality,
+    record_qualification, record_repeatability, select_qualified_pipeline,
+    selected_pipeline_configuration, register_qualification_policy,
 )
-from corridor.principals import HumanPrincipal
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor_pdf_reader.replacement import semantics
 from corridor_pdf_reader.replacement.pages import slim_page
 from test_native_matrix import _document, matrix_source, project, session
@@ -570,3 +570,171 @@ def test_a_boundary_that_does_not_cover_this_run_cannot_supply_a_fresh_observati
                                  client=client, plan=ObservationPlan(**fields),
                                  output_dir=tmp_path / "refused", document_label=matrix_source.path.name)
     assert not transport.sent and not (tmp_path / "refused").exists()
+
+
+# ---- ADR-0095: a recorded maintainer acceptance is a selection basis ---------
+
+
+def _acceptance_fixture(session, project, source, *, purpose="synthetic_validation", **overrides):
+    """A registered configuration and the maintainer's own recorded acceptance."""
+    scope = _scope(source, purpose=purpose)
+    document = session.scalar(select(Document).where(
+        Document.project_id == project.id, Document.sha256 == source.reading.rendition_sha256))
+    if document is None:
+        document = _document(session, project, source)
+    configuration = register_pipeline_configuration(
+        session, {"fixture": "accepted native configuration", "code_revision": "a" * 40})
+    fields = dict(
+        decision="ADR-0095",
+        configuration_sha256=configuration.configuration_sha256,
+        implementation_revision="a" * 40,
+        scope_sha256=scope.identity,
+        evidence=(AcceptedEvidence(
+            name="paired-rendition exact gate",
+            reference="docs/operations/native-pipeline-qualification-evidence-2026-09-08.md",
+            summary="262 of 263 development pairs and 70 of 70 holdout pairs pass the exact gate.",
+        ),),
+        limits=("Shared-reader references do not establish independent full-field accuracy.",),
+        words="The evidence already measured is enough for this change; I accept it.",
+        accepted_on="2026-09-08",
+    )
+    fields.update(overrides)
+    return document, scope, MaintainerAcceptance(**fields)
+
+
+def test_a_recorded_acceptance_selects_beside_a_passing_gate(session, project, matrix_source, tmp_path, preexisting_pipeline_state):
+    document, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
+    protected_before = _protected_rows(session)
+    recorded = record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    body = pipeline_receipt(recorded)
+    assert body["schema"] == "pipeline-acceptance-v1" and body["basis"] == "maintainer_acceptance"
+    assert body["actor"] == ACTOR.subject and body["words"] == acceptance.words
+    assert body["implementation_revision"] == "a" * 40
+    assert body["evidence"][0]["reference"].endswith(".md") and body["limits"]
+    assert body["scope"]["source_class"] == "native_matrix"
+    assert "status" not in body and "missing" not in body and "failed" not in body
+    selected = select_qualified_pipeline(session, acceptance_id=recorded.id, actor=ACTOR,
+        reason="Accepted on the evidence already measured (ADR-0095)", expected_selection_id=None)
+    _assert_protected_rows_unchanged(session, protected_before, new_selection_ids=(selected.id,))
+    selection = pipeline_receipt(selected)
+    assert selection["basis"] == "maintainer_acceptance"
+    assert selection["acceptance_id"] == recorded.id and selection["acceptance_sha256"] == recorded.receipt_sha256
+    assert selection["qualification_id"] is None
+    assert selected_pipeline_configuration(session, document, deployment=scope.deployment,
+        configuration_sha256=acceptance.configuration_sha256) == scope
+
+
+def test_an_acceptance_never_becomes_a_passing_gate(session, project, matrix_source, tmp_path):
+    """An incomplete measurement stays incomplete in its own receipt."""
+    fixture = _gate_fixture(session, project, matrix_source, tmp_path, purpose="prospective_production", mode="retained_replay")
+    gate = _qualify(session, fixture)
+    assert gate.status == "incomplete"
+    scope = fixture[1]
+    configuration = register_pipeline_configuration(
+        session, {"fixture": "accepted native configuration", "code_revision": "a" * 40})
+    acceptance = MaintainerAcceptance(
+        decision="ADR-0095", configuration_sha256=configuration.configuration_sha256,
+        implementation_revision="a" * 40, scope_sha256=scope.identity,
+        evidence=(AcceptedEvidence(name="integrated replay", reference="artifacts/pipeline-qualification/",
+                                   summary="466 required rows and 2,466 Facts reproduced twice."),),
+        limits=("The 5.1% unrebindable prose locators stay exactly as measured.",),
+        words="I accept this on the measured evidence.", accepted_on="2026-09-08")
+    before = pipeline_receipt(gate)
+    record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    session.expire_all()
+    reread = session.get_one(PipelineQualification, gate.id)
+    assert reread.status == "incomplete" and pipeline_receipt(reread) == before
+    assert session.scalar(select(func.count()).select_from(PipelineQualification)) == 1
+
+
+def test_no_automated_path_can_grant_itself_an_acceptance(session, project, matrix_source):
+    """ADR-0095: only the maintainer's own principal may record one."""
+    _, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
+    with pytest.raises(InvalidHumanPrincipal, match="HumanPrincipal"):
+        record_acceptance(session, acceptance, project_id=project.id, scope=scope,
+                          actor="pipeline:native-matrix-worker")
+    for role in ("corridor_web", "corridor_worker", "corridor_source_append"):
+        with session.begin_nested():
+            session.execute(text(f"set local role {role}"))
+            with pytest.raises(PipelineQualificationRefused, match="maintenance"):
+                record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+            with pytest.raises(PipelineQualificationRefused, match="maintenance"):
+                select_qualified_pipeline(session, acceptance_id=1, actor=ACTOR,
+                                          reason="Unprivileged", expected_selection_id=None)
+            assert session.scalar(text(
+                "select has_table_privilege(current_user, 'pipeline_acceptances', 'INSERT')")) is False
+            session.execute(text("reset role"))
+    # No SECURITY DEFINER command exists that could append one on their behalf.
+    definers = session.scalars(text(
+        "select p.proname from pg_proc p join pg_namespace n on n.oid = p.pronamespace "
+        "where p.prosecdef and n.nspname = 'public' and p.prosrc ilike '%pipeline_acceptances%'"
+    )).all()
+    assert list(definers) == []
+    assert session.scalar(text(
+        "select count(*) from information_schema.role_table_grants "
+        "where table_name = 'pipeline_acceptances' and privilege_type <> 'SELECT' "
+        "and grantee in ('corridor_web', 'corridor_worker', 'corridor_source_append')")) == 0
+
+
+@pytest.mark.parametrize("break_it", ["scope", "configuration", "revision", "synthetic"])
+def test_an_acceptance_must_bind_what_it_accepts(session, project, matrix_source, break_it):
+    document, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
+    if break_it == "scope":
+        acceptance = acceptance.model_copy(update={"scope_sha256": "f" * 64})
+    elif break_it == "configuration":
+        acceptance = acceptance.model_copy(update={"configuration_sha256": "e" * 64})
+    elif break_it == "revision":
+        acceptance = acceptance.model_copy(update={"implementation_revision": "b" * 40})
+    else:
+        project.is_synthetic = False
+        session.flush()
+    with pytest.raises(PipelineQualificationRefused):
+        record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    assert session.scalar(select(func.count()).select_from(PipelineAcceptance)) == 0
+
+
+def test_selection_stands_on_exactly_one_basis_and_a_failing_gate_still_refuses(
+    session, project, matrix_source, tmp_path,
+):
+    fixture = _gate_fixture(session, project, matrix_source, tmp_path, purpose="prospective_production", mode="retained_replay")
+    incomplete = _qualify(session, fixture)
+    assert incomplete.status == "incomplete"
+    _, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
+    recorded = record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    with pytest.raises(PipelineQualificationRefused, match="not complete and passing"):
+        select_qualified_pipeline(session, incomplete.id, actor=ACTOR,
+                                  reason="An incomplete gate is still a refusal", expected_selection_id=None)
+    with pytest.raises(PipelineQualificationRefused, match="exactly one basis"):
+        select_qualified_pipeline(session, incomplete.id, acceptance_id=recorded.id, actor=ACTOR,
+                                  reason="Two bases at once", expected_selection_id=None)
+    with pytest.raises(PipelineQualificationRefused, match="exactly one basis"):
+        select_qualified_pipeline(session, actor=ACTOR, reason="No basis at all", expected_selection_id=None)
+    assert session.scalar(select(func.count()).select_from(PipelineSelection)) == 0
+
+
+def test_an_acceptance_settles_only_whether_the_configuration_is_good_enough(
+    session, project, matrix_source, tmp_path,
+):
+    """Authorization, source scope and the class boundary are untouched."""
+    document, scope, acceptance = _acceptance_fixture(session, project, matrix_source)
+    recorded = record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    select_qualified_pipeline(session, acceptance_id=recorded.id, actor=ACTOR,
+                              reason="Accepted on the measured evidence", expected_selection_id=None)
+    configuration_sha256 = acceptance.configuration_sha256
+    with pytest.raises(PipelineQualificationRefused, match="no enabled"):
+        selected_pipeline_configuration(session, document, deployment="another-deployment",
+                                        configuration_sha256=configuration_sha256)
+    with pytest.raises(PipelineQualificationRefused, match="exact source"):
+        selected_pipeline_configuration(session, document, deployment=scope.deployment,
+                                        configuration_sha256="e" * 64)
+    document.doc_type = "minutes"
+    session.flush()
+    with pytest.raises(PipelineQualificationRefused, match="exact source"):
+        selected_pipeline_configuration(session, document, deployment=scope.deployment,
+                                        configuration_sha256=configuration_sha256)
+    document.doc_type = "matrix"
+    document.sha256 = "d" * 64
+    session.flush()
+    with pytest.raises(PipelineQualificationRefused, match="exact source"):
+        selected_pipeline_configuration(session, document, deployment=scope.deployment,
+                                        configuration_sha256=configuration_sha256)
