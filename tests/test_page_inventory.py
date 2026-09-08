@@ -5,9 +5,11 @@ from __future__ import annotations
 from pathlib import Path
 
 import pymupdf
+from PIL import Image
 
 from corridor.config import Settings, settings
 from corridor.page_inventory import (
+    FIXED_POINT_SCALE,
     OCR_ENGINE,
     READER_COORDINATE_FRAME,
     READER_ROUTER_VERSION,
@@ -221,6 +223,66 @@ def test_the_reader_backed_inventory_reports_a_rotated_page_as_it_is_displayed(
         image_region.box.x1,
         image_region.box.y1,
     ) == (300_000 - 280_000, 30_000, 300_000 - 210_000, 200_000)
+
+
+def test_a_rotated_pages_image_region_names_the_pixels_the_render_shows(tmp_path):
+    """The frame is not a detail: it decides which pixels OCR is handed.
+
+    A recorded OCR region is cut from the page render, and the render is the
+    page as displayed — `workers/render/render_worker.py` renders with
+    `get_pixmap`, which applies the page's rotation, and clips within rotated
+    page bounds. The reader-backed inventory records displayed-crop boxes, so
+    its region names the pixels the render shows.
+
+    The incumbent records the unrotated box, which on a rotated page is
+    somewhere else entirely. That is asserted rather than described because it
+    is the reason an inventory records the frame it is in at all; #741 removes
+    the incumbent that has it.
+    """
+
+    patch = Image.new("L", (40, 20), 0)
+    fixture = PdfFixture()
+    drawn = fixture.add_page(width=400, height=300, rotation=180)
+    declared = drawn.image((20, 20, 120, 70), patch)
+    path = fixture.save(tmp_path / "rotated.pdf")
+
+    with pymupdf.open(path) as document:
+        incumbent = inventory_page(document[0])
+        pixmap = document[0].get_pixmap(dpi=72, alpha=False)
+    rendered = Image.frombytes(
+        "RGB", (pixmap.width, pixmap.height), pixmap.samples
+    ).convert("L")
+    (reader,) = reader_page_inventories(read_page_facts(path)).values()
+
+    def printed_fraction(region) -> float:
+        window = rendered.crop(
+            tuple(
+                round(value / FIXED_POINT_SCALE)
+                for value in (
+                    region.box.x0,
+                    region.box.y0,
+                    region.box.x1,
+                    region.box.y1,
+                )
+            )
+        )
+        dark = sum(1 for pixel in window.getdata() if pixel < 40)
+        return dark / (window.width * window.height)
+
+    [reader_region] = reader.image_regions
+    [incumbent_region] = incumbent.image_regions
+    assert printed_fraction(reader_region) == 1
+    assert printed_fraction(incumbent_region) == 0
+    # The incumbent's box is the unrotated one the fixture declared; a
+    # 180-degree page displays it at (width - x, height - y).
+    assert (incumbent_region.box.x0, incumbent_region.box.y1) == (
+        round(declared.box[0] * FIXED_POINT_SCALE),
+        round(declared.box[3] * FIXED_POINT_SCALE),
+    )
+    assert (reader_region.box.x0, reader_region.box.y0) == (
+        round((400 - declared.box[2]) * FIXED_POINT_SCALE),
+        round((300 - declared.box[3]) * FIXED_POINT_SCALE),
+    )
 
 
 def test_the_reader_backed_route_decides_as_the_incumbent_router_and_names_textract(

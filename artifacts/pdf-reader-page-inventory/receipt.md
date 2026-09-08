@@ -77,14 +77,33 @@ comparator does — it calls a page scanned below 50 characters — and all four
 lengths are far above it under either reading, so the retired rule's recorded
 50 % false "OCR not needed" rate on the mixed page is unchanged as well.
 
-**Region-level treatment is identical on both OCR-routed pages.** The
-image-only page: 6 embedded image regions under both inventories, coverage
-0.99999993 under both, and the same 5 regions sent to OCR — the sixth is
-below the 2 % coverage floor under both. The mixed page: 1 image region,
-coverage 1.0, one OCR region beside a native region, under both. The mixed
-page routes `both` because the inventory sees an image region on a page that
-also carries native glyphs; that is the case the retired character-count rule
-missed, and it is still caught.
+**Both OCR-routed pages are cut into the same regions, and on the rotated
+one the regions are not in the same place.** The image-only page: 6 embedded
+image regions under both inventories, coverage 0.99999993 under both, and the
+same 5 region identities sent to OCR — the sixth is below the 2 % coverage
+floor under both. The mixed page: 1 image region, coverage 1.0, one OCR
+region beside a native region, under both. The mixed page routes `both`
+because the inventory sees an image region on a page that also carries native
+glyphs; that is the case the retired character-count rule missed, and it is
+still caught.
+
+The image-only page is rotated 180 degrees, and there the two inventories
+disagree about where its six strips are. The incumbent records them in the
+unrotated frame and the reader records them displayed, so each box is the
+other's mirror: the incumbent's `image-2` is 0 → 120,240 thousandths across
+the page and the reader's is 491,760 → 612,000. The render an OCR region is
+cut from is the rotated page — the render worker renders with rotation
+applied and clips within rotated page bounds — so the frame decides which
+pixels an OCR call actually reads. Measured on a synthetic 180-degree page
+with one embedded patch and PyMuPDF's own `get_pixmap`, the fraction of the
+patch's pixels inside the recorded image region is **0.0 under the incumbent
+and 1.0 under the reader-backed inventory**. `tests/test_page_inventory.py`
+holds that measurement.
+
+This changes no routing decision — the page is image-only and routes to OCR
+under both — and it is not this ticket's to celebrate: it says the incumbent
+has been handing OCR the wrong strip of a rotated page, and the replacement
+does not.
 
 **Table-region evidence differs, and no routing depends on it.** The two
 matrix pages: the incumbent records one region of 30 × 28 and one of 61 × 28;
@@ -99,8 +118,9 @@ against 0.07710677 and 0.05967886 against 0.05969674 on the two matrix pages —
 the two readings measure the same glyphs with slightly different box
 conventions. The vector density is equal to ten decimal places on both
 (0.0001237869 and 0.0001567967), from two independently written counts of the
-page's painted paths. Rotation agrees on all five pages, including the
-180-degree image-only page.
+page's painted paths. Rotation agrees on the four non-holdout pages, 180
+degrees on the image-only one and 0 on the other three, and the reader reads
+0 on the holdout page.
 
 **No structural trigger fired on any of the five pages.** Every table region
 the reader found on a text-layer page had text in some of its cells, which is
