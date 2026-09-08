@@ -865,6 +865,7 @@ def _read_scanned_page(
             text=None,
             error_type=failure.reason,
             error_message=failure.detail,
+            engine=failure.engine,
         )
         return _ScannedPageOutcome(
             (),
@@ -890,12 +891,29 @@ def _read_scanned_page(
         images_dir,
         page_no=page_no,
         region_id="page",
-        configuration={"engine": reading.token_layer.identity.engine, "provenance": reading.provenance},
+        configuration={"provenance": reading.provenance},
         scope=scope,
         outcome=result,
         text=recovered,
         error_type=None,
         error_message=None,
+        engine=reading.token_layer.identity.engine,
+        values=[
+            {
+                "region_id": value.region_id,
+                "table": value.table,
+                "row": value.row,
+                "column": value.column,
+                "box": value.box.model_dump(mode="json"),
+                "value": value.value,
+                "value_source": value.value_source,
+                "state": value.state,
+                "confidence": value.confidence,
+                "locator": value.locator.model_dump(mode="json") if value.locator else None,
+                "provenance": value.provenance,
+            }
+            for value in reading.values
+        ],
     )
     return _ScannedPageOutcome(
         (recovered.strip(),) if recovered.strip() else (),
@@ -916,17 +934,27 @@ def _write_raw_ocr_receipt(
     text: str | None,
     error_type: str | None,
     error_message: str | None,
+    engine: str = OCR_ENGINE,
+    values: list[dict] | None = None,
 ) -> Path:
     """Write one OCR attempt's exact output to a content-addressed Class B file.
 
     Content-addressed so a re-render of the same page reuses the identical
     receipt rather than colliding; the persistence seam registers it for
     retention. No session here: extraction stays pure, persistence classifies.
+
+    `engine` is the engine that actually read, which is not always the one the
+    route named (#739): a receipt that said `tesseract` over a Textract reading
+    would be the same lie the retired router told about thin text. `values` is
+    the scanned route's per-cell classification — which cells were re-mapped
+    from the document's own glyphs and which are Unconfirmed readings — kept
+    here rather than in the record, because it is evidence about a reading and
+    not a value the record depends on.
     """
 
     payload = {
         "configuration": dict(configuration),
-        "engine": OCR_ENGINE,
+        "engine": engine,
         "error_message": error_message,
         "error_type": error_type,
         "outcome": outcome,
@@ -934,6 +962,7 @@ def _write_raw_ocr_receipt(
         "region_id": region_id,
         "scope": scope,
         "text": text,
+        "values": values,
     }
     content = (
         json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)

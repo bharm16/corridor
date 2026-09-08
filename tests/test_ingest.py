@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -1079,6 +1080,16 @@ def test_an_authorized_scanned_read_writes_the_provider_backed_token_layer(
     assert len(layer.engine_json["reading_sha256"]) == 64
     assert "SCANNED" in page.text
     assert page.text_source == "ocr"
+    # The receipt names the engine that actually read, and records which cells
+    # are Unconfirmed readings rather than leaving that to be re-derived.
+    receipt = json.loads(
+        next((tmp_path / "images" / doc.sha256).glob("0001-page-raw-ocr-*.json")).read_text()
+    )
+    assert receipt["engine"] == "textract"
+    assert [(value["value"], value["value_source"], value["state"]) for value in receipt["values"]] == [
+        ("SCANNED", "textract_words", "unconfirmed")
+    ]
+    assert receipt["values"][0]["provenance"]["processing"]["engine"] == "textract"
 
 
 def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(
