@@ -1,0 +1,2368 @@
+{
+  "absence": {
+    "render_worker_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/workers/render/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/workers/render/.venv-engine-absent/lib/python3.12/site-packages"
+    },
+    "test_environment": {
+      "distributions": [],
+      "entries": [],
+      "executables": {
+        "tesseract": null
+      },
+      "imports": {
+        "fitz": null,
+        "pymupdf": null,
+        "pytesseract": null
+      },
+      "interpreter": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/.venv-engine-absent/bin/python",
+      "site_packages": "/Users/bryceharmon/Desktop/corridor-wt/741-retirement/.venv-engine-absent/lib/python3.12/site-packages"
+    }
+  },
+  "forbidden_executables": [
+    "tesseract"
+  ],
+  "forbidden_imports": [
+    "pymupdf",
+    "fitz",
+    "pytesseract"
+  ],
+  "mode": "imports",
+  "passed": false,
+  "path_entries_removed": [
+    "/opt/homebrew/bin"
+  ],
+  "prepare": [
+    {
+      "command": "/opt/homebrew/bin/uv sync --locked --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Resolved 84 packages in 6ms",
+        "Audited 77 packages in 13ms"
+      ]
+    },
+    {
+      "command": "/opt/homebrew/bin/uv sync --project workers/render --frozen --no-install-package pymupdf --no-install-package pytesseract",
+      "returncode": 0,
+      "stderr_tail": [
+        "Audited 4 packages in 0.74ms"
+      ]
+    }
+  ],
+  "recorded_at": "2026-09-08T14:34:09.981758+00:00",
+  "result": {
+    "attempted": 511,
+    "engine_attributable": [
+      "corridor.adjudicate",
+      "corridor.admission",
+      "corridor.automatic_carry_forward",
+      "corridor.automatic_carry_forward_cli",
+      "corridor.baseline_adoption",
+      "corridor.baseline_workbook",
+      "corridor.briefing",
+      "corridor.candidate_model",
+      "corridor.changes",
+      "corridor.check_configuration",
+      "corridor.connector_polling",
+      "corridor.connectors.box",
+      "corridor.consequence_levels",
+      "corridor.coordination_summary",
+      "corridor.current_record",
+      "corridor.demo",
+      "corridor.dependency_admission",
+      "corridor.docs",
+      "corridor.document_notifications",
+      "corridor.due_work",
+      "corridor.due_work_cli",
+      "corridor.email_intake",
+      "corridor.event_admission_acceptance",
+      "corridor.event_admission_acceptance_cli",
+      "corridor.event_admission_reproof",
+      "corridor.evidence_investigator",
+      "corridor.evidence_investigator_capture",
+      "corridor.evidence_investigator_cli",
+      "corridor.evidence_investigator_evaluation",
+      "corridor.evidence_investigator_evaluation_cli",
+      "corridor.evidence_investigator_runtime",
+      "corridor.evidence_investigator_shadow",
+      "corridor.evidence_investigator_shadow_cli",
+      "corridor.exceptions",
+      "corridor.export",
+      "corridor.extract_batch",
+      "corridor.extract_matrix",
+      "corridor.extract_minutes_v5",
+      "corridor.extract_project",
+      "corridor.extract_sheet",
+      "corridor.extraction_runs",
+      "corridor.facts",
+      "corridor.field_mapping_manifest",
+      "corridor.follow_up_bundles",
+      "corridor.geometry",
+      "corridor.gold",
+      "corridor.ingest",
+      "corridor.issue_content",
+      "corridor.issue_coverage",
+      "corridor.issue_profile",
+      "corridor.issue_rendering",
+      "corridor.key_date_table",
+      "corridor.later_revision",
+      "corridor.ledger",
+      "corridor.location_discovery",
+      "corridor.location_discovery_cli",
+      "corridor.locator_validation",
+      "corridor.m8_acceptance",
+      "corridor.m8_acceptance_cli",
+      "corridor.m8_acceptance_controlled",
+      "corridor.native_matrix",
+      "corridor.native_matrix_bindings",
+      "corridor.native_pipeline",
+      "corridor.native_reference",
+      "corridor.native_segment_measurement",
+      "corridor.operational_health",
+      "corridor.operative_support",
+      "corridor.packet_review",
+      "corridor.page_inventory",
+      "corridor.pipeline",
+      "corridor.pipeline_comparison",
+      "corridor.pipeline_qualification",
+      "corridor.product_proving_execution",
+      "corridor.product_proving_extraction",
+      "corridor.product_proving_frontend_capture",
+      "corridor.product_proving_run_cli",
+      "corridor.product_proving_session",
+      "corridor.production_run_explanation",
+      "corridor.project_portfolio",
+      "corridor.project_processing",
+      "corridor.project_reading",
+      "corridor.project_workflow",
+      "corridor.prose_interpretation",
+      "corridor.reader_segments",
+      "corridor.record_history",
+      "corridor.release_authorization",
+      "corridor.release_candidate",
+      "corridor.release_preparation_supervisor",
+      "corridor.release_preparation_worker",
+      "corridor.render_profiles",
+      "corridor.render_rasterizer_comparison",
+      "corridor.report",
+      "corridor.report_publication",
+      "corridor.report_release",
+      "corridor.revision_change_explanation",
+      "corridor.revision_comparison",
+      "corridor.revision_processing",
+      "corridor.revision_processing_cli",
+      "corridor.revision_reconciliation",
+      "corridor.sh99_admission_acceptance",
+      "corridor.sh99_admission_acceptance_cli",
+      "corridor.sh99_coordinator_rehearsal",
+      "corridor.sh99_coordinator_rehearsal_cli",
+      "corridor.sheets",
+      "corridor.source_intake",
+      "corridor.source_intake_draft",
+      "corridor.source_segments",
+      "corridor.statement_coordination",
+      "corridor.statement_spine",
+      "corridor.supersession_review",
+      "corridor.support_transfer",
+      "corridor.support_transfer_lineage",
+      "corridor.support_update_routing",
+      "corridor.token_layers",
+      "corridor.unreadable_cells",
+      "corridor.verbal",
+      "corridor.vocabulary",
+      "corridor.web.app",
+      "corridor.web.follow_up_view",
+      "corridor.web.issue_section",
+      "corridor.web.statement_forms",
+      "corridor.work_list",
+      "corridor.workbook_render",
+      "coverage_support",
+      "key_date_table_support",
+      "later_revision_support",
+      "m8_acceptance_support",
+      "packet_review_support",
+      "test_adjudicate",
+      "test_admission",
+      "test_analytics",
+      "test_audit",
+      "test_automatic_carry_forward",
+      "test_automatic_carry_forward_cli",
+      "test_baseline_adoption",
+      "test_briefing",
+      "test_candidate_model",
+      "test_candidates",
+      "test_changes",
+      "test_check_configuration",
+      "test_cited_statement_facts",
+      "test_cohort",
+      "test_condition_tracking",
+      "test_connector_polling_runtime",
+      "test_consequence_levels",
+      "test_current_record",
+      "test_delta_generation_runtime",
+      "test_demo",
+      "test_dependency_admission",
+      "test_dispute_history",
+      "test_disputes",
+      "test_docs",
+      "test_document_delivery_link",
+      "test_document_notifications",
+      "test_document_notifications_runtime",
+      "test_documentation_checklist",
+      "test_due_action_notifications",
+      "test_due_action_notifications_runtime",
+      "test_due_work",
+      "test_due_work_cli",
+      "test_email_intake",
+      "test_eval",
+      "test_event_admission",
+      "test_event_admission_acceptance_cli",
+      "test_event_admission_acceptance_window",
+      "test_event_admission_reproof",
+      "test_event_admission_reproof_runtime",
+      "test_event_cohort",
+      "test_evidence_investigator",
+      "test_evidence_investigator_capture",
+      "test_exceptions",
+      "test_experimental_cli",
+      "test_experimental_database",
+      "test_export",
+      "test_extract_batch",
+      "test_extract_matrix",
+      "test_extract_minutes_v5",
+      "test_extract_project",
+      "test_extract_sheet",
+      "test_extraction_failure_diagnosis",
+      "test_extraction_runs",
+      "test_fact_materialization",
+      "test_facts",
+      "test_focused_review",
+      "test_follow_up_bundles",
+      "test_follow_up_chase_screen",
+      "test_follow_up_plans",
+      "test_geometry",
+      "test_gold",
+      "test_human_fact_decision",
+      "test_human_principals",
+      "test_ingest",
+      "test_intake_hardening",
+      "test_internal_report",
+      "test_issue_coverage",
+      "test_issue_path_end_to_end",
+      "test_issue_profile",
+      "test_issue_rendering",
+      "test_issue_section",
+      "test_key_date_table",
+      "test_key_dates_web",
+      "test_later_revision",
+      "test_ledger",
+      "test_legacy_ledger_archive",
+      "test_legacy_ledger_archive_cli",
+      "test_location_discovery",
+      "test_location_discovery_cli",
+      "test_locator_validation",
+      "test_m8_acceptance",
+      "test_m8_acceptance_capture",
+      "test_m8_acceptance_cli",
+      "test_m8_acceptance_controlled",
+      "test_m8_acceptance_integrity",
+      "test_m8_acceptance_replay",
+      "test_m8_acceptance_sources",
+      "test_migration_baseline",
+      "test_milestones",
+      "test_native_matrix",
+      "test_native_pipeline",
+      "test_native_pipeline_geometry",
+      "test_native_reference",
+      "test_native_segment_measurement",
+      "test_notifications",
+      "test_notifications_runtime",
+      "test_notifications_web",
+      "test_object_storage",
+      "test_operating_mode",
+      "test_operational_telemetry",
+      "test_operations",
+      "test_operations_checks",
+      "test_operations_screen",
+      "test_operative_support",
+      "test_packet_review",
+      "test_packet_review_screen",
+      "test_page_inventory",
+      "test_page_inventory_routing_replay",
+      "test_pipeline",
+      "test_pipeline_comparison",
+      "test_pipeline_qualification_cli",
+      "test_pipeline_render_identity",
+      "test_pipeline_selection",
+      "test_pipeline_selection_guards",
+      "test_policy",
+      "test_product_proving_execution",
+      "test_product_proving_extraction",
+      "test_product_proving_frontend_capture",
+      "test_product_proving_session",
+      "test_production_run_explanation",
+      "test_project_partition_and_offboarding",
+      "test_project_portfolio",
+      "test_project_processing",
+      "test_project_processing_cli",
+      "test_project_processing_runtime",
+      "test_project_workflow",
+      "test_prose_facts",
+      "test_prose_interpretation",
+      "test_prose_locator_regression",
+      "test_pull_connector",
+      "test_push_intake",
+      "test_reader_segments",
+      "test_record_history",
+      "test_record_inclusion",
+      "test_recorded_verbal_segment",
+      "test_release_authorization",
+      "test_release_candidate",
+      "test_release_preparation",
+      "test_release_preparation_supervisor",
+      "test_render_profiles",
+      "test_render_retention",
+      "test_report",
+      "test_report_diff_reference",
+      "test_report_preparation_runtime",
+      "test_report_publication",
+      "test_report_release",
+      "test_retention",
+      "test_retention_sweep_runtime",
+      "test_revision_change_explanation",
+      "test_revision_comparison",
+      "test_revision_processing",
+      "test_revision_processing_cli",
+      "test_revision_reconciliation",
+      "test_revision_reconciliation_runtime",
+      "test_sh99_admission_acceptance",
+      "test_sh99_admission_acceptance_cli",
+      "test_sh99_coordinator_rehearsal",
+      "test_sh99_coordinator_rehearsal_cli",
+      "test_sh99_shared_admission_seal",
+      "test_sheets",
+      "test_sign_in_access",
+      "test_sign_in_link_origin",
+      "test_source_intake",
+      "test_source_intake_draft",
+      "test_source_intake_draft_web",
+      "test_source_intake_web",
+      "test_source_segments",
+      "test_statement_coordination",
+      "test_statement_scope_matching",
+      "test_statement_timing_fact",
+      "test_supersession_review",
+      "test_support_update_routing",
+      "test_thread_reading",
+      "test_token_layer_ingest",
+      "test_token_layers",
+      "test_ui_primitives",
+      "test_unreadable_cells",
+      "test_verbal",
+      "test_verbal_spine",
+      "test_vocabulary",
+      "test_web",
+      "test_work_list",
+      "test_workbook_render"
+    ],
+    "failures": {
+      "corridor.adjudicate": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.admission": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.automatic_carry_forward": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.automatic_carry_forward_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.baseline_adoption": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.baseline_workbook": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.briefing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.candidate_model": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.changes": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.check_configuration": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.connector_polling": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.connectors.box": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.consequence_levels": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.coordination_summary": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.current_record": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.demo": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.dependency_admission": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.docs": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.document_notifications": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.due_work": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.due_work_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.email_intake": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.event_admission_acceptance": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.event_admission_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.event_admission_reproof": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_capture": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_evaluation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_evaluation_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_shadow": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.evidence_investigator_shadow_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.exceptions": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.export": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.extract_batch": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.extract_matrix": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.extract_minutes_v5": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/source_segments.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.extract_project": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.extract_sheet": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.extraction_runs": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.facts": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.field_mapping_manifest": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.follow_up_bundles": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.geometry": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.gold": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/gold.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.ingest": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.issue_content": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.issue_coverage": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.issue_profile": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.issue_rendering": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.key_date_table": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.later_revision": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.ledger": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.location_discovery": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.location_discovery_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.locator_validation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/source_segments.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.m8_acceptance": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.m8_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.m8_acceptance_controlled": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.native_matrix": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.native_matrix_bindings": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.native_pipeline": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.native_reference": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.native_segment_measurement": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.operational_health": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.operative_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.packet_review": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.page_inventory": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.pipeline": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.pipeline_comparison": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.pipeline_qualification": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.product_proving_execution": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.product_proving_extraction": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.product_proving_frontend_capture": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.product_proving_run_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.product_proving_session": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.production_run_explanation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.project_portfolio": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.project_processing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.project_reading": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.project_workflow": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.prose_interpretation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.reader_segments": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.record_history": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.release_authorization": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.release_candidate": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.release_preparation_supervisor": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.release_preparation_worker": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.render_profiles": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.render_rasterizer_comparison": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.report": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.report_publication": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.report_release": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.revision_change_explanation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.revision_comparison": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.revision_processing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.revision_processing_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.revision_reconciliation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.sh99_admission_acceptance": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.sh99_admission_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.sh99_coordinator_rehearsal": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.sh99_coordinator_rehearsal_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.sheets": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.source_intake": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.source_intake_draft": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.source_segments": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/source_segments.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.statement_coordination": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.statement_spine": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.supersession_review": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.support_transfer": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.support_transfer_lineage": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.support_update_routing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.token_layers": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.unreadable_cells": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.verbal": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.vocabulary": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.web.app": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.web.follow_up_view": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.web.issue_section": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "corridor.web.statement_forms": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.work_list": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "corridor.workbook_render": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "coverage_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "key_date_table_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "later_revision_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "m8_acceptance_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "packet_review_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_adjudicate": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_admission": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_analytics": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_audit": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_automatic_carry_forward": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_automatic_carry_forward_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_baseline_adoption": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_briefing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_candidate_model": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_candidates": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_changes": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_check_configuration": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_cited_statement_facts": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_cohort": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_condition_tracking": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_connector_polling_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_consequence_levels": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_current_record": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_delta_generation_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_demo": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_dependency_admission": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_dispute_history": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_disputes": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_docs": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_document_delivery_link": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_document_notifications": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_document_notifications_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_documentation_checklist": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_due_action_notifications": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_due_action_notifications_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_due_work": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_due_work_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_email_intake": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_eval": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_admission": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_admission_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_admission_acceptance_window": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_admission_reproof": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_admission_reproof_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_event_cohort": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_evidence_investigator": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_evidence_investigator_capture": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_exceptions": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_experimental_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_experimental_database": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_export": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_extract_batch": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_extract_matrix": {
+        "error": "ModuleNotFoundError",
+        "import_site": "tests/test_extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_extract_minutes_v5": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_extract_project": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_extract_sheet": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_extraction_failure_diagnosis": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_extraction_runs": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_fact_materialization": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_facts": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_focused_review": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_follow_up_bundles": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_follow_up_chase_screen": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_follow_up_plans": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_geometry": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_gold": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/gold.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_human_fact_decision": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_human_principals": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_ingest": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_intake_hardening": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_internal_report": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_issue_coverage": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_issue_path_end_to_end": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_issue_profile": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_issue_rendering": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_issue_section": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_key_date_table": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_key_dates_web": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_later_revision": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_ledger": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_legacy_ledger_archive": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_legacy_ledger_archive_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_location_discovery": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_location_discovery_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_locator_validation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance_capture": {
+        "error": "ModuleNotFoundError",
+        "import_site": "tests/test_m8_acceptance_capture.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_m8_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance_controlled": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance_integrity": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance_replay": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_m8_acceptance_sources": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_migration_baseline": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_milestones": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_native_matrix": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_native_pipeline": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_native_pipeline_geometry": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_native_reference": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/gold.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_native_segment_measurement": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_notifications": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_notifications_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_notifications_web": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_object_storage": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_operating_mode": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_operational_telemetry": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_operations": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_operations_checks": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_operations_screen": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_operative_support": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_packet_review": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_packet_review_screen": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_page_inventory": {
+        "error": "ModuleNotFoundError",
+        "import_site": "tests/test_page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_page_inventory_routing_replay": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_pipeline": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_pipeline_comparison": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_pipeline_qualification_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_pipeline_render_identity": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_pipeline_selection": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_pipeline_selection_guards": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_policy": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_product_proving_execution": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_product_proving_extraction": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_product_proving_frontend_capture": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_product_proving_session": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_production_run_explanation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_project_partition_and_offboarding": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_project_portfolio": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_project_processing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_project_processing_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_project_processing_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_project_workflow": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_prose_facts": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_prose_interpretation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_prose_locator_regression": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/source_segments.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_pull_connector": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_push_intake": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_reader_segments": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_record_history": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_record_inclusion": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_recorded_verbal_segment": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/source_segments.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_release_authorization": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_release_candidate": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_release_preparation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_release_preparation_supervisor": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_render_profiles": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/page_inventory.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_render_retention": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_report": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_report_diff_reference": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_report_preparation_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_report_publication": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_report_release": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_retention": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_retention_sweep_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_change_explanation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_comparison": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_processing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_processing_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_reconciliation": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_revision_reconciliation_runtime": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sh99_admission_acceptance": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sh99_admission_acceptance_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sh99_coordinator_rehearsal": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sh99_coordinator_rehearsal_cli": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sh99_shared_admission_seal": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_sheets": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_sign_in_access": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_sign_in_link_origin": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_source_intake": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_source_intake_draft": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_source_intake_draft_web": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_source_intake_web": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_source_segments": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_statement_coordination": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_statement_scope_matching": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_statement_timing_fact": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_supersession_review": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_support_update_routing": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_thread_reading": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_token_layer_ingest": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/extract_matrix.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_token_layers": {
+        "error": "ModuleNotFoundError",
+        "import_site": "tests/test_token_layers.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_ui_primitives": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/ingest.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_unreadable_cells": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_verbal": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_verbal_spine": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_vocabulary": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/gold.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      },
+      "test_web": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_work_list": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/token_layers.py",
+        "message": "No module named 'pytesseract'",
+        "missing": "pytesseract"
+      },
+      "test_workbook_render": {
+        "error": "ModuleNotFoundError",
+        "import_site": "src/corridor/geometry.py",
+        "message": "No module named 'pymupdf'",
+        "missing": "pymupdf"
+      }
+    },
+    "must_move": {
+      "src/corridor/extract_matrix.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.extract_matrix",
+          "test_extract_project",
+          "test_pipeline"
+        ],
+        "modules_blocked": 5
+      },
+      "src/corridor/geometry.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.baseline_adoption",
+          "corridor.baseline_workbook",
+          "corridor.consequence_levels"
+        ],
+        "modules_blocked": 48
+      },
+      "src/corridor/gold.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.gold",
+          "test_gold",
+          "test_native_reference"
+        ],
+        "modules_blocked": 4
+      },
+      "src/corridor/ingest.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.connector_polling",
+          "corridor.connectors.box",
+          "corridor.email_intake"
+        ],
+        "modules_blocked": 33
+      },
+      "src/corridor/page_inventory.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.page_inventory",
+          "corridor.render_profiles",
+          "corridor.render_rasterizer_comparison"
+        ],
+        "modules_blocked": 9
+      },
+      "src/corridor/source_segments.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "corridor.extract_minutes_v5",
+          "corridor.locator_validation",
+          "corridor.source_segments"
+        ],
+        "modules_blocked": 5
+      },
+      "src/corridor/token_layers.py": {
+        "engines": [
+          "pytesseract"
+        ],
+        "examples": [
+          "corridor.adjudicate",
+          "corridor.admission",
+          "corridor.automatic_carry_forward"
+        ],
+        "modules_blocked": 203
+      },
+      "tests/test_extract_matrix.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "test_extract_matrix"
+        ],
+        "modules_blocked": 1
+      },
+      "tests/test_m8_acceptance_capture.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "test_m8_acceptance_capture"
+        ],
+        "modules_blocked": 1
+      },
+      "tests/test_page_inventory.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "test_page_inventory"
+        ],
+        "modules_blocked": 1
+      },
+      "tests/test_token_layers.py": {
+        "engines": [
+          "pymupdf"
+        ],
+        "examples": [
+          "test_token_layers"
+        ],
+        "modules_blocked": 1
+      }
+    }
+  },
+  "revision": "2bf9fc466de67d341bb543fb9ffedd4af1a4148f",
+  "schema_version": "corridor.engine-absent-suite.v1",
+  "withheld_distributions": [
+    "pymupdf",
+    "pytesseract"
+  ]
+}

@@ -1,6 +1,10 @@
-.PHONY: clean-test-databases boot up down psql check prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
+.PHONY: clean-test-databases boot up down psql check test-engine-absent image-engine-audit retained-citation-inventory prose-locator-regression pdf-reader-inspect pdf-reader-node pdf-reader-reproduce pdf-pairs-measure pdf-reader-gold-eval native-matrix-replay textract-replay link-deliveries test-focused test test-full test-slow test-timing test-slow-timing test-migrations test-serial corpus demo ingest docs queue agreements extract active-run revision-process milestones exceptions eval candidate-model gold storage-baseline storage identity-audit retention ledger-archive carry-forward due-work location-discovery m8-acceptance sh99-admission-acceptance event-admission-acceptance sh99-coordinator-rehearsal product-proving evidence-investigator evidence-shadow evidence-shadow-eval pdf-eval page-inventory-eval page-inventory-routing-replay render-rasterizer-compare minutes report
 
 TEST_WORKERS ?= 4
+
+# Which engine-absent proof `make test-engine-absent` runs: imports, collect
+# or the complete suite.
+MODE ?= suite
 
 # One command from a clean clone.
 boot:
@@ -94,6 +98,28 @@ test-slow-timing:
 	@mkdir -p out/timing
 	uv run pytest -n $(TEST_WORKERS) --dist worksteal -m "slow and not migration" \
 	  --durations=50 --durations-min=0.5 --junitxml=out/timing/slow.xml
+
+# Prove the retirement, not merely describe it: build a second environment
+# that never receives PyMuPDF (and therefore neither the `pymupdf` nor the
+# `fitz` import name) or pytesseract, strip every PATH entry offering the
+# `tesseract` executable, verify that absence, and only then run the tests in
+# it (#741, ADR-0094). MODE=imports names the modules that must still move,
+# MODE=collect adds conftest imports, MODE=suite is the acceptance criterion.
+# The receipt lands under artifacts/pdf-engine-retirement/.
+test-engine-absent:
+	uv run python scripts/engine_absent_suite.py --mode $(MODE) --workers $(TEST_WORKERS)
+
+# Build the deployable image and prove neither retired engine is in it: no
+# pymupdf/fitz/pytesseract in either environment, no `tesseract` on PATH, no
+# tesseract-ocr apt package. Writes the audit receipt #461 closes against.
+image-engine-audit:
+	uv run python scripts/audit_image_engines.py
+
+# Inventory the persisted citations that retained accepted decisions and
+# released artifacts actually reference, with each one's original document
+# digest, reader and configuration identity, and locator scheme (#741).
+retained-citation-inventory:
+	uv run python scripts/retained_citation_inventory.py
 
 # Database upgrade tests. Run for migration-sensitive changes, not ordinary PRs.
 test-migrations:
