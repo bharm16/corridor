@@ -1,4 +1,5 @@
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -6,7 +7,7 @@ from sqlalchemy import select
 
 from corridor.config import settings
 from corridor.db import Session, engine
-from corridor.ingest import ingest_document
+from corridor.ingest import _extract_pages, ingest_document
 from corridor.page_inventory import READER_COORDINATE_FRAME, READER_ROUTER_VERSION
 from corridor.models import (
     DocPage,
@@ -885,11 +886,12 @@ def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
 ):
     """The route names Textract; the failure names the engine that failed.
 
-    Wiring Textract in is #739's, so the region is still read by the incumbent
-    OCR engine, and a Processing Failure records that engine, its
+    The scanned setting is off here, so the region is still read by the
+    incumbent OCR engine and a Processing Failure records that engine, its
     configuration and the page scope. Calling the failure Textract's because
     the route asked for Textract would be the same lie the retired router told
-    about thin text.
+    about thin text. The tests below are the other half: with the scanned
+    setting on, the failure names Textract because Textract is what read.
     """
 
     scan = scan_image(400, 300, dpi=150, lines=(((20, 50), "SCANNED", 11),))
@@ -916,3 +918,202 @@ def test_a_reader_backed_ocr_failure_is_still_a_scoped_processing_failure(
     assert failure.configuration_json["language"] == "eng"
     assert failure.scope_json["page_number"] == 1
     assert failure.error_type == "RuntimeError"
+
+
+# --- the scanned route, behind its own setting (#739) ---------------------------
+
+
+def _scan_pdf(tmp_path, name="scan.pdf"):
+    scan = scan_image(400, 300, dpi=150, lines=(((20, 50), "SCANNED", 11),))
+    fixture = PdfFixture()
+    fixture.add_page(width=400, height=300).image((0, 0, 400, 300), scan)
+    return fixture.save(tmp_path / name)
+
+
+def _ocr_layers(session, document_id):
+    return session.scalars(
+        select(TokenLayerManifest)
+        .where(
+            TokenLayerManifest.document_id == document_id,
+            TokenLayerManifest.origin == "ocr",
+        )
+        .order_by(TokenLayerManifest.page_no)
+    ).all()
+
+
+def test_the_scanned_path_needs_the_router_that_names_its_engine(tmp_path, monkeypatch):
+    """The engine an OCR route names comes from the reader-backed inventory.
+
+    With the incumbent inventory the route names the incumbent engine, so the
+    scanned setting alone would have ingest read regions Textract was never
+    routed to. The pair is refused rather than resolved by the setting.
+    """
+    monkeypatch.setattr(settings, "textract_scanned_reading", True)
+    monkeypatch.setattr(settings, "reader_page_inventory", False)
+
+    with pytest.raises(ValueError, match="reader_page_inventory beside it"):
+        _extract_pages(_scan_pdf(tmp_path), tmp_path / "images", "a" * 64, project="1")
+
+
+def test_the_scanned_route_refuses_without_an_authorization_and_never_falls_back(
+    session, project, tmp_path, monkeypatch
+):
+    """Corridor has no authorization record yet (#732, #522), so this is the live shape.
+
+    The routed region records a Processing Failure naming Textract, with zero
+    outbound requests, and the incumbent engine is not asked to fill the gap:
+    there is no OCR token layer and the page carries no OCR text. A reading
+    from an engine nobody selected would be worse than no reading.
+    """
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    monkeypatch.setattr(settings, "textract_scanned_reading", True)
+
+    doc = ingest(session, project, _scan_pdf(tmp_path), tmp_path / "images")
+
+    [page] = _pages(session, doc.id)
+    assert page.routing_json["ocr_engine"] == "textract"
+    assert page.routing_json["page_mode"] == "ocr"
+    failures = session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == doc.id
+        )
+    ).all()
+    assert [failure.engine for failure in failures] == ["textract"]
+    assert failures[0].error_type == "authorization-absent"
+    assert failures[0].scope_json["page_number"] == 1
+    assert failures[0].configuration_json["operation"] == "AnalyzeDocument"
+    assert _ocr_layers(session, doc.id) == []
+    assert "SCANNED" not in (page.text or "")
+
+
+def test_an_authorized_scanned_read_writes_the_provider_backed_token_layer(
+    session, project, tmp_path, monkeypatch
+):
+    """The other branch, with a record and a transport double: no live call anywhere."""
+    from corridor import ingest as ingest_module
+    from corridor.scanned_reading import ScannedReader
+    from corridor_pdf_reader.textract_adapter.boundary import open_boundary
+    from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
+    from corridor_pdf_reader.textract_adapter.records import (
+        PROVIDER_POSTURE,
+        ExperimentScope,
+        RequestBoundary,
+    )
+    from corridor_pdf_reader.textract.tests.helpers import Page
+    from dataclasses import replace as replace_fields
+
+    page_builder = Page(frame=(400.0, 300.0))
+    word = page_builder.word("SCANNED", (20, 40, 90, 56))
+    page_builder.line([word])
+    cell = page_builder.cell(1, 1, (15, 35, 100, 60), [word])
+    page_builder.table((15, 35, 100, 60), [cell])
+    response = page_builder.response()
+
+    class Recorded:
+        calls = 0
+
+        def analyze_document(self, *, Document, FeatureTypes):
+            type(self).calls += 1
+            return response
+
+    # The experiment scope's dataset identity is what a request's `project`
+    # field is matched against, and ingest names the project by its id.
+    scope = ExperimentScope(
+        record_id="exp-739",
+        dataset=str(project.id),
+        dataset_digest="0" * 8,
+        purpose="scanned-page-reading",
+        scope="one synthetic scan built by the test",
+        source_classes=frozenset({"synthetic", "scanned-pdf"}),
+        region=PROVIDER_POSTURE.region,
+        posture_identity=PROVIDER_POSTURE.identity,
+        posture_digest=PROVIDER_POSTURE.digest,
+        recorded_by="a named person",
+        recorded_on="2026-09-08",
+    )
+    boundary = RequestBoundary(
+        project=str(project.id),
+        source_class="scanned-pdf",
+        purpose="scanned-page-reading",
+        region=PROVIDER_POSTURE.region,
+        posture_identity=PROVIDER_POSTURE.identity,
+        stage="experiment",
+    )
+    adapter = open_boundary(
+        scope,
+        boundary,
+        extraction_run="run-739",
+        cache_root=tmp_path / "cache",
+        service=Recorded(),
+        configuration=RequestConfiguration(dpi=36),
+        posture=replace_fields(
+            PROVIDER_POSTURE,
+            status="accepted",
+            retention="verified",
+            ai_services_opt_out="optOut",
+            permissions="verified",
+        ),
+        sleep=lambda seconds: None,
+    )
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    monkeypatch.setattr(settings, "textract_scanned_reading", True)
+    monkeypatch.setattr(
+        ingest_module,
+        "open_scanned_reader",
+        lambda *args, **kwargs: ScannedReader(adapter=adapter, refusal=None, request=boundary),
+    )
+
+    doc = ingest(session, project, _scan_pdf(tmp_path), tmp_path / "images")
+
+    [page] = _pages(session, doc.id)
+    assert Recorded.calls == 1
+    assert session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == doc.id
+        )
+    ).all() == []
+    [layer] = _ocr_layers(session, doc.id)
+    assert layer.engine_json["engine"] == "textract"
+    assert layer.engine_json["provider"] == "textract"
+    assert layer.engine_json["provider_model_version"] == "1.0"
+    assert len(layer.engine_json["raw_response_sha256"]) == 64
+    assert len(layer.engine_json["reading_sha256"]) == 64
+    assert "SCANNED" in page.text
+    assert page.text_source == "ocr"
+    # The receipt names the engine that actually read, and records which cells
+    # are Unconfirmed readings rather than leaving that to be re-derived.
+    receipt = json.loads(
+        next((tmp_path / "images" / doc.sha256).glob("0001-page-raw-ocr-*.json")).read_text()
+    )
+    assert receipt["engine"] == "textract"
+    assert [(value["value"], value["value_source"], value["state"]) for value in receipt["values"]] == [
+        ("SCANNED", "textract_words", "unconfirmed")
+    ]
+    assert receipt["values"][0]["provenance"]["processing"]["engine"] == "textract"
+
+
+def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    """An ordinary native page is not scanned work that failed (#739).
+
+    The scanned setting is on and no authorization record exists, so any page
+    the decision routed to Textract would record a refusal. These pages are
+    routed nowhere, so nothing is spent and nothing is recorded — a blank or
+    clean page must not become a Processing Failure just because the scanned
+    path is selected.
+    """
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    monkeypatch.setattr(settings, "textract_scanned_reading", True)
+
+    doc = ingest(session, project, pdf, tmp_path / "images")
+
+    pages = _pages(session, doc.id)
+    assert {page.routing_json["page_mode"] for page in pages} == {"native"}
+    assert {page.text_source for page in pages} == {"text_layer"}
+    assert session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == doc.id
+        )
+    ).all() == []
+    assert _ocr_layers(session, doc.id) == []

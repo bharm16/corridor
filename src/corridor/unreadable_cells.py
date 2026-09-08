@@ -76,8 +76,14 @@ _INVOKED_STATES = (
 # declare all of them, but it may not invent one outside this vocabulary, and
 # the harness may only call an identity the running profile declared.
 KNOWN_IMAGE_OPS: tuple[str, ...] = ("deskew", "denoise", "contrast", "upscale", "crop")
+# ADR-0094 makes Textract a read identity here rather than a special case: it
+# is enumerated like every other read, a profile must declare it before the
+# harness may call it, and a read of it generates a candidate and never proves
+# one. The incumbent local engine stays in the vocabulary while its rollback is
+# retained; #741 removes it (#739).
 KNOWN_READS: tuple[str, ...] = (
     "tesseract",
+    "textract",
     "secondary_ocr",
     "vision_model_a",
     "vision_model_b",
@@ -272,7 +278,17 @@ class PagePreprocessor(Protocol):
 
     Returns the recovered text layer for the pinned image under the applied ops.
     A missing binary or a failed pass returns "" — the page keeps its class.
+
+    `applied_ops` is optional and says which of the declared operations this
+    preprocessor actually performed. A preprocessor that performs the profile's
+    whole chain need not offer it and the run records the declared list, as it
+    always has. One that performs none of them — a cloud read is the case
+    ADR-0094 introduced (#739) — says so, and the run records an empty applied
+    list beside the declaration rather than crediting the reading with
+    operations nothing ran.
     """
+
+    applied_ops: tuple[str, ...]
 
     def rescue(
         self, *, image_sha256: str, image_path: str | None, ops: tuple[str, ...]
@@ -303,6 +319,10 @@ def rescue_page(
     page_input_pin = _pin_bytes(page)
     pinned = page_input_pin
     ops = tuple(profile.image_op_identities_json or ())
+    # What the preprocessor will actually perform, which is the declared chain
+    # unless it says otherwise. Read before the pass so a failed pass still
+    # records the truth about what it would have applied.
+    applied = tuple(getattr(preprocessor, "applied_ops", ops))
     try:
         recovered = preprocessor.rescue(
             image_sha256=pinned, image_path=page.image_path, ops=ops
@@ -332,11 +352,12 @@ def rescue_page(
         outcome_json={
             "kind": "rescue",
             "rescued": rescued,
-            "applied_ops": list(ops),
+            "declared_ops": list(ops),
+            "applied_ops": list(applied),
             "recovered_chars": len(recovered.strip()),
         },
         validator_outcome="n/a",
-        budget_json={"applied_ops": list(ops)},
+        budget_json={"declared_ops": list(ops), "applied_ops": list(applied)},
         usage_json={"recovered_chars": len(recovered.strip())},
         steps=(),
     )
@@ -1168,6 +1189,70 @@ def contributes_to_ready(resolution: UnreadableCellResolution | None) -> bool:
     corroboration arrives and, separately, the admission class is active.
     """
     return resolution is not None and resolution.state == "admitted"
+
+
+@dataclass(frozen=True)
+class ReadingDisplay:
+    """How one cell's current value is shown, and what it is allowed to claim.
+
+    The two answers travel together because they are the same sentence read
+    twice: a value that does not count toward Ready must not be shown as
+    though it did. `flagged` is the whole of what a surface owes an
+    unconfirmed reading — a mark saying no reading of this is proven — and
+    deliberately not a control. There is no confirm, accept, or correct
+    affordance here and there is no queue behind it: ADR-0064 rejected the
+    transcription-review surface outright and this is not a way back to one.
+    An unconfirmed reading leaves that state when a corroborating source
+    arrives, mechanically, with no human step.
+    """
+
+    state: str
+    value: str | None
+    flagged: bool
+    contributes_to_ready: bool
+    label: str
+
+
+_READING_LABELS = {
+    "unconfirmed": (
+        "Unconfirmed reading — the value is on the page and no reading of it "
+        "is proven"
+    ),
+    "corroborated": (
+        "Corroborated by another registered source; not yet record-contributing"
+    ),
+    "admitted": "Admitted from a corroborated source",
+    "absent": "The source holds no value here",
+}
+
+
+def display_reading(resolution: UnreadableCellResolution | None) -> ReadingDisplay:
+    """One cell's current value as a surface should show it.
+
+    A cell with no resolution at all is not in this class and is shown by the
+    ordinary path; it is answered here as an unflagged empty so a caller need
+    not special-case the common row.
+    """
+
+    if resolution is None:
+        return ReadingDisplay(
+            state="none",
+            value=None,
+            flagged=False,
+            contributes_to_ready=False,
+            label="",
+        )
+    return ReadingDisplay(
+        state=resolution.state,
+        value=resolution.value,
+        # Everything short of admitted is flagged. A corroborated value is
+        # proven text on a readable source and still not record-contributing
+        # until the gated admission class promotes it, so showing it plain
+        # would overstate it exactly as showing an unconfirmed one would.
+        flagged=resolution.state != "admitted",
+        contributes_to_ready=contributes_to_ready(resolution),
+        label=_READING_LABELS.get(resolution.state, resolution.state),
+    )
 
 
 # --------------------------------------------------------------------------- #

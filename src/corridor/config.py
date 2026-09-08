@@ -147,6 +147,21 @@ class Settings(BaseSettings):
         default=False, validation_alias="CORRIDOR_READER_PAGE_INVENTORY"
     )
 
+    # Whether the pages and image regions the inventory routes to OCR read
+    # through the authorized Textract adapter (ADR-0094, #739) instead of the
+    # incumbent local engine. Off is the incumbent Tesseract path, unchanged;
+    # on is the whole switch, so a deployment that wants the replacement OCR
+    # changes this one value and nothing else. It is separate from the two
+    # native settings above because it moves a third boundary — who reads a
+    # scanned page, and what a value only that engine supplies may claim — and
+    # a rollback of one must not drag the others with it. Off, because merging
+    # an adapter is not selecting it: scanned selection is #739's own act
+    # through #447's mechanism, and a production default moves by that
+    # decision, never because an implementation landed.
+    textract_scanned_reading: bool = Field(
+        default=False, validation_alias="CORRIDOR_TEXTRACT_SCANNED_READING"
+    )
+
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     # Recorded on every candidate. Changing this without an eval run makes
