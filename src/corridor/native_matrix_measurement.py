@@ -35,6 +35,8 @@ from corridor_pdf_reader.replacement import semantics
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DATASET_PATH = REPO_ROOT / "gold/native-matrix/v1/dataset.json"
+# Differences a person settled by reading the page. Absent file means none.
+ADJUDICATIONS_PATH = REPO_ROOT / "gold/native-matrix/v1/adjudications.json"
 RECEIPT_SCHEMA = "corridor.native-matrix-measurement.v1"
 MEASURED_PAGE_KEYS = ("number", "structure", "reading", "listing")
 
@@ -205,10 +207,52 @@ def _differences(expected: Any, actual: Any, path: str) -> list[dict[str, Any]]:
     return []
 
 
+def _settles(adjudication: Mapping[str, Any], difference: Mapping[str, Any], source_sha256: str) -> bool:
+    """One adjudication settles one difference, matched on every recorded field.
+
+    Exactness is the point. An adjudication that matched on the path alone
+    would absorb whatever else later appeared at that path, which is how a
+    settled question becomes a blind spot.
+    """
+
+    if adjudication.get("source_sha256") != source_sha256:
+        return False
+    return all(
+        adjudication.get(key) == difference.get(key)
+        for key in ("path", "reason", "expected", "actual")
+        if key in difference
+    )
+
+
+def load_adjudications(path: Path = ADJUDICATIONS_PATH) -> list[dict[str, Any]]:
+    """Every recorded adjudication, or none when the file is absent."""
+
+    if not path.exists():
+        return []
+    record = json.loads(path.read_text(encoding="utf-8"))
+    if record.get("schema") != "corridor.native-matrix-adjudications.v1":
+        raise ValueError("adjudications file declares an unknown schema")
+    return list(record["adjudications"])
+
+
 def compare_retained_reading(
-    retained: Mapping[str, Any], actual_pages: Sequence[Mapping[str, Any]]
+    retained: Mapping[str, Any],
+    actual_pages: Sequence[Mapping[str, Any]],
+    *,
+    source_sha256: str = "",
+    adjudications: Sequence[Mapping[str, Any]] = (),
 ) -> dict[str, Any]:
-    """Compare complete semantic output, including rows the adapter excludes."""
+    """Compare complete semantic output, including rows the adapter excludes.
+
+    The retained reading is the incumbent's answer, not the document's. Where
+    a person reads the page and finds the incumbent wrong, the finding is
+    recorded as an adjudication rather than written back over the retained
+    bytes, which stay first-write-only evidence (ADR-0023). So `pass` and
+    `differences` keep their exact meaning, "identical to the incumbent", and
+    `unadjudicated_differences` reports what no one has settled against the
+    source. A difference is settled only by an adjudication that names this
+    document and matches the difference on every field.
+    """
 
     actual = [{key: page.get(key) for key in MEASURED_PAGE_KEYS} for page in actual_pages]
     # Dataclass tuples become JSON arrays, exactly as in the retained file.
@@ -224,8 +268,19 @@ def compare_retained_reading(
                 differences.append({"path": str(key), "reason": "duplicate_row_disposition"})
             seen.add(key)
             rows.append(row)
+    adjudicated = [
+        {**difference, "verdict": adjudication.get("verdict", "")}
+        for difference in differences
+        for adjudication in adjudications
+        if _settles(adjudication, difference, source_sha256)
+    ]
+    settled = [{key: value for key, value in entry.items() if key != "verdict"} for entry in adjudicated]
+    unadjudicated = [difference for difference in differences if difference not in settled]
     return {
         "pass": not differences,
+        "adjudicated": adjudicated,
+        "unadjudicated_differences": unadjudicated,
+        "unadjudicated_pass": not unadjudicated,
         "expected_sha256": digest(expected),
         "actual_sha256": digest(actual),
         "compared_pages": len(expected),
@@ -581,7 +636,11 @@ def replay_case(database, case: RetainedCase, configuration, output: Path) -> di
         run_id, document_id = extraction.run.id, document.id
         pages, outcomes = extraction.mapping.pages, list(extraction.field_outcomes)
         session.commit()
-    comparison = compare_retained_reading(case.document, pages)
+    comparison = compare_retained_reading(
+        case.document, pages,
+        source_sha256=reading.rendition_sha256,
+        adjudications=load_adjudications(),
+    )
     row_comparison = compare_required_rows(case.document, pages)
     diagnostics = compare_mapping_diagnostics(case.document, pages)
     topology = []

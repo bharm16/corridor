@@ -373,3 +373,73 @@ def test_a_diagnostic_exception_never_hides_a_substantive_reading_change(retaine
     assert diagnostics["classification"] == "other_difference"
     assert diagnostics["required_semantic_output_unchanged"] is False
     assert measurement.compare_retained_reading(retained, actual)["pass"] is False
+
+
+def test_an_adjudicated_difference_leaves_the_exact_regression_result_untouched(retained):
+    """A recorded adjudication explains a difference; it never erases one.
+
+    The retained reading is the incumbent's answer, not the document's. When
+    the source shows the incumbent was wrong, the honest record keeps the
+    exact regression failing and says which differences a person settled
+    against the page, so `pass` still means "identical to the incumbent" and a
+    reader can see what was adjudicated and why (ADR-0023).
+    """
+    actual = deepcopy(retained["pages"])
+    actual[0]["reading"]["mapping"]["unmapped"] = ["AGREEMENT STATUS", "FRANCHISE (F) AND NUMBER"]
+    adjudications = [{
+        "source_sha256": "b" * 64,
+        "path": "pages[0].reading.mapping.unmapped",
+        "reason": "length",
+        "expected": 1,
+        "actual": 2,
+        "verdict": "the page prints one merged header over two columns",
+    }]
+
+    settled = measurement.compare_retained_reading(
+        retained, actual, source_sha256="b" * 64, adjudications=adjudications,
+    )
+
+    assert settled["pass"] is False, "the exact regression still reports the difference"
+    assert len(settled["differences"]) == 2
+    assert len(settled["adjudicated"]) == 1
+    assert settled["adjudicated"][0]["verdict"].startswith("the page prints")
+    assert [d["path"] for d in settled["unadjudicated_differences"]] == [
+        "pages[0].reading.mapping.unmapped[0]"
+    ]
+    assert settled["unadjudicated_pass"] is False
+
+
+def test_an_adjudication_only_settles_the_exact_difference_it_names(retained):
+    """A near-miss adjudication settles nothing: the values must match exactly."""
+    actual = deepcopy(retained["pages"])
+    actual[0]["reading"]["mapping"]["unmapped"] = ["SOMETHING ELSE"]
+    adjudications = [{
+        "source_sha256": "b" * 64,
+        "path": "pages[0].reading.mapping.unmapped[0]",
+        "reason": "value",
+        "expected": "AGREEMENT STATUS",
+        "actual": "FRANCHISE (F) AND NUMBER",
+        "verdict": "settles a different reading",
+    }]
+
+    settled = measurement.compare_retained_reading(
+        retained, actual, source_sha256="b" * 64, adjudications=adjudications,
+    )
+
+    assert settled["adjudicated"] == []
+    assert len(settled["unadjudicated_differences"]) == len(settled["differences"]) == 1
+    assert settled["unadjudicated_pass"] is False
+
+
+def test_an_adjudication_for_another_document_settles_nothing(retained):
+    actual = deepcopy(retained["pages"])
+    actual[0]["reading"]["mapping"]["unmapped"] = ["FRANCHISE (F) AND NUMBER"]
+    difference = measurement.compare_retained_reading(retained, actual)["differences"][0]
+    adjudications = [{**difference, "source_sha256": "c" * 64, "verdict": "another document"}]
+
+    settled = measurement.compare_retained_reading(
+        retained, actual, source_sha256="b" * 64, adjudications=adjudications,
+    )
+
+    assert settled["adjudicated"] == []
+    assert settled["unadjudicated_differences"] == settled["differences"]
