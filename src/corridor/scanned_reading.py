@@ -42,9 +42,33 @@ to confirm, and `tests/test_no_transcription_review_surface.py` holds that shut.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal
+from typing import Any, Literal, Protocol
 
-from corridor.page_inventory import PageRoutingDecision, PdfRect
+from corridor.page_inventory import FIXED_POINT_SCALE, PageRoutingDecision, PdfRect
+from corridor.token_layers import (
+    READER_ENGINE,
+    Token,
+    TokenLayer,
+    textract_token_layer,
+)
+
+# The adapter package, and only through its boundary. The rung underneath it —
+# the imported client, its transport and its rasterizer — stays unreachable
+# from production code: `tests/test_textract_adapter.py` allows this module the
+# adapter and nothing below it, which is why the raster below is a protocol
+# declared here rather than the rung's own dataclass imported by name.
+from corridor_pdf_reader.textract_adapter.boundary import (
+    AuthorizedTextract,
+    TextractProcessingFailure,
+)
+
+
+class PageRaster(Protocol):
+    """What a page raster must offer the boundary: the bytes and the frame they are in."""
+
+    png: bytes
+    dpi: int
+    mode: str
 
 # ADR-0094's declared OCR provider. The routing decision names it; this module
 # reads only for decisions that do.
@@ -92,3 +116,358 @@ def routed_textract_regions(routing: PageRoutingDecision) -> tuple[RoutedRegion,
         if trigger.region_id not in routed
     )
     return tuple(regions)
+
+
+# --- the read ------------------------------------------------------------------
+
+
+class ScannedRoutingRefused(RuntimeError):
+    """A page was handed to this module that no recorded decision routed here.
+
+    Raised before anything reaches the adapter, so a caller that lost its
+    routing decision cannot spend a call by accident.
+    """
+
+
+@dataclass(frozen=True)
+class ScannedProcessingFailure:
+    """An OCR engine failure, in the shape ingest already records one.
+
+    `engine` is the engine that actually failed — the provider, not the engine
+    a route names — with the configuration the request carried and the page
+    scope it covered, so a receipt can say what failed, under what settings,
+    over which pages and regions. `outbound_requests` is how many requests left
+    the process before the failure, which an authorization refusal makes zero
+    by construction.
+    """
+
+    engine: str
+    reason: str
+    detail: str
+    configuration: dict[str, Any]
+    scope: dict[str, Any]
+    outbound_requests: int
+
+    def as_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "processing-failure",
+            "engine": self.engine,
+            "reason": self.reason,
+            "detail": self.detail,
+            "configuration": self.configuration,
+            "scope": self.scope,
+            "outbound_requests": self.outbound_requests,
+        }
+
+
+@dataclass(frozen=True)
+class ScannedCellValue:
+    """One cell of one routed region, and which of the three cases it is.
+
+    `value_source` says where the characters came from and `state` says what
+    may be claimed for them. They are two facts, not one: a value re-mapped
+    from the document's own glyphs is on the ordinary source-verification path
+    and carries a locator into the native reading, while a value only Textract
+    supplies is an Unconfirmed reading — flagged, never Ready — however
+    confident the provider was about it.
+    """
+
+    region_id: str
+    table: int
+    row: int
+    column: int
+    box: PdfRect
+    value: str
+    value_source: Literal["native_glyphs", "textract_words"]
+    state: Literal["source_verified", "unconfirmed"]
+    confidence: float | None
+    locator: PdfRect | None
+    provenance: dict[str, Any]
+
+
+@dataclass(frozen=True)
+class ScannedPageReading:
+    """One page read through the authorized adapter, with everything it produced."""
+
+    page_no: int
+    regions: tuple[RoutedRegion, ...]
+    token_layer: TokenLayer
+    values: tuple[ScannedCellValue, ...]
+    reading: dict[str, Any]
+    provenance: dict[str, Any]
+
+    @property
+    def unconfirmed_readings(self) -> tuple[ScannedCellValue, ...]:
+        return tuple(value for value in self.values if value.state == "unconfirmed")
+
+
+def read_scanned_page(
+    adapter: AuthorizedTextract,
+    raster: PageRaster,
+    *,
+    routing: PageRoutingDecision,
+    page_no: int,
+    rendition_sha256: str,
+    source_sha256: str,
+    native_layer: TokenLayer | None = None,
+    render_profile_id: str | None = None,
+) -> ScannedPageReading:
+    """Read one routed page through the adapter, and classify what came back.
+
+    The routing decision is checked first and the call is refused outright when
+    it routes nothing here, so the recorded decision is the only thing that can
+    spend a request. The authorization check itself is the adapter's: this
+    module hands it the raster and it either returns a reading or raises a
+    Processing Failure, which `processing_failure` puts in the shape ingest
+    records.
+    """
+
+    regions = routed_textract_regions(routing)
+    if not regions:
+        raise ScannedRoutingRefused(
+            f"page {page_no}: no recorded routing decision sends a region to "
+            f"{TEXTRACT_ENGINE} (engine {routing.ocr_engine!r}, mode "
+            f"{routing.page_mode!r})"
+        )
+    reading = adapter.analyze_page(
+        raster, rendition_sha256=rendition_sha256, page_number=page_no
+    )
+    provenance = reading.binding.as_dict()
+    layer = textract_token_layer(
+        reading.page,
+        page_no=page_no,
+        source_sha256=source_sha256,
+        provenance=provenance,
+        configuration=adapter.configuration.as_dict(),
+        render_profile_id=render_profile_id,
+    )
+    values = classify_region_values(
+        reading.page,
+        regions=regions,
+        native_layer=native_layer,
+        provenance=provenance,
+    )
+    return ScannedPageReading(
+        page_no=page_no,
+        regions=regions,
+        token_layer=layer,
+        values=values,
+        reading=reading.page,
+        provenance=provenance,
+    )
+
+
+def processing_failure(
+    failure: TextractProcessingFailure,
+    *,
+    page_no: int,
+    regions: tuple[RoutedRegion, ...],
+    rendition_sha256: str,
+    configuration: dict[str, Any],
+) -> ScannedProcessingFailure:
+    """The adapter's refusal or failure, as the Processing Failure ingest records."""
+
+    return ScannedProcessingFailure(
+        engine=TEXTRACT_ENGINE,
+        reason=failure.reason,
+        detail=failure.detail or "; ".join(failure.mismatches) or failure.reason,
+        configuration=dict(configuration),
+        scope={
+            "page_number": page_no,
+            "rendition_sha256": rendition_sha256,
+            "region_ids": [region.region_id for region in regions],
+        },
+        outbound_requests=failure.outbound_requests,
+    )
+
+
+# --- the three cases -----------------------------------------------------------
+
+
+def classify_region_values(
+    reading: dict[str, Any],
+    *,
+    regions: tuple[RoutedRegion, ...],
+    native_layer: TokenLayer | None,
+    provenance: dict[str, Any],
+) -> tuple[ScannedCellValue, ...]:
+    """Every routed region's cells, each as the case its evidence makes it.
+
+    Geometry is Textract's throughout — the rows, columns and cell boxes are
+    the ones it returned. What differs per cell is where the characters come
+    from. Where the region has a usable native layer and that layer puts glyphs
+    inside the cell, the value is the document's own text and the cell carries
+    a locator back into the native reading, which is the ordinary
+    source-verification path. Where it does not, the value is Textract's, and
+    it is an Unconfirmed reading.
+
+    A cell outside every routed region is not read here at all: on a mixed
+    page the native regions keep their native values by the ordinary route, and
+    borrowing Textract's opinion about them would be a reading nothing asked
+    for.
+    """
+
+    usable = _usable_native_tokens(native_layer)
+    values: list[ScannedCellValue] = []
+    for table_no, table in enumerate(reading.get("tables") or ()):
+        for cell in table.get("cells") or ():
+            box = _fixed(cell["box"])
+            region = _containing_region(box, regions)
+            if region is None:
+                continue
+            native = _native_text_in(box, usable)
+            if native is not None:
+                text, locator = native
+                values.append(
+                    ScannedCellValue(
+                        region_id=region.region_id,
+                        table=table_no,
+                        row=int(cell["row"]),
+                        column=int(cell["column"]),
+                        box=box,
+                        value=text,
+                        value_source="native_glyphs",
+                        state="source_verified",
+                        confidence=None,
+                        locator=locator,
+                        provenance=_cell_provenance(
+                            provenance, region, source="native_glyphs"
+                        ),
+                    )
+                )
+                continue
+            text = str(cell.get("text") or "").strip()
+            if not text:
+                continue
+            values.append(
+                ScannedCellValue(
+                    region_id=region.region_id,
+                    table=table_no,
+                    row=int(cell["row"]),
+                    column=int(cell["column"]),
+                    box=box,
+                    value=text,
+                    value_source="textract_words",
+                    state="unconfirmed",
+                    confidence=_confidence(cell.get("confidence")),
+                    locator=None,
+                    provenance=_cell_provenance(
+                        provenance, region, source="textract_words"
+                    ),
+                )
+            )
+    return tuple(values)
+
+
+def _usable_native_tokens(layer: TokenLayer | None) -> tuple[Token, ...]:
+    """The native tokens a Textract cell box may be re-mapped over, if any.
+
+    Only the reader-backed native layer qualifies, and the reason is
+    arithmetic rather than preference: its boxes are in the reader's displayed
+    crop, top-left origin, which is the frame the adapter puts a Textract box
+    in. The incumbent engine reports word boxes in its own page space, which
+    differs on a rotated page, so re-mapping over it would silently mix two
+    frames. A page with no usable layer has no native values, which is exactly
+    the scanned case.
+    """
+
+    if layer is None or layer.origin != "native":
+        return ()
+    if layer.identity.engine != READER_ENGINE:
+        return ()
+    return layer.tokens
+
+
+def _containing_region(
+    box: PdfRect, regions: tuple[RoutedRegion, ...]
+) -> RoutedRegion | None:
+    centre = ((box.x0 + box.x1) / 2, (box.y0 + box.y1) / 2)
+    for region in regions:
+        if (
+            region.box.x0 <= centre[0] <= region.box.x1
+            and region.box.y0 <= centre[1] <= region.box.y1
+        ):
+            return region
+    return None
+
+
+def _native_text_in(
+    box: PdfRect, tokens: tuple[Token, ...]
+) -> tuple[str, PdfRect] | None:
+    """The document's own text inside one Textract cell, with its locator.
+
+    A glyph belongs to the cell when its centre is inside the cell box, which
+    is the measured lane A assignment. The locator is the union of the assigned
+    tokens' own boxes — the region of the page the value is actually printed
+    in, not the cell Textract drew around it.
+    """
+
+    inside = [
+        token
+        for token in tokens
+        if box.x0 <= (token.polygon_pdf.x0 + token.polygon_pdf.x1) / 2 <= box.x1
+        and box.y0 <= (token.polygon_pdf.y0 + token.polygon_pdf.y1) / 2 <= box.y1
+    ]
+    text = " ".join(token.raw_text for token in inside if token.raw_text.strip())
+    if not text.strip():
+        return None
+    return text, PdfRect(
+        x0=min(token.polygon_pdf.x0 for token in inside),
+        y0=min(token.polygon_pdf.y0 for token in inside),
+        x1=max(token.polygon_pdf.x1 for token in inside),
+        y1=max(token.polygon_pdf.y1 for token in inside),
+    )
+
+
+def _cell_provenance(
+    provenance: dict[str, Any], region: RoutedRegion, *, source: str
+) -> dict[str, Any]:
+    """Source provenance and processing provenance, kept apart and both recorded.
+
+    Source provenance says which rendition, page and region the value is
+    printed in. Processing provenance says which response produced it, under
+    which authorization scope, and what the provider reported about itself.
+    An Unconfirmed reading carries both because both are what a later
+    corroboration is checked against.
+    """
+
+    return {
+        "source": {
+            "rendition_sha256": provenance.get("rendition_sha256"),
+            "page_number": provenance.get("page_number"),
+            "region_id": region.region_id,
+            "routing_reason": region.reason,
+            "structural_trigger": region.trigger,
+        },
+        "processing": {
+            "engine": TEXTRACT_ENGINE,
+            "value_source": source,
+            "extraction_run": provenance.get("extraction_run"),
+            "authorization_record_id": provenance.get("record_id"),
+            "scope_digest": provenance.get("scope_digest"),
+            "raster_sha256": provenance.get("raster_sha256"),
+            "raw_response_digest": provenance.get("raw_response_digest"),
+            "normalized_reading_digest": provenance.get("normalized_reading_digest"),
+            "provider_model_version": provenance.get("model_version"),
+            "request_identity": provenance.get("request_identity"),
+            "normalization": provenance.get("normalization"),
+        },
+    }
+
+
+def _fixed(box) -> PdfRect:
+    """A reading's box, in points, as the inventory's fixed-point rectangle."""
+
+    x0, y0, x1, y1 = (float(value) for value in box)
+    return PdfRect(
+        x0=round(x0 * FIXED_POINT_SCALE),
+        y0=round(y0 * FIXED_POINT_SCALE),
+        x1=round(x1 * FIXED_POINT_SCALE),
+        y1=round(y1 * FIXED_POINT_SCALE),
+    )
+
+
+def _confidence(value: object) -> float | None:
+    if value is None:
+        return None
+    return max(0.0, min(1.0, float(value) / 100.0))

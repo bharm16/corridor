@@ -819,25 +819,50 @@ def test_the_boto3_service_name_appears_only_where_the_boundary_constructs_the_l
     assert _textract_client_constructions(IMPORTED_ROOT / "client.py") == [150], "the imported client's own construction, unreachable but through the boundary"
 
 
-# The rung and the adapter, the two module trees no production path may reach.
-# The wider rule -- which production modules may import the reader package at
-# all -- is `tests/test_pdf_reader_package.py`, which carries the reasoned
-# exceptions (#740 entered PDFium for glyph geometry from three modules). This
-# rule is about the provider: nothing in production may reach a Textract call.
+# The rung and the adapter, the two module trees production may not wander
+# into. The wider rule -- which production modules may import the reader
+# package at all -- is `tests/test_pdf_reader_package.py`, which carries the
+# reasoned exceptions (#740 entered PDFium for glyph geometry from three
+# modules). This rule is about the provider.
+#
+# Until #739 the rule was "nothing in production may reach a Textract call",
+# and it could be, because nothing called the adapter. #739 wires the scanned
+# route, so one production module now reaches it, and the rule says what it
+# always meant instead: the boundary is the only path to a call, and exactly
+# one production module may take it. `scanned_reading` may import the adapter
+# package; the rung beneath it -- the imported client, its transport, its
+# harness driver, its semantics runner and its rasterizer -- stays unreachable
+# from every production module including that one, so a caller cannot slip
+# past the authorization check by importing what the boundary wraps. The
+# companion rule above, which allows `corridor_pdf_reader.textract.client` in
+# `boundary.py` and nowhere else, is unchanged and still does the load-bearing
+# work: even the allowed module cannot construct a client or name the service.
 TEXTRACT_TREES = (
     "corridor_pdf_reader.textract",
     "corridor_pdf_reader.textract_adapter",
 )
+# The one production caller, and the tree it may reach. Everything else in
+# production may reach neither tree. Adding a name here is a decision about
+# who may spend a provider call.
+ADAPTER_CALLERS = {
+    "src/corridor/scanned_reading.py": "corridor_pdf_reader.textract_adapter",
+}
 
 
 def _reaches_textract(name: str) -> bool:
     return any(name == tree or name.startswith(f"{tree}.") for tree in TEXTRACT_TREES)
 
 
-def test_no_production_module_imports_the_textract_rung_or_the_adapter():
+def _permitted(relative: str, name: str) -> bool:
+    allowed = ADAPTER_CALLERS.get(relative)
+    return allowed is not None and (name == allowed or name.startswith(f"{allowed}."))
+
+
+def test_only_the_named_caller_imports_the_adapter_and_no_production_module_the_rung():
     offenders = []
     for root in PRODUCTION_ROOTS:
         for path in _python_files(root):
+            relative = str(path.relative_to(REPO_ROOT))
             source = path.read_text(encoding="utf-8")
             for node in ast.walk(ast.parse(source, filename=str(path))):
                 names = []
@@ -845,10 +870,24 @@ def test_no_production_module_imports_the_textract_rung_or_the_adapter():
                     names = [alias.name for alias in node.names]
                 elif isinstance(node, ast.ImportFrom) and node.module:
                     names = [node.module]
-                if any(_reaches_textract(name) for name in names):
-                    offenders.append(str(path.relative_to(REPO_ROOT)))
+                if any(_reaches_textract(name) and not _permitted(relative, name) for name in names):
+                    offenders.append(relative)
                     break
             if "import_module(" in source and any(tree in source for tree in TEXTRACT_TREES):
-                offenders.append(f"{path.relative_to(REPO_ROOT)} (dynamic import)")
+                offenders.append(f"{relative} (dynamic import)")
 
     assert offenders == []
+
+
+def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
+    """The allowlist is exact in both directions: the caller takes the boundary, not what it wraps."""
+    imported = set()
+    for relative in ADAPTER_CALLERS:
+        path = REPO_ROOT / relative
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"), filename=str(path))):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name for alias in node.names if _reaches_textract(alias.name))
+            elif isinstance(node, ast.ImportFrom) and node.module and _reaches_textract(node.module):
+                imported.add(node.module)
+
+    assert imported == {"corridor_pdf_reader.textract_adapter.boundary"}

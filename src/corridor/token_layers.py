@@ -82,6 +82,12 @@ from corridor.source_segment_errors import SourceDocumentDigestMismatch, SourceS
 
 NATIVE_ADAPTER_VERSION = "native-pymupdf-v1"
 OCR_ADAPTER_VERSION = "ocr-tesseract-v1"
+# The replacement OCR adapter (ADR-0094, #739). The engine name is the
+# provider, because that is what a scanned reading is answerable to: a
+# retained response, its reported model version and its request identity, not
+# a Python package or a local executable.
+TEXTRACT_ENGINE = "textract"
+TEXTRACT_OCR_ADAPTER_VERSION = "ocr-textract-v1"
 # The reader-backed native adapter (#733). The engine name is the imported
 # package, not one of its libraries: pypdfium2 supplies the glyphs and pypdf
 # the structure tree, and it is the reader's own assembly of the two that a
@@ -135,6 +141,17 @@ class EngineIdentity(TokenModel):
     render_profile_id: str | None = None
     traineddata: dict[str, str] = Field(default_factory=dict)
     configuration: dict = Field(default_factory=dict)
+    # A cloud OCR provider pins nothing a local executable version could pin,
+    # so ADR-0094 names what must be retained instead: the provider, the
+    # version it reported for itself, the identity of the request, and the
+    # digests of the raw response and of the normalized reading taken from it.
+    # These are what makes a promoted Textract reading verifiable later; a
+    # local engine leaves them all None (#739).
+    provider: str | None = None
+    provider_model_version: str | None = None
+    provider_request_id: str | None = None
+    raw_response_sha256: str | None = None
+    reading_sha256: str | None = None
 
 
 class TokenLayer(TokenModel):
@@ -735,6 +752,136 @@ class TesseractEngine:
             tokens=tuple(tokens),
             quality=quality,
         )
+
+
+def textract_reading_tokens(reading: dict[str, Any]) -> tuple[Token, ...]:
+    """The normalized Textract page as positioned OCR tokens, in reading order.
+
+    The reading the adapter returns is already in the reader's own frame —
+    displayed crop, PDF points, top-left origin — because Textract answers in
+    ratios of the image it was sent and the boundary multiplies them by the
+    page size it recorded for that raster. So a token box needs the fixed-point
+    scale and nothing else; there is no render transform left to invert, which
+    is the difference between this engine and the local one below it.
+
+    Every table cell that holds text is one token, then every line the reading
+    found outside a table. Textract does not return a word list beside its
+    cells, and inventing one by splitting a cell's text would hand each
+    fragment a box it was never measured at. Confidence is the provider's own
+    score rescaled to 0..1 and is a recorded signal, never proof: 695 of the
+    901 mismatched cells in the measured clean-scan lane carried a mean word
+    confidence of 95 or more (ADR-0094).
+    """
+
+    tokens: list[Token] = []
+    for table_no, table in enumerate(reading.get("tables") or ()):
+        for cell in table.get("cells") or ():
+            text = str(cell.get("text") or "")
+            if not text.strip():
+                continue
+            tokens.append(
+                Token(
+                    ordinal=len(tokens),
+                    origin="ocr",
+                    raw_text=text,
+                    normalized_text=normalize(text),
+                    polygon_pdf=_rect_from_points(*cell["box"]),
+                    confidence=_provider_confidence(cell.get("confidence")),
+                    block=table_no,
+                    line=int(cell["row"]),
+                )
+            )
+    for item in reading.get("outside") or ():
+        text = str(item.get("text") or "")
+        if not text.strip():
+            continue
+        tokens.append(
+            Token(
+                ordinal=len(tokens),
+                origin="ocr",
+                raw_text=text,
+                normalized_text=normalize(text),
+                polygon_pdf=_rect_from_points(*item["box"]),
+                confidence=_provider_confidence(item.get("confidence")),
+            )
+        )
+    return tuple(tokens)
+
+
+def _provider_confidence(value: object) -> float | None:
+    """Textract reports 0..100; a token layer records 0..1, or nothing at all."""
+
+    if value is None:
+        return None
+    return max(0.0, min(1.0, float(value) / 100.0))
+
+
+def textract_token_layer(
+    reading: dict[str, Any],
+    *,
+    page_no: int,
+    source_sha256: str,
+    provenance: dict[str, Any],
+    configuration: dict[str, Any],
+    render_profile_id: str | None = None,
+) -> TokenLayer:
+    """One OCR token layer read by Textract, pinned by the provider's own identity.
+
+    The layer's `origin` stays `ocr` — that is the class of reading the
+    manifest column records and geometry readers filter on, and it is `native`
+    or `ocr` in the database's own check constraint. What says the reading came
+    from Textract is the engine identity: `engine` is the provider, and beside
+    it sit the four things ADR-0094 requires a cloud reading to retain — the
+    model version the provider reported, the request identity, the digest of
+    the raw response and the digest of the normalized reading. A local engine's
+    executable version and traineddata digests have no counterpart here, so the
+    layer records the provider's answers rather than pretending to pin an
+    executable it never ran.
+
+    `provenance` is the adapter's binding for this page (#732): it is the only
+    place those digests come from, so a layer cannot claim a response it was
+    not read out of.
+    """
+
+    tokens = textract_reading_tokens(reading)
+    confidences = [token.confidence for token in tokens if token.confidence is not None]
+    identity = EngineIdentity(
+        origin="ocr",
+        engine=TEXTRACT_ENGINE,
+        # The provider reports its own version per response; a layer read from
+        # a response that did not report one records that, rather than a
+        # version it guessed.
+        engine_version=str(provenance.get("model_version") or "unreported"),
+        adapter_version=TEXTRACT_OCR_ADAPTER_VERSION,
+        dpi=(provenance.get("frame") or {}).get("dpi"),
+        preprocessing_profile=(provenance.get("normalization") or {}).get("parser"),
+        render_profile_id=render_profile_id,
+        configuration=dict(configuration),
+        provider=TEXTRACT_ENGINE,
+        provider_model_version=provenance.get("model_version"),
+        provider_request_id=(provenance.get("request_identity") or {}).get("request_id"),
+        raw_response_sha256=provenance.get("raw_response_digest"),
+        reading_sha256=provenance.get("normalized_reading_digest"),
+    )
+    return TokenLayer(
+        page_no=page_no,
+        origin="ocr",
+        source_sha256=source_sha256,
+        identity=identity,
+        tokens=tokens,
+        quality={
+            "token_count": len(tokens),
+            "mean_confidence": (
+                sum(confidences) / len(confidences) if confidences else None
+            ),
+            "low_confidence_tokens": sum(1 for value in confidences if value < 0.5),
+            "tables": len(reading.get("tables") or ()),
+            "cells": sum(len(table.get("cells") or ()) for table in reading.get("tables") or ()),
+            "outside_lines": len(reading.get("outside") or ()),
+            "raster_sha256": provenance.get("raster_sha256"),
+            "response_was_cached": provenance.get("cached"),
+        },
+    )
 
 
 def _layer_key(document_id: int, layer: TokenLayer) -> str:
