@@ -15,6 +15,7 @@ from copy import deepcopy
 from datetime import date
 from hashlib import sha256
 import json
+import math
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -278,24 +279,57 @@ def _normalized_output(value: dict) -> dict:
         if not isinstance(value[key], list) or any(not isinstance(item, dict) for item in value[key]):
             raise ValueError(f"pipeline output {key} must retain an ordered record population")
     page_numbers = [page.get("page") for page in value["pages"]]
-    if (not page_numbers or any(type(page) is not int or page < 1 for page in page_numbers)
+    if ((not page_numbers and (value["rows"] or value["facts"]))
+            or any(type(page) is not int or page < 1 for page in page_numbers)
             or len(set(page_numbers)) != len(page_numbers)):
         raise ValueError("pipeline output must identify its complete, distinct page population")
+    for page in value["pages"]:
+        if (set(page) != {"page", "geometry", "structure", "reading"}
+                or not isinstance(page["structure"], dict) or not isinstance(page["reading"], dict)
+                or not isinstance(page["reading"].get("refused"), list)
+                or type(page["reading"].get("is_utility_matrix")) is not bool):
+            raise ValueError("pipeline page requires its geometry, reading and explicit diagnostics")
+        _validate_page_geometry(page["geometry"])
     for row in value["rows"]:
+        if (set(row) != {"location", "geometry", "disposition", "reason", "confidence", "unmapped", "fields", "proposal"}
+                or row["disposition"] not in {"extracted", "blank", "skipped"}
+                or not isinstance(row["reason"], str) or not row["reason"]
+                or not isinstance(row["unmapped"], list)
+                or any(not isinstance(item, str) for item in row["unmapped"])
+                or (row["confidence"] is not None and not _finite_number(row["confidence"]))):
+            raise ValueError("pipeline row requires an explicit disposition, reason and diagnostics")
         _validate_row_location(row.get("location"), page_numbers)
         geometry = row.get("geometry")
-        if (not isinstance(geometry, dict) or not geometry.get("cells")
-                or not isinstance(geometry.get("table_box"), list)):
+        if (not isinstance(geometry, dict) or set(geometry) != {"table_box", "cells"}
+                or not isinstance(geometry["cells"], list) or not geometry["cells"]):
             raise ValueError("pipeline row requires its physical table and cell geometry")
+        _validate_box(geometry["table_box"])
+        for cell in geometry["cells"]:
+            if (not isinstance(cell, dict) or set(cell) != {"row", "column", "row_span", "column_span", "box"}
+                    or any(type(cell[key]) is not int for key in ("row", "column", "row_span", "column_span"))
+                    or cell["row"] < 0 or cell["column"] < 0 or cell["row_span"] < 1 or cell["column_span"] < 1
+                    or not cell["row"] <= row["location"]["row"] < cell["row"] + cell["row_span"]):
+                raise ValueError("pipeline row requires actual located cells covering its row")
+            _validate_box(cell["box"])
         fields = row.get("fields")
         if (not isinstance(fields, list) or any(not isinstance(field, dict) for field in fields)
                 or any(not isinstance(field.get("name"), str) or not field["name"] for field in fields)
                 or len({field["name"] for field in fields}) != len(fields)):
             raise ValueError("pipeline row requires distinct named fields")
+        if row["disposition"] == "extracted":
+            if not fields or not isinstance(row["proposal"], dict):
+                raise ValueError("extracted pipeline rows require source-bound fields and a proposal")
+        elif row["proposal"] is not None:
+            raise ValueError("a skipped or blank pipeline row cannot carry a proposal")
         for field in fields:
             sources = field.get("sources")
-            if (not isinstance(field.get("text"), str) or not isinstance(sources, dict)
-                    or set(sources) != set(_ROLES) or not sources["value_source"]):
+            outcome = field.get("materialization")
+            if (set(field) != {"name", "text", "sources", "materialization"}
+                    or not isinstance(field["text"], str) or not field["text"]
+                    or not isinstance(sources, dict) or set(sources) != set(_ROLES) or not sources["value_source"]
+                    or not isinstance(outcome, dict) or set(outcome) != {"status", "reason"}
+                    or outcome["status"] not in {"materialized", "refused", "not_extracted"}
+                    or not isinstance(outcome["reason"], str) or not outcome["reason"]):
                 raise ValueError("pipeline field requires exact text and ordered source roles")
             for role in _ROLES:
                 if not isinstance(sources[role], list):
@@ -323,6 +357,27 @@ def _validate_row_location(location: object, pages: list[int]) -> None:
         raise ValueError("pipeline row requires its source page/table/row location")
 
 
+def _finite_number(value: object) -> bool:
+    return type(value) in (float, int) and math.isfinite(value)
+
+
+def _validate_box(box: object, *, glyph: bool = False) -> None:
+    if (not isinstance(box, list) or len(box) != 4 or not all(_finite_number(number) for number in box)
+            or box[2] < box[0] or box[3] < box[1]
+            or (not glyph and (box[2] == box[0] or box[3] == box[1]))):
+        raise ValueError("pipeline physical anchors require finite ordered coordinate boxes")
+
+
+def _validate_page_geometry(geometry: object) -> None:
+    if (not isinstance(geometry, dict)
+            or not all(_finite_number(geometry.get(key)) and geometry[key] > 0 for key in ("width", "height"))
+            or type(geometry.get("rotation")) is not int or geometry["rotation"] not in (0, 90, 180, 270)
+            or geometry.get("box_convention") != "PDF bottom-left"):
+        raise ValueError("pipeline page geometry requires its source frame")
+    _validate_box(geometry.get("crop_box"))
+    _validate_box(geometry.get("media_box"))
+
+
 def _validate_physical_segment(segment: object, source: str, pages: list[int]) -> None:
     if (not isinstance(segment, dict) or segment.get("source_sha256") != source
             or segment.get("kind") not in {"pdf_cell", "pdf_span"}
@@ -334,6 +389,14 @@ def _validate_physical_segment(segment: object, source: str, pages: list[int]) -
     if (not isinstance(location, dict) or not isinstance(location.get("geometry"), dict)
             or not isinstance(location.get("glyphs"), list) or not location["glyphs"]):
         raise ValueError("pipeline source segment requires physical glyph and page anchors")
+    _validate_page_geometry(location["geometry"])
+    for glyph in location["glyphs"]:
+        if not isinstance(glyph, dict) or not isinstance(glyph.get("text"), str) or not glyph["text"]:
+            raise ValueError("pipeline source segment requires actual glyph records")
+        _validate_box(glyph.get("display_box"), glyph=True)
+    if not any(glyph["display_box"][0] < glyph["display_box"][2]
+               and glyph["display_box"][1] < glyph["display_box"][3] for glyph in location["glyphs"]):
+        raise ValueError("pipeline source glyph anchors cannot all be degenerate")
 
 
 def _differences(expected: Any, actual: Any, path: str) -> list[dict]:

@@ -217,6 +217,9 @@ def test_empty_output_can_repeat_but_cannot_pass_quality(output):
     result = compare_pipeline_outputs(empty, empty)
     assert result["equal"] and not result["passed"]
     assert result["coverage_refusal"] == "empty_row_denominator"
+    refused = {**empty, "pages": []}
+    unobserved = compare_pipeline_outputs(refused, refused)
+    assert unobserved["equal"] and not unobserved["passed"]
 
 
 def test_wrong_source_document_or_incomplete_fact_population_refuses(session, source, tmp_path):
@@ -242,12 +245,44 @@ def test_invalid_schema_and_nonfinite_values_refuse(output):
         compare_pipeline_outputs(output, invalid)
 
 
-@pytest.mark.parametrize("missing", ["row", "glyph_anchors"])
+@pytest.mark.parametrize("missing", ["row", "glyph_anchors", "glyph_record", "cell_record", "cell_box", "table_box", "diagnostics", "page"])
 def test_shaped_but_unlocated_records_cannot_create_a_quality_denominator(output, missing):
     invalid = deepcopy(output)
     if missing == "row":
         invalid["rows"] = [{}]
-    else:
+    elif missing == "glyph_anchors":
         field(invalid["rows"][0], "external_org")["sources"]["value_source"][0]["location"]["glyphs"] = []
+    elif missing == "glyph_record":
+        field(invalid["rows"][0], "external_org")["sources"]["value_source"][0]["location"]["glyphs"] = [{}]
+    elif missing == "cell_record":
+        invalid["rows"][0]["geometry"]["cells"] = [{}]
+    elif missing == "cell_box":
+        invalid["rows"][0]["geometry"]["cells"][0]["box"] = []
+    elif missing == "table_box":
+        invalid["rows"][0]["geometry"]["table_box"] = []
+    elif missing == "diagnostics":
+        invalid["rows"][0].pop("disposition")
+    else:
+        invalid["pages"] = [{"page": 1}]
     with pytest.raises(ValueError):
         compare_pipeline_outputs(invalid, invalid)
+
+
+def test_review_placeholder_cannot_manufacture_a_positive_denominator(output):
+    placeholder = {
+        "schema_version": output["schema_version"], "source_sha256": "a" * 64,
+        "pages": [{"page": 1}], "rows": [{
+            "location": {"page": 1, "table": 0, "row": 0},
+            "geometry": {"table_box": [], "cells": [{}]}, "fields": [],
+        }], "facts": [],
+    }
+    with pytest.raises(ValueError):
+        compare_pipeline_outputs(placeholder, placeholder)
+
+
+def test_known_blank_rows_keep_their_real_geometry_and_disposition(output):
+    blank = deepcopy(output)
+    blank["rows"] = [blank["rows"][0]]
+    blank["rows"][0].update(disposition="blank", reason="blank_source_row", fields=[], proposal=None)
+    blank["facts"] = []
+    assert compare_pipeline_outputs(blank, blank)["passed"]
