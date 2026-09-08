@@ -559,7 +559,7 @@ def _extract_sheets(path: Path) -> list[ExtractedPage]:
 
 
 def _extract_pages(
-    path: Path, images_dir: Path, source_sha256: str, *, project: str = ""
+    path: Path, images_dir: Path, source_sha256: str, *, project: str
 ) -> list[ExtractedPage]:
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[ExtractedPage] = []
@@ -677,9 +677,10 @@ def _extract_pages(
                 failures.extend(outcome.failures)
                 ocr_attempts.extend(outcome.attempts)
                 scanned_layer = outcome.token_layer
-            for region in routing.regions:
-                if scanned is not None:
-                    break
+            # The incumbent per-region loop. The scanned route read the whole
+            # page above — one raster, one call, the routed regions selecting
+            # which of its cells are consumed — so the two never both run.
+            for region in routing.regions if scanned is None else ():
                 if region.mode not in {"ocr", "both"}:
                     continue
                 scope = {
