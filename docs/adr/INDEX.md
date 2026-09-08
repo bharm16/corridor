@@ -74,6 +74,7 @@ for everything else.
 | [ADR-0068](0068-a-source-segment-stores-its-exact-text-once.md) | A source segment stores its exact text once | current product | — | — | [ADR-0079](0079-one-application-one-worker-managed-postgres-and-one-database-per-customer.md) | `evidence_citations`, `external_statements`, `locator_validation`, `models`, `prose_interpretation`, `render_profiles`, `source_segments`, `token_layers` | — |
 | [ADR-0069](0069-a-fact-cites-one-rendition-agreement-across-documents-is-a-decision.md) | A fact cites one rendition; agreement across documents is a decision | current product | — | — | — | `evidence_citations`, `facts` | — |
 | [ADR-0073](0073-token-layers-are-class-b-artifacts-with-postgresql-manifests.md) | Token layers are Class B artifacts with PostgreSQL manifests | current product | — | — | [ADR-0079](0079-one-application-one-worker-managed-postgres-and-one-database-per-customer.md) | `extract_matrix`, `ingest`, `models`, `token_layers` | — |
+| [ADR-0094](0094-pdf-facts-come-from-the-paired-rendition-reader-scanned-pages-from-textract-and-pymupdf-and-tesseract-leave-the-product.md) | PDF facts come from the paired-rendition reader, scanned pages from Textract, and PyMuPDF and Tesseract leave the product | current product | — | [ADR-0006](0006-the-model-reads-structure-the-document-supplies-values.md) | — | `config`, `ingest`, `page_inventory`, `render_profiles`, `token_layers` | the reader package (#729), independent fixtures (#730), frozen measurement (#731), disabled adapters (#732 to #735) and remaining-call-site migration (#740) are implemented; coherent prose and cell segmentation (#736), semantic mapping (#737), reference integration (#738), qualification and selection (#447 and #739), provider-posture acceptance (#732) and final retirement (#741) remain. `ENGINE_ALLOWLIST` in `tests/test_architecture.py` still records retained incumbent imports. |
 
 ### supporting-documentation
 
@@ -165,7 +166,7 @@ Not in force. A proposed ADR governs nothing and may not supersede an accepted d
 
 | ADR | Title | Domain | Amends |
 |---|---|---|---|
-| [ADR-0094](0094-pdf-facts-come-from-the-paired-rendition-reader-scanned-pages-from-textract-and-pymupdf-and-tesseract-leave-the-product.md) | PDF facts come from the paired-rendition reader, scanned pages from Textract, and PyMuPDF and Tesseract leave the product | extraction | [ADR-0006](0006-the-model-reads-structure-the-document-supplies-values.md) |
+| — | none | — | — |
 
 ## Historical, superseded, and deprecated decisions
 
