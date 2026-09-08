@@ -23,6 +23,7 @@ import hashlib
 import json
 from datetime import datetime, timezone
 from pathlib import Path
+import sys
 import tempfile
 
 from PIL import Image, ImageChops, ImageFilter
@@ -248,6 +249,12 @@ def run(
             if not store.exists(key):
                 documents.append({**entry, "skipped": "absent from the content store"})
                 continue
+            print(
+                f"[{compared + 1}/{limit or len(selected)}] {digest[:12]} "
+                f"{entry['bytes']} bytes",
+                file=sys.stderr,
+                flush=True,
+            )
             source = store.stage(key, workspace / f"{digest}.pdf", sha256=digest)
             renders: dict[str, list[RenderDerivative]] = {}
             try:

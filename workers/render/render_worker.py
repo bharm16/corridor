@@ -199,6 +199,13 @@ def rasterise_pdfium(source_path, page_number, dpi):
     Corridor's top-left frame here. `get_cropbox()` falls back to the media box
     when the page declares none, which is what a reader displays and what MuPDF
     reports for such a page.
+
+    The boxes are then checked against the size PDFium says it is rendering,
+    because PDFium's box accessors do not inherit /MediaBox or /CropBox from a
+    parent node of the page tree while its renderer resolves them properly. No
+    corpus page disagrees, and a page that did would otherwise produce a
+    manifest whose affine chain quietly described a different rectangle from
+    the one in the PNG. It fails the render instead.
     """
 
     document = pypdfium2.PdfDocument(source_path)
@@ -207,10 +214,21 @@ def rasterise_pdfium(source_path, page_number, dpi):
         media_box = fixed_box(*page.get_mediabox())
         crop_box = fixed_box(*page.get_cropbox())
         rotation = int(page.get_rotation())
+        displayed = page.get_size()
         image = page.render(scale=dpi / 72).to_pil().convert("RGB").copy()
         page.close()
     finally:
         document.close()
+    width, height = box_width(crop_box), box_height(crop_box)
+    if rotation in {90, 270}:
+        width, height = height, width
+    if abs(round(displayed[0] * SCALE) - width) > 1 or (
+        abs(round(displayed[1] * SCALE) - height) > 1
+    ):
+        raise ValueError(
+            "the page boxes PDFium reports are not the page it renders; the "
+            "file may inherit /MediaBox or /CropBox from the page tree"
+        )
     return RasterPage(
         media_box=media_box,
         crop_box=flip_box(crop_box, media_box["y1"]),
