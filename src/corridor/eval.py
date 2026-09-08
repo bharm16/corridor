@@ -34,6 +34,11 @@ from corridor.experimental_database import (
     experimental_session,
     require_experimental_database,
 )
+from corridor.extraction_run_queries import (
+    completed_document_ids,
+    completion_predicate,
+    is_completed_run,
+)
 from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.measurement_cases import (
     CasePredictionError,
@@ -411,8 +416,6 @@ def extracted_documents(
     never run through the extractor would otherwise count every one of its
     rows as missed, and report the backlog as a recall failure.
     """
-    from corridor.extraction_runs import completed_document_ids
-
     return completed_document_ids(
         session, project_id, prompt_version=prompt_version
     )
@@ -570,8 +573,6 @@ def _completed_prompt_versions(
     provenance still names the extraction path that completed cleanly
     rather than collapsing to "unknown".
     """
-    from corridor.extraction_runs import completion_predicate
-
     query = (
         select(ExtractionRun.prompt_version)
         .join(Document, Document.id == ExtractionRun.document_id)
@@ -1137,10 +1138,6 @@ def measure(
     stable document hash set. A filename alone never grants machine-reference
     provenance.
     """
-    # Archived CSV/method loading must not import authoring engines. The
-    # database-run path retains its existing canonical completion contract.
-    from corridor.extraction_runs import is_completed_run
-
     assert_measurement_not_spent(slug)
     project = session.scalars(select(Project).where(Project.slug == slug)).first()
     if project is None:

@@ -215,7 +215,13 @@ exceptions:
 
 # Prepare a diagnostic disagreement report, or author the explicitly
 # semi-independent machine reference plus its required scope manifest:
-#   make gold ARGS="wsdot-9424 --author"
+#   make gold ARGS="<new-unspent-project> --author"
+# Existing first-write references refuse re-authoring. For a justified new
+# unspent PDF scope, select the independent native-cell recipe explicitly:
+#   make gold ARGS="<project> --author --method=native-pdf-cell-grid --directory=out/references"
+# Read-only regeneration verifies its recorded native source/configuration:
+#   make gold ARGS="<project> --replay <native-reference.csv>"
+# Archived CSV evaluation does not regenerate it; see docs/operations/machine-reference-methods.md.
 gold:
 	uv run python -m corridor.gold $(ARGS)
 

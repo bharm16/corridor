@@ -19,6 +19,11 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, aliased
 
 from corridor import audit
+from corridor.extraction_run_queries import (
+    completed_document_ids,
+    completion_predicate,
+    is_completed_run,
+)
 from corridor.extractor_lineage import (
     ExtractorConfig,
     canonical_json_bytes,
@@ -52,38 +57,6 @@ from corridor.source_segments import (
     append_ingested_source_segments,
     dereference_source_segment,
 )
-
-
-def completion_predicate():
-    """Which runs count as completed for resume/eval selection.
-
-    Only a document with zero page failures is complete. A successful zero-row
-    read still counts because it has `page_errors == 0`. A document with any
-    failed page must retry as a whole, so its run is history, not completion,
-    even if some pages appeared to yield candidates before the failure.
-    """
-    return and_(
-        ExtractionRun.outcome == "completed", ExtractionRun.page_errors == 0
-    )
-
-
-def is_completed_run(run: ExtractionRun) -> bool:
-    """Object-level form of the one extraction completion rule."""
-
-    return run.outcome == "completed" and run.page_errors == 0
-
-
-def completed_document_ids(
-    session: Session, project_id: int, *, prompt_version: str | None = None
-) -> set[int]:
-    query = (
-        select(ExtractionRun.document_id)
-        .join(Document, Document.id == ExtractionRun.document_id)
-        .where(Document.project_id == project_id, completion_predicate())
-    )
-    if prompt_version is not None:
-        query = query.where(ExtractionRun.prompt_version == prompt_version)
-    return set(session.scalars(query.distinct()).all())
 
 
 class SourceFactAppendConflict(ValueError):

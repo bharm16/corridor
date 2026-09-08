@@ -4,6 +4,7 @@ from contextlib import nullcontext
 from dataclasses import replace
 from hashlib import sha256
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -83,19 +84,21 @@ def draw(page, rows, *, top=35):
                 page.text((x + 5, y + 22), value, fontsize=10)
 
 
-def source(session, project, tmp_path, *, rows=ROWS, extra=None):
+def source(session, project, tmp_path, *, rows=ROWS, extra=None, additional_pages=()):
     fixture = PdfFixture()
     page = fixture.add_page(width=950, height=900)
     draw(page, rows)
     if extra:
         draw(page, extra, top=400)
+    for page_rows in additional_pages:
+        draw(fixture.add_page(width=950, height=900), page_rows)
     path = fixture.save(tmp_path / "native-reference.pdf")
     document = Document(
         project_id=project.id,
         filename=path.name,
         sha256=sha256(path.read_bytes()).hexdigest(),
         doc_type="matrix",
-        pages=1,
+        pages=1 + len(additional_pages),
         parse_status="parsed",
     )
     session.add(document)
@@ -555,3 +558,145 @@ def test_cli_bad_replay_contract_refuses_without_reading(
     )
     assert main([project.slug, "--replay", str(csv)]) == 1
     assert "unsupported method/version" in capsys.readouterr().err and document.sha256
+
+
+def test_actual_archived_scoring_has_no_authoring_engine_dependency(
+    runtime_database, tmp_path
+):
+    with runtime_database.session_factory() as session:
+        project = Project(
+            slug="native-reference-without-engines",
+            name="Archived reference",
+            is_synthetic=True,
+        )
+        session.add(project)
+        session.flush()
+        document, _ = source(session, project, tmp_path)
+        _, (csv, _, scope) = publish(session, project, tmp_path)
+        run = record_run(session, project, document, "A-1", "A-1", "A-3")
+        run_id, slug = run.id, project.slug
+        database_url = session.get_bind().url.render_as_string(hide_password=False)
+        session.commit()
+    script = """
+import os, sys
+class AbsentEngine:
+ def find_spec(self, fullname, path=None, target=None):
+  if fullname.split('.')[0] in {'pymupdf','fitz','pypdfium2'} or fullname == 'corridor.native_reference':
+   raise ModuleNotFoundError('historical authoring engine is unavailable')
+sys.meta_path.insert(0, AbsentEngine())
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+from corridor.eval import measure, artifact
+from datetime import datetime, timezone
+csv, manifest, slug, run_id = sys.argv[1:]
+engine=create_engine(os.environ['NATIVE_REFERENCE_TEST_DATABASE_URL'])
+try:
+ with Session(engine) as session:
+  result=measure(session,slug,gold_path=csv,reference_manifest_path=manifest,extraction_run_ids={int(run_id)})
+  assert result.result.matched == result.result.gold_total == 3
+  assert result.result.critical_matched == result.result.critical_gold_total == 1
+  assert result.reference_scope.method == 'native-pdf-cell-grid'
+  written=artifact(result.result,reference_description=result.reference_description,ran_at=datetime.now(timezone.utc),extraction_runs=result.extraction_runs,reference_scope=result.reference_scope)
+  assert written['reference_scope']['method'] == 'native-pdf-cell-grid'
+  assert written['extraction_run_ids'] == [int(run_id)]
+finally:
+ engine.dispose()
+"""
+    result = subprocess.run(
+        [sys.executable, "-c", script, str(csv), str(scope), slug, str(run_id)],
+        env={**os.environ, "NATIVE_REFERENCE_TEST_DATABASE_URL": database_url},
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
+
+
+def test_shared_completion_helpers_have_one_engine_independent_owner():
+    from corridor import extraction_run_queries, extraction_runs
+
+    for name in ("completion_predicate", "is_completed_run", "completed_document_ids"):
+        assert getattr(extraction_runs, name) is getattr(extraction_run_queries, name)
+
+
+def test_spanning_owner_cannot_make_a_second_source_row_disappear(
+    session, project, tmp_path
+):
+    from corridor.native_reference import authoring_identity
+    from corridor.token_layers import read_native_pdf
+    from corridor.reader_segments import native_segment_values
+
+    fixture = PdfFixture()
+    page = fixture.add_page(width=950, height=900)
+    rows = [ROWS[0], ROWS[1], ["Owner A", "A-1", "X", "", ""], ["", "A-2", "X", "", ""]]
+    for row_no, row in enumerate(rows):
+        for column, words in enumerate(row):
+            if column == 0 and row_no == 3:
+                continue
+            x, y = 25 + column * 175, 35 + row_no * 36
+            height = 72 if column == 0 and row_no == 2 else 36
+            page.rect((x, y, x + 175, y + height))
+            if words:
+                page.text((x + 5, y + 22), words, fontsize=10)
+    path = fixture.save(tmp_path / "spanning-owner.pdf")
+    document = Document(
+        project_id=project.id,
+        filename=path.name,
+        sha256=sha256(path.read_bytes()).hexdigest(),
+        doc_type="matrix",
+        pages=1,
+    )
+    session.add(document)
+    session.flush()
+    document._pdf_path = str(path)
+    original_bytes = path.read_bytes()
+    reading = read_native_pdf(path, source_sha256=document.sha256)
+    cells = [
+        value for value in native_segment_values(reading) if value.kind == "pdf_cell"
+    ]
+    assert next(cell for cell in cells if cell.exact_text == "Owner A").row_span == 2
+    assert {"A-1", "A-2"} <= {cell.exact_text for cell in cells}
+    identity = authoring_identity()
+    for _ in range(2):
+        with pytest.raises(ValueError, match="does not support row-spanning cells"):
+            author(session, project, tmp_path)
+        assert not (tmp_path / "references").exists()
+    assert path.read_bytes() == original_bytes and authoring_identity() == identity
+
+
+def test_populated_continuation_without_headers_refuses_before_publication(
+    session, project, tmp_path
+):
+    document, path = source(
+        session,
+        project,
+        tmp_path,
+        rows=ROWS[:3],
+        additional_pages=([["Owner D", "CONT-2", "X", "", ""]],),
+    )
+    original = path.read_bytes()
+    for _ in range(2):
+        with pytest.raises(
+            ValueError, match="page 2 has populated content without supported headings"
+        ):
+            author(session, project, tmp_path)
+        assert not (tmp_path / "references").exists()
+    assert path.read_bytes() == original and document.pages == 2
+
+
+def test_supported_continuation_repeats_headers_without_repeating_group_anchor(
+    session, project, tmp_path
+):
+    document, _ = source(
+        session,
+        project,
+        tmp_path,
+        rows=ROWS[:3],
+        additional_pages=([ROWS[1], ["Owner D", "CONT-2", "", "X", ""]],),
+    )
+    gold, (csv, _, _) = publish(session, project, tmp_path)
+    assert [(row.source_ref, row.page, row.critical) for row in gold.rows] == [
+        ("A-1", 1, "yes"),
+        ("CONT-2", 2, "no"),
+    ]
+    assert replay_machine_reference(session, project.id, csv)["replayed"]
+    assert document.pages == 2

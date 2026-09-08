@@ -114,19 +114,27 @@ def read_reference_document(path: Path, document_sha256: str) -> NativeReference
     cells = defaultdict(list)
     for value in native_segment_values(reading):
         if value.kind == "pdf_cell":
+            if value.row_span != 1:
+                raise ValueError(
+                    "native reference recipe does not support row-spanning cells"
+                )
             cells[(value.page_no, value.table_index)].append(value)
     expected = Counter(
         (page["number"], table_index, cell["row"], cell["column"])
         for page in reading.pages
         for table_index, table in enumerate(page["tables"]["value"])
-        for cell in table["structured_cells"] if cell["text"]
+        for cell in table["structured_cells"]
+        if cell["text"]
     )
     actual = Counter(
         (page_no, table, cell.cell_row, cell.cell_column)
-        for (page_no, table), values in cells.items() for cell in values
+        for (page_no, table), values in cells.items()
+        for cell in values
     )
     if expected != actual:
-        raise ValueError("native reference has nonempty reader cells without unique typed source values")
+        raise ValueError(
+            "native reference has nonempty reader cells without unique typed source values"
+        )
     grids = {}
     for page in reading.pages:
         tables = [
@@ -149,6 +157,10 @@ def read_reference_document(path: Path, document_sha256: str) -> NativeReference
             )
         if eligible:
             grids[page["number"]] = eligible[0]
+        elif page["characters"]["value"] or page["clipped"]["value"]:
+            raise ValueError(
+                f"native reference page {page['number']} has populated content without supported headings"
+            )
     if not any(
         _norm(cell.exact_text) == _ANCHOR for grid in grids.values() for cell in grid
     ):
