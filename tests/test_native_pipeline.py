@@ -454,3 +454,119 @@ def test_numeric_evidence_refuses_file_change_at_registration(session, project, 
     with pytest.raises(PipelineQualificationRefused, match="changed between measurement"), session.begin_nested():
         _qualify(session, fixture)
     assert session.scalar(select(func.count()).select_from(PipelineQualification)) == 0
+
+
+def _boundary(source, transport, *, campaign="native-matrix-test-campaign", **overrides):
+    from corridor.native_provider_boundary import (
+        EXPERIMENT_STAGE, NATIVE_MATRIX_PURPOSE, POSTURE, Budget, ExperimentScope,
+        RequestBoundary, open_native_provider_boundary,
+    )
+
+    digests = frozenset({source.reading.rendition_sha256})
+    record = ExperimentScope(
+        record_id="native-pipeline-test-scope", dataset="native-pipeline-test-dataset",
+        dataset_digest="d" * 64, purpose=NATIVE_MATRIX_PURPOSE,
+        scope="Source-authored fixture; no customer material",
+        source_classes=frozenset({"native_matrix"}), source_sha256s=digests,
+        max_calls=8, max_pages=8, max_total_tokens=1_000_000,
+        posture_identity=POSTURE.identity, posture_digest=POSTURE.digest,
+        recorded_by="local:pipeline-test-maintainer", recorded_on="2026-09-08",
+    )
+    request = RequestBoundary(
+        project="native-pipeline-test-dataset", source_class="native_matrix",
+        purpose=NATIVE_MATRIX_PURPOSE, stage=EXPERIMENT_STAGE, posture_identity=POSTURE.identity,
+        model=POSTURE.model, reasoning_effort="none", store=False, base_url=POSTURE.base_url,
+        image_detail="original", image_dpi=110,
+    )
+    return open_native_provider_boundary(
+        record, request, transport=transport,
+        budget=Budget(max_calls=8, max_pages=8, max_total_tokens=1_000_000),
+        source_sha256s=digests, campaign=campaign, **overrides,
+    )
+
+
+class _FixtureTransport:
+    """Returns the fixture's own answers in a Responses API body; counts nothing."""
+
+    def __init__(self, answers):
+        self.answers = list(answers)
+        self.sent = []
+
+    def send(self, payload):
+        from corridor.native_provider_boundary import TransportOutcome
+
+        self.sent.append(payload)
+        answer = self.answers[len(self.sent) - 1]
+        return TransportOutcome(status=200, body={
+            "id": f"resp_{len(self.sent)}", "status": "completed", "model": "gpt-5.6-luna",
+            "usage": {"input_tokens": 1000 + len(self.sent), "output_tokens": 200,
+                      "input_tokens_details": {"cached_tokens": 128}},
+            "output": [{"type": "message", "content": [
+                {"type": "output_text", "text": json.dumps(answer)}]}],
+        })
+
+
+def test_fresh_provider_runs_only_through_the_authorized_boundary_and_records_its_costs(
+    session, project, matrix_source, tmp_path, preexisting_pipeline_state,
+):
+    document = _document(session, project, matrix_source)
+    scope = _scope(matrix_source, purpose="prospective_production")
+    transport = _FixtureTransport(matrix_source.answers)
+    client = _boundary(matrix_source, transport)
+    from corridor.native_provider_boundary import POSTURE
+
+    plan = ObservationPlan(
+        mode="fresh_provider", origin_sha256=client.origin_sha256, source_permission="public",
+        provider_posture_sha256=POSTURE.digest,
+        description="Fresh structured mapping under the recorded experiment scope",
+    )
+    protected_before = _protected_rows(session)
+    result = run_native_matrix_shadow(
+        session, document, source_path=matrix_source.path, scope=scope, client=client,
+        plan=plan, output_dir=tmp_path / "fresh", document_label=matrix_source.path.name,
+    )
+    _assert_protected_rows_unchanged(session, protected_before)
+    record = pipeline_receipt(result.observation)
+    assert record["disposition"] == "completed", record["outcome"]
+    assert record["metrics"]["client_calls"] == len(transport.sent) == 1
+    assert record["metrics"]["outbound_attempts"] == 1
+    assert record["metrics"]["provider_tokens"]["input"] == 1001
+    assert record["metrics"]["provider_tokens"]["cached_input"] == 128
+    assert record["metrics"]["provider_tokens"]["total"] == 1201
+    assert record["metrics"]["processing_cost_tokens"] == 1201
+    assert record["metrics"]["observed_new_provider_cost_usd"] is None
+    assert record["chain"]["provider"]["authorization"]["record_id"] == "native-pipeline-test-scope"
+    assert record["chain"]["provider"]["counts"]["calls"] == 1
+    assert record["chain"]["model_observations"][0]["response_sha256"]
+    call = record["chain"]["provider"]["call_receipts"][0]
+    assert call["response_id"] == "resp_1" and call["transport_attempts"] == 1
+
+
+@pytest.mark.parametrize("break_it", ["scope", "posture", "origin", "permission"])
+def test_a_boundary_that_does_not_cover_this_run_cannot_supply_a_fresh_observation(
+    session, project, matrix_source, tmp_path, break_it,
+):
+    document = _document(session, project, matrix_source)
+    transport = _FixtureTransport(matrix_source.answers)
+    client = _boundary(matrix_source, transport)
+    from corridor.native_provider_boundary import POSTURE
+
+    scope = _scope(matrix_source, purpose="prospective_production")
+    fields = dict(mode="fresh_provider", origin_sha256=client.origin_sha256,
+                  source_permission="public", provider_posture_sha256=POSTURE.digest,
+                  description="Fresh mapping")
+    if break_it == "posture":
+        fields["provider_posture_sha256"] = "b" * 64
+    elif break_it == "origin":
+        fields["origin_sha256"] = "a" * 64
+    elif break_it == "permission":
+        fields["source_permission"] = "customer"
+    elif break_it == "scope":
+        scope = PipelineScope(deployment="test-fixture", source_sha256s=(document.sha256, "f" * 64),
+                              corpus_version="source-authored-fixture-v1", corpus_sha256="c" * 64,
+                              purpose="prospective_production")
+    with pytest.raises(ValueError, match="authorization boundary"):
+        run_native_matrix_shadow(session, document, source_path=matrix_source.path, scope=scope,
+                                 client=client, plan=ObservationPlan(**fields),
+                                 output_dir=tmp_path / "refused", document_label=matrix_source.path.name)
+    assert not transport.sent and not (tmp_path / "refused").exists()

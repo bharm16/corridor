@@ -180,6 +180,7 @@ def test_an_authorized_call_records_request_response_attempts_usage_and_cache(tm
     assert receipt["usage"] == {"input_tokens": 120, "output_tokens": 30, "cached_tokens": 64}
     assert receipt["cached"] is False and receipt["pages"] == 1
     assert len(receipt["request_sha256"]) == 64 and len(receipt["response_sha256"]) == 64
+    assert len(receipt["boundary_sha256"]) == 64
     sent = transport.payloads[0]
     assert sent["model"] == POSTURE.model and sent["store"] is False
     assert sent["reasoning"] == {"effort": "none"}

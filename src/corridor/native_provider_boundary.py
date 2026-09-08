@@ -406,6 +406,17 @@ class AuthorizedNativeMapper:
         self._transport = transport
         self._sleep = sleep
 
+    @property
+    def origin_sha256(self) -> str:
+        """This observation origin: posture, record, request and budget together.
+
+        An `ObservationPlan` names it, so a receipt cannot claim to have been
+        observed under one authorization and actually run under another.
+        """
+        return _digest({"posture": self.posture.as_dict(), "record": self.record.as_dict(),
+                        "request": self.request.as_dict(), "budget": self.budget.as_dict(),
+                        "source_sha256s": sorted(self.source_sha256s)})
+
     # -- accounting ---------------------------------------------------------
 
     @property
@@ -462,13 +473,16 @@ class AuthorizedNativeMapper:
     def complete(self, *, system: str, user: str, schema: dict[str, Any], images=()) -> dict[str, Any]:
         """One structured page mapping, budgeted and counted before it goes out."""
         paths = [Path(image) for image in images]
-        request_identity = {
-            "campaign": self.campaign, "record_id": self.record.record_id,
-            "boundary": self.request.as_dict(),
+        # The four-field core is the request identity the observation record
+        # already verifies. The authorization it went out under is recorded
+        # beside it, not folded into it, so the two stay independently checkable.
+        core = {
             "system_sha256": sha256(system.encode()).hexdigest(),
             "schema_sha256": _digest(schema), "user": user,
             "image_sha256s": [sha256(path.read_bytes()).hexdigest() for path in paths],
         }
+        request_identity = {"core": core, "campaign": self.campaign,
+                            "record_id": self.record.record_id, "boundary": self.request.as_dict()}
         self._require_budget(len(paths), request_identity)
         payload = {
             "model": self.model, "instructions": system,
@@ -512,7 +526,8 @@ class AuthorizedNativeMapper:
     def _refuse(self, reason: str, detail: str, request_identity: dict[str, Any], attempts: int) -> NativeProviderRefused:
         refusal = NativeProviderRefused(reason, detail=detail, outbound_requests=attempts, request=self.request)
         record = refusal.record()
-        record["request_sha256"] = _digest(request_identity)
+        record["request_sha256"] = _digest(request_identity["core"])
+        record["boundary_sha256"] = _digest(request_identity)
         self.refusals.append(record)
         return refusal
 
@@ -541,7 +556,8 @@ class AuthorizedNativeMapper:
         answer = json.loads(text_part["text"])
         receipt = {
             "campaign": self.campaign, "record_id": self.record.record_id,
-            "request_sha256": _digest(request_identity), "response_sha256": _digest(answer),
+            "request_sha256": _digest(request_identity["core"]),
+            "boundary_sha256": _digest(request_identity), "response_sha256": _digest(answer),
             "raw_response_sha256": _digest(body), "response_id": body.get("id") or "",
             "model_reported": body.get("model") or self.model,
             "transport_attempts": attempts,
@@ -549,7 +565,7 @@ class AuthorizedNativeMapper:
             # No response is served from a local store: `store` is false and
             # this boundary keeps no cache. Provider-side prompt caching shows
             # up as cached input tokens, which is a discount, not a hit.
-            "cached": False, "pages": len(request_identity["image_sha256s"]),
+            "cached": False, "pages": len(request_identity["core"]["image_sha256s"]),
             "latency_ms": (time.perf_counter_ns() - started) / 1_000_000,
             "recorded_at": _now(),
         }
