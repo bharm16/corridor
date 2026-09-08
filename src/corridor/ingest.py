@@ -24,12 +24,23 @@ exception becomes a scoped Processing Failure and fails the document attempt.
 Which engine supplies a PDF page's native reading is one setting,
 `native_reader_token_layer` (ADR-0094, #733). Off, and this is the incumbent
 path unchanged. On, and the paired-rendition reader supplies exactly two
-things: the page's native text and its native Token Layer. It does not supply
-the Page Inventory or the routing decision — those still come from the
-incumbent open below, so enabling the adapter cannot move the OCR boundary as
-a side effect; the reader's inventory is #734's, and the OCR layer beside it
-is #739's. The setting is off, because merging an adapter is not selecting it
-(#447).
+things: the page's native text and its native Token Layer.
+
+Which engine's facts decide where OCR is needed is a second, separate setting,
+`reader_page_inventory` (#734). Off, and the Page Inventory and the routing
+decision come from the incumbent open below. On, and both come from the same
+reader, in its own isolated read of the document. The two settings are kept
+apart because they move different boundaries — one changes which engine's text
+a page carries, the other changes which pages are sent to OCR at all — and a
+rollback of either must not drag the other with it. Both are off, because
+merging an adapter is not selecting it (#447, #739).
+
+A reader-backed route names Amazon Textract as the engine that should read its
+OCR regions (ADR-0094). Ingest does not call Textract: wiring the scanned read
+is #739's, and until then the OCR attempt below is the incumbent engine's and
+records itself as the incumbent engine's. A routing decision says who a region
+*should* be read by; an attempt and its Processing Failure record who read it.
+Neither is allowed to borrow the other's name.
 """
 
 from __future__ import annotations
@@ -60,7 +71,9 @@ from corridor.page_inventory import (
     PageRoutingDecision,
     PdfRect,
     inventory_page,
+    read_reader_page_inventories,
     route_page,
+    route_reader_page,
 )
 from corridor.render_profiles import (
     RenderDerivative,
@@ -523,6 +536,16 @@ def _extract_pages(
         if settings.native_reader_token_layer
         else {}
     )
+    # The inventory's own isolated read, on the same terms. It is a second
+    # read of the same document when both settings are on: the two adapters
+    # own their own readings and neither answers for the other, which is what
+    # keeps a rollback of one from disturbing the other. Collapsing them into
+    # one read is worth doing the day both are selected together (#447).
+    reader_inventories: dict[int, PageInventory] = (
+        read_reader_page_inventories(path)
+        if settings.reader_page_inventory
+        else {}
+    )
 
     with pymupdf.open(path) as pdf:
         if pdf.page_count == 0:
@@ -532,10 +555,19 @@ def _extract_pages(
             # mean the page a reader sees.
             page_no = index + 1
             incumbent_text = page.get_text()
-            # The Page Inventory reads the incumbent's text on both settings,
-            # so the routing decision is the same decision either way.
-            inventory = inventory_page(page, native_text=incumbent_text)
-            routing = route_page(inventory)
+            if settings.reader_page_inventory:
+                reader_inventory = reader_inventories.get(page_no)
+                if reader_inventory is None:
+                    raise ValueError(
+                        f"{path.name}: the reader returned no page {page_no}"
+                    )
+                inventory, routing = (
+                    reader_inventory,
+                    route_reader_page(reader_inventory),
+                )
+            else:
+                inventory = inventory_page(page, native_text=incumbent_text)
+                routing = route_page(inventory)
             reader_layer = reader_layers.get(page_no)
             if settings.native_reader_token_layer and reader_layer is None:
                 raise ValueError(
@@ -571,6 +603,10 @@ def _extract_pages(
                     "region_id": region.region_id,
                     "box": region.box.model_dump(mode="json"),
                 }
+                # The engine that actually reads the region, and its
+                # configuration — not the engine the route names. Until #739
+                # wires Textract in, those differ on a reader-backed route,
+                # and a Processing Failure must name the engine that failed.
                 configuration = {
                     **OCR_CONFIGURATION,
                     "render_profile_id": ocr_derivative.profile_id,

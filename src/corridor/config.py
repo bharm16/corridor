@@ -136,6 +136,17 @@ class Settings(BaseSettings):
         default=False, validation_alias="CORRIDOR_NATIVE_READER_TOKEN_LAYER"
     )
 
+    # Whether the Page Inventory and the routing decision come from the same
+    # reader (ADR-0094, #734) instead of the incumbent engine. Separate from
+    # the setting above because the two move different boundaries: that one
+    # changes which engine's text a page carries, this one changes which pages
+    # are sent to OCR at all, and a rollback of either must not drag the other
+    # with it. Off for the same reason: #447 owns native selection and #739
+    # owns scanned selection, and neither moves because an adapter merged.
+    reader_page_inventory: bool = Field(
+        default=False, validation_alias="CORRIDOR_READER_PAGE_INVENTORY"
+    )
+
     openai_api_key: str = ""
     openai_base_url: str = "https://api.openai.com/v1"
     # Recorded on every candidate. Changing this without an eval run makes
