@@ -547,8 +547,7 @@ def test_a_boundary_that_does_not_cover_this_run_cannot_supply_a_fresh_observati
     session, project, matrix_source, tmp_path, break_it,
 ):
     document = _document(session, project, matrix_source)
-    transport = _FixtureTransport(matrix_source.answers)
-    client = _boundary(matrix_source, transport)
+    client = _boundary(matrix_source, _ForbiddenTransport())
     from corridor.native_provider_boundary import POSTURE
 
     scope = _scope(matrix_source, purpose="prospective_production")
@@ -569,7 +568,7 @@ def test_a_boundary_that_does_not_cover_this_run_cannot_supply_a_fresh_observati
         run_native_matrix_shadow(session, document, source_path=matrix_source.path, scope=scope,
                                  client=client, plan=ObservationPlan(**fields),
                                  output_dir=tmp_path / "refused", document_label=matrix_source.path.name)
-    assert not transport.sent and not (tmp_path / "refused").exists()
+    assert not (tmp_path / "refused").exists()
 
 
 # ---- ADR-0095: a recorded maintainer acceptance is a selection basis ---------
@@ -738,3 +737,99 @@ def test_an_acceptance_settles_only_whether_the_configuration_is_good_enough(
     with pytest.raises(PipelineQualificationRefused, match="exact source"):
         selected_pipeline_configuration(session, document, deployment=scope.deployment,
                                         configuration_sha256=configuration_sha256)
+
+
+# ---- the authorized outbound boundary, offline ------------------------------
+
+
+class _ForbiddenTransport:
+    """Fails the test on any outbound request. Corridor must reach no provider."""
+
+    def send(self, payload):
+        raise AssertionError("a refused native run must send nothing")
+
+
+def test_a_selected_pipeline_runs_a_fresh_observation_through_its_authorized_boundary(
+    session, project, matrix_source, tmp_path, preexisting_pipeline_state,
+):
+    """The two halves meet: an accepted configuration, executed through the boundary.
+
+    No live provider is reached. The transport is a double that returns the
+    fixture's own retained answers in a Responses API body, so the outbound
+    path is exercised end to end without a network call.
+    """
+    document = _document(session, project, matrix_source)
+    scope = _scope(matrix_source, purpose="prospective_production")
+    transport = _FixtureTransport(matrix_source.answers)
+    client = _boundary(matrix_source, transport)
+    from corridor.native_pipeline import native_pipeline_configuration
+    from corridor.native_provider_boundary import POSTURE
+
+    plan = ObservationPlan(
+        mode="fresh_provider", origin_sha256=client.origin_sha256, source_permission="public",
+        provider_posture_sha256=POSTURE.digest,
+        description="Fresh structured mapping under the recorded experiment scope")
+    configuration = native_pipeline_configuration(client, plan)
+    register_pipeline_configuration(session, configuration)
+    acceptance = MaintainerAcceptance(
+        decision="ADR-0095", configuration_sha256=content_digest(configuration),
+        implementation_revision=configuration["code_revision"], scope_sha256=scope.identity,
+        evidence=(AcceptedEvidence(name="integrated replay", reference="gold/native-matrix/v1/dataset.json",
+                                   summary="466 required rows and 2,466 Facts reproduced twice."),),
+        limits=("Independent full-field accuracy is not established; the references share a reader.",),
+        words="I accept the replacement on the evidence already measured.", accepted_on="2026-09-08")
+    recorded = record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    protected_before = _protected_rows(session)
+    selected = select_qualified_pipeline(session, acceptance_id=recorded.id, actor=ACTOR,
+        reason="Accepted on the evidence already measured (ADR-0095)", expected_selection_id=None)
+    _assert_protected_rows_unchanged(session, protected_before, new_selection_ids=(selected.id,))
+    result = run_selected_native_matrix(
+        session, document, deployment=scope.deployment, client=client, plan=plan,
+        source_path=matrix_source.path, output_dir=tmp_path / "selected",
+        document_label=matrix_source.path.name)
+    record = pipeline_receipt(result.observation)
+    assert record["disposition"] == "completed", record["outcome"]
+    assert record["plan"]["mode"] == "fresh_provider" and len(transport.sent) == 1
+    assert record["chain"]["provider"]["counts"]["calls"] == 1
+    assert record["chain"]["provider"]["counts"]["outbound_requests"] == 1
+    assert record["metrics"]["processing_cost_usd"] is None
+    assert record["metrics"]["handling_minutes"] is None
+    # The accepted record is untouched: an acceptance settles whether the
+    # configuration is good enough, never what it may write (ADR-0095).
+    assert session.scalar(select(func.count()).select_from(ActiveExtractionRun)) == 0
+    assert session.scalar(select(func.count()).select_from(RecordInclusionRequest)) == 1
+
+
+def test_a_selected_run_the_boundary_does_not_cover_sends_nothing(
+    session, project, matrix_source, tmp_path,
+):
+    document = _document(session, project, matrix_source)
+    scope = _scope(matrix_source, purpose="prospective_production")
+    client = _boundary(matrix_source, _ForbiddenTransport())
+    from corridor.native_pipeline import native_pipeline_configuration
+    from corridor.native_provider_boundary import POSTURE
+
+    plan = ObservationPlan(mode="fresh_provider", origin_sha256=client.origin_sha256,
+        source_permission="public", provider_posture_sha256=POSTURE.digest,
+        description="Fresh mapping under a boundary that does not cover it")
+    configuration = native_pipeline_configuration(client, plan)
+    register_pipeline_configuration(session, configuration)
+    acceptance = MaintainerAcceptance(
+        decision="ADR-0095", configuration_sha256=content_digest(configuration),
+        implementation_revision=configuration["code_revision"], scope_sha256=scope.identity,
+        evidence=(AcceptedEvidence(name="integrated replay", reference="gold/native-matrix/v1/dataset.json",
+                                   summary="466 required rows reproduced twice."),),
+        limits=("Independent full-field accuracy is not established.",),
+        words="I accept the replacement on the evidence already measured.", accepted_on="2026-09-08")
+    recorded = record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=ACTOR)
+    select_qualified_pipeline(session, acceptance_id=recorded.id, actor=ACTOR,
+                              reason="Accepted scope", expected_selection_id=None)
+    # The selection is real and the run is inside it; the plan claims an
+    # authorization the boundary was not opened with, so nothing goes out.
+    stale = plan.model_copy(update={"origin_sha256": "a" * 64})
+    with pytest.raises(ValueError, match="authorization boundary"):
+        run_selected_native_matrix(session, document, deployment=scope.deployment, client=client,
+            plan=stale, source_path=matrix_source.path, output_dir=tmp_path / "uncovered",
+            document_label=matrix_source.path.name)
+    assert not (tmp_path / "uncovered").exists()
+    assert session.scalar(select(func.count()).select_from(PipelineObservation)) == 0
