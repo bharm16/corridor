@@ -1,0 +1,52 @@
+{
+  "cases": [
+    {
+      "after_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt--3-pymupdf-after/pixels/6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609-p0001-table_cv-3c83a1fb67d7.png",
+      "artifact_sha256": "40451989f09ac88d2b717ec41a81082db914d3aad47e70e76fa4d6a01fde545a",
+      "authored_tilt_degrees": -3,
+      "before_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt--3-pymupdf-before/pixels/6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609-p0001-table_cv-3c83a1fb67d7.png",
+      "exact_png_bytes_equal": true,
+      "manifests_equal_except_output_path": true,
+      "rasterizer": "pymupdf",
+      "same_filename": true,
+      "source_sha256": "6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609"
+    },
+    {
+      "after_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt--3-pdfium-after/pixels/6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609-p0001-table_cv-7d206c16d8f2.png",
+      "artifact_sha256": "4827892b0a06832dea56f4ba6e1819ef2c9da98f9b80f2c559e191288fc9373a",
+      "authored_tilt_degrees": -3,
+      "before_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt--3-pdfium-before/pixels/6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609-p0001-table_cv-7d206c16d8f2.png",
+      "exact_png_bytes_equal": true,
+      "manifests_equal_except_output_path": true,
+      "rasterizer": "pdfium",
+      "same_filename": true,
+      "source_sha256": "6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609"
+    },
+    {
+      "after_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt-3-pymupdf-after/pixels/c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631-p0001-table_cv-3c83a1fb67d7.png",
+      "artifact_sha256": "b8806b748bf06e0f378b93b6607e9a1ac249f22e41a41a293ab90c4d6ab0de0b",
+      "authored_tilt_degrees": 3,
+      "before_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt-3-pymupdf-before/pixels/c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631-p0001-table_cv-3c83a1fb67d7.png",
+      "exact_png_bytes_equal": true,
+      "manifests_equal_except_output_path": true,
+      "rasterizer": "pymupdf",
+      "same_filename": true,
+      "source_sha256": "c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631"
+    },
+    {
+      "after_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt-3-pdfium-after/pixels/c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631-p0001-table_cv-7d206c16d8f2.png",
+      "artifact_sha256": "6d0289b32e7042a4a73f1e5374af6aa2bcd2872d7dabf336e9cdbe199ddef023",
+      "authored_tilt_degrees": 3,
+      "before_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/tilt-3-pdfium-before/pixels/c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631-p0001-table_cv-7d206c16d8f2.png",
+      "exact_png_bytes_equal": true,
+      "manifests_equal_except_output_path": true,
+      "rasterizer": "pdfium",
+      "same_filename": true,
+      "source_sha256": "c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631"
+    }
+  ],
+  "worker_sha256": {
+    "after": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+    "before": "cfce9fbdba01d0076555d064e29d0db2f110c1fb9ee60c751191b1bfeca5aa9c"
+  }
+}

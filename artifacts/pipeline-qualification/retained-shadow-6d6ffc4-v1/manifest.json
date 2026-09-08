@@ -1,0 +1,120 @@
+{
+  "external_observations": [
+    {
+      "bytes": 60726188,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9424-v2-1.observation.json",
+      "sha256": "21a1eaba4d08b649756e9a204cbe1ba3b095f45a54e40a37b27359c88dcbc726"
+    },
+    {
+      "bytes": 60726197,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9424-v2-2.observation.json",
+      "sha256": "2e87ed39b1d0d9b9d94ef3eb754e3a512cd81ebc17c47302219625e2e37b8edb"
+    },
+    {
+      "bytes": 32236712,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-comm-1.observation.json",
+      "sha256": "4c9ced488a79cf51da430dc22179cb1e90942ae40ff97dc44727d69c8000ff90"
+    },
+    {
+      "bytes": 32236711,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-comm-2.observation.json",
+      "sha256": "ff18c9f77204fbd2ad13bbf5bdcdbf02c15ce2eb9bb72042323604d054942be2"
+    },
+    {
+      "bytes": 6487842,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-gas-1.observation.json",
+      "sha256": "d6a6e2cce3f1661bd6dd250e590aea8c65141422f33e149f181538d3038da15a"
+    },
+    {
+      "bytes": 6487842,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-gas-2.observation.json",
+      "sha256": "c514f4515624a4b510c96359bd2ba3fc452a8aa98e3fd556208bb26a7be2f816"
+    },
+    {
+      "bytes": 713450,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-opl-1.observation.json",
+      "sha256": "07662765c197c4831f3f1bd06deb5d6925c57c6ac96f3612ebedfc0e359f780d"
+    },
+    {
+      "bytes": 713456,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-opl-2.observation.json",
+      "sha256": "d65a16f90242417f8ea61968923054ce08f3db1de05725490b3b37ff6670dee7"
+    },
+    {
+      "bytes": 16607167,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-power-1.observation.json",
+      "sha256": "9b2d45f17f02a24c002ee708d82152edbd0431085737f8d5b0e246728dd4964f"
+    },
+    {
+      "bytes": 16607169,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-power-2.observation.json",
+      "sha256": "18d9dc858fa0bd7aa5392106d25b9185047f3d1bc009c02e35f3d9f387305da9"
+    },
+    {
+      "bytes": 9270414,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-sewer-1.observation.json",
+      "sha256": "80958906fa602f4a530ebe50f3d3b592160a79b6a4e143ae9516f759aefa662a"
+    },
+    {
+      "bytes": 9270414,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-sewer-2.observation.json",
+      "sha256": "4695b0deb9da275af245102087c76842469680dc2bb41d85afd64a4600b20c1b"
+    },
+    {
+      "bytes": 12228475,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-water-1.observation.json",
+      "sha256": "afdf801c88582daac26d1afcca799f67d1cbb0890c7043006b13757afa4d2164"
+    },
+    {
+      "bytes": 12228474,
+      "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/semantics-9540-water-2.observation.json",
+      "sha256": "2d2b897e4e6bfd58e996106c6177e79571648051d263d0d203339053d35a5e93"
+    }
+  ],
+  "files": [
+    {
+      "bytes": 2899,
+      "path": "summary.json",
+      "sha256": "cf08e7b0bc40e4d30438294418d8328a162b3190ee4f7bd009ac68bb6f397c49",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-measurement-summary-6d6ffc4-v1.json"
+    },
+    {
+      "bytes": 44776,
+      "path": "receipt.json",
+      "sha256": "b713c9f1a715d43055b9ebabbf92fea41835c2d85b91cccf2d8b6901872b6f0c",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/receipt.json"
+    },
+    {
+      "bytes": 7159,
+      "path": "configuration.json",
+      "sha256": "5d763a8a8beb593e2198336050e673fd84544828db647d0bab36d3c6d4b41256",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-shadow-measurement-6d6ffc4-v1/configuration.json"
+    },
+    {
+      "bytes": 1480,
+      "path": "process-observation.json",
+      "sha256": "2371349be445d48ffb9268afd5f2fae3b6e112ca6d94f349ae076a9512e12bc5",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-process-observation-6d6ffc4-v1/receipt.json"
+    },
+    {
+      "bytes": 2649,
+      "path": "source-before.json",
+      "sha256": "98902815e80001b95c0055b2c0c0057e0fe124b4f1972c6dc147a0c3898c981d",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-source-before-6d6ffc4.json"
+    },
+    {
+      "bytes": 2688,
+      "path": "source-after.json",
+      "sha256": "8bdb72c18a0fc874d48b1a88ecc57442cbedbb89a05f63aca59b2ff79f5b280e",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-source-after-6d6ffc4.json"
+    }
+  ],
+  "limitations": [
+    "These exact observations predate the subsequent gate review corrections and retain their original configuration identity.",
+    "Full canonical observations, raw model replay inputs, render artifacts and RSS samples remain at the recorded external paths.",
+    "The sampled process-tree RSS sum and elapsed time cover both observation rounds plus driver/setup, not independent per-document peaks or deployed costs."
+  ],
+  "qualification_status": "incomplete",
+  "runtime_core": "6d6ffc4f01bd0600d63825fbe36877f6844fd7eb",
+  "schema_version": "corridor.pipeline-measurement-artifacts.v1"
+}

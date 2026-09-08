@@ -1,0 +1,172 @@
+{
+  "code_revision": "d0eb8ce9f8fe9e98b47ed7012033d603800a4346",
+  "eligibility": "explicit_challenger_only",
+  "extractor": {
+    "config_json": {
+      "extractor": "native_matrix",
+      "model": "gpt-5.6-luna",
+      "postprocessor_sha256": "89f6a5711593873ecf4c3e0160ab857c2af1f93983a34dd62cafe64c7669f19a",
+      "prompt_sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+      "prompt_version": "matrix_structure_ids_v1",
+      "receipt_version": 1,
+      "request_controls": {
+        "api": "responses",
+        "flex": false,
+        "image_detail": "original",
+        "logprobs": false,
+        "model_image_dpi": 110,
+        "native_reader_dpi": 36,
+        "native_reader_engine": "tagged",
+        "provider_base_url": "https://api.openai.com/v1",
+        "reasoning_effort": "none",
+        "selection": "explicit_challenger_only",
+        "store": false,
+        "strict": true
+      },
+      "runtime": {
+        "dependency_lock_sha256": "d69ce36f54ba9e96fe2624b86d9f38d5e19634883a2c77bae8b10cd09a2086fc",
+        "packages": {
+          "Pillow": "12.3.0",
+          "httpx": "0.28.1",
+          "pypdf": "6.17.0",
+          "pypdfium2": "5.13.0"
+        },
+        "python_implementation": "CPython",
+        "python_version": "3.12.12"
+      },
+      "schema_sha256": "d050e1f7e37f5aeee14e53000a211c818e8f3bcd59c35997a589122e782e7c33",
+      "schema_version": "native-matrix-source-fields-v1"
+    },
+    "config_sha256": "6cac4d28912bf895eaba0c04169ef69c91cca456123acd3893f4ec4bdf9db2d5",
+    "model": "gpt-5.6-luna",
+    "postprocessor_sha256": "89f6a5711593873ecf4c3e0160ab857c2af1f93983a34dd62cafe64c7669f19a",
+    "prompt_sha256": "89da71794b65daac5cb48118c4afd0751f8f50a46fe5f07068003b9d80c18c4b",
+    "prompt_version": "matrix_structure_ids_v1",
+    "schema_sha256": "d050e1f7e37f5aeee14e53000a211c818e8f3bcd59c35997a589122e782e7c33",
+    "schema_version": "native-matrix-source-fields-v1"
+  },
+  "geometry_profile": "table_cv",
+  "inventory": "page-inventory-router-reader-v1",
+  "model_context": {
+    "dpi": 110,
+    "operation": "render_native_matrix_context"
+  },
+  "provider": {
+    "name": "openai-responses",
+    "posture_sha256": null
+  },
+  "qualification_policy_sha256": null,
+  "rasterizer": "pdfium",
+  "reader": {
+    "dpi": 36,
+    "engine": "tagged"
+  },
+  "render_profiles": {
+    "measurement_sha256": "d952c12ae74126387eae71c5d94549c44e2ad6d174483f0249f063c08ff99e6d",
+    "pdf_gold_dataset_version": "2026-08-31.2",
+    "profiles": {
+      "cell_detail": {
+        "dpi": 600,
+        "name": "cell_detail",
+        "parameters": {
+          "alpha": false,
+          "color": "rgb",
+          "format": "png"
+        },
+        "preprocessing": [],
+        "profile_id": "c76f537dc0c6311304d95b4592d735be4d8ebba3e736336227cd0e841d926b8f",
+        "requires_clip": true
+      },
+      "ocr_layout": {
+        "dpi": 300,
+        "name": "ocr_layout",
+        "parameters": {
+          "denoise_kernel": [
+            3,
+            3
+          ],
+          "format": "png"
+        },
+        "preprocessing": [
+          "grayscale",
+          "denoise"
+        ],
+        "profile_id": "27530b723b5a182f77a252adc085a28277084b1cf233c22e0e1859f84b26f483",
+        "requires_clip": false
+      },
+      "review": {
+        "dpi": 200,
+        "name": "review",
+        "parameters": {
+          "alpha": false,
+          "color": "rgb",
+          "format": "png"
+        },
+        "preprocessing": [],
+        "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+        "requires_clip": false
+      },
+      "table_cv": {
+        "dpi": 300,
+        "name": "table_cv",
+        "parameters": {
+          "format": "png",
+          "line_kernel_pixels": 25,
+          "threshold_block_size": 31,
+          "threshold_c": 9
+        },
+        "preprocessing": [
+          "grayscale",
+          "denoise",
+          "adaptive_threshold",
+          "line_morphology"
+        ],
+        "profile_id": "74d99c7ffb64cbc7bf49c0a598d401ab372ceb366ac0827221fc0b2eda7961c7",
+        "requires_clip": false
+      }
+    },
+    "schema_version": "corridor.render-profiles.v1"
+  },
+  "runtime": {
+    "machine": "arm64",
+    "packages": {
+      "Pillow": "12.3.0",
+      "SQLAlchemy": "2.0.51",
+      "pypdf": "6.17.0",
+      "pypdfium2": "5.13.0"
+    },
+    "python": "3.12.12",
+    "system": "Darwin"
+  },
+  "schema": "native-pipeline-configuration-v1",
+  "source_sha256s": {
+    "src/corridor/access.py": "2a9b85b9a11c23158ae01667588a11fa7e79e48cee91c25d38a05837c33f2838",
+    "src/corridor/extraction_run_queries.py": "1c181d21ff7f58092e371c58be268d1d60c51003cd5ce444f126ea229f3db4f3",
+    "src/corridor/extraction_runs.py": "1de59c50ad32c1af303bcb1f2e657171ab462ad71e9f19c909a3089ec6b93c1e",
+    "src/corridor/extractor_lineage.py": "222ad63689a602f82edd37a8033543e164848350dc19d4305f1e16b42d58038e",
+    "src/corridor/fact_types.py": "08ea0325a06c6cd859444fe4669ad89ccc00334bff56dade070164488ede3a09",
+    "src/corridor/facts.py": "a05345a66199093618eaca0e60d9d09dfb191009c097e5dddcbe037549d524c9",
+    "src/corridor/materializer.py": "9d7405650dbb4481a45d430b12e9402ee09e17726c903cfec07b29bf9998bfa4",
+    "src/corridor/migrations/baseline_versions/b2d5f8a1c4e7_source_append_commands.py": "d80f92cac3753f52fca4a9e9a12e60cdcd96730ba0ec0e8ebeb6a4e3465dacb0",
+    "src/corridor/native_matrix.py": "3842b380d30e7078ce7d9061b0bba15515106b193b1f6aac9bc934e262328cc5",
+    "src/corridor/native_matrix_bindings.py": "1482ceb0fc0840c91398f768cf1bc338dac32d60fb1bd3522a0710824bcae9ab",
+    "src/corridor/native_pipeline.py": "ea8346b89fb38f98a566f4d0fd745b2777cdc386717776822d9820aee78b9ff0",
+    "src/corridor/page_inventory.py": "57ca502f50b6d8608ee84d167ae69f8e9e8afd29a6945cd26393ad804e3b8ccb",
+    "src/corridor/pdf_evaluation.py": "4b59058f5d6d2e361d8d6f36dfebdaa2d3a5cd3de0a36506e74a2657a42357a8",
+    "src/corridor/pipeline_comparison.py": "a14d11c1bcd2d7f9b82ad3fb94b1e28d20eda179b69366e496fb2838d249fea9",
+    "src/corridor/pipeline_contracts.py": "1bbf724264d332ad96cae73b25b8cd76fca64f72f0f5d36c6c3015dae3a3235b",
+    "src/corridor/pipeline_qualification.py": "382f11deaed4e25cff4b0e981a27baf356e9f88bfd59fc57eb003eee8e3b7bcc",
+    "src/corridor/reader_segments.py": "737782506d420bcb263adb3cddb287962ab74e467aad9b6c06b8468ead842946",
+    "src/corridor/render_profiles.py": "7b3e5a7ab8dee9552444219885449349cd2dad538a1c1c63fcb5cf40e0e754ab",
+    "src/corridor/source_append.py": "fa7bc8aa2b7960087e1e0210cf349472ccfb3524003e8d4443f43242bb25a25b",
+    "src/corridor/token_layers.py": "6f1e58307d033f09ab34e358925f1024c2d521aa8dfe53be47203e09d51759d2",
+    "uv.lock": "d69ce36f54ba9e96fe2624b86d9f38d5e19634883a2c77bae8b10cd09a2086fc",
+    "workers/render/raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+    "workers/render/render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+    "workers/render/uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+  },
+  "textract": {
+    "reason": "OCR and structural assistance are excluded from this scope",
+    "used": false
+  }
+}

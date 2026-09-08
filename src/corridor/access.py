@@ -855,6 +855,10 @@ PARTITION_CLASSIFICATIONS = (
 
 PARTITIONED_RELATIONS: frozenset[str] = frozenset(
     {
+        "pipeline_observations",
+        "pipeline_comparisons",
+        "pipeline_qualifications",
+        "pipeline_selections",
         "candidates",
         "connector_checkpoint_advances",
         "delta_decision_supports",
@@ -958,6 +962,14 @@ PROTECTED_RELATIONS: dict[str, str] = {
 }
 
 CUSTOMER_WIDE_RELATIONS: dict[str, str] = {
+    "pipeline_configurations": (
+        "immutable technical code, dependency, profile and prompt identities; "
+        "actual source readings and values belong to partitioned observations"
+    ),
+    "pipeline_qualification_policies": (
+        "immutable maintenance metric contracts and numeric rules, with scope "
+        "digest only; source content and gate results are partitioned separately"
+    ),
     "audit_log": (
         "the append-only attribution ledger of the whole customer database. "
         "Offboarding keeps authorship (ADR-0081) and the identity export "

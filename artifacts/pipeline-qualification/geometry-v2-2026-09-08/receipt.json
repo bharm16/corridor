@@ -1,0 +1,633 @@
+{
+  "base_commit_at_recording": "c7bc25e44497aea1630a50919693a716e9d4166c",
+  "change": "Correct the deskew rotation sign only for explicitly requested PDFium preprocessing_version=pdfium-deskew-v2. Omitted versions preserve the historical direction and identity. Unsupported versions refuse before source access.",
+  "corrected_alignment_cases": [
+    {
+      "artifact_sha256": "9f3862c25ac40bcaf477e7ab63b91828607a452a91ad5ebb1312b1becd4a379a",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 0.0,
+      "detected_skew_degrees": 2.9999991728661826,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d0/full.json",
+      "pixel_anchors": [
+        [
+          466,
+          551.5
+        ],
+        [
+          1216,
+          551.5
+        ]
+      ],
+      "rotation_degrees": 0,
+      "source_sha256": "6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609"
+    },
+    {
+      "artifact_sha256": "09e821dbaa17a34c2eead21032fe2ec786d944d531d1b4a82bf368e90bf5bc15",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 0.0,
+      "detected_skew_degrees": 3.0000000834826057,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d1/full.json",
+      "pixel_anchors": [
+        [
+          872.5,
+          466
+        ],
+        [
+          872.5,
+          1216
+        ]
+      ],
+      "rotation_degrees": 90,
+      "source_sha256": "e8863bd50cd09d1034fbae4d1b590f38993a19588d3ed6d7dca68f26a69340d4"
+    },
+    {
+      "artifact_sha256": "000118b32e314338469198c04478c8de4908aac7bbe844ed8e4c7c369e647a9d",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 0.0,
+      "detected_skew_degrees": 2.9999991728661826,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d2/full.json",
+      "pixel_anchors": [
+        [
+          1267,
+          872.5
+        ],
+        [
+          517,
+          872.5
+        ]
+      ],
+      "rotation_degrees": 180,
+      "source_sha256": "ac82ba3b19abac12d7769949464a8eebdce24c3dea6d0a80683c0269d69a4053"
+    },
+    {
+      "artifact_sha256": "f9645c197ee935efaf253277f7cd8a59b69452539156e8a0a0ae7599a3c02017",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 0.0,
+      "detected_skew_degrees": 3.0000000834826057,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d3/full.json",
+      "pixel_anchors": [
+        [
+          551.5,
+          1267
+        ],
+        [
+          551.5,
+          517
+        ]
+      ],
+      "rotation_degrees": 270,
+      "source_sha256": "72d8ed8dcfbd60e05d5d7244a55b8d3fa134f1d870dbc072096aca710e806c8a"
+    },
+    {
+      "artifact_sha256": "057604907a79ba272a77ee7fc833fcf4e152d57ecfa51bbb81ed812506edabdb",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": -0.03819718068321397,
+      "detected_skew_degrees": -3.0000009940990253,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d4/full.json",
+      "pixel_anchors": [
+        [
+          370,
+          445.0
+        ],
+        [
+          1120,
+          444.5
+        ]
+      ],
+      "rotation_degrees": 0,
+      "source_sha256": "c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631"
+    },
+    {
+      "artifact_sha256": "eec154af4019c69451665fe04d67f68bc0f54a48804d4f57654d23ff0bbf2bc8",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": 0.03819718068321397,
+      "detected_skew_degrees": -3.0000053198100147,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d5/full.json",
+      "pixel_anchors": [
+        [
+          979.0,
+          370
+        ],
+        [
+          979.5,
+          1120
+        ]
+      ],
+      "rotation_degrees": 90,
+      "source_sha256": "8489b0d439b60437659905c91a5fb9ef57426dd415c504b3c63cc47049212875"
+    },
+    {
+      "artifact_sha256": "d7acca120bf62f9d8b96f31690a5ea93717f9f53f86bd44bfe4a2091c64ee978",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": 0.0,
+      "detected_skew_degrees": -3.0000009940990253,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d6/full.json",
+      "pixel_anchors": [
+        [
+          1363,
+          979.0
+        ],
+        [
+          613,
+          979.0
+        ]
+      ],
+      "rotation_degrees": 180,
+      "source_sha256": "9e8e0cd281310c0957b5902045c2f90ca1e30a99c2770f4e4fbf6042e805aff2"
+    },
+    {
+      "artifact_sha256": "5f0e7580fc6cd7121a82ac735215a2e2cf63c247a61d48f1c1d99633f823830e",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": -0.07639432741341867,
+      "detected_skew_degrees": -2.9500015048963633,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d7/full.json",
+      "pixel_anchors": [
+        [
+          445.5,
+          1363
+        ],
+        [
+          444.5,
+          613
+        ]
+      ],
+      "rotation_degrees": 270,
+      "source_sha256": "0ddddf833a12a474e8c5834b4f41833a9fc911071f27e8c81de8aaa154fa85d5"
+    }
+  ],
+  "corrected_axis_deviation_degrees_max_absolute": 0.07639432741341867,
+  "crop_cases": [
+    {
+      "crop_sha256": "0cde6aba5cb8eda845fadddd7db23c2e508d71463a809f64e88178e82a817c65",
+      "full_sha256": "fa258332275306885115dc17eaf9bee4a32b1595d83e9c2b449cd9e2d07d615f",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras0/region/routed-c2cbfed6c4ec5ad97a9a5134d2633b1f4c232b472110df5b4a8b1fcc34bc2ef6.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 0,
+      "source_sha256": "048b52bfbde430b8a5361562fcd6982502db709983650734a34bd88d8427fa3c",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "dd2510f1d64ca6ea89fe4bae81b7f1b74445aabc42f8936c0bd2fc59967d46ea",
+      "full_sha256": "b929bb7fc4610371764bc8f8ef2518fc06a64ee73a9ee4c7bee0d5985c92bf00",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras1/region/routed-9f96085049811b0f4c599297d931b3428ecb27f5f97819a3b7932d23cafcc0e2.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 90,
+      "source_sha256": "5f5312003311ee7020e0e9def19a44dfe57dcfefa9f8984455163a8350a56c5c",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "a00a1565f8bceadc83c6a86fa40a6225fc1fef17022897c0f734e23514283dee",
+      "full_sha256": "2c21640db69c87263e29a3edd5f011aa761c87aff50414013523c1db157747e3",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras2/region/routed-ed8e110bb83652de8772d5d38a7cceb76be373e016a3abcb1e37515e4fcdf8df.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 180,
+      "source_sha256": "d6fa35706ec50fffe925689634bfe0d28d18713ce3c453048301a3b8865d7b71",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "234f8abec1526b29da27f8ede63858e9201953ab9376b6e0768bb26c5a8f2088",
+      "full_sha256": "c8274eb098ba25e173a75f8b52f3cd963658c418634762dc3cf2da6f4aa304c2",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras3/region/routed-467fbee9f244df01798fc9a994ca93ee105c1bbdf83c25098d90ae65fae4bf6f.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 270,
+      "source_sha256": "7be5b069f37627ab661734c91b5565db0850ce680c0dbb768ba52cc157973566",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "c7b903ecf10555cdb9e70aa4b431421b2a2e77aaca3ec2c8b774daa32be65b38",
+      "full_sha256": "ee42bafb40bc7258f706a6caf3a7eecf81f2ebe71d19c5cca138b1017fcf605d",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras4/region/routed-260a6d7e281d7998e6420e89d5ee202bc5b75bb30d70687c685ca8e3f31b847d.json",
+      "page_edge_clipped": true,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 0,
+      "source_sha256": "bc450858390bb2f6f79f99c29dcb2c181610d3cb0a612e0c7bf498a6604260d9",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "148529ff3108b23758ee5e93f29ebde4520f62142be6254b2961e3edf59d5008",
+      "full_sha256": "b35012907a4e382a1b2e4dc7dcca270c322b2b1fcbccd14edbe22644dcf28ecc",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras5/region/routed-e1993adc4c16533ff7f5b55a12c0578bbb0a6d4b4a309328ed8d32f2ca7eadd8.json",
+      "page_edge_clipped": true,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 90,
+      "source_sha256": "c5f9e77f674a71ec5ee229420afec2bee67c88be45098f706eb73d075e105ab8",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "48e76dece3c58d4edad44b96e7c6de8d1ae6e4d7e733ef0f28083488bae5e6ae",
+      "full_sha256": "5dbbfda1be086f2e89e7b46b9ba2a0d75fc702887d36e44846733b13af00a39c",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras6/region/routed-2558c97225329b677190bc5be34ff625456856c890991a6d729bbcf7415560c2.json",
+      "page_edge_clipped": true,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 180,
+      "source_sha256": "38f93cca31f8f9a9b3ba1625c1bcc5a0823ad230df38c52c7bbf8a1f7fb5faa2",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "b2fd820a3e64de1852241020eb6d6a94d517360f51937b24e36a0894bbd1ae7c",
+      "full_sha256": "98505f14484cab2f73dd691bc57cc916837d8cfce867a98da7982640d9e88e7e",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_inventory_to_selected_ras7/region/routed-df6ab2c5efad991f6f1dbc338e4ae5a5660b792442ff48898a757f72ab999def.json",
+      "page_edge_clipped": true,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "d5e27de5ceb4a9901055295164e02199b4e4d18597047d1853cc507fad082656",
+      "rotation_degrees": 270,
+      "source_sha256": "5a03eec1b2bf1a0105051f6feb90964bd69eb8f2a3b42e90c886763679896caf",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "302556c4457ef663b7ecebcf7c2f982feaa5bdd102811d1001db04af0f35ca28",
+      "full_sha256": "9f3862c25ac40bcaf477e7ab63b91828607a452a91ad5ebb1312b1becd4a379a",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d0/region/routed-5886b641f470f6d7834bc8dd5ae4f53b4da5f4e614c77c065c46a1ed74b11684.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 0,
+      "source_sha256": "6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "534ec6610ed38f181b738bab5e6844a2681f87a78d207690ecaf39d35eec97e6",
+      "full_sha256": "09e821dbaa17a34c2eead21032fe2ec786d944d531d1b4a82bf368e90bf5bc15",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d1/region/routed-35659465e6e2ccb62744caaa50a9a490a929872fc631bc98eab375806bb1fd50.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 90,
+      "source_sha256": "e8863bd50cd09d1034fbae4d1b590f38993a19588d3ed6d7dca68f26a69340d4",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "5c782e9615cd33759a6d419168210bd82004b4de627f70468a923669ee0c4da9",
+      "full_sha256": "000118b32e314338469198c04478c8de4908aac7bbe844ed8e4c7c369e647a9d",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d2/region/routed-a6f2478c67cb7484e7d4ad4f2d2e31552a294416b28c125af59edb0656cb7d82.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 180,
+      "source_sha256": "ac82ba3b19abac12d7769949464a8eebdce24c3dea6d0a80683c0269d69a4053",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "210a5fa30ef485732e1ddc6dd90396ee8b1e3b3f976077064cf0b11322f8adde",
+      "full_sha256": "f9645c197ee935efaf253277f7cd8a59b69452539156e8a0a0ae7599a3c02017",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d3/region/routed-bdea707462c1185b37129895b11f6c752f9559e201d544d903e60e96784e3328.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 270,
+      "source_sha256": "72d8ed8dcfbd60e05d5d7244a55b8d3fa134f1d870dbc072096aca710e806c8a",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "12a3c19a82f117da4d09dbbdbee9d0a5db7783f788193055fe8665bcc22e5d66",
+      "full_sha256": "057604907a79ba272a77ee7fc833fcf4e152d57ecfa51bbb81ed812506edabdb",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d4/region/routed-815a76568dece2b278f5481c96c120c863d4910e67ed0a9f6b8d5ae85bb38021.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 0,
+      "source_sha256": "c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "a653e320d2144fe22b041709df5e21c5fda70093d7b8ba44eb24b8fa0201996d",
+      "full_sha256": "eec154af4019c69451665fe04d67f68bc0f54a48804d4f57654d23ff0bbf2bc8",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d5/region/routed-5349bebdede927389c148cae035e63331295e0620610fdbbbe7c4048102ab8ce.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 90,
+      "source_sha256": "8489b0d439b60437659905c91a5fb9ef57426dd415c504b3c63cc47049212875",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "5b5259791fb887244dbcf7007dbc549b05c5c2be8b28652f4d32580a07ef4d0e",
+      "full_sha256": "d7acca120bf62f9d8b96f31690a5ea93717f9f53f86bd44bfe4a2091c64ee978",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d6/region/routed-baa24455d69c3be71e34123337b7ee9328dde333830be52ce73197d3081e5c5f.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 180,
+      "source_sha256": "9e8e0cd281310c0957b5902045c2f90ca1e30a99c2770f4e4fbf6042e805aff2",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    },
+    {
+      "crop_sha256": "4d8a75fe3369e0d0134916220d572e7e25e41d73c11c43869b1a1cb3af822483",
+      "full_sha256": "5f0e7580fc6cd7121a82ac735215a2e2cf63c247a61d48f1c1d99633f823830e",
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated/popen-gw0/test_routed_crop_uses_actual_d7/region/routed-10800fd231ee83475137df44e986b370e0e6c6a6b1a3d8d4ee5a830a1313d2d6.json",
+      "page_edge_clipped": false,
+      "preprocessing_version": "pdfium-deskew-v2",
+      "profile_id": "27c13a6f4dd4cd863f86ede7f2528df6d6b532f4dd5dac9270d5cb9e630eff13",
+      "rotation_degrees": 270,
+      "source_sha256": "0ddddf833a12a474e8c5834b4f41833a9fc911071f27e8c81de8aaa154fa85d5",
+      "worker_runtime_sha256s": {
+        "legacy_pymupdf.py": "6c9d789a305e3503df38d467875e4462340cfc82dddb61a7ab60b14486ffb028",
+        "raster.py": "3b04af953c1616a41447c7850a20c31db948e574a778b3b4421f0d145072aa22",
+        "render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300",
+        "uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+      }
+    }
+  ],
+  "integration_files_sha256_after_gate": {
+    "gold/pdf/v1/render-profiles.json": "63fef79a098b37c6e454d705be409132aad059914cf2536f0bacd049fab01696",
+    "src/corridor/page_inventory.py": "57ca502f50b6d8608ee84d167ae69f8e9e8afd29a6945cd26393ad804e3b8ccb",
+    "src/corridor/reader_segments.py": "737782506d420bcb263adb3cddb287962ab74e467aad9b6c06b8468ead842946",
+    "src/corridor/render_profiles.py": "7b3e5a7ab8dee9552444219885449349cd2dad538a1c1c63fcb5cf40e0e754ab",
+    "src/corridor/token_layers.py": "6f1e58307d033f09ab34e358925f1024c2d521aa8dfe53be47203e09d51759d2",
+    "tests/pdf_fixture_support.py": "886615fe5fd6af959d6cf1ad439c2c5d168919afb3a6c4ce35c0ddd165f69261",
+    "workers/render/uv.lock": "333db95d5f651b864aa37495144c9ea80f6e05e2bf1f9b8e03de13618776d69b"
+  },
+  "intermediate_runs_retained": {
+    "deskew-v2-final": "49 passed, 2 failed in the test oracle locating legacy pixels from retained legacy frame metadata. Final oracle uses the authored displayed frame without widening tolerances.",
+    "deskew-v2-green": "Intermediate unconditional-sign experiment only; replaced by request-bound behavior.",
+    "deskew-v2-red": "Invalid as deskew evidence: in-progress render request namespace NameError prevented rendering."
+  },
+  "limits": [
+    "Synthetic 3-degree rules, selected authored source anchors, and routed geometry only; no resolution of the 35 corpus raster outliers.",
+    "No scanned extraction, OCR accuracy, model quality, field/disposition quality or production-selection qualification.",
+    "No frozen profiles, original reference bytes, imported reader algorithms or prior receipts changed.",
+    "Historical rollback pixels and their frame conventions are preserved, not newly qualified.",
+    "The core request and output namespace changes belong to the integration lead; the measured worker and test remain uncommitted in the shared branch."
+  ],
+  "owned_files_sha256": {
+    "tests/test_native_pipeline_geometry.py": "01593c4749e05be2c69cc7ba68003e5f564ce4942f41f47f2dceb6c0d80edf50",
+    "workers/render/render_worker.py": "8f11684f3a477528051ab37a417cfba329ddd57ca5328123d3319b17f3614300"
+  },
+  "prior_receipt": {
+    "path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/geometry-receipt.json",
+    "sha256": "f7b4da58de375b976400e3d4a70186cf6922317f047ad1d299171be25237f968",
+    "status": "Retained old-code geometry evidence; does not establish corrected leveling."
+  },
+  "receipt_version": 2,
+  "recorded_at": "2026-09-08T09:54:29.972301+00:00",
+  "validation": {
+    "exact_old_call_replay": {
+      "log": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility.log",
+      "receipt": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/receipt.json",
+      "result": "Both rasterizers x both tilt signs: four exact PNG byte/filename matches; full manifests equal except output path."
+    },
+    "focused": {
+      "log": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-validated.log",
+      "result": "51 passed, 5 dependency deprecation warnings in 25.84s",
+      "scope": "23 geometry/compatibility/refusal cases, all render-profile tests, 4 existing native-locator deskew cases"
+    },
+    "make_check": {
+      "log": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-check.log",
+      "owner_notified": true,
+      "result": "ruff/mypy/compile passed; architecture 38 passed and 2 failed on in-flight lead-owned CLI capability binding and pipeline relation classification."
+    },
+    "owned_file_ruff": {
+      "log": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-ruff-final.log",
+      "result": "passed"
+    },
+    "wrong_sign_mutation": {
+      "log": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final.log",
+      "result": "All 8 cases failed at the pixel alignment assertion in 6.39s; corrected worker restored byte-for-byte.",
+      "worker_sha256": "04bab4288edbb8a6d001cdde50b4e31d680768e06ea62b2568b5eb9139d057e3"
+    }
+  },
+  "wrong_sign_alignment_cases": [
+    {
+      "artifact_sha256": "4827892b0a06832dea56f4ba6e1819ef2c9da98f9b80f2c559e191288fc9373a",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 6.007006942091209,
+      "detected_skew_degrees": 2.9999991728661826,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d0/full.json",
+      "pixel_anchors": [
+        [
+          485,
+          510.5
+        ],
+        [
+          1231,
+          589.0
+        ]
+      ],
+      "rotation_degrees": 0,
+      "source_sha256": "6ecef8cf6deaa203ffe5149c69ffa4e036d938f2f971b59a2e07eb2fa7da5609"
+    },
+    {
+      "artifact_sha256": "d4d02e9d32ed1b3f6b8e156bca00351703ed03f55a4d4de796263054bbd2890f",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": -6.007006942091209,
+      "detected_skew_degrees": 3.0000000834826057,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d1/full.json",
+      "pixel_anchors": [
+        [
+          913.5,
+          485
+        ],
+        [
+          835.0,
+          1231
+        ]
+      ],
+      "rotation_degrees": 90,
+      "source_sha256": "e8863bd50cd09d1034fbae4d1b590f38993a19588d3ed6d7dca68f26a69340d4"
+    },
+    {
+      "artifact_sha256": "9eb16c71ad840a23684ffafabdb3b8684063edff33215a458bb62c302896c611",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": -6.007006942091209,
+      "detected_skew_degrees": 2.9999991728661826,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d2/full.json",
+      "pixel_anchors": [
+        [
+          1248,
+          913.5
+        ],
+        [
+          502,
+          835.0
+        ]
+      ],
+      "rotation_degrees": 180,
+      "source_sha256": "ac82ba3b19abac12d7769949464a8eebdce24c3dea6d0a80683c0269d69a4053"
+    },
+    {
+      "artifact_sha256": "b55dcd11d1958b40715e6d364e5d0f8676798bfbff262bc44a31baaa61bcd278",
+      "authored_tilt_degrees": -3,
+      "axis_deviation_degrees": 6.007006942091209,
+      "detected_skew_degrees": 3.0000000834826057,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d3/full.json",
+      "pixel_anchors": [
+        [
+          510.5,
+          1248
+        ],
+        [
+          589.0,
+          502
+        ]
+      ],
+      "rotation_degrees": 270,
+      "source_sha256": "72d8ed8dcfbd60e05d5d7244a55b8d3fa134f1d870dbc072096aca710e806c8a"
+    },
+    {
+      "artifact_sha256": "6d0289b32e7042a4a73f1e5374af6aa2bcd2872d7dabf336e9cdbe199ddef023",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": -6.044985719414398,
+      "detected_skew_degrees": -3.0000009940990253,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d4/full.json",
+      "pixel_anchors": [
+        [
+          345,
+          498.5
+        ],
+        [
+          1091,
+          419.5
+        ]
+      ],
+      "rotation_degrees": 0,
+      "source_sha256": "c7f5123c07aa66627c2ff685972b1c4298a88391a800f4664b110e052f0ec631"
+    },
+    {
+      "artifact_sha256": "f726d946f36ac6b0ac9ab7a3b7d264f394cce545977d833f9cee202ee04615f7",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": 6.044985719414398,
+      "detected_skew_degrees": -3.0000053198100147,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d5/full.json",
+      "pixel_anchors": [
+        [
+          925.5,
+          345
+        ],
+        [
+          1004.5,
+          1091
+        ]
+      ],
+      "rotation_degrees": 90,
+      "source_sha256": "8489b0d439b60437659905c91a5fb9ef57426dd415c504b3c63cc47049212875"
+    },
+    {
+      "artifact_sha256": "db4682a17ecf422ef7d42d9749ebb1f8bf9bdb6b523ea326e164f2ab8a0504f1",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": 6.015010965107363,
+      "detected_skew_degrees": -3.0000009940990253,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d6/full.json",
+      "pixel_anchors": [
+        [
+          1388,
+          925.5
+        ],
+        [
+          643,
+          1004.0
+        ]
+      ],
+      "rotation_degrees": 180,
+      "source_sha256": "9e8e0cd281310c0957b5902045c2f90ca1e30a99c2770f4e4fbf6042e805aff2"
+    },
+    {
+      "artifact_sha256": "289d9fe2ebfadaaaf2e8bdd9b559dfdbfb0bb0d0a22b94b1928a03b5281ba961",
+      "authored_tilt_degrees": 3,
+      "axis_deviation_degrees": -5.931033523215449,
+      "detected_skew_degrees": -2.9500015048963633,
+      "manifest": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-wrong-sign-final/popen-gw0/test_routed_crop_uses_actual_d7/full.json",
+      "pixel_anchors": [
+        [
+          497.5,
+          1388
+        ],
+        [
+          420.0,
+          642
+        ]
+      ],
+      "rotation_degrees": 270,
+      "source_sha256": "0ddddf833a12a474e8c5834b4f41833a9fc911071f27e8c81de8aaa154fa85d5"
+    }
+  ],
+  "wrong_sign_axis_deviation_degrees_absolute_range": [
+    5.931033523215449,
+    6.044985719414398
+  ]
+}

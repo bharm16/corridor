@@ -1,0 +1,53 @@
+{
+  "configuration_sha256": "959e444598aa568ae953431a8a02a111f1afc001a5192a37ebeab5d95ca0874d",
+  "documents": 7,
+  "facts_per_observation_set": 2466,
+  "failed": [],
+  "field_outcomes_per_observation_set": {
+    "materialized": 2466,
+    "not_extracted": 224,
+    "refused": 11
+  },
+  "full_reading_parity": false,
+  "limit": "Required fields/refusals/diagnostics are retained-answer regression, not independent field gold or fresh model quality; spent 9540 stays spent.",
+  "missing": [
+    "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228: fresh_model_observation",
+    "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228: independent_source_quality",
+    "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361: fresh_model_observation",
+    "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361: independent_source_quality",
+    "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c: fresh_model_observation",
+    "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c: independent_source_quality",
+    "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27: fresh_model_observation",
+    "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27: independent_source_quality",
+    "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db: fresh_model_observation",
+    "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db: independent_source_quality",
+    "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b: fresh_model_observation",
+    "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b: independent_source_quality",
+    "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a: fresh_model_observation",
+    "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a: independent_source_quality",
+    "predeclared_metric_policy"
+  ],
+  "new_provider_calls": 0,
+  "new_provider_cost_usd": 0,
+  "observations": 14,
+  "pages_per_observation_set": 20,
+  "process_observation": {
+    "elapsed_wall_seconds": 283.6873568329611,
+    "maximum_observed_process_count": 6,
+    "sample_count": 1228,
+    "sample_interval_seconds": 0.2,
+    "sampled_peak_process_count": 6,
+    "sampled_peak_process_tree_rss_sum_kib": 1104688
+  },
+  "process_receipt_sha256": "412aabca9cb0e0f39fabd43e3fe18ef283d760119acd6caf69cf1650187be3a7",
+  "production_selection_executed": false,
+  "qualification_status": "incomplete",
+  "receipt_sha256": "c54149bd633ebe7fb8e33eacfbe347badcc5d40cd0f39278b91d6863ffef844e",
+  "repeatability_pass": true,
+  "retained_required_rows_pass": true,
+  "rows_per_observation_set": 466,
+  "runtime_core": "d0eb8ce9f8fe9e98b47ed7012033d603800a4346",
+  "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+  "source_hashes_verified_before_and_after": true,
+  "total_processing_cost_usd": null
+}

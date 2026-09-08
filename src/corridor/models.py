@@ -4506,6 +4506,85 @@ class ExtractorConfiguration(Base):
     )
 
 
+class PipelineQualificationPolicy(Base):
+    """Native metric contracts and rules frozen before their observations."""
+
+    __tablename__ = "pipeline_qualification_policies"
+    policy_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    scope_sha256: Mapped[str] = mapped_column(String(64))
+    policy_text: Mapped[str] = mapped_column(Text)
+    actor: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
+
+
+class PipelineConfiguration(Base):
+    """One immutable full-chain configuration; registration selects nothing."""
+
+    __tablename__ = "pipeline_configurations"
+    __table_args__ = (CheckConstraint(
+        "configuration_sha256 = encode(sha256(convert_to(configuration_text, 'UTF8')), 'hex')",
+        name="ck_pipeline_configurations_digest",
+    ),)
+    configuration_sha256: Mapped[str] = mapped_column(String(64), primary_key=True)
+    configuration_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PipelineReceiptMixin:
+    """Permanent exact bytes, separately indexed by their scope/configuration."""
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    configuration_sha256: Mapped[str] = mapped_column(ForeignKey("pipeline_configurations.configuration_sha256"))
+    scope_sha256: Mapped[str] = mapped_column(String(64))
+    receipt_sha256: Mapped[str] = mapped_column(String(64), unique=True)
+    receipt_text: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class PipelineObservation(PipelineReceiptMixin, Base):
+    """A complete, refused or failed shadow attempt, never an active run declaration."""
+
+    __tablename__ = "pipeline_observations"
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    extraction_run_id: Mapped[int | None] = mapped_column(ForeignKey("extraction_runs.id"))
+
+
+class PipelineComparison(PipelineReceiptMixin, Base):
+    """Repeatability and quality are distinct immutable observations."""
+
+    __tablename__ = "pipeline_comparisons"
+    kind: Mapped[str] = mapped_column(String(24))
+
+
+class PipelineQualification(PipelineReceiptMixin, Base):
+    """A numeric, chain-bound gate result; incomplete evidence remains incomplete."""
+
+    __tablename__ = "pipeline_qualifications"
+    status: Mapped[str] = mapped_column(String(24))
+
+
+class PipelineSelection(PipelineReceiptMixin, Base):
+    """One maintainer's append-only routing selection, with a CAS predecessor.
+
+    This relation does not declare an Active Extraction Run, reconcile an old
+    cohort or write accepted values. Restoring an older qualified configuration
+    appends another selection; its original observations remain intact.
+    """
+
+    __tablename__ = "pipeline_selections"
+    __table_args__ = (UniqueConstraint(
+        "project_id", "deployment", "previous_selection_id",
+        name="uq_pipeline_selections_successor", postgresql_nulls_not_distinct=True,
+    ),)
+    deployment: Mapped[str] = mapped_column(Text)
+    qualification_id: Mapped[int] = mapped_column(ForeignKey("pipeline_qualifications.id"))
+    previous_selection_id: Mapped[int | None] = mapped_column(ForeignKey("pipeline_selections.id"))
+    actor: Mapped[str] = mapped_column(Text)
+    reason: Mapped[str] = mapped_column(Text)
+    enabled: Mapped[bool] = mapped_column(Boolean)
+
+
 class ExtractionRun(Base):
     """One immutable extraction attempt for one document and prompt version.
 

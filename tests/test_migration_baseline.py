@@ -61,7 +61,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "43d912f5fb4fad8717084ec68d61d9e11865e09eb07e8be91c1aa2b9c3ce9519"
+    "fa8539c9b94eed745f879ab24909820331b7537ff83d3c537c625835b593450e"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -246,6 +246,12 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+            for table in ("pipeline_observations", "pipeline_comparisons", "pipeline_qualifications", "pipeline_selections"):
+                assert session.scalar(text(f"select count(*) from public.{table}")) == 0
+            for role in ("corridor_web", "corridor_worker", "corridor_source_append"):
+                for table in ("pipeline_qualification_policies", "pipeline_comparisons", "pipeline_qualifications", "pipeline_selections"):
+                    assert session.scalar(text("select has_table_privilege(:role, :table, 'INSERT')"),
+                                          {"role": role, "table": table}) is False
 
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
@@ -356,6 +362,21 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
         assert fingerprint_database_url(database_url.render_as_string(hide_password=False)) == before_refusal
         with database.session_factory() as session:
             assert session.get(SourceSegment, native_id).exact_text == expected_text
+            assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+
+        # A permanent pipeline identity is also outside the supported
+        # predecessor. Prove refusal on this same seeded upgrade, preserving
+        # the original Fact/authority bytes and the newly appended identity.
+        from corridor.native_pipeline import register_pipeline_configuration
+        with database.session_factory() as session, session.begin():
+            configuration = register_pipeline_configuration(session, {"fixture": "pipeline migration preservation"})
+            configuration_sha = configuration.configuration_sha256
+        before_pipeline_refusal = fingerprint_database_url(database_url.render_as_string(hide_password=False))
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert refused.returncode != 0 and "permanent pipeline evidence cannot be represented" in refused.stderr
+        assert fingerprint_database_url(database_url.render_as_string(hide_password=False)) == before_pipeline_refusal
+        with database.session_factory() as session:
+            assert session.scalar(text("select configuration_sha256 from pipeline_configurations")) == configuration_sha
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
 
     # #693: the supported revision carries three undocumented grants to

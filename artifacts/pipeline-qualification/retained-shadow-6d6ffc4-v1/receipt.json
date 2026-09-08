@@ -1,0 +1,1018 @@
+{
+  "schema_version": "corridor.pipeline-shadow-measurement.v1",
+  "mode": "historical_retained_answer_full_chain_replay",
+  "scope": {
+    "deployment": "offline-retained-matrix-qualification",
+    "source_class": "native_matrix",
+    "source_sha256s": [
+      "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a"
+    ],
+    "corpus_version": "native-matrix-retained-v1",
+    "corpus_sha256": "94962a918d52420a2327b6315e9f01ad67a52ae3172e0e5da9be5eb95ae888df",
+    "purpose": "prospective_production",
+    "history": "excluded_preserve_original",
+    "excluded_classes": [
+      "native_minutes",
+      "scanned",
+      "mixed_ocr",
+      "other"
+    ]
+  },
+  "database": {
+    "postgres_version": "16.15 (Debian 16.15-1.pgdg13+2)",
+    "migration_head": "b2d5f8a1c4e7",
+    "disposable": true,
+    "dropped_after_measurement": true
+  },
+  "documents": [
+    {
+      "name": "semantics-9424-v2",
+      "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 933,
+          "actual_rows": 265,
+          "actual_sha256": "40c57ba839a604e65b02056a947630807561e5933b8ff348dc52337b48f08959",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 933,
+          "expected_rows": 265,
+          "expected_sha256": "40c57ba839a604e65b02056a947630807561e5933b8ff348dc52337b48f08959",
+          "matched_rows": 265,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 1,
+        "left_observation_sha256": "cbf7325f0f3fae5d491748ea9a9ffc63e735cde4b1482f514268acc825798cb8",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T09:59:46.507015+00:00",
+        "right_observation_id": 2,
+        "right_observation_sha256": "b53432f7cb44db2694c17427c2230ac2d873d4efdc47bc53e8ff077dd10e978d",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a"
+      },
+      "observation_sha256s": [
+        "cbf7325f0f3fae5d491748ea9a9ffc63e735cde4b1482f514268acc825798cb8",
+        "b53432f7cb44db2694c17427c2230ac2d873d4efdc47bc53e8ff077dd10e978d"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "aed542ddf94a0693547f2a96104e90d45e17dadc3484f84c0c80d5e22c6ec4a6",
+        "actual_sha256": "aed542ddf94a0693547f2a96104e90d45e17dadc3484f84c0c80d5e22c6ec4a6",
+        "compared_rows": 265,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": true,
+        "expected_sha256": "b70ed4f387617d401b76dab712c57ce4c4a73b81e075595b7f39815731883f14",
+        "actual_sha256": "b70ed4f387617d401b76dab712c57ce4c4a73b81e075595b7f39815731883f14",
+        "compared_pages": 11,
+        "compared_rows": 265,
+        "actual_rows": 265,
+        "field_values": 1144,
+        "reasons": {
+          "candidate_recorded": 162,
+          "insufficient_mapped_fields": 2,
+          "retired_row": 101
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-comm",
+      "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 688,
+          "actual_rows": 89,
+          "actual_sha256": "da8a61e140102c50913d11da9d2ecfa2f6b8bbe2614e562be1c77468fd5c5c58",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 688,
+          "expected_rows": 89,
+          "expected_sha256": "da8a61e140102c50913d11da9d2ecfa2f6b8bbe2614e562be1c77468fd5c5c58",
+          "matched_rows": 89,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 3,
+        "left_observation_sha256": "5bea5e6ef3bc6280e359f0a0769b6f99df827aea871e64b677350b2ad7cef02b",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:00:46.143862+00:00",
+        "right_observation_id": 4,
+        "right_observation_sha256": "e1dfa519d0814062d83e439cad3118aa156a551e37fac296be809261abc34aee",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db"
+      },
+      "observation_sha256s": [
+        "5bea5e6ef3bc6280e359f0a0769b6f99df827aea871e64b677350b2ad7cef02b",
+        "e1dfa519d0814062d83e439cad3118aa156a551e37fac296be809261abc34aee"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "b644a45813a571548bc8e9b7845893dd712e6dd1fcb2ed5895a742a9346730d0",
+        "actual_sha256": "b644a45813a571548bc8e9b7845893dd712e6dd1fcb2ed5895a742a9346730d0",
+        "compared_rows": 89,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": true,
+        "expected_sha256": "41b286b7f46f448738e08f097ce78a72494942b53f6e663a841b5c14f2c78dcd",
+        "actual_sha256": "41b286b7f46f448738e08f097ce78a72494942b53f6e663a841b5c14f2c78dcd",
+        "compared_pages": 3,
+        "compared_rows": 89,
+        "actual_rows": 89,
+        "field_values": 694,
+        "reasons": {
+          "candidate_recorded": 86,
+          "missing_required_fields": 3
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-gas",
+      "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 112,
+          "actual_rows": 15,
+          "actual_sha256": "e677ef1a898d61f192fa8a3f1742d93e12134e13b33ea0fd4cfe540db0668bfe",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 112,
+          "expected_rows": 15,
+          "expected_sha256": "e677ef1a898d61f192fa8a3f1742d93e12134e13b33ea0fd4cfe540db0668bfe",
+          "matched_rows": 15,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 5,
+        "left_observation_sha256": "40dc2b08d9652314a10b152a835d2c2dc72790c8812b3fc4c2e9c5c340fac740",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:01:01.684692+00:00",
+        "right_observation_id": 6,
+        "right_observation_sha256": "0768ec94195784148e3dc647a6cd8209bb784c185de25d8a164857ae72620e14",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27"
+      },
+      "observation_sha256s": [
+        "40dc2b08d9652314a10b152a835d2c2dc72790c8812b3fc4c2e9c5c340fac740",
+        "0768ec94195784148e3dc647a6cd8209bb784c185de25d8a164857ae72620e14"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "239d8cad79ce2e27d380cb802d0a2c9ffbf9458255e23af1e7a0cd9e9dcf3f76",
+        "actual_sha256": "239d8cad79ce2e27d380cb802d0a2c9ffbf9458255e23af1e7a0cd9e9dcf3f76",
+        "compared_rows": 15,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": false,
+        "expected_sha256": "0625df6a2f0fb1db45d770c6ede41e9c997c635e2e6774c2137dbe0f3674ed15",
+        "actual_sha256": "2b4f4ffaed3218b35b19a78b26250a54579194d1c169acbcffd6fdb11e94fabd",
+        "compared_pages": 1,
+        "compared_rows": 15,
+        "actual_rows": 15,
+        "field_values": 115,
+        "reasons": {
+          "candidate_recorded": 14,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-opl",
+      "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 8,
+          "actual_rows": 2,
+          "actual_sha256": "e5fcee8472b5023c80ce1990291471f59cf6774b792a85a64a98959998f0190b",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 8,
+          "expected_rows": 2,
+          "expected_sha256": "e5fcee8472b5023c80ce1990291471f59cf6774b792a85a64a98959998f0190b",
+          "matched_rows": 2,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 7,
+        "left_observation_sha256": "fd55840ec4195690712502923c0526f840a061082ac3ad1ec14138776d57f8c3",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:01:09.278608+00:00",
+        "right_observation_id": 8,
+        "right_observation_sha256": "f5ff5a3d049601aa3a7e2b9bd90606361ae5e5cc9c2b95acbd2afc2d8d404220",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b"
+      },
+      "observation_sha256s": [
+        "fd55840ec4195690712502923c0526f840a061082ac3ad1ec14138776d57f8c3",
+        "f5ff5a3d049601aa3a7e2b9bd90606361ae5e5cc9c2b95acbd2afc2d8d404220"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "2244b93ab898f61533596f41fbb754de2729ec0b082f140d6c3749151e12e920",
+        "actual_sha256": "2244b93ab898f61533596f41fbb754de2729ec0b082f140d6c3749151e12e920",
+        "compared_rows": 2,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": false,
+        "expected_sha256": "1207a62157db5b8af0e7c72b70ab84f7cb9c8cecde342feaf6ca3a9890f55174",
+        "actual_sha256": "28ef7e6ca2db5ebd73f892a5e92b064b567bff5e56cc330d43ce8fbbfe938d8b",
+        "compared_pages": 1,
+        "compared_rows": 2,
+        "actual_rows": 2,
+        "field_values": 11,
+        "reasons": {
+          "candidate_recorded": 1,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-power",
+      "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 293,
+          "actual_rows": 39,
+          "actual_sha256": "2770f11e66429d12baf74abcd46203b10b56a5376a2feed127bda2f326cee4d6",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 293,
+          "expected_rows": 39,
+          "expected_sha256": "2770f11e66429d12baf74abcd46203b10b56a5376a2feed127bda2f326cee4d6",
+          "matched_rows": 39,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 9,
+        "left_observation_sha256": "cb828d373826d97ca4b131323788203b24109c1a574a78db65704670f39aa0f1",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:01:41.451970+00:00",
+        "right_observation_id": 10,
+        "right_observation_sha256": "e1729e0a6bb47e3d3a5136e7b6c621f68bae894771ec66b38ffb07d0049e1e7f",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228"
+      },
+      "observation_sha256s": [
+        "cb828d373826d97ca4b131323788203b24109c1a574a78db65704670f39aa0f1",
+        "e1729e0a6bb47e3d3a5136e7b6c621f68bae894771ec66b38ffb07d0049e1e7f"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "3fb9d67cda9c557a608fd8c6ce4d07ad351b71e7a77931247f87eb37ec1f68a0",
+        "actual_sha256": "3fb9d67cda9c557a608fd8c6ce4d07ad351b71e7a77931247f87eb37ec1f68a0",
+        "compared_rows": 39,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": true,
+        "expected_sha256": "c55476743de24d9fabbcfd756eec2acf20801ca19802e50ad0aa373396ae5b23",
+        "actual_sha256": "c55476743de24d9fabbcfd756eec2acf20801ca19802e50ad0aa373396ae5b23",
+        "compared_pages": 2,
+        "compared_rows": 39,
+        "actual_rows": 39,
+        "field_values": 299,
+        "reasons": {
+          "candidate_recorded": 37,
+          "missing_required_fields": 2
+        },
+        "differences": [],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "identical",
+        "only_duplicate_unmapped_headings": false,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-sewer",
+      "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 200,
+          "actual_rows": 26,
+          "actual_sha256": "f2aa8ac6012b1338e466e5ad551d77928eade8b9c7f03f973ab6a8b0b4e1421c",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 200,
+          "expected_rows": 26,
+          "expected_sha256": "f2aa8ac6012b1338e466e5ad551d77928eade8b9c7f03f973ab6a8b0b4e1421c",
+          "matched_rows": 26,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 11,
+        "left_observation_sha256": "f6d6e374b1d4e53280bb01f2dd6ac8860abcd202039c9c0769603240dc98aa2c",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:02:00.303516+00:00",
+        "right_observation_id": 12,
+        "right_observation_sha256": "c11bf2dd02d77b5870c1b4a6e55936fc6e01bddc09ed2a5c8bfc36101f291a5e",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361"
+      },
+      "observation_sha256s": [
+        "f6d6e374b1d4e53280bb01f2dd6ac8860abcd202039c9c0769603240dc98aa2c",
+        "c11bf2dd02d77b5870c1b4a6e55936fc6e01bddc09ed2a5c8bfc36101f291a5e"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "ed236953d8a837924ee1f8d5b58aa46db704bfae3db8175222915f800c9f32ab",
+        "actual_sha256": "ed236953d8a837924ee1f8d5b58aa46db704bfae3db8175222915f800c9f32ab",
+        "compared_rows": 26,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": false,
+        "expected_sha256": "975c31f4de446c3a8675af9eaf9827fc5919a20854fc0f72ac2fa6eddd9336b7",
+        "actual_sha256": "a8e1c3393fb7f8794311f569732fae3ce97aca277d4d8ddf77919fe2a20e196d",
+        "compared_pages": 1,
+        "compared_rows": 26,
+        "actual_rows": 26,
+        "field_values": 203,
+        "reasons": {
+          "candidate_recorded": 25,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER RIGHT OF WAY (RW)",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    },
+    {
+      "name": "semantics-9540-water",
+      "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+      "disposition": "completed",
+      "repeatability": {
+        "actor": "pipeline:retained-shadow",
+        "comparison": {
+          "actual_facts": 232,
+          "actual_rows": 30,
+          "actual_sha256": "1653b2260c9a921a4053b8029235409352cf61792ebc5947038ecd9ca17132b8",
+          "coverage_refusal": null,
+          "difference_count": 0,
+          "differences": [],
+          "equal": true,
+          "expected_facts": 232,
+          "expected_rows": 30,
+          "expected_sha256": "1653b2260c9a921a4053b8029235409352cf61792ebc5947038ecd9ca17132b8",
+          "matched_rows": 30,
+          "passed": true
+        },
+        "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+        "kind": "repeatability",
+        "left_observation_id": 13,
+        "left_observation_sha256": "c22222b6d1883dadcc3058a593ab7380b77961e6747e1d2fbeb710f369f05a58",
+        "left_outcome": {
+          "disposition": "completed"
+        },
+        "limit": "Conditional on these exact inputs and observation origins; replay is not fresh model quality.",
+        "passed": true,
+        "project_id": 1,
+        "recorded_at": "2026-09-08T10:02:23.195827+00:00",
+        "right_observation_id": 14,
+        "right_observation_sha256": "800edf4425fc29698d27d242963e19abe1bc65308fa8af87f81142131eaaffcf",
+        "right_outcome": {
+          "disposition": "completed"
+        },
+        "same_inputs": true,
+        "same_outcome": true,
+        "schema": "pipeline-comparison-v1",
+        "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+        "source_sha256": "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c"
+      },
+      "observation_sha256s": [
+        "c22222b6d1883dadcc3058a593ab7380b77961e6747e1d2fbeb710f369f05a58",
+        "800edf4425fc29698d27d242963e19abe1bc65308fa8af87f81142131eaaffcf"
+      ],
+      "retained_required_rows": {
+        "pass": true,
+        "expected_sha256": "9f4e4ca6a56b387352c8989f7d4394623c8d34c602237b220da923769f034d79",
+        "actual_sha256": "9f4e4ca6a56b387352c8989f7d4394623c8d34c602237b220da923769f034d79",
+        "compared_rows": 30,
+        "differences": [],
+        "scope": "Exact page/row membership, field text, local references, disposition and reason for every body row."
+      },
+      "retained_full_reading": {
+        "pass": false,
+        "expected_sha256": "46145cea447aed6f9fdb96d910be3b1d8392caacf2c219f54000ef306a660071",
+        "actual_sha256": "5e94218bf5ff1f5845adf641f16187c0491ad98efa5071687e3cde2f65e6a5c4",
+        "compared_pages": 1,
+        "compared_rows": 30,
+        "actual_rows": 30,
+        "field_values": 235,
+        "reasons": {
+          "candidate_recorded": 29,
+          "missing_required_fields": 1
+        },
+        "differences": [
+          {
+            "path": "pages[0].reading.mapping.unmapped",
+            "reason": "length",
+            "expected": 3,
+            "actual": 4
+          },
+          {
+            "path": "pages[0].reading.mapping.unmapped[2]",
+            "reason": "value",
+            "expected": "AGREEMENT STATUS",
+            "actual": "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER"
+          }
+        ],
+        "scope": "Exact retained-reading regression, including field text/local IDs and all row/page decisions; no independent field gold."
+      },
+      "retained_diagnostics": {
+        "classification": "duplicate_unmapped_heading_diagnostic",
+        "only_duplicate_unmapped_headings": true,
+        "required_semantic_output_unchanged": true,
+        "diagnostics": [
+          {
+            "page": 1,
+            "retained_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "actual_unmapped": [
+              "COMPOSITE UTILITY CU SHEET",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "FRANCHISE (F) EASEMENT (E) PERMIT (P) OR EXISTING (EP, EF) AND NUMBER",
+              "AGREEMENT STATUS"
+            ],
+            "only_added_adjacent_duplicates": true
+          }
+        ],
+        "other_differences": [],
+        "selection_owner": "#447",
+        "limits": "Full-reading parity remains separate. Historical header-span geometry was not retained; shared listing/image bytes do not establish topology equality."
+      }
+    }
+  ],
+  "qualification": {
+    "actor": "pipeline:retained-shadow",
+    "configuration_sha256": "3ca47077b2369f34e9fecd30e16741cf64847169b879699c6959650c7f5fdf7a",
+    "document_metrics": {
+      "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228": {
+        "client_calls": 2,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 2,
+        "facts": 293,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 293,
+          "not_extracted": 6,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 2,
+        "latency_ms": 15902.7785,
+        "mapped_pages": 2,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 4367.315,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 37,
+        "refusal": 0,
+        "rows": 39,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361": {
+        "client_calls": 1,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 1,
+        "facts": 200,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 200,
+          "not_extracted": 3,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 1,
+        "latency_ms": 9051.696875,
+        "mapped_pages": 1,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 2410.754,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 25,
+        "refusal": 0,
+        "rows": 26,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c": {
+        "client_calls": 1,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 1,
+        "facts": 232,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 232,
+          "not_extracted": 3,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 1,
+        "latency_ms": 11386.011208,
+        "mapped_pages": 1,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 3102.726,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 29,
+        "refusal": 0,
+        "rows": 30,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27": {
+        "client_calls": 1,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 1,
+        "facts": 112,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 112,
+          "not_extracted": 3,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 1,
+        "latency_ms": 7558.077792,
+        "mapped_pages": 1,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 1769.791,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 14,
+        "refusal": 0,
+        "rows": 15,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db": {
+        "client_calls": 3,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 3,
+        "facts": 688,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 688,
+          "not_extracted": 6,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 3,
+        "latency_ms": 29026.857916,
+        "mapped_pages": 3,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 8858.418,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 86,
+        "refusal": 0,
+        "rows": 89,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b": {
+        "client_calls": 1,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 1,
+        "facts": 8,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 8,
+          "not_extracted": 3,
+          "refused": 0
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 1,
+        "latency_ms": 3782.785,
+        "mapped_pages": 1,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 415.161,
+        "parent_process_lifetime_peak_rss_bytes": 1056931840,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 1,
+        "refusal": 0,
+        "rows": 2,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      },
+      "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a": {
+        "client_calls": 11,
+        "cost_limit": "Replay has zero new provider calls; compute rates and total deployed processing cost remain unmeasured.",
+        "declared_pages": 11,
+        "facts": 933,
+        "failure": 0,
+        "field_outcomes": {
+          "materialized": 933,
+          "not_extracted": 200,
+          "refused": 11
+        },
+        "handling_minutes": null,
+        "inventoried_pages": 11,
+        "latency_ms": 68222.343291,
+        "mapped_pages": 11,
+        "memory_limit": "Parent lifetime RSS excludes PDFium/render children; full-chain peak is unmeasured.",
+        "observed_new_provider_cost_usd": 0.0,
+        "outbound_attempts": 0,
+        "parent_cpu_ms": 20455.655,
+        "parent_process_lifetime_peak_rss_bytes": 617627648,
+        "peak_process_tree_rss_bytes": null,
+        "processing_cost_usd": null,
+        "proposed_rows": 162,
+        "refusal": 0,
+        "rows": 265,
+        "unconfirmed_reading_basis": "This native-only chain emits exact source-bound readings or explicit refusals; awaiting record acceptance is not uncertain transcription.",
+        "unconfirmed_readings": 0,
+        "validated_customer_roi": null
+      }
+    },
+    "failed": [],
+    "history": {
+      "disposition": "excluded_preserve_original",
+      "limit": "Original history stays intact; prospective scope does not qualify historical citation migration or engine retirement."
+    },
+    "measurements": {},
+    "metric_policy": null,
+    "metric_policy_sha256": null,
+    "missing": [
+      "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228: fresh_model_observation",
+      "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228: independent_source_quality",
+      "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361: fresh_model_observation",
+      "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361: independent_source_quality",
+      "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c: fresh_model_observation",
+      "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c: independent_source_quality",
+      "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27: fresh_model_observation",
+      "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27: independent_source_quality",
+      "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db: fresh_model_observation",
+      "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db: independent_source_quality",
+      "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b: fresh_model_observation",
+      "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b: independent_source_quality",
+      "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a: fresh_model_observation",
+      "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a: independent_source_quality",
+      "predeclared_metric_policy"
+    ],
+    "observation_ids": [
+      1,
+      3,
+      5,
+      7,
+      9,
+      11,
+      13
+    ],
+    "observation_sha256s": [
+      "40dc2b08d9652314a10b152a835d2c2dc72790c8812b3fc4c2e9c5c340fac740",
+      "5bea5e6ef3bc6280e359f0a0769b6f99df827aea871e64b677350b2ad7cef02b",
+      "c22222b6d1883dadcc3058a593ab7380b77961e6747e1d2fbeb710f369f05a58",
+      "cb828d373826d97ca4b131323788203b24109c1a574a78db65704670f39aa0f1",
+      "cbf7325f0f3fae5d491748ea9a9ffc63e735cde4b1482f514268acc825798cb8",
+      "f6d6e374b1d4e53280bb01f2dd6ac8860abcd202039c9c0769603240dc98aa2c",
+      "fd55840ec4195690712502923c0526f840a061082ac3ad1ec14138776d57f8c3"
+    ],
+    "policy": "native-matrix-qualification-v1",
+    "project_id": 1,
+    "quality_ids": [],
+    "recorded_at": "2026-09-08T10:02:25.402573+00:00",
+    "repeatability_ids": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7
+    ],
+    "schema": "pipeline-qualification-v1",
+    "scope": {
+      "corpus_sha256": "94962a918d52420a2327b6315e9f01ad67a52ae3172e0e5da9be5eb95ae888df",
+      "corpus_version": "native-matrix-retained-v1",
+      "deployment": "offline-retained-matrix-qualification",
+      "excluded_classes": [
+        "native_minutes",
+        "scanned",
+        "mixed_ocr",
+        "other"
+      ],
+      "history": "excluded_preserve_original",
+      "purpose": "prospective_production",
+      "source_class": "native_matrix",
+      "source_sha256s": [
+        "1b949a1a1e26fcdb457df7ba265888d7bfe107b1d63c14ea0b1e56082620e228",
+        "36acb221898e1a771f955a80e1136d3bd7117e1fd6fd4b36d542c84454bf3361",
+        "3c53895423d57b61959b74d146cd0076d11245328c354540a1e509fc17cb6f1c",
+        "94fd41adde257c8a2948b529d2c8a0547021e578462241efa7325f523f8d6c27",
+        "d794938ff8c9c29004586a98ab5d7aeeb8904305527980c3dc5a74fede5b26db",
+        "e1c7895b56021f86317efa8074aa6f298087d8f0bd4ac8652f17721f99bb0d3b",
+        "e619a4abf6044ee17415d4f6933ec9ef674c67735befb172a8d6da5a691e4b9a"
+      ]
+    },
+    "scope_sha256": "b211b98f42f257f04dc85399a3c577915df5f1794f5f1edc6de4914aae534a1e",
+    "status": "incomplete",
+    "unmeasured": [
+      "handling_minutes",
+      "validated_customer_roi"
+    ]
+  },
+  "production_selection_executed": false,
+  "new_provider_calls": 0,
+  "new_provider_cost_usd": 0,
+  "total_processing_cost_usd": null,
+  "completed_documents": 7,
+  "repeatability_pass": true,
+  "retained_required_rows_pass": true,
+  "full_reading_parity": false,
+  "historical_limits": [
+    "Retained answers are model outputs, not independent field gold.",
+    "Source-reference matching and exact retained-reading replay are separate measures.",
+    "Historical call/token counts belong to retained runs; this replay makes zero new provider calls.",
+    "Passing this replay does not select production; selection belongs to #447/#739.",
+    "Non-ISO matrix date phrases remain source-bound proposal fields and must refuse ISO-date Fact materialization.",
+    "WSDOT 9540 is spent; this replay grants no new generalization claim and changes no evaluation guard.",
+    "The frozen WSDOT 9424 sidecar has a different row population (97 retired); this native retained-reading population (101 retired) does not correct that sidecar."
+  ],
+  "quality_limit": "Required fields/refusals/diagnostics are retained-answer regression, not independent field gold or fresh model quality; spent 9540 stays spent."
+}

@@ -1,0 +1,381 @@
+{
+  "schema_version": "corridor.local-retained-citation-census.v1",
+  "status": "read_only_local_snapshot_recorded",
+  "qualification_status": "unavailable_for_actual_deployed_customer_scope",
+  "database_scope": {
+    "connection_scope": "currently configured LOCAL Corridor database only",
+    "configured_host": "localhost",
+    "configured_port": 5433,
+    "configured_schema_web_worker_targets_identical": true,
+    "database": {
+      "database_name": "corridor",
+      "server_version_num": 160015,
+      "server_version": "16.15 (Debian 16.15-1.pgdg13+2)",
+      "transaction_read_only": "on",
+      "transaction_isolation": "repeatable read",
+      "receipt_time": "2026-09-08T08:53:48.657267+00:00",
+      "snapshot_identity": "4926163:4926163:",
+      "server_address": "172.18.0.2/32",
+      "server_port": 5432
+    },
+    "role_visibility_flags": {
+      "rolsuper": true,
+      "rolbypassrls": true
+    },
+    "table_visibility": {
+      "assertions": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "delta_decision_supports": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "delta_record_decisions": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "dependencies": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "dependency_event_evidence": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "dependency_events": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "documents": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "evidence_link_sources": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "evidence_links": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "external_report_artifacts": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "external_report_releases": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "fact_closure_sources": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "fact_decisions": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": false
+      },
+      "fact_sources": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "facts": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "project_baseline_adoptions": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "project_record_revisions": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": false
+      },
+      "projects": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "recorded_verbal_origin_backfill_receipts": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "release_candidate_artifacts": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "release_candidates": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "release_package_artifacts": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "release_packages": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "report_runs": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "source_segments": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "subject_resolution_attempts": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "subject_resolution_decisions": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": false
+      },
+      "support_assessment_sources": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "support_assessments": {
+        "relrowsecurity": true,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      },
+      "work_decisions": {
+        "relrowsecurity": false,
+        "relforcerowsecurity": false,
+        "role_owns_table": true
+      }
+    },
+    "deployment_or_customer_provenance": "not established; a local empty snapshot is not global/customer history coverage"
+  },
+  "snapshot_counts": {
+    "assertions": 0,
+    "delta_decision_supports": 0,
+    "delta_record_decisions": 0,
+    "dependencies": 0,
+    "dependency_event_evidence": 0,
+    "dependency_events": 0,
+    "documents": 0,
+    "evidence_link_sources": 0,
+    "evidence_links": 0,
+    "external_report_artifacts": 0,
+    "external_report_releases": 0,
+    "fact_closure_sources": 0,
+    "fact_decisions": 0,
+    "fact_sources": 0,
+    "facts": 0,
+    "project_baseline_adoptions": 0,
+    "project_record_revisions": 0,
+    "projects": 0,
+    "recorded_verbal_origin_backfill_receipts": 0,
+    "release_candidate_artifacts": 0,
+    "release_candidates": 0,
+    "release_package_artifacts": 0,
+    "release_packages": 0,
+    "report_runs": 0,
+    "source_segments": 0,
+    "subject_resolution_attempts": 0,
+    "subject_resolution_decisions": 0,
+    "support_assessment_sources": 0,
+    "support_assessments": 0,
+    "work_decisions": 0
+  },
+  "persisted_source_segment_kinds": {
+    "spreadsheet_cell": {
+      "persisted_rows": 0,
+      "class": "native workbook coordinate"
+    },
+    "prose_span": {
+      "persisted_rows": 0,
+      "class": "legacy PDF offsets; incumbent dereference"
+    },
+    "recorded_verbal_statement": {
+      "persisted_rows": 0,
+      "class": "non-document origin"
+    },
+    "pdf_span": {
+      "persisted_rows": 0,
+      "class": "versioned native PDF page/clipped span; absent from local executable schema"
+    },
+    "pdf_cell": {
+      "persisted_rows": 0,
+      "class": "versioned native PDF table cell; absent from local executable schema"
+    }
+  },
+  "direct_source_segment_reference_counts": [
+    {
+      "source_table": "evidence_link_sources",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "fact_closure_sources",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "fact_sources",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "recorded_verbal_origin_backfill_receipts",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "subject_resolution_attempts",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "subject_resolution_decisions",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    },
+    {
+      "source_table": "support_assessment_sources",
+      "link_rows": 0,
+      "referenced_segment_ids": 0,
+      "dangling_link_rows": 0
+    }
+  ],
+  "actual_reference_edge_counts": {
+    "fact_decision_to_fact_source": 0,
+    "fact_decision_to_closure_source": 0,
+    "delta_decision_to_support_source": 0,
+    "legacy_dependency_evidence_to_segment": 0,
+    "subject_resolution_decision_to_segment": 0
+  },
+  "release_citation_population": {
+    "authorized_packages": 0,
+    "legacy_external_releases": 0,
+    "report_runs": 0,
+    "package_artifacts": 0,
+    "external_report_artifacts": 0,
+    "actual_released_citation_edges": 0,
+    "status": "no persisted release roots to traverse; not a qualification pass"
+  },
+  "source_segments": [],
+  "actual_reference_edges": {
+    "fact_decision_to_fact_source": [],
+    "fact_decision_to_closure_source": [],
+    "delta_decision_to_support_source": [],
+    "legacy_dependency_evidence_to_segment": [],
+    "subject_resolution_decision_to_segment": []
+  },
+  "schema_state": {
+    "alembic_version": [
+      "b2d5f8a1c4e7"
+    ],
+    "inspected_source_segment_columns": [
+      "id",
+      "project_id",
+      "document_id",
+      "kind",
+      "exact_text",
+      "content_sha256",
+      "ordinal",
+      "sheet_name",
+      "cell_range",
+      "created_at",
+      "page_no",
+      "start_offset",
+      "end_offset",
+      "recorded_verbal_origin_id"
+    ],
+    "missing_native_locator_columns": [
+      "cell_column",
+      "cell_row",
+      "column_span",
+      "location_json",
+      "reader_identity",
+      "reading_sha256",
+      "rendition_sha256",
+      "row_span",
+      "span_stream",
+      "table_index"
+    ],
+    "source_append_function": {
+      "security_definer": true,
+      "definition_md5": "1ae4ffab003f8962fd36dda27db9bd8a",
+      "supports_native_pdf_cell": false
+    },
+    "native_pdf_fact_transform_allowed": false,
+    "source_segment_constraints": [
+      {
+        "conname": "ck_source_segments_content_sha256",
+        "definition": "CHECK (((content_sha256)::text ~ '^[0-9a-f]{64}$'::text))"
+      },
+      {
+        "conname": "ck_source_segments_exact_text",
+        "definition": "CHECK ((length(exact_text) > 0))"
+      },
+      {
+        "conname": "ck_source_segments_kind",
+        "definition": "CHECK (((kind)::text = ANY ((ARRAY['spreadsheet_cell'::character varying, 'prose_span'::character varying, 'recorded_verbal_statement'::character varying])::text[])))"
+      },
+      {
+        "conname": "ck_source_segments_locator",
+        "definition": "CHECK (((((kind)::text = 'spreadsheet_cell'::text) AND (document_id IS NOT NULL) AND (recorded_verbal_origin_id IS NULL) AND (length(sheet_name) > 0) AND ((cell_range)::text ~ '^[A-Z]+[1-9][0-9]*$'::text) AND (page_no IS NULL) AND (start_offset IS NULL) AND (end_offset IS NULL)) OR (((kind)::text = 'prose_span'::text) AND (document_id IS NOT NULL) AND (recorded_verbal_origin_id IS NULL) AND (sheet_name IS NULL) AND (cell_range IS NULL) AND (page_no > 0) AND (start_offset >= 0) AND (end_offset > start_offset)) OR (((kind)::text = 'recorded_verbal_statement'::text) AND (document_id IS NULL) AND (recorded_verbal_origin_id IS NOT NULL) AND (sheet_name IS NULL) AND (cell_range IS NULL) AND (page_no IS NULL) AND (start_offset IS NULL) AND (end_offset IS NULL))))"
+      },
+      {
+        "conname": "ck_source_segments_ordinal",
+        "definition": "CHECK ((ordinal > 0))"
+      }
+    ],
+    "assessment": "stale executable schema relative to current checkout despite the same unreleased Alembic head label; this is distinct from data absence; no migration was run"
+  },
+  "original_reading_and_byte_checks": {
+    "status": "not_assessable_empty_persisted_population",
+    "referenced_documents": 0,
+    "original_files_hashed": 0,
+    "missing_source_bytes_count": null,
+    "unavailable_historical_reading_count": null,
+    "note": "There are no actual cited rows or original-document bindings in this snapshot. Corpus files were not substituted for missing database evidence."
+  },
+  "unenumerated_or_unproved": [
+    "Any remote/deployed/customer database, backup or other local database outside the configured endpoint.",
+    "Actual citation membership inside nonempty release PDF/workbook/JSON artifacts; this database has no release records.",
+    "Original-byte locator replay and historical reader/configuration availability for retained customer citations; no cited population exists here.",
+    "Comprehensive schema drift beyond the inspected native locator and Fact-transform boundaries."
+  ],
+  "privacy": "No source text, customer names, credential values or raw source contents exported; identifiers/digests/locators would be retained if rows existed.",
+  "operations": "SELECT and PostgreSQL catalog reads in a server-enforced read-only REPEATABLE READ transaction; final transaction explicitly rolled back. No boot, migration, seed, provider call, source scan, reference update or repository edit.",
+  "preflight_metadata_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-citation-census/census-20260908T084651Z/preflight.json",
+  "preflight_metadata_sha256": "cf0532240254ea5add7e1f576b6b77b72d86838ff27fce43cbbb662f809d8020"
+}

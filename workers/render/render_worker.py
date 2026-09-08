@@ -47,6 +47,7 @@ from raster import SCALE, RasterPage, fixed_box, flip_box
 
 LEGACY_RASTERIZER = "pymupdf"
 REPLACEMENT_RASTERIZER = "pdfium"
+PDFIUM_PREPROCESSING_VERSION = "pdfium-deskew-v2"
 
 
 def multiply(left, right):
@@ -129,12 +130,16 @@ def detect_skew(gray):
     return float(np.median(deviations)) if deviations else 0.0
 
 
-def deskew(image):
+def deskew(image, *, preprocessing_version=None):
     gray = cv2.cvtColor(image, cv2.COLOR_RGB2GRAY)
     angle = detect_skew(gray)
     height, width = gray.shape[:2]
     center = (width / 2, height / 2)
-    cv_matrix = cv2.getRotationMatrix2D(center, -angle, 1.0)
+    # Hough's deviation is in raster y-down coordinates. OpenCV removes it
+    # with the same signed angle. Keep the historical direction for requests
+    # without the replacement version so rollback pixels do not change.
+    correction = angle if preprocessing_version == PDFIUM_PREPROCESSING_VERSION else -angle
+    cv_matrix = cv2.getRotationMatrix2D(center, correction, 1.0)
     forward = (
         float(cv_matrix[0, 0]),
         float(cv_matrix[1, 0]),
@@ -257,11 +262,17 @@ def rasterise(rasterizer, source_path, page_number, dpi):
 
 
 def render(request):
+    rasterizer = request["rasterizer"]
+    preprocessing_version = request.get("preprocessing_version")
+    if preprocessing_version is not None:
+        if preprocessing_version != PDFIUM_PREPROCESSING_VERSION:
+            raise ValueError(f"unsupported render preprocessing version {preprocessing_version!r}")
+        if rasterizer != REPLACEMENT_RASTERIZER:
+            raise ValueError("versioned PDFium preprocessing requires the PDFium rasterizer")
     source_path = Path(request["pdf_path"])
     source_bytes = source_path.read_bytes()
     source_sha256 = hashlib.sha256(source_bytes).hexdigest()
     profile = request["profile"]
-    rasterizer = request["rasterizer"]
     output_dir = Path(request["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     page, engine_versions = rasterise(
@@ -329,9 +340,12 @@ def render(request):
     ]
 
     if profile["name"] == "table_cv":
-        array, angle, deskew_matrix = deskew(array)
+        array, angle, deskew_matrix = deskew(array, preprocessing_version=preprocessing_version)
+        deskew_parameters = {"angle_degrees": angle}
+        if preprocessing_version is not None:
+            deskew_parameters["preprocessing_version"] = preprocessing_version
         transforms.append(
-            transform_step("deskew", deskew_matrix, parameters={"angle_degrees": angle})
+            transform_step("deskew", deskew_matrix, parameters=deskew_parameters)
         )
     operations = tuple(profile.get("preprocessing", ()))
     array = preprocess(array, operations)
@@ -342,6 +356,8 @@ def render(request):
     identity = {"profile_id": profile["profile_id"], "clip": clip_box}
     if rasterizer != LEGACY_RASTERIZER:
         identity["rasterizer"] = rasterizer
+    if preprocessing_version is not None:
+        identity["preprocessing_version"] = preprocessing_version
     suffix = hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()[:12]
@@ -406,7 +422,10 @@ def render(request):
             "pillow": pillow_version,
             "numpy": np.__version__,
         },
-        "parameters": profile["parameters"],
+        "parameters": {
+            **profile["parameters"],
+            **({"preprocessing_version": preprocessing_version} if preprocessing_version is not None else {}),
+        },
     }
 
 

@@ -1,0 +1,32 @@
+{
+  "command_argv_sha256": "e0380bd60a96e333316ca6c7d092b9206590e3356018c5dbedb00a16ec07f803",
+  "command_executable": "make",
+  "elapsed_wall_seconds": 294.08918179100147,
+  "finished_at": "2026-09-08T10:02:25.796477+00:00",
+  "limitations": [
+    "Sampled sum of per-process resident sets, not exact continuous peak or unique physical memory.",
+    "Shared pages can be counted in multiple processes; peaks between samples and short-lived descendants can be missed.",
+    "The observer and its ps subprocess are outside the experiment process tree; sampling adds measurement overhead.",
+    "No inference of deployed processing cost, customer handling burden or return on investment."
+  ],
+  "maximum_observed_process_count": 6,
+  "observation_script_sha256": "06d059a89e4cc4ca7c523d7f3c5612f03ded673b825f2ab70fa516297bbe8ea1",
+  "output_log": {
+    "path": "command.log",
+    "sha256": "970f74061e9d035c582d90a6b3abba4eb741eb343486b8d62498da7a39c4b45a"
+  },
+  "platform": "macOS-26.6.2-arm64-arm-64bit",
+  "return_code": 0,
+  "sample_count": 1264,
+  "sample_interval_seconds": 0.2,
+  "sampled_peak_at_seconds": 146.463358,
+  "sampled_peak_process_count": 6,
+  "sampled_peak_process_tree_rss_sum_kib": 1131424,
+  "samples": {
+    "path": "rss-samples.jsonl",
+    "sha256": "44e5f04b457a08b9da013921108224afd598e7c8ab1fb4458153a06aa7600184"
+  },
+  "sampling_errors": [],
+  "schema_version": "corridor.process-observation.v1",
+  "started_at": "2026-09-08T09:57:31.715759+00:00"
+}

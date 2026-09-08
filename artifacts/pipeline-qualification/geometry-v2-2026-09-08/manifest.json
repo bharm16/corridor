@@ -1,0 +1,24 @@
+{
+  "files": [
+    {
+      "bytes": 33877,
+      "path": "receipt.json",
+      "sha256": "9550748cdccf8d7885f79c2f4ef04af18f2bccf279c0b7b8fc1b32b5a22c0f73",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/geometry-receipt-v2.json"
+    },
+    {
+      "bytes": 3740,
+      "path": "historical-call-compatibility.json",
+      "sha256": "8c46045c82c167ad61740de1a543d93ae06a3a1e3718752037de4a9372a5fc0e",
+      "source_path": "/Users/bryceharmon/Desktop/corridor-evidence/2026-09-08-program727/447-geometry/deskew-v2-compatibility/receipt.json"
+    }
+  ],
+  "limits": [
+    "The copied receipt was recorded before the core commit; owned worker/test hashes match the committed runtime core.",
+    "Earlier in-flight architecture failures named in that receipt were subsequently resolved by the lead: 447-check-01.log records all 40 passing.",
+    "No new claim about the 35 original corpus raster outliers follows; those remain old-code evidence."
+  ],
+  "qualification_status": "synthetic_geometry_evidence_only",
+  "runtime_core": "6d6ffc4f01bd0600d63825fbe36877f6844fd7eb",
+  "schema_version": "corridor.pipeline-geometry-evidence.v1"
+}

@@ -10233,6 +10233,183 @@ create or replace function public.append_source_segments(
 """
 
 
+PIPELINE_TABLES = (
+    "pipeline_qualification_policies", "pipeline_configurations", "pipeline_observations", "pipeline_comparisons",
+    "pipeline_qualifications", "pipeline_selections",
+)
+
+PIPELINE_SCHEMA = """
+create table public.pipeline_qualification_policies (
+    policy_sha256 varchar(64) primary key,
+    scope_sha256 varchar(64) not null,
+    policy_text text not null,
+    actor text not null,
+    created_at timestamptz not null default clock_timestamp(),
+    check (policy_sha256 = encode(sha256(convert_to(policy_text, 'UTF8')), 'hex')),
+    check (policy_text::jsonb ->> 'scope_sha256' = scope_sha256)
+);
+create table public.pipeline_configurations (
+    configuration_sha256 varchar(64) primary key,
+    configuration_text text not null,
+    created_at timestamptz not null default now(),
+    constraint ck_pipeline_configurations_digest check (
+        configuration_sha256 = encode(sha256(convert_to(configuration_text, 'UTF8')), 'hex')
+    )
+);
+create function public.validate_pipeline_receipt() returns trigger language plpgsql as $$
+declare body jsonb; scope_text text;
+begin
+    if tg_op <> 'INSERT' then
+        raise exception 'pipeline evidence and selections are append-only' using errcode='23514';
+    end if;
+    body := new.receipt_text::jsonb;
+    if jsonb_typeof(body) is distinct from 'object'
+       or new.receipt_sha256 <> encode(sha256(convert_to(new.receipt_text, 'UTF8')), 'hex')
+       or (body ->> 'project_id')::bigint is distinct from new.project_id
+       or body ->> 'configuration_sha256' is distinct from new.configuration_sha256
+       or body ->> 'scope_sha256' is distinct from new.scope_sha256 then
+        raise exception 'pipeline receipt identity or binding differs' using errcode='23514';
+    end if;
+    if tg_table_name in ('pipeline_observations', 'pipeline_qualifications', 'pipeline_selections') then
+        scope_text := body ->> 'scope_text';
+        if scope_text is null
+           or encode(sha256(convert_to(scope_text, 'UTF8')), 'hex') is distinct from new.scope_sha256
+           or jsonb_typeof(scope_text::jsonb) is distinct from 'object'
+           or scope_text::jsonb is distinct from body -> 'scope' then
+            raise exception 'pipeline parsed scope differs from its exact digest-bound bytes' using errcode='23514';
+        end if;
+    end if;
+    if tg_table_name = 'pipeline_qualifications' then
+        if body ->> 'status' is distinct from new.status
+           or jsonb_typeof(body -> 'missing') is distinct from 'array'
+           or jsonb_typeof(body -> 'failed') is distinct from 'array' then
+            raise exception 'pipeline gate needs its status and typed missing/failed evidence arrays' using errcode='23514';
+        end if;
+        if exists (select 1 from jsonb_array_elements(body -> 'missing') member where jsonb_typeof(member) <> 'string')
+           or exists (select 1 from jsonb_array_elements(body -> 'failed') member where jsonb_typeof(member) <> 'string')
+           or (new.status = 'passed' and (body -> 'missing' is distinct from '[]'::jsonb
+                                        or body -> 'failed' is distinct from '[]'::jsonb)) then
+            raise exception 'passing pipeline gate cannot omit or retain unmet evidence' using errcode='23514';
+        end if;
+    elsif tg_table_name = 'pipeline_comparisons' then
+        if body ->> 'kind' is distinct from new.kind
+           or jsonb_typeof(body -> 'passed') is distinct from 'boolean' then
+            raise exception 'pipeline comparison kind differs from its receipt' using errcode='23514';
+        end if;
+    elsif tg_table_name = 'pipeline_observations' then
+        if not exists (select 1 from public.documents d where d.id = new.document_id
+                       and d.project_id = new.project_id and d.sha256 = body ->> 'source_sha256')
+           or (new.extraction_run_id is not null and not exists (
+               select 1 from public.extraction_runs r where r.id = new.extraction_run_id
+                   and r.document_id = new.document_id)) then
+            raise exception 'pipeline observation crosses its source/run project' using errcode='23514';
+        end if;
+    end if;
+    return new;
+end $$;
+revoke all on function public.validate_pipeline_receipt() from public;
+create trigger pipeline_configuration_immutable before update or delete
+    on public.pipeline_configurations for each row
+    execute function public.refuse_extractor_configuration_rewrite();
+create trigger pipeline_policy_immutable before update or delete
+    on public.pipeline_qualification_policies for each row
+    execute function public.validate_pipeline_receipt();
+"""
+
+PIPELINE_SELECTION_GUARD = """
+create function public.validate_pipeline_selection() returns trigger language plpgsql as $$
+declare
+    qualification public.pipeline_qualifications;
+    previous bigint;
+    body jsonb := new.receipt_text::jsonb;
+begin
+    -- The project lock protects even direct maintenance INSERTs. The expected
+    -- predecessor is a compare-and-swap, not a last-writer-wins update.
+    perform 1 from public.projects where id = new.project_id for update;
+    select id into previous from public.pipeline_selections
+      where project_id = new.project_id and deployment = new.deployment
+      order by id desc limit 1;
+    if previous is distinct from new.previous_selection_id then
+        raise exception 'pipeline selection predecessor changed' using errcode='40001';
+    end if;
+    select * into qualification from public.pipeline_qualifications where id = new.qualification_id;
+    if qualification.id is null or qualification.status is distinct from 'passed'
+       or qualification.receipt_text::jsonb ->> 'status' is distinct from 'passed'
+       or qualification.receipt_text::jsonb -> 'missing' is distinct from '[]'::jsonb
+       or qualification.receipt_text::jsonb -> 'failed' is distinct from '[]'::jsonb
+       or qualification.project_id is distinct from new.project_id
+       or qualification.configuration_sha256 is distinct from new.configuration_sha256
+       or qualification.scope_sha256 is distinct from new.scope_sha256
+       or qualification.receipt_text::jsonb #>> '{scope,deployment}' is distinct from new.deployment
+       or body -> 'scope' is distinct from qualification.receipt_text::jsonb -> 'scope'
+       or body ->> 'qualification_sha256' is distinct from qualification.receipt_sha256
+       or (body ?& array['previous_selection_id', 'actor', 'reason', 'enabled', 'qualification_id']) is not true
+       or new.actor !~ '^[a-z][a-z0-9._-]{1,31}:[^[:space:]]+$'
+       or lower(substring(new.actor from position(':' in new.actor) + 1)) in ('agent', 'demo', 'extractor', 'reviewer', 'system')
+       or length(trim(new.reason)) = 0
+       or body ->> 'actor' is distinct from new.actor
+       or body ->> 'reason' is distinct from new.reason
+       or (body ->> 'enabled')::boolean is distinct from new.enabled
+       or (body ->> 'qualification_id')::bigint is distinct from new.qualification_id
+       or (body ->> 'previous_selection_id')::bigint is distinct from new.previous_selection_id then
+        raise exception 'pipeline selection needs its exact qualified scope and human act' using errcode='23514';
+    end if;
+    return new;
+end $$;
+revoke all on function public.validate_pipeline_selection() from public;
+create trigger pipeline_selection_scope before insert on public.pipeline_selections
+    for each row execute function public.validate_pipeline_selection();
+"""
+
+
+def _create_pipeline_qualification_schema() -> None:
+    """#447 adds routing authority for maintenance only, never record authority."""
+    op.execute(PIPELINE_SCHEMA)
+    additions = {
+        "pipeline_observations": "document_id bigint not null references documents(id), extraction_run_id bigint references extraction_runs(id),",
+        "pipeline_comparisons": "kind varchar(24) not null check (kind in ('repeatability', 'quality')),",
+        "pipeline_qualifications": "status varchar(24) not null check (status in ('passed', 'failed', 'incomplete')),",
+        "pipeline_selections": (
+            "deployment text not null, qualification_id bigint not null references pipeline_qualifications(id), "
+            "previous_selection_id bigint references pipeline_selections(id), "
+            "actor text not null, reason text not null, enabled boolean not null, "
+            "constraint uq_pipeline_selections_successor unique nulls not distinct "
+            "(project_id, deployment, previous_selection_id),"
+        ),
+    }
+    for table, columns in additions.items():
+        op.execute(f"""
+            create table public.{table} (
+                id bigserial primary key,
+                project_id bigint not null references projects(id),
+                configuration_sha256 varchar(64) not null references pipeline_configurations(configuration_sha256),
+                scope_sha256 varchar(64) not null,
+                receipt_sha256 varchar(64) not null unique,
+                receipt_text text not null,
+                {columns}
+                created_at timestamptz not null default now()
+            );
+            create trigger {table}_immutable before insert or update or delete on public.{table}
+                for each row execute function public.validate_pipeline_receipt();
+            alter table public.{table} enable row level security;
+            create policy p_{table}_project_partition on public.{table} to corridor_web
+                using (project_id = any(public.current_project_partition()));
+            create policy p_{table}_unpartitioned on public.{table} to corridor_worker using (true);
+        """)
+    op.execute(PIPELINE_SELECTION_GUARD)
+    for table in PIPELINE_TABLES:
+        op.execute(f"revoke all on public.{table} from {RUNTIME_LOGINS}")
+        op.execute(f"grant select on public.{table} to {RUNTIME_LOGINS}")
+        if table not in ("pipeline_configurations", "pipeline_qualification_policies"):
+            op.execute(f"revoke all on sequence public.{table}_id_seq from {RUNTIME_LOGINS}")
+    # Ordinary capture may register its actual configuration and observation.
+    # Comparisons/gates/selection are maintenance tooling; runtime logins have
+    # no write grant and no SECURITY DEFINER command that manufactures one.
+    for table in ("pipeline_configurations", "pipeline_observations"):
+        op.execute(f"grant insert on public.{table} to {RUNTIME_LOGINS}")
+    op.execute(f"grant usage on sequence public.pipeline_observations_id_seq to {RUNTIME_LOGINS}")
+
+
 def upgrade() -> None:
     """Create the append commands and take back the raw source-table writes."""
 
@@ -10980,6 +11157,7 @@ def upgrade() -> None:
     op.create_check_constraint("ck_facts_typed_value", "facts", FACTS_TYPED_VALUE_WITH_PDF)
     op.execute(NATIVE_SEGMENTS_SCHEMA)
     op.execute(APPEND_NATIVE_SOURCE_SEGMENTS)
+    _create_pipeline_qualification_schema()
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -10990,6 +11168,13 @@ def downgrade() -> None:
     downgrade removes it whole rather than opening it to raw writes.
     """
 
+    for table in PIPELINE_TABLES:
+        if op.get_bind().scalar(sa.text(f"select exists (select 1 from public.{table})")):
+            raise RuntimeError("permanent pipeline evidence cannot be represented by the supported predecessor")
+    for table in reversed(PIPELINE_TABLES):
+        op.execute(f"drop table public.{table} cascade")
+    op.execute("drop function public.validate_pipeline_selection()")
+    op.execute("drop function public.validate_pipeline_receipt()")
     if op.get_bind().scalar(sa.text(
         "select exists (select 1 from extraction_runs where "
         "row_accounting_json ->> 'schema_version' = 'native-matrix-row-accounting-v1')"
@@ -11275,4 +11460,3 @@ def downgrade() -> None:
         )
     op.execute(SUPPORT_ASSESSMENT_SCHEMA_DOWN)
     op.execute(PROPOSED_DELTA_SCHEMA_DOWN)
-
