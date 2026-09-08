@@ -20,6 +20,16 @@ and swallowed every OCR exception into an empty string. That made short pages,
 mixed pages, and failed OCR indistinguishable. PDF ingest now persists the page
 inventory and region decision before it uses any recovered text; an engine
 exception becomes a scoped Processing Failure and fails the document attempt.
+
+Which engine supplies a PDF page's native reading is one setting,
+`native_reader_token_layer` (ADR-0094, #733). Off, and this is the incumbent
+path unchanged. On, and the paired-rendition reader supplies exactly two
+things: the page's native text and its native Token Layer. It does not supply
+the Page Inventory or the routing decision — those still come from the
+incumbent open below, so enabling the adapter cannot move the OCR boundary as
+a side effect; the reader's inventory is #734's, and the OCR layer beside it
+is #739's. The setting is off, because merging an adapter is not selecting it
+(#447).
 """
 
 from __future__ import annotations
@@ -34,6 +44,7 @@ import pymupdf
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.config import settings
 from corridor.models import (
     NUMBERING_SCHEMES,
     DocPage,
@@ -66,7 +77,9 @@ from corridor.token_layers import (
     TesseractEngine,
     TokenLayer,
     extract_native_token_layer,
+    page_text_projection,
     persist_token_layer,
+    read_native_token_layers,
 )
 
 # Suffixes read as a workbook rather than a page image. `.xlsm` alongside
@@ -497,6 +510,19 @@ def _extract_pages(
     images_dir.mkdir(parents=True, exist_ok=True)
     out: list[ExtractedPage] = []
     ocr_engine = TesseractEngine()
+    # One isolated read of the whole document, before the page loop, when the
+    # replacement adapter is selected. A failure here fails the document
+    # attempt like any other engine failure; it is never quietly answered by
+    # the incumbent, which would make the two readings indistinguishable in
+    # the record.
+    reader_layers: dict[int, TokenLayer] = (
+        {
+            layer.page_no: layer
+            for layer in read_native_token_layers(path, source_sha256=source_sha256)
+        }
+        if settings.native_reader_token_layer
+        else {}
+    )
 
     with pymupdf.open(path) as pdf:
         if pdf.page_count == 0:
@@ -505,9 +531,22 @@ def _extract_pages(
             # 1-based: citations are written for humans, and [D12 p.4] must
             # mean the page a reader sees.
             page_no = index + 1
-            native_text = page.get_text()
-            inventory = inventory_page(page, native_text=native_text)
+            # The Page Inventory reads the incumbent's text on both settings,
+            # so the routing decision is the same decision either way.
+            inventory = inventory_page(page, native_text=page.get_text())
             routing = route_page(inventory)
+            reader_layer = reader_layers.get(page_no) if reader_layers else None
+            if settings.native_reader_token_layer and reader_layer is None:
+                raise ValueError(
+                    f"{path.name}: the reader returned no page {page_no}"
+                )
+            # `DocPage.text` is a projection over the native token layer, not
+            # a second reading beside it (ADR-0073).
+            native_text = (
+                page_text_projection(reader_layer)
+                if reader_layer is not None
+                else page.get_text()
+            )
             # The layout/model derivative is purpose-specific even when OCR is
             # not needed; vision consumers never borrow reviewer pixels. All
             # three are asked for at once so the worker's OpenCV/PyMuPDF import
@@ -605,7 +644,9 @@ def _extract_pages(
             # above is a rebuildable projection, and geometry-consuming
             # extraction reads these tokens, not the page string.
             token_layers: list[TokenLayer] = [
-                extract_native_token_layer(
+                reader_layer
+                if reader_layer is not None
+                else extract_native_token_layer(
                     page, page_no=page_no, source_sha256=source_sha256
                 )
             ]
