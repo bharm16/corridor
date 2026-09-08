@@ -118,9 +118,11 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   The gate's wall clock is the slowest of its nine jobs, so it samples the
   worst setup draw taken in the run rather than the average one: serial setup
   steps add their draws, concurrent ones do not (#595).
-- **CI measures and reuses its own timings.** Every required test job uploads
-  JUnit and a receipt; the summary publishes the `test-feedback` artifact.
-  The next run uses one shared snapshot of validated reports for shard weights.
+- **CI measures and reuses its own timings.** Each test command records its
+  receipt in its job log. The required summary validates those logs, writes
+  the feedback report to the run summary, and retains it in its own log.
+  The next run shares one validated timing output with every shard. No artifact
+  upload is required after a test passes.
   `tests/durations*.json` are bootstrap weights. Routine changes do not require
   local full-suite timing reruns or duration-only follow-up PRs. Use
   `make test-timing` or `make test-slow-timing` only to diagnose a local cost.

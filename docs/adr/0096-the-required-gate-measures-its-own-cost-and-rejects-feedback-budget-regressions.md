@@ -28,9 +28,10 @@ checks the feedback budget before reporting success. The existing exact match
 between classifier answers and job results runs first and remains unchanged.
 Timing evidence cannot excuse a failed, cancelled, or unexpectedly skipped job.
 
-Every required behavior shard and migration job writes a receipt with run,
-revision, attempt, suite and shard identity, elapsed time, test count, exit
-status, and per-file timings. The summary requires exactly the expected set
+Every required behavior shard and migration command writes local JUnit and a
+receipt with run, revision, attempt, suite and shard identity, elapsed time,
+test count, exit status, and per-file timings. It emits that receipt as one
+`CORRIDOR_TEST_RECEIPT` JSON line in its existing job log. The summary requires exactly the expected set
 of successful receipts and rejects missing, duplicate, stale, or inconsistent
 evidence. An empty shard is valid only when the complete suite still has
 executed tests; successful status alone cannot prove coverage. GitHub job
@@ -48,10 +49,16 @@ the three-minute target may pass while the historical median remains slow.
 Raising a limit is a policy change that requires an explicit successor
 decision; ordinary timing refreshes cannot move these limits.
 
-The classifier reads previous validated aggregate reports once and publishes
-one input artifact. Every shard consumes that same snapshot. Its measured
+The classifier reads previous validated aggregate reports from completed
+release-gate job logs and emits one compact `timing_weights` job output. Every
+shard receives that same output through `CORRIDOR_CI_WEIGHTS`. Its measured
 per-file durations become the next partition's weights automatically; the
 checked-in duration files remain the bootstrap when no usable report exists.
+The summary reads current successful job logs through GitHub's read-only API,
+validates their receipts and metadata, writes the run summary, and emits one
+`CORRIDOR_TEST_FEEDBACK` JSON line even when the budget fails. These existing
+logs retain the evidence without a separate upload that can fail after the
+tests have already passed.
 This removes the requirement to run two additional local timing suites after
 every change that alters test cost. Missing history starts a visible bootstrap;
 missing current receipts fails closed. No classifier or summary package
@@ -75,10 +82,12 @@ that proof its own bounded execution context without dropping it from PR CI.
 Test connections default to JIT disabled, avoiding compilation overhead for
 short transactional queries; the server and production defaults are unchanged.
 
-The migration target directly collects its owning migration file and runs
-serially. These tests already create disposable databases for their fresh
-baseline and supported predecessor transitions; a one-worker xdist process
-and whole-tree collection supply no additional proof.
+The migration target collects only its owning migration file and runs its
+independent cases on two workers. The same eleven checks measured 48.91 seconds
+serially in CI; the parallel command measured 32.34 seconds on the isolated
+local stack. Every case keeps its database isolation and production-identity
+guard, including the worker database that guard may need. Whole-tree collection
+supplies no additional migration proof.
 
 `make check` owns `tests/test_architecture.py` and
 `tests/test_source_scan_support.py`. These source checks are omitted from
@@ -134,6 +143,11 @@ repeat unrelated infrastructure assertions.
 execution and needs recurring manual maintenance without rejecting growth.
 CI already pays to run the tests and can retain its own measurements.
 
+**Transport receipts through uploaded artifacts.** Rejected after artifact
+finalization returned HTTP 403 despite every test passing. Timing evidence
+travels through the job logs GitHub already retains and the classifier's job
+output; a separate metadata upload must not force successful tests to repeat.
+
 **Add runners or keep four workers per private runner.** Rejected as the
 initial repair. The measured package-download ceiling remains in force and
 extra processes do not add CPU cores. Remove duplicated work first; a future
@@ -161,8 +175,9 @@ ADR-0093's summary gains a second required decision after its unchanged job
 result check. Its always-triggered workflow, narrow documentation allowlist,
 exact result matching, and migration path scoping remain in force.
 
-The `test-feedback` artifact becomes the ordinary timing record. A developer
-investigates the measured files when it fails and uses local timing targets
+The run summary and its `CORRIDOR_TEST_FEEDBACK` log record become the ordinary
+timing evidence. A developer investigates the measured files when the budget
+fails and uses local timing targets
 only when they answer a specific diagnostic question. The implementation is
 validated by executing receipt rejection and budget cases and by testing the
 actual workflow's wiring; future performance claims still require a measured

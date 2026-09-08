@@ -28,11 +28,14 @@ def test_untrustworthy_junit_cannot_produce_weights(tmp_path, case):
         gate.measured_cases(report, ["tests/test_a.py"])
 
 
-def test_migration_runs_only_its_owned_databases_without_a_worker_template(tmp_path):
+def test_migration_parallelizes_only_the_migration_file(tmp_path):
     files = gate.partition("migration", 1, 1, tmp_path)
     assert files == ["tests/test_migration_baseline.py"]
-    command = gate.pytest_command("migration", files, 1, tmp_path / "migration.xml")
-    assert "-n" not in command
+    command = gate.pytest_command("migration", files, 2, tmp_path / "migration.xml")
+    assert command[command.index("-n") + 1] == "2"
+    assert command[command.index("--dist") + 1] == "worksteal"
+    pytest_arguments = command[3:]
+    assert pytest_arguments[pytest_arguments.index("-m") + 1] == "migration"
     assert command[-1] == files[0]
 
 

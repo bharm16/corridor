@@ -1,7 +1,6 @@
 """Reuse completed CI measurements and enforce feedback on the required run.
 
-Only artifacts from this repository's completed release-gate runs supply
-weights. They are inert, validated JSON, never executable configuration or
+Only completed release-gate job logs from this repository supply weights. They are inert, validated JSON, never executable configuration or
 a test-selection list. A missing historical measurement uses the checked-in
 starting weights; unavailable or corrupt current proof fails the gate.
 """
@@ -11,13 +10,11 @@ from __future__ import annotations
 import argparse
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
-import io
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
-import zipfile
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -44,65 +41,79 @@ def _attempt_start(run: dict) -> str:
     return run["created_at"] if run["run_attempt"] == 1 else run["run_started_at"]
 
 
-def report_from_zip(data: bytes) -> dict:
-    if len(data) > 10_000_000:
-        raise EvidenceError("timing artifact exceeds its size bound")
-    with zipfile.ZipFile(io.BytesIO(data)) as archive:
-        entries = archive.infolist()
-        if len(entries) != 1 or entries[0].filename != "report.json" or entries[0].file_size > 10_000_000:
-            raise EvidenceError("timing artifact must contain only a bounded report.json")
-        return validate_report(json.loads(archive.read(entries[0])))
+RECEIPT_MARKER = "CORRIDOR_TEST_RECEIPT"
+REPORT_MARKER = "CORRIDOR_TEST_FEEDBACK"
 
 
-def prepare(directory: Path, repository: str, run_id: str) -> None:
-    directory.mkdir(parents=True, exist_ok=True)
-    history = directory / "history"
-    history.mkdir(exist_ok=True)
-    # The same job may be retried. Its previous partial download is not proof.
-    for path in history.glob("*.json"):
-        path.unlink()
-    for suite in ("pytest", "slow"):
-        (directory / f"{suite}.json").unlink(missing_ok=True)
-    artifacts = github(f"repos/{repository}/actions/artifacts?name=test-feedback&per_page=30")["artifacts"]
-    candidates = [item for item in artifacts if (
-        not item["expired"] and item["name"] == "test-feedback"
-        and int(item["workflow_run"]["id"]) < int(run_id)
-        and item["workflow_run"]["repository_id"] == item["workflow_run"]["head_repository_id"]
-    )][:10]
+def logged_json(log: bytes, marker: str) -> dict | None:
+    """Read the final machine record, never pytest's human summary text."""
+    if len(log) > 20_000_000:
+        raise EvidenceError("job log exceeds its bounded size")
+    payload = None
+    for line in log.decode("utf-8-sig").splitlines():
+        if line.startswith(marker + " "):
+            payload = line[len(marker) + 1:]
+        elif " " + marker + " " in line:
+            payload = line.split(" " + marker + " ", 1)[1]
+    if payload is None:
+        return None
+    def pairs(items):
+        value = {}
+        for key, item in items:
+            if key in value:
+                raise EvidenceError("duplicate field in logged timing record")
+            value[key] = item
+        return value
+    def invalid(_value):
+        raise EvidenceError("non-finite logged timing value")
+    return json.loads(payload, object_pairs_hook=pairs, parse_constant=invalid)
 
-    def load(item: dict) -> dict | None:
-        metadata = item["workflow_run"]
-        run = github(f"repos/{repository}/actions/runs/{metadata['id']}")
-        if run["path"].split("@")[0] != WORKFLOW or run["event"] != "pull_request" or run["status"] != "completed" or run["conclusion"] not in ("success", "failure"):
+
+def run_jobs(repository: str, run_id: str) -> list[dict]:
+    jobs = []
+    for page in range(1, 6):
+        batch = github(f"repos/{repository}/actions/runs/{run_id}/jobs?filter=all&per_page=100&page={page}")["jobs"]
+        jobs.extend(batch)
+        if len(batch) < 100:
+            return jobs
+    raise EvidenceError("workflow attempt history exceeds the bounded job inventory")
+
+
+def previous_reports(repository: str, run_id: str) -> list[dict]:
+    runs = github(f"repos/{repository}/actions/workflows/release-gate.yml/runs?event=pull_request&status=completed&per_page=10")["workflow_runs"]
+    candidates = [run for run in runs if (
+        int(run["id"]) < int(run_id)
+        and run["conclusion"] in ("success", "failure")
+        and run.get("head_repository", {}).get("id") == run["repository"]["id"]
+    )]
+    def load(run):
+        summaries = [job for job in run_jobs(repository, str(run["id"])) if job["name"] == "release-gate" and job["run_attempt"] == run["run_attempt"]]
+        if len(summaries) != 1 or not any(step["name"] == "Enforce the measured feedback budget" and step["conclusion"] in ("success", "failure") for step in summaries[0].get("steps", [])):
             return None
+        log = github(f"repos/{repository}/actions/jobs/{summaries[0]['id']}/logs", binary=True)
         try:
-            report = report_from_zip(github(f"repos/{repository}/actions/artifacts/{item['id']}/zip", binary=True))
-        except (EvidenceError, ValueError, zipfile.BadZipFile) as error:
-            print(f"Ignoring unusable historical timing artifact {item['id']}: {error}")
+            data = logged_json(log, REPORT_MARKER)
+            if data is None:
+                return None
+            report = validate_report(data)
+        except (EvidenceError, ValueError) as error:
+            print(f"Ignoring unusable historical timing for run {run['id']}: {error}")
             return None
-        if report["expected"]["run_id"] != str(run["id"]):
-            raise EvidenceError("historical artifact disagrees with its GitHub run")
-        if report["expected"]["run_attempt"] != run["run_attempt"]:
-            print(f"Ignoring superseded attempt timing for run {run['id']}")
-            return None
-        # Once completed, GitHub can supply the last few seconds the original
-        # summary could not yet observe (artifact upload and job teardown).
-        return aggregate_receipts(report["receipts"], report["expected"],
-                                  max(report["gate_elapsed_seconds"], _elapsed(_attempt_start(run), run["updated_at"])), report["breakdown"])
-
+        if report["expected"]["run_id"] != str(run["id"]) or report["expected"]["run_attempt"] != run["run_attempt"]:
+            raise EvidenceError("historical timing disagrees with its GitHub job")
+        return aggregate_receipts(report["receipts"], report["expected"], max(report["gate_elapsed_seconds"], _elapsed(_attempt_start(run), run["updated_at"])), report["breakdown"])
     with ThreadPoolExecutor(max_workers=4) as executor:
         reports = [report for report in executor.map(load, candidates) if report is not None]
-    reports.sort(key=lambda item: (int(item["expected"]["run_id"]), item["expected"]["run_attempt"]), reverse=True)
-    for report in reports:
-        (history / f"{report['expected']['run_id']}.json").write_text(json.dumps(report, sort_keys=True) + "\n")
-    if reports:
-        for suite in ("pytest", "slow"):
-            (directory / f"{suite}.json").write_text(json.dumps(reports[0]["suites"][suite]["per_file_seconds"], sort_keys=True) + "\n")
-        print(f"CI partition weights from run {reports[0]['expected']['run_id']}; {len(reports)} completed measurements")
-    else:
-        print("No completed feedback history yet; using checked-in starting weights")
-    # Keep the initial artifact nonempty, and make bootstrap visible.
-    (directory / "basis.json").write_text(json.dumps({"history_runs": [report["expected"]["run_id"] for report in reports]}) + "\n")
+    return sorted(reports, key=lambda report: (int(report["expected"]["run_id"]), report["expected"]["run_attempt"]), reverse=True)
+
+
+def prepare(repository: str, run_id: str) -> None:
+    reports = previous_reports(repository, run_id)
+    weights = {suite: reports[0]["suites"][suite]["per_file_seconds"] for suite in ("pytest", "slow")} if reports else {}
+    encoded = json.dumps(weights, separators=(",", ":"), allow_nan=False)
+    with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+        output.write("timing_weights=" + encoded + "\n")
+    print(f"Prepared one shared timing snapshot from {len(reports)} completed runs; " + ("using measured CI weights" if reports else "using checked-in bootstrap weights"))
 
 
 def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now: str) -> float:
@@ -138,11 +149,7 @@ def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now
     return max(_elapsed(_attempt_start(run), now), cost_floor)
 
 
-def finish(inputs: Path, receipts_dir: Path, output: Path, repository: str, run_id: str) -> int:
-    output.unlink(missing_ok=True)
-    basis = read_json(inputs / "basis.json")
-    if not isinstance(basis, dict) or set(basis) != {"history_runs"} or not isinstance(basis["history_runs"], list):
-        raise EvidenceError("the timing input basis is malformed")
+def finish(repository: str, run_id: str) -> int:
     suites = {"pytest": int(os.environ["PYTEST_SHARDS"]), "slow": int(os.environ["SLOW_SHARDS"])}
     if os.environ["MIGRATION_REQUIRED"] == "true":
         suites["migration"] = 1
@@ -152,31 +159,36 @@ def finish(inputs: Path, receipts_dir: Path, output: Path, repository: str, run_
     run = github(f"repos/{repository}/actions/runs/{run_id}")
     if run["status"] != "in_progress" or run["run_attempt"] != expected["run_attempt"]:
         raise EvidenceError("feedback is not observing the current running attempt")
-    receipts = [read_json(path) for path in sorted(receipts_dir.rglob("receipt-*.json"))]
-    jobs = []
-    for page in range(1, 6):
-        batch = github(f"repos/{repository}/actions/runs/{run_id}/jobs?filter=all&per_page=100&page={page}")["jobs"]
-        jobs.extend(batch)
-        if len(batch) < 100:
-            break
-    else:
-        raise EvidenceError("workflow attempt history exceeds the bounded job inventory")
+    jobs = run_jobs(repository, run_id)
+    latest = {}
+    for job in jobs:
+        if job["name"] not in latest or job["run_attempt"] > latest[job["name"]]["run_attempt"]:
+            latest[job["name"]] = job
+    names = [f"{suite} ({number})" if suite in ("pytest", "slow") else suite for suite, shards in suites.items() for number in range(1, shards + 1)]
+    if any(name not in latest or latest[name]["conclusion"] != "success" for name in names):
+        raise EvidenceError("required test jobs did not all succeed")
+    def receipt(name):
+        log = github(f"repos/{repository}/actions/jobs/{latest[name]['id']}/logs", binary=True)
+        value = logged_json(log, RECEIPT_MARKER)
+        if value is None:
+            raise EvidenceError(f"successful job has no timing receipt: {name}")
+        return value
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        receipts = list(executor.map(receipt, names))
+    history = previous_reports(repository, run_id)
     now = datetime.now(timezone.utc).isoformat()
     report = aggregate_receipts(receipts, expected, verified_gate_seconds(receipts, run, jobs, now))
     required_files = set(test_files())
     for suite in ("pytest", "slow"):
         if set(report["suites"][suite]["per_file_seconds"]) != required_files:
             raise EvidenceError(f"{suite} receipts do not cover every current test file")
-    history = [read_json(path) for path in sorted((inputs / "history").glob("*.json"))]
-    if sorted(item["expected"]["run_id"] for item in history) != sorted(basis["history_runs"]):
-        raise EvidenceError("the prepared timing history is incomplete")
     result = assess(report, history, read_json(ROOT / "tests/feedback-budget.json"))
-    output.parent.mkdir(parents=True, exist_ok=True)
-    output.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    # Logs already belong to this workflow. No subsequent upload can turn a
+    # successful test job into a failure and force its tests to run again.
+    print(REPORT_MARKER + " " + json.dumps(report, separators=(",", ":"), allow_nan=False), flush=True)
     summary = ["### Test feedback", "", f"Current gate: **{report['gate_elapsed_seconds']:.1f}s** (through this decision).", "", "```json", json.dumps(result, indent=2, sort_keys=True), "```", "", "| Suite | Executed tests | Slowest test command |", "|---|---:|---:|"]
     for name, measured in report["suites"].items():
         summary.append(f"| {name} | {measured['test_count']} | {measured['elapsed_seconds']:.1f}s |")
-    summary += ["", "Timings are reused by the next required run; no separate local timing run is required."]
     rendered = "\n".join(summary) + "\n"
     print(rendered)
     if os.environ.get("GITHUB_STEP_SUMMARY"):
@@ -187,21 +199,15 @@ def finish(inputs: Path, receipts_dir: Path, output: Path, repository: str, run_
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    commands = parser.add_subparsers(dest="command", required=True)
-    preparing = commands.add_parser("prepare")
-    preparing.add_argument("--directory", type=Path, required=True)
-    finishing = commands.add_parser("finish")
-    finishing.add_argument("--input", type=Path, required=True)
-    finishing.add_argument("--receipts", type=Path, required=True)
-    finishing.add_argument("--output", type=Path, required=True)
+    parser.add_argument("command", choices=("prepare", "finish"))
     args = parser.parse_args(argv)
     try:
         repository, run_id = os.environ["GITHUB_REPOSITORY"], os.environ["GITHUB_RUN_ID"]
         if args.command == "prepare":
-            prepare(args.directory, repository, run_id)
+            prepare(repository, run_id)
             return 0
-        return finish(args.input, args.receipts, args.output, repository, run_id)
-    except (EvidenceError, ValueError, KeyError, OSError, subprocess.CalledProcessError, zipfile.BadZipFile) as error:
+        return finish(repository, run_id)
+    except (EvidenceError, ValueError, KeyError, OSError, subprocess.SubprocessError) as error:
         print(f"::error::test feedback failed: {error}", file=sys.stderr)
         return 1
 

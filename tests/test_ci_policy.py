@@ -263,7 +263,9 @@ def test_the_classifier_is_the_in_repository_script_reading_full_history():
     # The SHAs arrive through env, never interpolated into the shell body.
     assert "${{" not in step["run"]
     assert set(step["env"]) == {"BASE_SHA", "HEAD_SHA"}
-    assert set(classify["outputs"]) == {"behavior_required", "migration_required"}
+    assert set(classify["outputs"]) == {
+        "behavior_required", "migration_required", "timing_weights"
+    }
 
 
 def test_the_added_jobs_download_no_packages():
@@ -493,67 +495,47 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
     assert commands[0].endswith(" -q")
 
 
-def test_every_test_job_consumes_one_partition_input_and_publishes_its_receipt():
-    """Different weight snapshots can omit a file even with an exact balancer."""
-    for suite in ("pytest", "slow", "migration"):
-        steps = _job(suite)["steps"]
-        inputs = [
-            step for step in steps
-            if step.get("uses", "").startswith("actions/download-artifact")
-        ]
-        assert len(inputs) == 1
-        assert inputs[0]["with"] == {
-            "name": "test-feedback-input", "path": "out/test-feedback-input"
-        }
-        outputs = [
-            step for step in steps
-            if step.get("uses", "").startswith("actions/upload-artifact")
-        ]
-        assert len(outputs) == 1
-        shard = "1" if suite == "migration" else "${{ matrix.shard }}"
-        assert outputs[0]["if"] == "${{ always() }}"
-        assert outputs[0]["with"] == {
-            "name": f"test-receipt-{suite}-{shard}",
-            "path": "out/test-feedback",
-            "if-no-files-found": "error", "overwrite": "true",
-        }
-        test_index = next(
-            index for index, step in enumerate(steps)
-            if step.get("run", "").startswith("make test")
-        )
-        assert steps.index(inputs[0]) < test_index < steps.index(outputs[0])
-
-
-def test_the_classifier_publishes_one_validated_history_snapshot():
-    steps = _job("classify")["steps"]
-    prepare = next(
-        step for step in steps if "ci_feedback.py prepare" in step.get("run", "")
-    )
-    publish = next(
-        step for step in steps
-        if step.get("uses", "").startswith("actions/upload-artifact")
-    )
-    required = "${{ steps.classify.outputs.behavior_required == 'true' }}"
-    assert prepare["if"] == publish["if"] == required
-    assert prepare["run"] == (
-        "python3 scripts/ci_feedback.py prepare --directory out/test-feedback-input"
-    )
-    assert prepare["env"] == {"GH_TOKEN": "${{ github.token }}"}
-    assert publish["with"] == {
-        "name": "test-feedback-input", "path": "out/test-feedback-input",
-        "if-no-files-found": "error", "overwrite": "true",
+def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_command():
+    """Metadata transport must not fail a completed test job or alter its partition."""
+    commands = {
+        "pytest": "make test-shard SHARDS=5 SHARD=${{ matrix.shard }}",
+        "slow": "make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}",
+        "migration": "make test-migrations",
     }
-    assert steps.index(prepare) < steps.index(publish)
+    for suite, command in commands.items():
+        job = _job(suite)
+        assert job["env"]["CORRIDOR_CI_WEIGHTS"] == (
+            "${{ needs.classify.outputs.timing_weights }}"
+        )
+        assert job["steps"][-1] == {"run": command}
+    for job in _workflow(GATE)["jobs"].values():
+        assert all(
+            "actions/upload-artifact" not in step.get("uses", "")
+            and "actions/download-artifact" not in step.get("uses", "")
+            for step in job["steps"]
+        ), "artifact transport can fail after tests already passed"
+
+
+def test_the_classifier_shares_one_validated_timing_output():
+    job = _job("classify")
+    steps = job["steps"]
+    prepare = next(step for step in steps if step.get("id") == "timing")
+    assert prepare["if"] == "${{ steps.classify.outputs.behavior_required == 'true' }}"
+    assert prepare["run"] == "python3 scripts/ci_feedback.py prepare"
+    assert prepare["env"] == {"GH_TOKEN": "${{ github.token }}"}
+    assert job["outputs"]["timing_weights"] == "${{ steps.timing.outputs.timing_weights }}"
+    classifier = next(step for step in steps if step.get("id") == "classify")
+    assert steps.index(classifier) < steps.index(prepare)
     assert _workflow(GATE)["permissions"] == {"actions": "read", "contents": "read"}
 
 
 def test_budget_enforcement_extends_the_fail_closed_summary():
     steps = _job("release-gate")["steps"]
     assert steps[0] == _summary_step()
-    finish = next(
-        step for step in steps if "ci_feedback.py finish" in step.get("run", "")
-    )
-    assert finish["if"] == (
+    assert len(steps) == 3
+    checkout, finish = steps[1:]
+    assert checkout["uses"].startswith("actions/checkout")
+    assert checkout["if"] == finish["if"] == (
         "${{ success() && needs.classify.outputs.behavior_required == 'true' }}"
     )
     assert finish["env"] == {
@@ -562,30 +544,8 @@ def test_budget_enforcement_extends_the_fail_closed_summary():
         "SLOW_SHARDS": str(_shard_count("slow")),
         "MIGRATION_REQUIRED": "${{ needs.classify.outputs.migration_required }}",
     }
-    assert finish["run"] == (
-        "python3 scripts/ci_feedback.py finish --input out/test-feedback-input "
-        "--receipts out/test-feedback-receipts --output out/test-feedback/report.json"
-    )
+    assert finish["run"] == "python3 scripts/ci_feedback.py finish"
     assert "continue-on-error" not in finish
-    downloads = [
-        step for step in steps
-        if step.get("uses", "").startswith("actions/download-artifact")
-    ]
-    assert [step["with"] for step in downloads] == [
-        {"name": "test-feedback-input", "path": "out/test-feedback-input"},
-        {"pattern": "test-receipt-*", "merge-multiple": "true",
-         "path": "out/test-feedback-receipts"},
-    ]
-    assert all(step["if"] == finish["if"] for step in downloads)
-    assert all(steps.index(step) < steps.index(finish) for step in downloads)
-    publish = steps[-1]
-    assert publish["with"] == {
-        "name": "test-feedback", "path": "out/test-feedback/report.json",
-        "if-no-files-found": "error", "overwrite": "true",
-    }
-    assert publish["if"] == (
-        "${{ always() && hashFiles('out/test-feedback/report.json') != '' }}"
-    )
 
 
 def test_pr_workflows_cancel_obsolete_revisions():

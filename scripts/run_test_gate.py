@@ -38,10 +38,18 @@ def partition(suite: str, shards: int, number: int, inputs: Path) -> list[str]:
         if (shards, number) != (1, 1):
             raise ValueError("migration has one partition")
         return ["tests/test_migration_baseline.py"]
-    measured = inputs / f"{suite}.json"
-    weights = recorded_seconds(measured if measured.exists() else (
-        DURATIONS if suite == "pytest" else SLOW_DURATIONS
-    ))
+    shared = os.environ.get("CORRIDOR_CI_WEIGHTS")
+    if os.environ.get("GITHUB_ACTIONS") == "true" and not shared:
+        raise ValueError("CI did not provide its shared timing snapshot")
+    incoming = json.loads(shared) if shared else {}
+    if not isinstance(incoming, dict) or set(incoming) - {"pytest", "slow"}:
+        raise ValueError("shared timing snapshot is malformed")
+    weights = incoming.get(suite, recorded_seconds(DURATIONS if suite == "pytest" else SLOW_DURATIONS))
+    if not isinstance(weights, dict) or any(
+        not isinstance(name, str) or type(value) not in (float, int)
+        or not math.isfinite(value) or value < 0 for name, value in weights.items()
+    ):
+        raise ValueError("partition weights must be finite nonnegative seconds")
     if suite == "pytest":
         weights.update({name: 0.0 for name in CHECK_OWNED_FILES})
     return shard(test_files(), weights, shards)[number - 1]
@@ -53,6 +61,10 @@ def pytest_command(suite: str, files: list[str], workers: int, junit: Path) -> l
     command = [sys.executable, "-m", "pytest"]
     if suite != "migration":
         command += ["-n", str(workers), "--dist", "worksteal" if suite == "pytest" else "loadfile"]
+    else:
+        # Each migration case owns a distinct disposable database, so fresh
+        # installation and supported-upgrade proofs can run independently.
+        command += ["-n", str(workers), "--dist", "worksteal"]
     command += ["-m", {"pytest": "not slow", "slow": "slow and not migration", "migration": "migration"}[suite]]
     return command + ["--durations=25", "--durations-min=1.0", f"--junitxml={junit}", *files]
 
@@ -119,6 +131,7 @@ def main(argv: list[str] | None = None) -> int:
         "test_count": count, "per_file_seconds": totals,
     }
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
+    print("CORRIDOR_TEST_RECEIPT " + json.dumps(receipt, separators=(",", ":"), allow_nan=False), flush=True)
     return 0 if status == 5 and count == 0 else status
 
 

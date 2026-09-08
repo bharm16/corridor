@@ -107,10 +107,10 @@ image-engine-audit:
 retained-citation-inventory:
 	uv run python scripts/retained_citation_inventory.py
 
-# The migration file owns disposable databases. Run it directly and serially
-# instead of importing the whole tree and starting a redundant xdist worker.
+# Collect only the migration contract and run independent cases on two workers.
+# The existing experimental-database identity guard remains intact.
 test-migrations:
-	uv run python scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 1
+	uv run python scripts/run_test_gate.py --suite migration --shards 1 --shard 1 --workers 2
 
 # Single-process fallback for debugger use and scheduler diagnosis.
 test-serial:
