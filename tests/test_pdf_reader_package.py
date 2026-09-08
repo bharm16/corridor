@@ -154,6 +154,15 @@ PRODUCTION_IMPORTERS = {
         "worker; disabled by default, and selection for the record stays with "
         "#447 and #739"
     ),
+    "src/corridor/scanned_reading.py": (
+        "the replacement scanned route is the one production caller of the "
+        "Textract adapter (#739): it reads a routed page through the boundary "
+        "that enforces the authorization check, and rasterizes it with the "
+        "adapter's own rasterizer so the bytes sent are the bytes the retained "
+        "identity names. It reaches no module of the imported rung, and "
+        "tests/test_textract_adapter.py holds both halves of that; disabled by "
+        "default, and scanned selection stays with #739 through #447"
+    ),
     "src/corridor/source_intake_draft.py": (
         "a staged PDF's page text for an intake draft is PDFium's, read in one "
         "PdfiumExecutor process per draft because the draft runs on a web "

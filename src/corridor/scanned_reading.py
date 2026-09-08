@@ -729,9 +729,17 @@ def recovered_text(reading: dict[str, Any]) -> str:
 # --- ingest's handle on the route ----------------------------------------------
 
 # What an ingest request claims about itself. The purpose and source class are
-# the posture's own words for reading a scanned page; the region is the
-# posture's, because a request naming another one is refused by the check
-# rather than served from a second posture nobody accepted.
+# the posture's own words; the region is the posture's, because a request
+# naming another one is refused by the check rather than served from a second
+# posture nobody accepted.
+#
+# The purpose is `scanned-page-reading` on every page, including a mixed one
+# whose only routed region is an image. The posture also permits
+# `image-region-reading`, and the difference is real, but what is sent here is
+# the whole page raster either way — the boundary reads a page, and the route
+# then selects which of its cells are consumed — so describing that request as
+# a region read would overstate how narrow it is. A caller that ever sends a
+# cropped region names the other purpose, and gets its own boundary for it.
 INGEST_SOURCE_CLASS = "scanned-pdf"
 INGEST_PURPOSE = "scanned-page-reading"
 

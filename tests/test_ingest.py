@@ -1079,3 +1079,30 @@ def test_an_authorized_scanned_read_writes_the_provider_backed_token_layer(
     assert len(layer.engine_json["reading_sha256"]) == 64
     assert "SCANNED" in page.text
     assert page.text_source == "ocr"
+
+
+def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    """An ordinary native page is not scanned work that failed (#739).
+
+    The scanned setting is on and no authorization record exists, so any page
+    the decision routed to Textract would record a refusal. These pages are
+    routed nowhere, so nothing is spent and nothing is recorded — a blank or
+    clean page must not become a Processing Failure just because the scanned
+    path is selected.
+    """
+    monkeypatch.setattr(settings, "reader_page_inventory", True)
+    monkeypatch.setattr(settings, "textract_scanned_reading", True)
+
+    doc = ingest(session, project, pdf, tmp_path / "images")
+
+    pages = _pages(session, doc.id)
+    assert {page.routing_json["page_mode"] for page in pages} == {"native"}
+    assert {page.text_source for page in pages} == {"text_layer"}
+    assert session.scalars(
+        select(PageProcessingFailure).where(
+            PageProcessingFailure.document_id == doc.id
+        )
+    ).all() == []
+    assert _ocr_layers(session, doc.id) == []
