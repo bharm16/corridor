@@ -53,6 +53,16 @@ class SegmentValues:
     page_no: int | None = None
     start_offset: int | None = None
     end_offset: int | None = None
+    rendition_sha256: str | None = None
+    reading_sha256: str | None = None
+    reader_identity: dict | None = None
+    location_json: dict | None = None
+    span_stream: str | None = None
+    table_index: int | None = None
+    cell_row: int | None = None
+    cell_column: int | None = None
+    row_span: int | None = None
+    column_span: int | None = None
 
 
 @dataclass(frozen=True)
@@ -136,6 +146,16 @@ def append_source_segments(
             "page_no": segment.page_no,
             "start_offset": segment.start_offset,
             "end_offset": segment.end_offset,
+            "rendition_sha256": segment.rendition_sha256,
+            "reading_sha256": segment.reading_sha256,
+            "reader_identity": segment.reader_identity,
+            "location_json": segment.location_json,
+            "span_stream": segment.span_stream,
+            "table_index": segment.table_index,
+            "cell_row": segment.cell_row,
+            "cell_column": segment.cell_column,
+            "row_span": segment.row_span,
+            "column_span": segment.column_span,
         }
         for segment in segments
     ]
@@ -363,4 +383,3 @@ def _jsonb(value: object):
 
 def _iso(value: date | None) -> str | None:
     return value.isoformat() if value is not None else None
-

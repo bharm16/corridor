@@ -24,7 +24,10 @@ exception becomes a scoped Processing Failure and fails the document attempt.
 Which engine supplies a PDF page's native reading is one setting,
 `native_reader_token_layer` (ADR-0094, #733). Off, and this is the incumbent
 path unchanged. On, and the paired-rendition reader supplies exactly two
-things: the page's native text and its native Token Layer.
+things initially: the page's native text and its native Token Layer. #736
+binds those projections and the new prose/cell Source Segments to the same
+immutable reading. Explicit shadow ingestion can append that reading to an
+already-ingested document without replacing its historical DocPage projection.
 
 Which engine's facts decide where OCR is needed is a second, separate setting,
 `reader_page_inventory` (#734). Off, and the Page Inventory and the routing
@@ -139,6 +142,7 @@ class ExtractedPage:
     derivatives: tuple[RenderDerivative, ...] = ()
     ocr_attempts: tuple[OcrAttempt, ...] = ()
     token_layers: tuple[TokenLayer, ...] = ()
+    native_reading: object | None = None
 
 
 def ingest_document(
@@ -248,7 +252,12 @@ def ingest_document(
         # (ADR-0030).
         if numbering_scheme is not None:
             existing.numbering_scheme = numbering_scheme
-        append_ingested_source_segments(session, existing, path)
+        if settings.native_reader_token_layer and path.suffix.lower() == ".pdf":
+            ingest_native_reader(
+                session, document=existing, path=path, images_dir=images_dir
+            )
+        else:
+            append_ingested_source_segments(session, existing, path)
         _quarantine_unmodeled_semantics(session, existing)
         session.flush()
         return existing
@@ -299,7 +308,9 @@ def ingest_document(
 
     _persist_pages(session, document, pages, token_dir)
 
-    append_ingested_source_segments(session, document, path)
+    append_ingested_source_segments(
+        session, document, path, native_reading=pages[0].native_reading if pages else None
+    )
 
     document.pages = len(pages)
     document.parse_status = (
@@ -354,13 +365,35 @@ def reparse_document(
     session.flush()
 
     _persist_pages(session, document, pages, token_dir)
-    append_ingested_source_segments(session, document, path)
+    append_ingested_source_segments(
+        session, document, path, native_reading=pages[0].native_reading if pages else None
+    )
     document.pages = len(pages)
     document.parse_status = (
         "failed" if any(page.failures for page in pages) else "parsed"
     )
     session.flush()
     return document.parse_status == "parsed"
+
+
+def ingest_native_reader(
+    session: Session, *, document: Document, path: Path | str,
+    images_dir: Path | str, engine: str = "tagged", dpi: int = 36,
+):
+    """Append an explicit disabled challenger to any registered PDF rendition.
+
+    This returns its own page text and tokens along with the new segments.
+    Existing DocPage projections and accepted citations remain historical;
+    ordinary document deduplication cannot suppress this execution. Selection
+    and downstream semantic mapping remain #447/#737 respectively.
+    """
+    from corridor.reader_segments import append_native_segments, read_native_pdf
+
+    reading = read_native_pdf(path, source_sha256=document.sha256, engine=engine, dpi=dpi)
+    segments = append_native_segments(session, document, reading)
+    for layer in reading.token_layers:
+        persist_token_layer(session, document.id, layer, output_dir=Path(images_dir) / document.sha256)
+    return reading, segments
 
 
 def _persist_pages(
@@ -528,14 +561,15 @@ def _extract_pages(
     # attempt like any other engine failure; it is never quietly answered by
     # the incumbent, which would make the two readings indistinguishable in
     # the record.
-    reader_layers: dict[int, TokenLayer] = (
-        {
-            layer.page_no: layer
-            for layer in read_native_token_layers(path, source_sha256=source_sha256)
-        }
-        if settings.native_reader_token_layer
-        else {}
+    from corridor.reader_segments import read_native_pdf
+
+    native_reading = (
+        read_native_pdf(path, source_sha256=source_sha256)
+        if settings.native_reader_token_layer else None
     )
+    reader_layers = {
+        layer.page_no: layer for layer in native_reading.token_layers
+    } if native_reading is not None else {}
     # The inventory's own isolated read, on the same terms. It is a second
     # read of the same document when both settings are on: the two adapters
     # own their own readings and neither answers for the other, which is what
@@ -711,6 +745,7 @@ def _extract_pages(
                     derivatives=tuple(derivatives),
                     ocr_attempts=tuple(ocr_attempts),
                     token_layers=tuple(token_layers),
+                    native_reading=native_reading,
                 )
             )
 

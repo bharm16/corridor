@@ -1,47 +1,41 @@
-"""Every PDF prose Source Segment on the registered corpus, re-verified
-against the reader-backed page text (#733).
+"""Measure reconstructed incumbent prose against the reader's text (#733, #736).
 
 Why this exists. ADR-0094 replaces the native engine, and a prose Source
 Segment's locator is a pair of character offsets into one page's text
 (ADR-0068). Offsets into a string only mean anything under the reading that
 produced the string, so replacing the reader puts every historical prose
-locator on the table at once. This command is the evidence for that: it takes
-each segment the production segmentation appends for the registered corpus,
-re-verifies it against the page text the replacement adapter would write, and
-records, per segment, exactly one of three outcomes.
+locator at risk. This command reconstructs the incumbent segmentation from
+the corpus's original bytes on each run. It does not query persisted Source
+Segments, accepted references, or customer citations. Its denominator is a
+corpus-generated population, not an inventory of existing customer records.
 
-- **verified unchanged** — the stored offsets still recover the stored text
-  from the new page text, byte for byte.
-- **verified through the compatibility path** — the offsets no longer land,
-  but the stored text is recovered byte for byte from the new page text at a
-  position a stated rule determines, and its digest still matches. Two rules,
-  in order: the stored text occurs exactly once in the new page text; or it
-  occurs several times and the historical reading of the same registered bytes
-  holds the same number of occurrences, so the segment's occurrence ordinal
-  carries over and names one of them. Both recover the segment's exact stored
-  bytes and nothing else. Neither normalizes, folds whitespace, matches
-  approximately, or picks the nearest offset, which is why this is a
-  verification rather than an excuse: what comes back is the segment's own
-  text, at a position the rule determines rather than the reader's luck.
-- **incompatible** — anything else: the text is absent from the new page text,
-  or present at several positions the ordinal rule cannot separate, or the
-  page itself is gone. An explained mismatch is recorded as incompatible. It
-  never becomes a pass because the explanation is good.
+Exact-text recovery and physical source-location equivalence are separate
+outcomes. The text classification records matching offsets, one occurrence,
+equal occurrence counts, multiple occurrences, or absent text. Even identical
+strings at identical offsets can describe different physical labels when a
+reader reverses their order. Equal counts and occurrence ordinals do not prove
+which label survived; neither does a single replacement occurrence when the
+historical reading contained several.
 
-What was tried, and rejected. Matching the segment after whitespace or
-Unicode normalization would convert most of the incompatible remainder into
-a pass, and would be exactly the lie ADR-0068 forbids: the segment's stored
-text is its exact text, and a span that only matches once folded has not been
+Every source-location outcome in this experiment is **unknown**. The experiment
+does not collect independently discriminating coordinates bound to each exact
+historical and replacement span in a common source frame. A word box or a page
+number without that mapping cannot close this gap. No text outcome authorizes
+rebinding, and this command never returns a replacement locator. #447 owns
+historical compatibility qualification; #741 owns retained-citation proof.
+
+What was tried, and rejected. Whitespace or Unicode normalization can conceal
+missing exact text: a span that only matches once folded has not been
 recovered. Binding an ambiguous locator to the occurrence nearest its old
 offset was rejected for the same reason — the old and new readings do not
 share a coordinate system, so "nearest" is a guess wearing a number.
 
-The historical reading is the incumbent engine's, because that is what the
-offsets were written against; there is no other way to replay a historical
-locator. That import is why this module is on `ENGINE_ALLOWLIST`. It is a
-one-time migration measurement, not a runtime path: nothing in the product
-imports this module, and a rebinding, once performed and recorded, does not
-need the old engine again.
+The reconstructed historical reading is the incumbent engine's. That import
+is why this module is on `ENGINE_ALLOWLIST`: nothing in the product imports
+this measurement, and #741 owns its removal. Replaying persisted locators
+under their recorded reading identity is a separate obligation, not something
+this corpus reconstruction proves. The original #733 receipt remains frozen;
+new receipts clarify its interpretation without changing its bytes.
 
 The command reads the content store only through `corridor.storage`, and
 writes nothing into it.
@@ -81,32 +75,43 @@ from corridor_pdf_reader.execution import (
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 CORPUS = REPO_ROOT / "corpus"
-# The prose locator is appended for exactly this document class today
-# (`source_segments.append_ingested_source_segments`), so these are the
-# segments the record actually holds. Every other PDF class is measured
-# beside them, under the same segmentation, so that table-bearing and drawing
-# pages are checked too rather than assumed to behave like minutes.
-REGISTERED_DOC_TYPE = "minutes"
-OUTCOMES = (
-    "verified_unchanged",
-    "verified_unique_occurrence",
-    "verified_preserved_occurrence_ordinal",
-    "incompatible_absent",
-    "incompatible_ambiguous",
-    "incompatible_page_missing",
-    "historical_locator_already_invalid",
+# Minutes are the incumbent prose-ingest class, but this script reconstructs
+# them from corpus bytes. It does not establish that any generated segment
+# was persisted, cited, or accepted. Other PDF classes use the same algorithm
+# to include table-bearing and drawing pages in the text experiment.
+PROSE_DOC_TYPE = "minutes"
+TEXT_OUTCOMES = (
+    "exact_text_at_recorded_offsets",
+    "exact_text_unique_candidate",
+    "exact_text_equal_count_ordinal_candidate",
+    "exact_text_multiple_candidates",
+    "exact_text_absent",
+    "replacement_page_missing",
+    "historical_locator_invalid",
 )
-VERIFIED = OUTCOMES[:1]
-COMPATIBLE = OUTCOMES[1:3]
-INCOMPATIBLE = OUTCOMES[3:]
+TEXT_RECOVERED = TEXT_OUTCOMES[:4]
+TEXT_NOT_RECOVERED = TEXT_OUTCOMES[4:6]
+FROZEN_RECEIPT = (
+    REPO_ROOT / "artifacts/pdf-reader-native-layer/733-prose-locator-regression.json"
+)
 
 
-# What an incompatible segment's own stored text carries. Neither trait
-# reclassifies it — a segment counted incompatible stays incompatible — but
-# together they say which reading difference put it there, in numbers rather
-# than in a sample: a span the incumbent wrapped where the replacement does
-# not, and a soft hyphen the replacement resolves to a hyphen-minus.
-INCOMPATIBLE_TRAITS = ("contains_line_break", "contains_soft_hyphen")
+# Traits characterize exact-text failures; they do not excuse a mismatch or
+# imply that every mismatch containing a trait was caused by that trait.
+TEXT_FAILURE_TRAITS = ("contains_line_break", "contains_soft_hyphen")
+
+
+@dataclass(frozen=True)
+class Comparison:
+    """Text evidence only; an unresolved location cannot emit a new locator."""
+
+    text_outcome: str
+    candidate_start_offsets: tuple[int, ...] = ()
+    source_location_outcome: str = field(default="unknown", init=False)
+    source_location_reason: str = field(
+        default="independent_occurrence_coordinates_not_collected", init=False
+    )
+    rebound_start_offset: None = field(default=None, init=False)
 
 
 @dataclass
@@ -114,11 +119,11 @@ class Counts:
     pages: int = 0
     pages_projection_matches_reader_text: int = 0
     documents: int = 0
-    outcomes: dict[str, int] = field(
-        default_factory=lambda: {outcome: 0 for outcome in OUTCOMES}
+    text_outcomes: dict[str, int] = field(
+        default_factory=lambda: {outcome: 0 for outcome in TEXT_OUTCOMES}
     )
-    incompatible_traits: dict[str, int] = field(
-        default_factory=lambda: {trait: 0 for trait in INCOMPATIBLE_TRAITS}
+    text_failure_traits: dict[str, int] = field(
+        default_factory=lambda: {trait: 0 for trait in TEXT_FAILURE_TRAITS}
     )
 
     def add(self, other: "Counts") -> None:
@@ -127,13 +132,13 @@ class Counts:
             other.pages_projection_matches_reader_text
         )
         self.documents += other.documents
-        for outcome, value in other.outcomes.items():
-            self.outcomes[outcome] += value
-        for trait, value in other.incompatible_traits.items():
-            self.incompatible_traits[trait] += value
+        for outcome, value in other.text_outcomes.items():
+            self.text_outcomes[outcome] += value
+        for trait, value in other.text_failure_traits.items():
+            self.text_failure_traits[trait] += value
 
     def as_json(self) -> dict:
-        segments = sum(self.outcomes.values())
+        segments = sum(self.text_outcomes.values())
         return {
             "documents": self.documents,
             "pages": self.pages,
@@ -141,13 +146,15 @@ class Counts:
                 self.pages_projection_matches_reader_text
             ),
             "segments": segments,
-            "verified_unchanged": sum(self.outcomes[k] for k in VERIFIED),
-            "verified_through_the_compatibility_path": sum(
-                self.outcomes[k] for k in COMPATIBLE
+            "exact_text_recovered": sum(self.text_outcomes[k] for k in TEXT_RECOVERED),
+            "exact_text_not_recovered": sum(
+                self.text_outcomes[k] for k in TEXT_NOT_RECOVERED
             ),
-            "incompatible": sum(self.outcomes[k] for k in INCOMPATIBLE),
-            "by_outcome": dict(self.outcomes),
-            "incompatible_traits": dict(self.incompatible_traits),
+            "historical_locator_invalid": self.text_outcomes["historical_locator_invalid"],
+            "by_text_outcome": dict(self.text_outcomes),
+            "by_source_location_outcome": {"unknown": segments},
+            "replacement_locators_proved": 0,
+            "text_failure_traits": dict(self.text_failure_traits),
         }
 
 
@@ -173,6 +180,8 @@ def registered_pdfs() -> list[dict]:
 
 
 def occurrences(text: str, needle: str) -> list[int]:
+    if not needle:
+        return []
     found: list[int] = []
     start = 0
     while True:
@@ -185,35 +194,47 @@ def occurrences(text: str, needle: str) -> list[int]:
 
 def classify(
     segment: ProseSegment, historical: str | None, replacement: str | None
-) -> str:
-    """One segment's outcome, under the rules this module's docstring states."""
+) -> Comparison:
+    """Find exact text candidates without asserting a physical occurrence."""
 
-    if historical is None or historical[
-        segment.start_offset : segment.end_offset
-    ] != segment.exact_text:
+    if (
+        historical is None
+        or not 0 <= segment.start_offset < segment.end_offset <= len(historical)
+        or historical[segment.start_offset : segment.end_offset] != segment.exact_text
+        or sha256(segment.exact_text.encode("utf-8")).hexdigest() != segment.content_sha256
+    ):
         # The control: the segment must dereference under the reading that
         # wrote it, or the comparison has nothing to say about the new one.
-        return "historical_locator_already_invalid"
+        return Comparison("historical_locator_invalid")
     if replacement is None:
-        return "incompatible_page_missing"
+        return Comparison("replacement_page_missing")
+    new_positions = tuple(occurrences(replacement, segment.exact_text))
+    if not new_positions:
+        return Comparison("exact_text_absent")
     if (
         segment.end_offset <= len(replacement)
         and replacement[segment.start_offset : segment.end_offset]
         == segment.exact_text
     ):
-        return "verified_unchanged"
-    new_positions = occurrences(replacement, segment.exact_text)
-    if not new_positions:
-        return "incompatible_absent"
+        return Comparison("exact_text_at_recorded_offsets", new_positions)
     if len(new_positions) == 1:
-        return "verified_unique_occurrence"
+        return Comparison("exact_text_unique_candidate", new_positions)
     old_positions = occurrences(historical, segment.exact_text)
     if (
         len(old_positions) == len(new_positions)
         and segment.start_offset in old_positions
     ):
-        return "verified_preserved_occurrence_ordinal"
-    return "incompatible_ambiguous"
+        return Comparison("exact_text_equal_count_ordinal_candidate", new_positions)
+    return Comparison("exact_text_multiple_candidates", new_positions)
+
+
+def historical_page_texts(path: Path) -> dict[int, str]:
+    """Reconstruct the incumbent strings, without implying persisted citations."""
+
+    with pymupdf.open(path) as document:
+        return {
+            index + 1: document[index].get_text() for index in range(document.page_count)
+        }
 
 
 def measure_document(
@@ -226,26 +247,25 @@ def measure_document(
     counts.pages_projection_matches_reader_text = sum(
         1 for layer in layers if layer.quality["projection_matches_reader_text"]
     )
-    with pymupdf.open(path) as document:
-        historical = {
-            index + 1: document[index].get_text() for index in range(document.page_count)
-        }
+    historical = historical_page_texts(path)
     for segment in pdf_prose_segments(path):
-        outcome = classify(
+        comparison = classify(
             segment, historical.get(segment.page_no), replacement.get(segment.page_no)
         )
-        counts.outcomes[outcome] += 1
-        if outcome in INCOMPATIBLE:
+        outcome = comparison.text_outcome
+        counts.text_outcomes[outcome] += 1
+        if outcome in TEXT_NOT_RECOVERED:
             if "\n" in segment.exact_text:
-                counts.incompatible_traits["contains_line_break"] += 1
+                counts.text_failure_traits["contains_line_break"] += 1
             if "\u00ad" in segment.exact_text:
-                counts.incompatible_traits["contains_soft_hyphen"] += 1
-        if outcome in INCOMPATIBLE and len(samples) < 40:
+                counts.text_failure_traits["contains_soft_hyphen"] += 1
+        if outcome not in TEXT_RECOVERED and len(samples) < 40:
             samples.append(
                 {
                     "sha256": digest,
                     "page_no": segment.page_no,
-                    "outcome": outcome,
+                    "text_outcome": outcome,
+                    "source_location_outcome": comparison.source_location_outcome,
                     "exact_text": segment.exact_text[:160],
                     "content_sha256": segment.content_sha256,
                     "occurrences_in_replacement": len(
@@ -255,7 +275,7 @@ def measure_document(
                     ),
                 }
             )
-    return counts, {"pages": counts.pages, "outcomes": dict(counts.outcomes)}
+    return counts, counts.as_json()
 
 
 def configuration_identity(executor: PdfiumExecutor) -> dict:
@@ -277,6 +297,14 @@ def configuration_identity(executor: PdfiumExecutor) -> dict:
             manifest.name: sha256(manifest.read_bytes()).hexdigest()
             for manifest in sorted(CORPUS.glob("*.lock.json"))
         },
+        "implementation_files": {
+            relative: sha256((REPO_ROOT / relative).read_bytes()).hexdigest()
+            for relative in (
+                "scripts/prose_locator_regression.py",
+                "src/corridor/source_segments.py",
+                "src/corridor/token_layers.py",
+            )
+        },
         "python": platform.python_version(),
         "platform": platform.platform(),
         "corridor_commit": subprocess.run(
@@ -289,7 +317,7 @@ def configuration_identity(executor: PdfiumExecutor) -> dict:
     }
 
 
-def main() -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument(
@@ -298,11 +326,14 @@ def main() -> int:
         default=30.0,
         help="skip registered PDFs larger than this, and record how many",
     )
-    arguments = parser.parse_args()
+    arguments = parser.parse_args(argv)
+    if arguments.output.exists():
+        parser.error("receipt already exists; choose a new output path to preserve history")
 
     executor = PdfiumExecutor()
     started = time.perf_counter()
-    totals = {"registered": Counts(), "extended": Counts()}
+    configuration = configuration_identity(executor)
+    totals = {"minutes_population": Counts(), "extended_population": Counts()}
     by_doc_type: dict[str, Counts] = {}
     samples: list[dict] = []
     documents: list[dict] = []
@@ -311,7 +342,9 @@ def main() -> int:
 
     for entry in registered_pdfs():
         lane = (
-            "registered" if entry["doc_type"] == REGISTERED_DOC_TYPE else "extended"
+            "minutes_population"
+            if entry["doc_type"] == PROSE_DOC_TYPE
+            else "extended_population"
         )
         if entry["bytes"] > arguments.max_mb * 1_000_000:
             skipped.append({**entry, "reason": "larger than --max-mb"})
@@ -335,55 +368,70 @@ def main() -> int:
         documents.append({**entry, "lane": lane, **summary})
         print(
             f"  {entry['sha256'][:12]} {entry['doc_type']:<9} "
-            f"{summary['pages']:>4} pages  {sum(summary['outcomes'].values()):>5} segments",
+            f"{summary['pages']:>4} pages  {summary['segments']:>5} generated segments",
             file=sys.stderr,
         )
 
     combined = Counts()
-    combined.add(totals["registered"])
-    combined.add(totals["extended"])
+    combined.add(totals["minutes_population"])
+    combined.add(totals["extended_population"])
     receipt = {
-        "ticket": "#733",
+        "schema_version": "corridor.prose-locator-regression.v2",
+        "ticket": "#736",
+        "clarifies_frozen_receipt": {
+            "path": str(FROZEN_RECEIPT.relative_to(REPO_ROOT)),
+            "sha256": sha256(FROZEN_RECEIPT.read_bytes()).hexdigest(),
+        },
         "experiment": (
-            "prose-locator regression: every PDF prose Source Segment the "
-            "production segmentation appends for the registered corpus, "
-            "re-verified against the page text the reader-backed native "
-            "adapter would write"
+            "Exact-text comparison of the incumbent prose segmentation "
+            "reconstructed from registered corpus PDFs with the new native "
+            "page text. Physical source-location equivalence is unknown."
         ),
         "what_was_compared": (
             "For each registered corpus PDF, read from the content store by "
             "SHA-256 through corridor.storage.staged_file: the prose segments "
-            "corridor.source_segments.pdf_prose_segments derives from the "
-            "registered bytes - the same call ingest appends from - against "
+            "corridor.source_segments.pdf_prose_segments reconstructs from "
+            "the original bytes using the incumbent algorithm against "
             "the page text corridor.token_layers.page_text_projection rebuilds "
-            "from the reader-backed native token layer. A segment verifies only "
-            "when its exact stored text is recovered byte for byte; see this "
-            "module's docstring for the compatibility rules and for what was "
-            "rejected."
+            "from the reader-backed native token layer. The script never "
+            "queries stored Source Segments, accepted references or customer "
+            "citations; no count is a count of broken customer citations."
+        ),
+        "source_location_evidence": (
+            "Not collected: the comparison has no independently discriminating "
+            "coordinates bound to each historical and replacement occurrence "
+            "in a common source frame. Same offsets, unique text, equal counts "
+            "and occurrence ordinal are text candidates only. Every location "
+            "is unknown; no replacement locator is proved or emitted."
+        ),
+        "qualification": (
+            "No text category is a historical-compatibility pass. #447 owns "
+            "qualification; #741 owns retained-citation preservation with the "
+            "old engines absent. Existing readings and citations are not changed."
         ),
         "lanes": {
-            "registered": (
-                "doc_type 'minutes': the PDFs whose prose segments the record "
-                "actually holds today"
+            "minutes_population": (
+                "doc_type 'minutes': the incumbent prose-ingest class, "
+                "reconstructed without checking database persistence or citations"
             ),
-            "extended": (
+            "extended_population": (
                 "every other registered PDF class - matrix, agreement, plan, "
                 "other - under the same segmentation, so table and drawing "
                 "pages are measured rather than assumed"
             ),
         },
         "an_explained_mismatch_is_not_a_pass": (
-            "Segments counted incompatible are counted incompatible. The "
-            "sampled reasons below characterize them; they do not reclassify "
-            "them."
+            "Missing exact text stays missing. No whitespace, soft-hyphen or "
+            "Unicode normalization turns a mismatch into a recovery. Traits "
+            "characterize failures and do not establish their cause."
         ),
-        "configuration": configuration_identity(executor),
+        "configuration": configuration,
         "max_mb": arguments.max_mb,
         "wall_seconds": None,
         "summary": {
-            "registered": totals["registered"].as_json(),
-            "extended": totals["extended"].as_json(),
-            "all_registered_pdfs": combined.as_json(),
+            "minutes_population": totals["minutes_population"].as_json(),
+            "extended_population": totals["extended_population"].as_json(),
+            "all_pdf_population": combined.as_json(),
             "by_doc_type": {
                 doc_type: counts.as_json()
                 for doc_type, counts in sorted(by_doc_type.items())
@@ -393,20 +441,24 @@ def main() -> int:
         },
         "skipped": skipped,
         "failures": failures,
-        "incompatible_samples": samples,
+        "text_failure_samples": samples,
         "documents": documents,
     }
     receipt["wall_seconds"] = round(time.perf_counter() - started, 1)
     arguments.output.parent.mkdir(parents=True, exist_ok=True)
-    arguments.output.write_text(json.dumps(receipt, indent=1) + "\n")
+    # Exclusive creation also protects history if another run wins the race
+    # after the early argument check.
+    with arguments.output.open("x", encoding="utf-8") as output:
+        output.write(json.dumps(receipt, indent=1) + "\n")
 
-    for lane in ("registered", "extended", "all_registered_pdfs"):
+    for lane in ("minutes_population", "extended_population", "all_pdf_population"):
         numbers = receipt["summary"][lane]
         print(
             f"{lane}: {numbers['segments']} segments — "
-            f"{numbers['verified_unchanged']} unchanged, "
-            f"{numbers['verified_through_the_compatibility_path']} compatible, "
-            f"{numbers['incompatible']} incompatible"
+            f"{numbers['exact_text_recovered']} exact text recovered, "
+            f"{numbers['exact_text_not_recovered']} exact text not recovered, "
+            f"{numbers['historical_locator_invalid']} invalid historical controls; "
+            f"{numbers['by_source_location_outcome']['unknown']} locations unknown"
         )
     print(f"receipt: {arguments.output}")
     return 0

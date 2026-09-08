@@ -9821,6 +9821,226 @@ PUBLIC_PRIVILEGE_RESTORE = "\n".join(
 )
 
 
+
+# #736: reading-bound PDF locators; fold into the one unreleased transition.
+NATIVE_SEGMENTS_SCHEMA = """alter table public.source_segments add column rendition_sha256 VARCHAR(64);
+alter table public.source_segments add column reading_sha256 VARCHAR(64);
+alter table public.source_segments add column reader_identity JSONB;
+alter table public.source_segments add column location_json JSONB;
+alter table public.source_segments add column span_stream VARCHAR(16);
+alter table public.source_segments add column table_index INTEGER;
+alter table public.source_segments add column cell_row INTEGER;
+alter table public.source_segments add column cell_column INTEGER;
+alter table public.source_segments add column row_span INTEGER;
+alter table public.source_segments add column column_span INTEGER;
+alter table public.source_segments add constraint ck_source_segments_native_complete check (kind not in ('pdf_span', 'pdf_cell') or (page_no is not null and ((kind = 'pdf_span' and span_stream is not null and start_offset is not null and end_offset is not null) or (kind = 'pdf_cell' and table_index is not null and cell_row is not null and cell_column is not null and row_span is not null and column_span is not null))));
+alter table public.source_segments drop constraint ck_source_segments_kind;
+alter table public.source_segments drop constraint ck_source_segments_locator;
+alter table public.source_segments add constraint ck_source_segments_kind check (kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement', 'pdf_span', 'pdf_cell'));
+alter table public.source_segments add constraint ck_source_segments_locator check ((kind = 'spreadsheet_cell' and document_id is not null and recorded_verbal_origin_id is null and length(sheet_name) > 0 and cell_range ~ '^[A-Z]+[1-9][0-9]*$' and page_no is null and start_offset is null and end_offset is null) or (kind = 'prose_span' and document_id is not null and recorded_verbal_origin_id is null and sheet_name is null and cell_range is null and page_no > 0 and start_offset >= 0 and end_offset > start_offset) or (kind = 'pdf_span' and document_id is not null and recorded_verbal_origin_id is null and sheet_name is null and cell_range is null and page_no > 0 and start_offset >= 0 and end_offset > start_offset and span_stream in ('page', 'clipped') and table_index is null and cell_row is null and cell_column is null and row_span is null and column_span is null) or (kind = 'pdf_cell' and document_id is not null and recorded_verbal_origin_id is null and sheet_name is null and cell_range is null and page_no > 0 and start_offset is null and end_offset is null and span_stream is null and table_index >= 0 and cell_row >= 0 and cell_column >= 0 and row_span > 0 and column_span > 0) or (kind = 'recorded_verbal_statement' and document_id is null and recorded_verbal_origin_id is not null and sheet_name is null and cell_range is null and page_no is null and start_offset is null and end_offset is null));
+alter table public.source_segments add constraint ck_source_segments_reading check ((kind in ('pdf_span', 'pdf_cell') and rendition_sha256 is not null and rendition_sha256 ~ '^[0-9a-f]{64}$' and reading_sha256 is not null and reading_sha256 ~ '^[0-9a-f]{64}$' and reader_identity is not null and jsonb_typeof(reader_identity) = 'object' and location_json is not null and jsonb_typeof(location_json) = 'object') or (kind not in ('pdf_span', 'pdf_cell') and rendition_sha256 is null and reading_sha256 is null and reader_identity is null and location_json is null and span_stream is null and table_index is null and cell_row is null and cell_column is null and row_span is null and column_span is null));
+alter table public.source_segments drop constraint uq_source_segments_document_kind_ordinal;
+CREATE UNIQUE INDEX uq_source_segments_document_kind_ordinal ON source_segments (document_id, kind, ordinal) WHERE reading_sha256 is null;
+alter table public.source_segments drop constraint uq_source_segments_prose_locator;
+CREATE UNIQUE INDEX uq_source_segments_prose_locator ON source_segments (document_id, kind, page_no, start_offset, end_offset) WHERE reading_sha256 is null;
+alter table public.source_segments add constraint uq_source_segments_reading_ordinal unique (document_id, reading_sha256, kind, ordinal);
+alter table public.source_segments add constraint uq_source_segments_native_span unique (document_id, reading_sha256, page_no, span_stream, start_offset, end_offset);
+alter table public.source_segments add constraint uq_source_segments_pdf_cell unique (document_id, reading_sha256, page_no, table_index, cell_row, cell_column);
+create or replace function public.enforce_prose_segment_non_overlap() returns trigger
+language plpgsql as $$
+begin
+    if new.kind in ('prose_span', 'pdf_span') and exists (
+        select 1 from source_segments existing
+        where existing.document_id = new.document_id and existing.kind = new.kind
+          and existing.reading_sha256 is not distinct from new.reading_sha256
+          and existing.span_stream is not distinct from new.span_stream
+          and existing.page_no = new.page_no
+          and int4range(existing.start_offset, existing.end_offset, '[)')
+              && int4range(new.start_offset, new.end_offset, '[)')
+    ) then raise exception 'prose source segments cannot overlap'; end if;
+    return new;
+end; $$;
+"""
+
+NATIVE_SEGMENTS_SCHEMA_DOWN = """
+alter table public.source_segments drop constraint ck_source_segments_native_complete;
+alter table public.source_segments drop constraint ck_source_segments_reading;
+alter table public.source_segments drop constraint ck_source_segments_kind;
+alter table public.source_segments drop constraint ck_source_segments_locator;
+alter table public.source_segments add constraint ck_source_segments_kind check (kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement'));
+alter table public.source_segments
+    add constraint ck_source_segments_locator check (
+        (kind = 'spreadsheet_cell' and document_id is not null
+         and recorded_verbal_origin_id is null and length(sheet_name) > 0
+         and cell_range ~ '^[A-Z]+[1-9][0-9]*$' and page_no is null
+         and start_offset is null and end_offset is null)
+        or (kind = 'prose_span' and document_id is not null
+            and recorded_verbal_origin_id is null and sheet_name is null
+            and cell_range is null and page_no > 0 and start_offset >= 0
+            and end_offset > start_offset)
+        or (kind = 'recorded_verbal_statement' and document_id is null
+            and recorded_verbal_origin_id is not null and sheet_name is null
+            and cell_range is null and page_no is null
+            and start_offset is null and end_offset is null)
+    );
+alter table public.source_segments drop constraint uq_source_segments_reading_ordinal;
+alter table public.source_segments drop constraint uq_source_segments_native_span;
+alter table public.source_segments drop constraint uq_source_segments_pdf_cell;
+drop index public.uq_source_segments_document_kind_ordinal;
+drop index public.uq_source_segments_prose_locator;
+alter table public.source_segments add constraint uq_source_segments_document_kind_ordinal unique(document_id,kind,ordinal);
+alter table public.source_segments add constraint uq_source_segments_prose_locator unique(document_id,kind,page_no,start_offset,end_offset);
+create or replace function public.enforce_prose_segment_non_overlap() returns trigger
+language plpgsql as $$
+begin
+    if new.kind = 'prose_span' and exists (
+        select 1 from source_segments existing where existing.document_id = new.document_id
+        and existing.kind = 'prose_span' and existing.page_no = new.page_no
+        and int4range(existing.start_offset, existing.end_offset, '[)')
+            && int4range(new.start_offset, new.end_offset, '[)')
+    ) then raise exception 'prose source segments cannot overlap'; end if;
+    return new;
+end; $$;
+alter table public.source_segments drop column rendition_sha256;
+alter table public.source_segments drop column reading_sha256;
+alter table public.source_segments drop column reader_identity;
+alter table public.source_segments drop column location_json;
+alter table public.source_segments drop column span_stream;
+alter table public.source_segments drop column table_index;
+alter table public.source_segments drop column cell_row;
+alter table public.source_segments drop column cell_column;
+alter table public.source_segments drop column row_span;
+alter table public.source_segments drop column column_span;
+"""
+
+APPEND_NATIVE_SOURCE_SEGMENTS = """
+create or replace function public.append_source_segments(
+    p_project_id bigint,
+    p_document_id bigint,
+    p_recorded_verbal_origin_id bigint,
+    p_segments jsonb
+) returns bigint[]
+    language plpgsql security definer
+    set search_path to 'public'
+    as $$
+        declare
+            item jsonb;
+            incoming source_segments%rowtype;
+            segment_kind text;
+            exact text;
+            digest text;
+            existing record;
+            appended bigint[] := '{}';
+            segment_id bigint;
+        begin
+            if (p_document_id is null) = (p_recorded_verbal_origin_id is null) then
+                raise exception 'source segments belong to one document or one recorded verbal origin'
+                    using errcode = '23514';
+            end if;
+            if p_document_id is not null and not exists (
+                select 1 from documents
+                 where id = p_document_id and project_id = p_project_id
+            ) then
+                raise exception 'source segment document is outside its project'
+                    using errcode = '23514';
+            end if;
+            if p_recorded_verbal_origin_id is not null and not exists (
+                select 1 from recorded_verbal_origins
+                 where id = p_recorded_verbal_origin_id and project_id = p_project_id
+            ) then
+                raise exception 'source segment recorded verbal origin is outside its project'
+                    using errcode = '23514';
+            end if;
+            if p_segments is null or jsonb_typeof(p_segments) <> 'array' then
+                raise exception 'source segments must be a list'
+                    using errcode = '23514';
+            end if;
+            for item in select value from jsonb_array_elements(p_segments) loop
+                incoming := jsonb_populate_record(null::source_segments, item);
+                segment_kind := item ->> 'kind';
+                exact := item ->> 'exact_text';
+                digest := item ->> 'content_sha256';
+                if exact is null or length(exact) = 0 then
+                    raise exception 'source segment needs exact text'
+                        using errcode = '23514';
+                end if;
+                if digest is distinct from
+                    encode(sha256(convert_to(exact, 'UTF8')), 'hex') then
+                    raise exception 'source segment digest does not match its exact text'
+                        using errcode = '23514';
+                end if;
+                if segment_kind in ('pdf_span', 'pdf_cell') then
+                    if incoming.rendition_sha256 is distinct from
+                        (select sha256 from documents where id = p_document_id)
+                        or incoming.reader_identity ->> 'scheme' is distinct from 'corridor.pdf-segments.v1'
+                        or incoming.reader_identity #>> '{native_layer,engine}' is distinct from 'corridor-pdf-reader'
+                        or jsonb_typeof(incoming.location_json -> 'glyphs') is distinct from 'array'
+                    then
+                        raise exception 'native source segment rendition or reader locator is invalid'
+                            using errcode = '23514';
+                    end if;
+                    perform pg_advisory_xact_lock(hashtextextended(
+                        'native-source:' || p_document_id::text || incoming.reading_sha256, 0));
+                    if exists (select 1 from source_segments where document_id = p_document_id
+                        and reading_sha256 = incoming.reading_sha256
+                        and reader_identity is distinct from incoming.reader_identity) then
+                        raise exception 'one native reading cannot carry different reader identities'
+                            using errcode = '23514';
+                    end if;
+                    select * into existing from source_segments
+                    where document_id = p_document_id and kind = segment_kind
+                      and reading_sha256 = incoming.reading_sha256
+                      and page_no = incoming.page_no
+                      and (segment_kind = 'pdf_span' and span_stream = incoming.span_stream
+                           and start_offset = incoming.start_offset and end_offset = incoming.end_offset
+                           or segment_kind = 'pdf_cell' and table_index = incoming.table_index
+                           and cell_row = incoming.cell_row and cell_column = incoming.cell_column);
+                elsif segment_kind = 'spreadsheet_cell' then
+                    select * into existing from source_segments
+                    where document_id = p_document_id and kind = 'spreadsheet_cell'
+                      and sheet_name = incoming.sheet_name and cell_range = incoming.cell_range;
+                elsif segment_kind = 'prose_span' then
+                    select * into existing from source_segments
+                    where document_id = p_document_id and kind = 'prose_span'
+                      and page_no = incoming.page_no and start_offset = incoming.start_offset
+                      and end_offset = incoming.end_offset;
+                elsif segment_kind = 'recorded_verbal_statement' then
+                    select * into existing from source_segments
+                    where kind = 'recorded_verbal_statement'
+                      and recorded_verbal_origin_id = p_recorded_verbal_origin_id;
+                else
+                    raise exception 'unrecognized source segment kind' using errcode = '23514';
+                end if;
+                if found then
+                    if row(existing.kind, existing.exact_text, existing.content_sha256, existing.ordinal, existing.sheet_name, existing.cell_range, existing.page_no, existing.start_offset, existing.end_offset, existing.rendition_sha256, existing.reading_sha256, existing.reader_identity, existing.location_json, existing.span_stream, existing.table_index, existing.cell_row, existing.cell_column, existing.row_span, existing.column_span)
+                        is distinct from row(incoming.kind, incoming.exact_text, incoming.content_sha256, incoming.ordinal, incoming.sheet_name, incoming.cell_range, incoming.page_no, incoming.start_offset, incoming.end_offset, incoming.rendition_sha256, incoming.reading_sha256, incoming.reader_identity, incoming.location_json, incoming.span_stream, incoming.table_index, incoming.cell_row, incoming.cell_column, incoming.row_span, incoming.column_span) then
+                        raise exception 'source segment locator is already bound to different content'
+                            using errcode = '23514';
+                    end if;
+                    appended := appended || existing.id;
+                    continue;
+                end if;
+                insert into source_segments (
+                    project_id, document_id, recorded_verbal_origin_id, kind,
+                    exact_text, content_sha256, ordinal, sheet_name, cell_range,
+                    page_no, start_offset, end_offset,
+                    rendition_sha256, reading_sha256, reader_identity, location_json, span_stream, table_index, cell_row, cell_column, row_span, column_span
+                ) values (
+                    p_project_id, p_document_id, p_recorded_verbal_origin_id,
+                    segment_kind, exact, digest, (item ->> 'ordinal')::integer,
+                    item ->> 'sheet_name', item ->> 'cell_range',
+                    (item ->> 'page_no')::integer,
+                    (item ->> 'start_offset')::integer,
+                    (item ->> 'end_offset')::integer,
+                    incoming.rendition_sha256, incoming.reading_sha256, incoming.reader_identity, incoming.location_json, incoming.span_stream, incoming.table_index, incoming.cell_row, incoming.cell_column, incoming.row_span, incoming.column_span
+                ) returning id into segment_id;
+                appended := appended || segment_id;
+            end loop;
+            return appended;
+        end; $$;
+"""
+
+
 def upgrade() -> None:
     """Create the append commands and take back the raw source-table writes."""
 
@@ -10558,6 +10778,8 @@ def upgrade() -> None:
     # than a statement about named relations. Running it earlier would leave a
     # PUBLIC grant made by a later block standing, which is the exact failure
     # mode it exists to close.
+    op.execute(NATIVE_SEGMENTS_SCHEMA)
+    op.execute(APPEND_NATIVE_SOURCE_SEGMENTS)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -10567,6 +10789,12 @@ def downgrade() -> None:
     The Support Assessment relation was born in this transition, so the
     downgrade removes it whole rather than opening it to raw writes.
     """
+
+    # Never remove a recorded reading or its locator, even on downgrade.
+    if op.get_bind().scalar(sa.text("select exists (select 1 from source_segments where reading_sha256 is not null)")):
+        raise RuntimeError("native PDF source segments cannot be represented by the supported predecessor")
+    op.execute(NATIVE_SEGMENTS_SCHEMA_DOWN)
+    op.execute(APPEND_SOURCE_SEGMENTS_OVER_ORIGIN.replace("create function", "create or replace function", 1))
 
     # --- #693 No application relation carries a privilege granted to PUBLIC
     # First, because the upgrade added it last. The restore names the exact

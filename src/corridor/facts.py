@@ -280,6 +280,16 @@ def append_statement_wording_facts(
             .order_by(SourceSegment.ordinal)
         ).all()
     )
+    if not segments and session.scalar(
+        select(SourceSegment.id).where(
+            SourceSegment.document_id == document.id,
+            SourceSegment.kind == "pdf_span",
+        ).limit(1)
+    ) is not None:
+        raise FactValidationError(
+            "native Minutes statement mapping is not selected; "
+            "source-class and full-chain qualification remain required (#447)"
+        )
     by_page_and_text: dict[tuple[int, str], list[SourceSegment]] = {}
     segment_by_id = {segment.id: segment for segment in segments}
     for segment in segments:

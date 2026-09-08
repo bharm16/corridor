@@ -55,7 +55,7 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    "db4f200ff69c412389189e13341fbe45c1853c3f4e3aa6271531c7d265b91576"
+    "b52f8103548185b29ef2223f4495d63de5709e38a13de88742a2db5eda22f013"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -175,7 +175,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     }
 
 
-def test_the_supported_database_upgrades_to_the_current_head_and_back():
+def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
     """The one supported transition, proved on its exact transformed rows.
 
     b2d5f8a1c4e7 transforms privileges and adds relations, not data: it
@@ -201,18 +201,81 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back():
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
 
         before_public = _public_relation_grants(database.session_factory)
+        with database.session_factory() as session, session.begin():
+            project_id = session.scalar(text(
+                "insert into projects (slug, name, is_synthetic) "
+                "values ('native-reading-transition', 'Native reading transition', true) returning id"
+            ))
+            document_id = session.scalar(text(
+                "insert into documents (project_id, sha256, filename, doc_type) "
+                "values (:project_id, :digest, 'historical.pdf', 'minutes') returning id"
+            ), {"project_id": project_id, "digest": "d" * 64})
+            wording = "Historical exact wording with soft\u00adhyphen."
+            segment_id = session.scalar(text(
+                "insert into source_segments (project_id, document_id, kind, exact_text, "
+                "content_sha256, ordinal, page_no, start_offset, end_offset) values "
+                "(:project_id, :document_id, 'prose_span', :wording, :digest, 7, 3, 42, :end) returning id"
+            ), {"project_id": project_id, "document_id": document_id,
+                "wording": wording, "digest": sha256(wording.encode()).hexdigest(), "end": 42 + len(wording)})
+            old_segment = tuple(session.execute(text(
+                "select id, project_id, document_id, kind, exact_text, content_sha256, "
+                "ordinal, page_no, start_offset, end_offset, created_at "
+                "from source_segments where id = :id"
+            ), {"id": segment_id}).one())
 
         upgraded = _alembic(database_url, "upgrade", "head")
         assert upgraded.returncode == 0, upgraded.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_SECURED
         upgraded_public = _public_relation_grants(database.session_factory)
+        with database.session_factory() as session:
+            row = session.get(SourceSegment, segment_id)
+            assert (row.id, row.project_id, row.document_id, row.kind, row.exact_text,
+                    row.content_sha256, row.ordinal, row.page_no, row.start_offset,
+                    row.end_offset, row.created_at) == old_segment
+            assert row.reading_sha256 is None and row.reader_identity is None
 
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
         assert _migration_head(database.session_factory) == SUPPORTED_HEAD
         assert _source_append_security(database.session_factory) == SOURCE_APPEND_OPEN
         restored_public = _public_relation_grants(database.session_factory)
+        with database.session_factory() as session:
+            restored = session.execute(text(
+                "select id, project_id, document_id, kind, exact_text, content_sha256, "
+                "ordinal, page_no, start_offset, end_offset, created_at "
+                "from source_segments where id = :id"
+            ), {"id": segment_id}).one()
+            assert tuple(restored) == old_segment
+
+        # A recorded native reading cannot be discarded to make a downgrade
+        # succeed. Exercise the same supported transition, with actual source
+        # bytes and the normal SECURITY DEFINER append command.
+        assert _alembic(database_url, "upgrade", "head").returncode == 0
+        from corridor.models import Document
+        from corridor.reader_segments import append_native_segments, read_native_pdf
+        from pdf_fixture_support import PdfFixture
+
+        fixture = PdfFixture()
+        fixture.add_page().text((40, 80), "Native source wording.")
+        source = fixture.save(tmp_path / "native-transition.pdf")
+        digest = sha256(source.read_bytes()).hexdigest()
+        reading = read_native_pdf(source, source_sha256=digest)
+        with database.session_factory() as session, session.begin():
+            document = Document(project_id=project_id, sha256=digest,
+                                filename=source.name, doc_type="minutes")
+            session.add(document)
+            session.flush()
+            native = append_native_segments(session, document, reading)
+            native_id = native[0].id
+            expected_text = native[0].exact_text
+        before_refusal = fingerprint_database_url(database_url.render_as_string(hide_password=False))
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert refused.returncode != 0 and "native PDF source segments cannot be represented" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+        assert fingerprint_database_url(database_url.render_as_string(hide_password=False)) == before_refusal
+        with database.session_factory() as session:
+            assert session.get(SourceSegment, native_id).exact_text == expected_text
 
     # #693: the supported revision carries three undocumented grants to
     # PUBLIC, the transition removes all three, and the downgrade returns

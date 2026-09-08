@@ -21,6 +21,11 @@ drawn-grid engine without Excel's structure tree, kept so the gate is proven
 to fail on a configuration that reads less. Adding a configuration here is
 how an integration ticket measures its change; retaining the receipt is how
 the result enters the registry.
+
+`native-segments-v1` measures the actual Corridor Source Segment handoff
+through its own driver, with the frozen reader and scorer unchanged. Its
+receipt records adapter/scheme identity and cell omissions; it does not
+claim database persistence merely because the in-memory handoff was scored.
 """
 
 from __future__ import annotations
@@ -72,15 +77,20 @@ class Configuration:
     engine: str
     description: str
     dpi: int = MEASURED_DPI
+    driver: str = "bootstrap.read"
+
+    @property
+    def driver_module(self) -> str:
+        return "corridor_pdf_reader.bootstrap.read" if self.driver == "bootstrap.read" else self.driver
 
     def identity(self, jobs: int) -> dict[str, Any]:
-        return {
+        identity = {
             "name": self.name,
             "description": self.description,
             "engine": self.engine,
             "dpi": self.dpi,
             "jobs": jobs,
-            "driver": "bootstrap.read",
+            "driver": self.driver,
             "retain_images": False,
             "reader": {
                 "commit": provenance.SOURCE_COMMIT,
@@ -89,6 +99,11 @@ class Configuration:
                 "matches_commit": provenance.verify() == [],
             },
         }
+        if self.driver == "corridor.native_segment_measurement":
+            from corridor.native_segment_measurement import configuration_identity
+
+            identity["source_segment_adapter"] = configuration_identity()
+        return identity
 
 
 CONFIGURATIONS: dict[str, Configuration] = {
@@ -103,6 +118,14 @@ CONFIGURATIONS: dict[str, Configuration] = {
         "pdfium",
         "the reader's drawn-grid engine (`pdfium`) without Excel's structure tree: not the measured "
         "configuration and not a candidate; it reads less than the frozen reader so the gate is proven to fail",
+    ),
+    "native-segments-v1": Configuration(
+        "native-segments-v1",
+        MEASURED_ENGINE,
+        "the disabled Corridor native Source Segment handoff, using read_native_pdf and "
+        "native_segment_values with the frozen tagged reader at 36 dpi; missing typed cells "
+        "remain omissions in the unchanged paired scorer",
+        driver="corridor.native_segment_measurement",
     ),
 }
 
@@ -323,6 +346,9 @@ def holdout_entry(
             "pypdfium2": configuration["environment"]["packages"]["pypdfium2"],
             "pdfium": configuration["environment"]["pdfium_build"],
             "pypdf": configuration["environment"]["packages"]["pypdf"],
+            **({"driver": configuration["driver"]} if "driver" in configuration else {}),
+            **({"source_segment_adapter": configuration["source_segment_adapter"]}
+               if "source_segment_adapter" in configuration else {}),
         },
         "holdout": {
             "pairs": len(holdout_keys),
@@ -393,6 +419,19 @@ def receipt_markdown(receipt: dict[str, Any]) -> str:
         )
     else:
         lines.append("- not included; the holdout was neither read nor scored")
+    handoff = receipt.get("source_segment_handoff")
+    if handoff is not None:
+        metrics = handoff["metrics"]
+        lines += [
+            "", "## Typed Source Segment handoff", "", handoff["scope"], "",
+            f"- {metrics['materialized_nonempty_cells']:,} of {metrics['nonempty_reader_cells']:,} "
+            f"nonempty reader cells supplied by matching typed segments; "
+            f"{metrics['omitted_nonempty_cells']:,} omitted "
+            f"({metrics['missing_cell_segments']:,} missing, {metrics['ambiguous_cell_segments']:,} ambiguous, "
+            f"{metrics['invalid_cell_segments']:,} invalid).",
+            f"- {metrics['generated_page_spans']:,} page spans and {metrics['generated_clipped_spans']:,} "
+            "clipped spans generated; exact text, offsets, digests and source membership are retained in the read files.",
+        ]
     lines += ["", "## Limits", "", receipt["limits"], ""]
     return "\n".join(lines)
 
@@ -424,6 +463,10 @@ def retain(output: Path, receipt: dict[str, Any], role: str, registry_root: Path
             "pypdfium2": receipt["configuration"]["environment"]["packages"]["pypdfium2"],
             "pdfium": receipt["configuration"]["environment"]["pdfium_build"],
             "pypdf": receipt["configuration"]["environment"]["packages"]["pypdf"],
+            **({"driver": receipt["configuration"]["driver"]}
+               if "driver" in receipt["configuration"] else {}),
+            **({"source_segment_adapter": receipt["configuration"]["source_segment_adapter"]}
+               if "source_segment_adapter" in receipt["configuration"] else {}),
         },
         "dataset": receipt["dataset"],
         "selection": receipt["selection"],
@@ -488,8 +531,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"{split_file} is not the registered split", file=sys.stderr)
         return 1
     problems = provenance.verify()
-    if problems and configuration.name == "frozen-reader":
-        print("the package does not match commit c39363e, so `frozen-reader` is not the frozen reader:", *problems, sep="\n  ", file=sys.stderr)
+    if problems and configuration.name in {"frozen-reader", "native-segments-v1"}:
+        print(f"the package does not match commit c39363e, required by `{configuration.name}`:", *problems, sep="\n  ", file=sys.stderr)
         return 1
     if args.reference is None:
         if not (PACKAGE_ROOT / "paired_trial" / "node_modules" / "ssf").is_dir():
@@ -593,7 +636,7 @@ def main(argv: list[str] | None = None) -> int:
         steps.append(
             run_step(
                 "read",
-                [python, "-m", "corridor_pdf_reader.bootstrap.read", "--output", str(loop), "--engine", configuration.engine, "--jobs", str(args.jobs), "--keys", *selected],
+                [python, "-m", configuration.driver_module, "--output", str(loop), "--engine", configuration.engine, "--jobs", str(args.jobs), "--keys", *selected],
                 args.output / "read.log",
                 env,
             )
@@ -672,6 +715,11 @@ def main(argv: list[str] | None = None) -> int:
         "wall_seconds": round(time.perf_counter() - started, 1),
         "output": str(args.output.resolve()),
     }
+    if "source_segment_metrics" in read_receipts:
+        receipt["source_segment_handoff"] = {
+            "scope": read_receipts["source_segment_scope"],
+            "metrics": read_receipts["source_segment_metrics"],
+        }
     if holdout:
         assert results["holdout"] is not None
         record_access(
