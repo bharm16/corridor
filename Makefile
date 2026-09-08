@@ -484,6 +484,14 @@ pdf-reader-gold-eval:
 native-matrix-replay:
 	uv run python -m corridor.native_matrix_measurement $(ARGS)
 
+# Explicit pipeline maintenance. `shadow` uses only the seven historical
+# retained-answer cases and a new disposable database. `select` is a separate
+# human maintenance act; no measurement invokes it or changes a default.
+# Example: make pipeline-qualification ARGS="shadow --output <new-dir> --postgres-admin-url-env <name> --actor local:<human>"
+.PHONY: pipeline-qualification
+pipeline-qualification:
+	uv run python scripts/pipeline_qualification.py $(ARGS)
+
 # The prose-locator audit (#733, clarified by #736): reconstruct historical
 # prose spans from registered corpus bytes and compare exact text with the
 # native reader projection. This does not query persisted Source Segments or

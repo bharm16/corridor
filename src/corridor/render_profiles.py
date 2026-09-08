@@ -19,6 +19,7 @@ from collections.abc import Sequence
 from datetime import datetime, timezone
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import subprocess
@@ -26,11 +27,15 @@ from typing import Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
+from PIL import Image, ImageDraw
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.config import settings
 from corridor.models import Document, PageRenderDerivative
+from corridor.page_inventory import (
+    PageInventory, READER_COORDINATE_FRAME, RoutingRegion,
+)
 from corridor.object_storage import content_store
 from corridor.retention import artifact_key, register_processing_artifact
 
@@ -195,6 +200,132 @@ class RenderDerivative(RenderModel):
         return self
 
 
+class RoutedRegionCrop(RenderModel):
+    """A masked crop of existing pixels, with the permitted source extent intact."""
+
+    derivative: RenderDerivative
+    region_id: str
+    mode: Literal["native", "ocr", "both"]
+    requested_display_box: PageBox
+    visible_display_box: PageBox
+    source_polygon: tuple[tuple[float, float], ...]
+    raster_polygon: tuple[tuple[float, float], ...]
+    pixel_crop: tuple[int, int, int, int]
+
+
+def crop_routed_region(
+    *, derivative: RenderDerivative, inventory: PageInventory,
+    region: RoutingRegion, output_dir: Path | str,
+) -> RoutedRegionCrop:
+    """Crop a reader region through the actual PDFium crop/deskew transform.
+
+    Inventory boxes are displayed fixed-point coordinates. The derivative's
+    first two steps establish that frame; all later steps, including deskew,
+    map it to existing pixels. Intersect first, then mask the transformed
+    polygon by pixel centres. Its bounding rectangle never grants neighboring
+    pixels permission. No raster is re-rendered and no OCR trust is conferred.
+    """
+    derivative = RenderDerivative.model_validate(derivative.model_dump())
+    if (derivative.rasterizer != REPLACEMENT_RASTERIZER
+            or inventory.coordinate_frame != READER_COORDINATE_FRAME
+            or inventory.rotation_degrees != derivative.rotation_degrees
+            or [step.name for step in derivative.transforms[:2]]
+            != ["pdf_user_to_page", "page_rotation"]):
+        raise ValueError("routed crop requires the reader's displayed PDFium frame")
+    width = derivative.crop_box.x1 - derivative.crop_box.x0
+    height = derivative.crop_box.y1 - derivative.crop_box.y0
+    if derivative.rotation_degrees % 180:
+        width, height = height, width
+    frame = inventory.boxes.crop
+    if (frame.x0, frame.y0, frame.x1, frame.y1) != (0, 0, width, height):
+        raise ValueError("inventory and derivative displayed bounds differ")
+    requested = PageBox.model_validate(region.box.model_dump())
+    coordinates = (max(0, requested.x0), max(0, requested.y0),
+                   min(width, requested.x1), min(height, requested.y1))
+    if coordinates[2] <= coordinates[0] or coordinates[3] <= coordinates[1]:
+        raise ValueError("routed region has an empty displayed intersection")
+    visible = PageBox(**dict(zip(("x0", "y0", "x1", "y1"), coordinates)))
+    points = ((visible.x0, visible.y0), (visible.x1, visible.y0),
+              (visible.x1, visible.y1), (visible.x0, visible.y1))
+    source_points = points
+    for step in reversed(derivative.transforms[:2]):
+        source_points = tuple(step.inverse_point(point) for point in source_points)
+    raster_points = points
+    for step in derivative.transforms[2:]:
+        raster_points = tuple(step.forward_point(point) for point in raster_points)
+    pixel_crop = (
+        max(0, math.floor(min(x for x, _ in raster_points))),
+        max(0, math.floor(min(y for _, y in raster_points))),
+        min(derivative.raster_width, math.ceil(max(x for x, _ in raster_points))),
+        min(derivative.raster_height, math.ceil(max(y for _, y in raster_points))),
+    )
+    left, top, right, bottom = pixel_crop
+    if right <= left or bottom <= top:
+        raise ValueError("routed region has an empty raster intersection")
+    mask = Image.new("L", (right - left, bottom - top), 0)
+    draw = ImageDraw.Draw(mask)
+    # Scan each pixel-centre row across the convex transformed rectangle.
+    edges = tuple(zip(raster_points, (*raster_points[1:], raster_points[0])))
+    for y in range(top, bottom):
+        centre = y + 0.5
+        crossings = sorted(
+            x0 + (centre - y0) * (x1 - x0) / (y1 - y0)
+            for (x0, y0), (x1, y1) in edges
+            if min(y0, y1) <= centre < max(y0, y1)
+        )
+        if len(crossings) == 2:
+            start = max(left, math.ceil(crossings[0] - 0.5))
+            end = min(right, math.ceil(crossings[1] - 0.5))
+            if end > start:
+                draw.line((start - left, y - top, end - left - 1, y - top), fill=255)
+    if mask.getbbox() is None:
+        raise ValueError("routed region contains no permitted pixel centres")
+    with Image.open(derivative.artifact_path) as image:
+        if image.size != (derivative.raster_width, derivative.raster_height):
+            raise ValueError("derivative raster dimensions disagree with its manifest")
+        cropped = image.convert("RGB").crop(pixel_crop)
+    cropped = Image.composite(cropped, Image.new("RGB", cropped.size, "white"), mask)
+    parameters = {
+        "parent_artifact_sha256": derivative.artifact_sha256,
+        "requested_display_box": requested.model_dump(),
+        "visible_display_box": visible.model_dump(),
+        "raster_polygon": raster_points, "pixel_crop": pixel_crop,
+        "mask": "transformed-visible-region-pixel-centres-v1",
+        "region": region.model_dump(mode="json"),
+    }
+    identity = hashlib.sha256(json.dumps(parameters, sort_keys=True).encode()).hexdigest()
+    output = Path(output_dir).resolve()
+    output.mkdir(parents=True, exist_ok=True)
+    path = output / f"routed-{identity}.png"
+    # First-write publication: an old artifact never gets replaced on retry.
+    import io
+    buffer = io.BytesIO()
+    cropped.save(buffer, format="PNG")
+    data = buffer.getvalue()
+    if path.exists():
+        if path.read_bytes() != data:
+            raise ValueError("routed crop identity already names different bytes")
+    else:
+        with path.open("xb") as target:
+            target.write(data)
+    step = AffineStep(
+        name="routed_region_crop", forward=(1, 0, 0, 1, -left, -top),
+        inverse=(1, 0, 0, 1, left, top), geometry_change=True, parameters=parameters,
+    )
+    payload = derivative.model_dump()
+    payload.update(
+        artifact_path=path, artifact_sha256=hashlib.sha256(data).hexdigest(),
+        artifact_bytes=len(data), raster_width=cropped.width, raster_height=cropped.height,
+        transforms=(*derivative.transforms, step),
+        parameters={**derivative.parameters, "routed_crop": parameters},
+    )
+    return RoutedRegionCrop(
+        derivative=RenderDerivative.model_validate(payload), region_id=region.region_id,
+        mode=region.mode, requested_display_box=requested, visible_display_box=visible,
+        source_polygon=source_points, raster_polygon=raster_points, pixel_crop=pixel_crop,
+    )
+
+
 def load_render_profile_bundle(
     path: Path | str = DEFAULT_PROFILE_PATH,
     *,
@@ -319,6 +450,16 @@ def render_page_derivatives(
     # that process boundary must already be absolute.
     output = Path(output_dir).resolve()
     output.mkdir(parents=True, exist_ok=True)
+    project = Path(worker_project)
+    worker_identity = None
+    raster_output = output
+    if engine == REPLACEMENT_RASTERIZER:
+        worker_identity = {
+            path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted((*project.glob("*.py"), project / "uv.lock"))
+        }
+        namespace = hashlib.sha256(json.dumps(worker_identity, sort_keys=True).encode()).hexdigest()
+        raster_output = output / f"worker-{namespace}"
     identity = uuid4().hex
     request_path = output / f".{identity}.request.json"
     manifest_path = output / f".{identity}.manifest.json"
@@ -328,7 +469,8 @@ def render_page_derivatives(
             "page_number": page_number,
             "profile": profile.model_dump(mode="json"),
             "rasterizer": engine,
-            "output_dir": str(output.resolve()),
+            **({"preprocessing_version": "pdfium-deskew-v2"} if engine == REPLACEMENT_RASTERIZER else {}),
+            "output_dir": str(raster_output.resolve()),
             "clip_page_box": (
                 clip_page_box.model_dump(mode="json") if clip_page_box else None
             ),
@@ -336,7 +478,6 @@ def render_page_derivatives(
         for profile in profiles
     ]
     request_path.write_text(json.dumps({"requests": requests}, sort_keys=True))
-    project = Path(worker_project)
     try:
         completed = subprocess.run(
             [
@@ -363,6 +504,14 @@ def render_page_derivatives(
                 "render worker failed: " + (completed.stderr or completed.stdout)
             )
         manifests = json.loads(manifest_path.read_text())["manifests"]
+        if worker_identity is not None:
+            if worker_identity != {
+                path.name: hashlib.sha256(path.read_bytes()).hexdigest()
+                for path in sorted((*project.glob("*.py"), project / "uv.lock"))
+            }:
+                raise ValueError("render worker bytes changed while the request ran")
+            for manifest in manifests:
+                manifest["parameters"]["worker_runtime_sha256s"] = worker_identity
         return [
             RenderDerivative.model_validate(manifest) for manifest in manifests
         ]
@@ -417,6 +566,10 @@ def _derivative_key(document_id: int, derivative: RenderDerivative) -> str:
     }
     if derivative.rasterizer != LEGACY_RASTERIZER:
         identity["rasterizer"] = derivative.rasterizer
+        if "worker_runtime_sha256s" in derivative.parameters:
+            identity["worker_runtime_sha256s"] = derivative.parameters["worker_runtime_sha256s"]
+    if "routed_crop" in derivative.parameters:
+        identity["routed_crop"] = derivative.parameters["routed_crop"]
     return hashlib.sha256(
         json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
     ).hexdigest()
