@@ -41,7 +41,9 @@ to confirm, and `tests/test_no_transcription_review_surface.py` holds that shut.
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from sqlalchemy.orm import Session
@@ -54,7 +56,7 @@ from corridor.token_layers import (
     textract_token_layer,
 )
 from corridor.models import UnreadableCellResolution
-from corridor.unreadable_cells import current_resolution
+from corridor.unreadable_cells import CellReadingRefused, current_resolution
 from corridor.verify import normalize
 
 # The adapter package, and only through its boundary. The rung underneath it —
@@ -66,6 +68,7 @@ from corridor_pdf_reader.textract_adapter.boundary import (
     AuthorizedTextract,
     TextractProcessingFailure,
 )
+from corridor_pdf_reader.textract_adapter.rendering import rasterize_page
 
 
 class PageRaster(Protocol):
@@ -618,3 +621,103 @@ def record_unconfirmed_readings(
     if appended:
         session.flush(appended)
     return tuple(appended)
+
+
+# --- ADR-0064's mechanical rescue, read by Textract ----------------------------
+
+
+class TextractRescue:
+    """ADR-0064's mechanical rescue with the provider in place of the local engine.
+
+    The harness is unchanged: `rescue_page` still pins the page, calls one
+    preprocessor, and lets the page leave the unreadable class when a usable
+    text layer comes back. What changes is who reads. This satisfies
+    `unreadable_cells.PagePreprocessor` and reads the pinned page through the
+    same authorized boundary as every other scanned read, so a rescue is
+    counted, bound and charged like one — there is no second, unchecked door
+    for a repair pass.
+
+    Two refusals happen here, at construction, before the harness is entered,
+    because the harness may never widen its own scope:
+
+    - a profile that has not declared the `textract` read identity may not have
+      its pages read by Textract, however the caller was wired.
+
+    The provider applies none of the profile's image operations, and this
+    reader says so rather than letting the run credit the reading with a
+    `deskew` nothing ran: `applied_ops` is empty, and `rescue_page` records it
+    beside the declared chain.
+
+    The bytes read are the page rendered under the boundary's own configuration,
+    which is what the retained identity says was sent; the pinned page digest
+    the harness hands in is checked against the pin this rescue was built for,
+    so a rescue cannot quietly read a different page than the one the harness
+    pinned.
+    """
+
+    def __init__(
+        self,
+        adapter: AuthorizedTextract,
+        *,
+        source: Path,
+        page_number: int,
+        rendition_sha256: str,
+        page_image_sha256: str,
+        read_identities: Sequence[str],
+        rasterize: Callable[..., Any] | None = None,
+    ) -> None:
+        if TEXTRACT_ENGINE not in tuple(read_identities):
+            raise CellReadingRefused(
+                "undeclared_read_identity",
+                f"the running profile did not declare the {TEXTRACT_ENGINE!r} read",
+            )
+        self.applied_ops: tuple[str, ...] = ()
+        self.adapter = adapter
+        self.source = Path(source)
+        self.page_number = page_number
+        self.rendition_sha256 = rendition_sha256
+        self.page_image_sha256 = page_image_sha256
+        self._rasterize = rasterize or rasterize_page
+        self.reading: dict[str, Any] | None = None
+        self.provenance: dict[str, Any] | None = None
+
+    def rescue(
+        self, *, image_sha256: str, image_path: str | None, ops: tuple[str, ...]
+    ) -> str:
+        if image_sha256 != self.page_image_sha256:
+            raise CellReadingRefused(
+                "stale_pinned_page",
+                "the harness pinned a different page than this rescue was built for",
+            )
+        raster = self._rasterize(
+            self.source, self.page_number, self.adapter.configuration
+        )
+        reading = self.adapter.analyze_page(
+            raster,
+            rendition_sha256=self.rendition_sha256,
+            page_number=self.page_number,
+        )
+        self.reading = reading.page
+        self.provenance = reading.binding.as_dict()
+        return recovered_text(reading.page)
+
+
+def recovered_text(reading: dict[str, Any]) -> str:
+    """One page reading as a text layer: table cells in order, then what is outside.
+
+    This is what the rescue offers the harness to decide whether the page has a
+    usable text layer again. It is a projection over the reading, not a second
+    reading, and it claims nothing about any individual value.
+    """
+
+    lines: list[str] = []
+    for table in reading.get("tables") or ():
+        for cell in table.get("cells") or ():
+            text = str(cell.get("text") or "").strip()
+            if text:
+                lines.append(text)
+    for item in reading.get("outside") or ():
+        text = str(item.get("text") or "").strip()
+        if text:
+            lines.append(text)
+    return "\n".join(lines)

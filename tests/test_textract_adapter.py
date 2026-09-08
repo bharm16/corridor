@@ -890,4 +890,7 @@ def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
             elif isinstance(node, ast.ImportFrom) and node.module and _reaches_textract(node.module):
                 imported.add(node.module)
 
-    assert imported == {"corridor_pdf_reader.textract_adapter.boundary"}
+    assert imported == {
+        "corridor_pdf_reader.textract_adapter.boundary",
+        "corridor_pdf_reader.textract_adapter.rendering",
+    }

@@ -36,12 +36,18 @@ from corridor.scanned_reading import (
     routed_textract_regions,
     scanned_cell_key,
 )
+from corridor.scanned_reading import TextractRescue
+from corridor.principals import HumanPrincipal
 from corridor.token_layers import EngineIdentity, READER_ENGINE, Token, TokenLayer
 from corridor.unreadable_cells import (
+    CellReadingRefused,
     contributes_to_ready,
     current_resolution,
+    declare_profile,
     display_reading,
+    rescue_page,
 )
+from sqlalchemy import select
 from corridor_pdf_reader.textract.tests.helpers import Page, minimal_pdf
 from corridor_pdf_reader.textract_adapter.boundary import (
     TextractProcessingFailure,
@@ -740,3 +746,103 @@ def test_re_reading_the_same_page_does_not_bury_an_upgraded_cell(session, projec
         ).state
         == "corroborated"
     )
+
+
+# --- ADR-0064's mechanical rescue, read by Textract ----------------------------
+
+
+def _rescue(tmp_path, adapter, **overrides: Any) -> TextractRescue:
+    fields: dict[str, Any] = dict(
+        source=minimal_pdf(tmp_path / "pinned.pdf", text="Total"),
+        page_number=1,
+        rendition_sha256=RENDITION_SHA,
+        page_image_sha256="pin-1",
+        read_identities=("textract",),
+    )
+    fields.update(overrides)
+    return TextractRescue(adapter, **fields)
+
+
+def test_a_profile_that_did_not_declare_the_textract_read_cannot_be_rescued_by_it(tmp_path):
+    """The harness may never widen its own scope; the refusal is before it runs."""
+    adapter = opened(tmp_path, FailingService())
+
+    with pytest.raises(CellReadingRefused) as raised:
+        _rescue(tmp_path, adapter, read_identities=("vision_model_a",))
+
+    assert raised.value.reason == "undeclared_read_identity"
+
+
+def test_the_rescue_reads_the_pinned_page_through_the_boundary(tmp_path):
+    """Through the boundary, and through nothing else.
+
+    That the replacement path never reaches the incumbent engine is proved by
+    `tests/test_architecture.py::test_only_allowlisted_modules_still_use_pymupdf_or_tesseract`
+    rather than restated here: `src/corridor/scanned_reading.py` is on neither
+    engine's allowlist, and that guard is exact in both directions, so it fails
+    the moment this module imports either engine or names one.
+    """
+    service = RecordedService(scanned_response())
+    adapter = opened(tmp_path, service)
+    rescue = _rescue(tmp_path, adapter)
+
+    recovered = rescue.rescue(image_sha256="pin-1", image_path=None, ops=())
+
+    assert recovered == "PLACEHOLDER\n42"
+    assert service.calls == 1
+    assert rescue.provenance["raw_response_digest"]
+    assert adapter.receipt.calls == 1
+
+
+def test_the_rescue_refuses_a_page_the_harness_pinned_differently(tmp_path):
+    adapter = opened(tmp_path, FailingService())
+    rescue = _rescue(tmp_path, adapter)
+
+    with pytest.raises(CellReadingRefused) as raised:
+        rescue.rescue(image_sha256="pin-2", image_path=None, ops=())
+
+    assert raised.value.reason == "stale_pinned_page"
+
+
+def test_the_rescue_satisfies_the_harness_preprocessor_and_leaves_it_unchanged(
+    session, project, tmp_path
+):
+    """The harness runs its own unchanged `rescue_page` over this preprocessor."""
+    profile = declare_profile(
+        session,
+        project_id=project.id,
+        principal=HumanPrincipal("local:scanned-textract-test"),
+        min_readable_text_chars=5,
+        page_scope=("matrix",),
+        image_op_identities=("deskew",),
+        read_identities=("textract",),
+        max_cells_per_page=200,
+        max_image_ops_per_cell=4,
+        max_reads_per_cell=6,
+        max_corpus_reads_per_cell=6,
+        timeout_seconds=30,
+    )
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    page = session.scalars(
+        select(DocPage).where(DocPage.document_id == document.id)
+    ).one()
+    adapter = opened(tmp_path, RecordedService(scanned_response()))
+    rescue = _rescue(
+        tmp_path, adapter, page_image_sha256=hashlib.sha256(b"").hexdigest()
+    )
+
+    result = rescue_page(
+        session,
+        document=document,
+        page=page,
+        profile=profile,
+        preprocessor=rescue,
+    )
+
+    assert result.rescued is True
+    assert result.recovered_text == "PLACEHOLDER\n42"
+    assert result.run.terminal_state == "rescued"
+    # The provider applied none of the profile's declared operations, and the
+    # run says so rather than crediting the reading with a deskew nothing ran.
+    assert result.run.outcome_json["declared_ops"] == ["deskew"]
+    assert result.run.outcome_json["applied_ops"] == []
