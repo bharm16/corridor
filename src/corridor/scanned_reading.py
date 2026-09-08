@@ -44,6 +44,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal, Protocol
 
+from sqlalchemy.orm import Session
+
 from corridor.page_inventory import FIXED_POINT_SCALE, PageRoutingDecision, PdfRect
 from corridor.token_layers import (
     READER_ENGINE,
@@ -51,6 +53,9 @@ from corridor.token_layers import (
     TokenLayer,
     textract_token_layer,
 )
+from corridor.models import UnreadableCellResolution
+from corridor.unreadable_cells import current_resolution
+from corridor.verify import normalize
 
 # The adapter package, and only through its boundary. The rung underneath it —
 # the imported client, its transport and its rasterizer — stays unreachable
@@ -471,3 +476,145 @@ def _confidence(value: object) -> float | None:
     if value is None:
         return None
     return max(0.0, min(1.0, float(value) / 100.0))
+
+
+# --- Tier 2: disagreement, which is not verification ----------------------------
+
+
+@dataclass(frozen=True)
+class TranscriptionCheck:
+    """What comparing a Tier 2 transcription with the Textract reading found.
+
+    Read the verdict carefully. `disagreed` is a real finding: the model wrote
+    words the provider did not read on that page, which is a reason to distrust
+    the transcription. `agreed` is not a finding at all. Both readings can be
+    wrong in the same way, and the model was shown the same page the provider
+    read; ADR-0094 lists "a model repeating words it was given from Textract"
+    and "checking a model transcription against those same words" among the
+    things that are explicitly *not* corroboration. This check can sink a row.
+    It can never raise one.
+    """
+
+    transcribed_tokens: tuple[str, ...]
+    reading_tokens: tuple[str, ...]
+    agreed: tuple[str, ...]
+    disagreed: tuple[str, ...]
+    verdict: Literal["disagreement-detected", "no-disagreement-detected"]
+
+    @property
+    def disagrees(self) -> bool:
+        return bool(self.disagreed)
+
+    @property
+    def corroborates(self) -> bool:
+        """Never. Kept as a named answer so no caller has to infer it from `agreed`."""
+        return False
+
+
+def check_transcription_against_reading(
+    transcribed: str, layer: TokenLayer
+) -> TranscriptionCheck:
+    """Compare a Tier 2 transcription's tokens with the Textract reading's.
+
+    Both sides are normalized the way a token layer normalizes text, then split
+    on whitespace, so the comparison is about characters rather than spacing. A
+    transcribed token the reading does not hold anywhere on the page is a
+    disagreement; everything else is silence.
+    """
+
+    if layer.identity.engine != TEXTRACT_ENGINE:
+        raise ValueError(
+            "a Tier 2 transcription is checked against the Textract reading of "
+            f"the same page; this layer was read by {layer.identity.engine!r}"
+        )
+    reading_tokens = tuple(
+        piece
+        for token in layer.tokens
+        for piece in token.normalized_text.split()
+        if piece
+    )
+    transcribed_tokens = tuple(piece for piece in normalize(transcribed).split() if piece)
+    held = set(reading_tokens)
+    agreed = tuple(piece for piece in transcribed_tokens if piece in held)
+    disagreed = tuple(piece for piece in transcribed_tokens if piece not in held)
+    return TranscriptionCheck(
+        transcribed_tokens=transcribed_tokens,
+        reading_tokens=reading_tokens,
+        agreed=agreed,
+        disagreed=disagreed,
+        verdict=(
+            "disagreement-detected" if disagreed else "no-disagreement-detected"
+        ),
+    )
+
+
+# --- an unconfirmed reading is ADR-0064's second state --------------------------
+
+# What appended a scanned unconfirmed reading, recorded on the row so a later
+# reader can tell it from a cell the reading harness worked.
+UNCONFIRMED_READING_POLICY_VERSION = "scanned-textract-reading-v1"
+
+
+def scanned_cell_key(value: ScannedCellValue, *, page_no: int) -> str:
+    """A stable identity for one cell of one page's Textract reading.
+
+    The page, the table and the cell's own row and column, which is everything
+    the reading gives a cell. It is stable across re-reads of the same page
+    because Textract's own row and column indices are, and it names no value,
+    so a later reading of the same cell appends beside the earlier one rather
+    than looking like a different cell.
+    """
+
+    return f"scan:p{page_no}:t{value.table}:r{value.row}:c{value.column}"
+
+
+def record_unconfirmed_readings(
+    session: Session,
+    *,
+    project_id: int,
+    document_id: int,
+    reading: ScannedPageReading,
+) -> tuple[UnreadableCellResolution, ...]:
+    """Append every Textract-only value of one page as an Unconfirmed reading.
+
+    ADR-0094 says a value supplied only by Textract stays unconfirmed until the
+    existing corroboration rules establish otherwise, and ADR-0064 already owns
+    that state: flagged, never Ready, upgraded automatically the moment a
+    corroborating source lands. So this appends into that class rather than
+    inventing a second one, and everything downstream — `display_reading`,
+    `contributes_to_ready`, the corroboration upgrade wired through
+    `load_project` — applies to a scanned reading unchanged.
+
+    Only the unconfirmed values are recorded. A cell whose characters came from
+    the document's own glyphs is on the ordinary source-verification path and
+    has no business in this class. Appending is idempotent per cell: a cell that
+    already carries a resolution is left alone, so re-reading a page does not
+    bury a corroboration under a fresh unconfirmed row.
+    """
+
+    appended: list[UnreadableCellResolution] = []
+    for value in reading.unconfirmed_readings:
+        cell_key = scanned_cell_key(value, page_no=reading.page_no)
+        existing = current_resolution(
+            session,
+            document_id=document_id,
+            page_no=reading.page_no,
+            cell_key=cell_key,
+        )
+        if existing is not None:
+            continue
+        row = UnreadableCellResolution(
+            project_id=project_id,
+            document_id=document_id,
+            page_no=reading.page_no,
+            cell_key=cell_key,
+            state="unconfirmed",
+            value=value.value,
+            origin="harness",
+            policy_version=UNCONFIRMED_READING_POLICY_VERSION,
+        )
+        session.add(row)
+        appended.append(row)
+    if appended:
+        session.flush(appended)
+    return tuple(appended)

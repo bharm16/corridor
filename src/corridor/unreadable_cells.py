@@ -1170,6 +1170,70 @@ def contributes_to_ready(resolution: UnreadableCellResolution | None) -> bool:
     return resolution is not None and resolution.state == "admitted"
 
 
+@dataclass(frozen=True)
+class ReadingDisplay:
+    """How one cell's current value is shown, and what it is allowed to claim.
+
+    The two answers travel together because they are the same sentence read
+    twice: a value that does not count toward Ready must not be shown as
+    though it did. `flagged` is the whole of what a surface owes an
+    unconfirmed reading — a mark saying no reading of this is proven — and
+    deliberately not a control. There is no confirm, accept, or correct
+    affordance here and there is no queue behind it: ADR-0064 rejected the
+    transcription-review surface outright and this is not a way back to one.
+    An unconfirmed reading leaves that state when a corroborating source
+    arrives, mechanically, with no human step.
+    """
+
+    state: str
+    value: str | None
+    flagged: bool
+    contributes_to_ready: bool
+    label: str
+
+
+_READING_LABELS = {
+    "unconfirmed": (
+        "Unconfirmed reading — the value is on the page and no reading of it "
+        "is proven"
+    ),
+    "corroborated": (
+        "Corroborated by another registered source; not yet record-contributing"
+    ),
+    "admitted": "Admitted from a corroborated source",
+    "absent": "The source holds no value here",
+}
+
+
+def display_reading(resolution: UnreadableCellResolution | None) -> ReadingDisplay:
+    """One cell's current value as a surface should show it.
+
+    A cell with no resolution at all is not in this class and is shown by the
+    ordinary path; it is answered here as an unflagged empty so a caller need
+    not special-case the common row.
+    """
+
+    if resolution is None:
+        return ReadingDisplay(
+            state="none",
+            value=None,
+            flagged=False,
+            contributes_to_ready=False,
+            label="",
+        )
+    return ReadingDisplay(
+        state=resolution.state,
+        value=resolution.value,
+        # Everything short of admitted is flagged. A corroborated value is
+        # proven text on a readable source and still not record-contributing
+        # until the gated admission class promotes it, so showing it plain
+        # would overstate it exactly as showing an unconfirmed one would.
+        flagged=resolution.state != "admitted",
+        contributes_to_ready=contributes_to_ready(resolution),
+        label=_READING_LABELS.get(resolution.state, resolution.state),
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Helpers                                                                       #
 # --------------------------------------------------------------------------- #

@@ -11,11 +11,14 @@ from __future__ import annotations
 from dataclasses import replace
 from pathlib import Path
 from typing import Any
-import json
+import hashlib
 
 import pytest
 
+from corridor.admission import load_project
 from corridor.config import settings
+from corridor.db import Session as DbSession, engine
+from corridor.models import DocPage, Document, Project
 from corridor.page_inventory import (
     OCR_ENGINE,
     PageRoutingDecision,
@@ -23,10 +26,34 @@ from corridor.page_inventory import (
     RoutingRegion,
     StructuralTrigger,
 )
-from corridor.scanned_reading import routed_textract_regions
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-FIXTURES = REPO_ROOT / "src" / "corridor_pdf_reader" / "textract" / "tests" / "fixtures"
+from corridor.scanned_reading import (
+    ScannedRoutingRefused,
+    check_transcription_against_reading,
+    classify_region_values,
+    processing_failure,
+    read_scanned_page,
+    record_unconfirmed_readings,
+    routed_textract_regions,
+    scanned_cell_key,
+)
+from corridor.token_layers import EngineIdentity, READER_ENGINE, Token, TokenLayer
+from corridor.unreadable_cells import (
+    contributes_to_ready,
+    current_resolution,
+    display_reading,
+)
+from corridor_pdf_reader.textract.tests.helpers import Page, minimal_pdf
+from corridor_pdf_reader.textract_adapter.boundary import (
+    TextractProcessingFailure,
+    open_boundary,
+)
+from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
+from corridor_pdf_reader.textract_adapter.records import (
+    PROVIDER_POSTURE,
+    ExperimentScope,
+    RequestBoundary,
+)
+from corridor_pdf_reader.textract_adapter.rendering import rasterize_page
 
 
 def box(x0: int = 0, y0: int = 0, x1: int = 612_000, y1: int = 792_000) -> PdfRect:
@@ -146,31 +173,6 @@ def test_a_region_named_by_both_a_route_and_a_trigger_is_routed_once():
 
 
 # --- the read goes through the authorization check ------------------------------
-
-from corridor.scanned_reading import (  # noqa: E402
-    ScannedRoutingRefused,
-    classify_region_values,
-    processing_failure,
-    read_scanned_page,
-)
-from corridor.token_layers import (  # noqa: E402
-    READER_ENGINE,
-    EngineIdentity,
-    Token,
-    TokenLayer,
-)
-from corridor_pdf_reader.textract.tests.helpers import Page, minimal_pdf  # noqa: E402
-from corridor_pdf_reader.textract_adapter.boundary import (  # noqa: E402
-    TextractProcessingFailure,
-    open_boundary,
-)
-from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration  # noqa: E402
-from corridor_pdf_reader.textract_adapter.records import (  # noqa: E402
-    PROVIDER_POSTURE,
-    ExperimentScope,
-    RequestBoundary,
-)
-from corridor_pdf_reader.textract_adapter.rendering import rasterize_page  # noqa: E402
 
 ACCEPTED_POSTURE = replace(
     PROVIDER_POSTURE,
@@ -512,3 +514,229 @@ def test_a_cell_outside_every_routed_region_is_not_read_here():
     )
 
     assert [value.value for value in values] == ["in"]
+
+
+# --- Tier 2 disagreement --------------------------------------------------------
+
+
+def reading_layer(tmp_path, response: dict[str, Any] | None = None) -> TokenLayer:
+    service = RecordedService(response or scanned_response())
+    adapter = opened(tmp_path, service)
+    return read_scanned_page(
+        adapter,
+        raster_of(tmp_path),
+        routing=reader_decision(),
+        page_no=1,
+        rendition_sha256=RENDITION_SHA,
+        source_sha256=SOURCE_SHA,
+    ).token_layer
+
+
+def test_a_transcription_the_reading_does_not_hold_is_a_detected_disagreement(tmp_path):
+    check = check_transcription_against_reading("PLACEHOLDER 43", reading_layer(tmp_path))
+
+    assert check.verdict == "disagreement-detected"
+    assert check.disagrees is True
+    assert check.disagreed == ("43",)
+    assert check.agreed == ("placeholder",)
+
+
+def test_agreement_with_the_reading_is_never_corroboration(tmp_path):
+    """Both readings can be wrong the same way; the model was shown the same page."""
+    check = check_transcription_against_reading("PLACEHOLDER 42", reading_layer(tmp_path))
+
+    assert check.verdict == "no-disagreement-detected"
+    assert check.disagrees is False
+    assert check.corroborates is False
+
+
+def test_a_transcription_is_only_checked_against_the_provider_that_read_the_page(tmp_path):
+    with pytest.raises(ValueError, match="read by"):
+        check_transcription_against_reading("anything", native_layer(("x", (0, 0, 1, 1))))
+
+
+# --- an unconfirmed reading: flagged, never Ready, upgraded on corroboration ----
+
+
+@pytest.fixture
+def session():
+    connection = engine.connect()
+    transaction = connection.begin()
+    session = DbSession(bind=connection)
+    yield session
+    session.close()
+    transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def project(session):
+    project = Project(slug="scanned-textract-test", name="Scanned Textract Test", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    return project
+
+
+def _document(session, project, *, filename, text, text_source):
+    document = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(f"{filename}{text}".encode()).hexdigest(),
+        filename=filename,
+        doc_type="matrix" if text_source == "ocr" else "other",
+        parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+    session.add(
+        DocPage(document_id=document.id, page_no=1, text=text, text_source=text_source)
+    )
+    session.flush()
+    return document
+
+
+def _scanned_reading(tmp_path, response: dict[str, Any] | None = None):
+    service = RecordedService(response or scanned_response())
+    adapter = opened(tmp_path, service)
+    return read_scanned_page(
+        adapter,
+        raster_of(tmp_path),
+        routing=reader_decision(),
+        page_no=1,
+        rendition_sha256=RENDITION_SHA,
+        source_sha256=SOURCE_SHA,
+    )
+
+
+def _corroborating_response() -> dict[str, Any]:
+    """The same page shape, holding a value a readable sibling source also states."""
+    page = Page()
+    word = page.word("CenterPoint", (100, 100, 190, 112))
+    page.line([word])
+    cell = page.cell(1, 1, (90, 95, 200, 118), [word])
+    page.table((90, 95, 200, 118), [cell])
+    return page.response()
+
+
+def test_a_textract_only_value_is_recorded_as_an_unconfirmed_reading(session, project, tmp_path):
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    reading = _scanned_reading(tmp_path)
+
+    appended = record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+
+    assert [row.value for row in appended] == ["PLACEHOLDER", "42"]
+    assert {row.state for row in appended} == {"unconfirmed"}
+    assert {row.policy_version for row in appended} == {"scanned-textract-reading-v1"}
+
+
+def test_an_unconfirmed_reading_displays_flagged(session, project, tmp_path):
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    reading = _scanned_reading(tmp_path)
+    record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+
+    resolution = current_resolution(
+        session,
+        document_id=document.id,
+        page_no=1,
+        cell_key=scanned_cell_key(reading.unconfirmed_readings[0], page_no=1),
+    )
+    shown = display_reading(resolution)
+
+    assert shown.flagged is True
+    assert shown.state == "unconfirmed"
+    assert shown.value == "PLACEHOLDER"
+    assert "no reading of it is proven" in shown.label
+    # A flag, not a control: nothing on the display offers a person a
+    # transcription to accept.
+    assert not any(
+        name in {"confirm", "accept", "correct", "approve", "review"}
+        for name in vars(shown)
+    )
+
+
+def test_an_unconfirmed_reading_never_contributes_to_ready(session, project, tmp_path):
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    reading = _scanned_reading(tmp_path)
+    record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+
+    for value in reading.unconfirmed_readings:
+        resolution = current_resolution(
+            session,
+            document_id=document.id,
+            page_no=1,
+            cell_key=scanned_cell_key(value, page_no=1),
+        )
+        assert contributes_to_ready(resolution) is False
+        assert display_reading(resolution).contributes_to_ready is False
+
+
+def test_an_unconfirmed_reading_upgrades_automatically_when_corroboration_lands(
+    session, project, tmp_path
+):
+    """No human step, and the upgrade keeps its relation to the original reading."""
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    reading = _scanned_reading(tmp_path, _corroborating_response())
+    record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+    cell_key = scanned_cell_key(reading.unconfirmed_readings[0], page_no=1)
+    before = current_resolution(
+        session, document_id=document.id, page_no=1, cell_key=cell_key
+    )
+    assert before.state == "unconfirmed" and before.value == "CenterPoint"
+
+    readable = _document(
+        session,
+        project,
+        filename="sue/level-a.xlsx",
+        text="SUE Level A\nOwner: CenterPoint\nUtility: 16-inch gas main",
+        text_source="cells",
+    )
+    load_project(session, project.id)
+
+    after = current_resolution(
+        session, document_id=document.id, page_no=1, cell_key=cell_key
+    )
+    assert after.state == "corroborated"
+    assert after.origin == "corroboration_upgrade"
+    assert after.corroboration_document_id == readable.id
+    assert "CenterPoint" in after.corroboration_quote
+    assert after.value == before.value
+    # Still flagged, and still out of Ready: corroborated is not admitted.
+    assert display_reading(after).flagged is True
+    assert contributes_to_ready(after) is False
+
+
+def test_re_reading_the_same_page_does_not_bury_an_upgraded_cell(session, project, tmp_path):
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    reading = _scanned_reading(tmp_path, _corroborating_response())
+    record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+    _document(
+        session,
+        project,
+        filename="sue/level-a.xlsx",
+        text="SUE Level A\nOwner: CenterPoint",
+        text_source="cells",
+    )
+    load_project(session, project.id)
+
+    assert (
+        record_unconfirmed_readings(
+            session, project_id=project.id, document_id=document.id, reading=reading
+        )
+        == ()
+    )
+    cell_key = scanned_cell_key(reading.unconfirmed_readings[0], page_no=1)
+    assert (
+        current_resolution(
+            session, document_id=document.id, page_no=1, cell_key=cell_key
+        ).state
+        == "corroborated"
+    )
