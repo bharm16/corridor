@@ -69,11 +69,7 @@ from corridor.object_storage import content_store
 from corridor.render_profiles import RenderDerivative
 from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
-from corridor_pdf_reader.execution import (
-    MEASURED_DPI,
-    MEASURED_ENGINE,
-    PdfiumExecutor,
-)
+from corridor_pdf_reader.execution import MEASURED_DPI, PdfiumExecutor
 from corridor_pdf_reader.provenance import SOURCE_COMMIT
 
 
