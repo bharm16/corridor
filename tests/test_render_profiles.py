@@ -506,6 +506,58 @@ def test_pdfium_transform_chain_lands_the_page_where_the_ink_is(tmp_path, rotati
     assert min(image.crop((right + 6, top + 3, right + 26, bottom - 3)).tobytes()) > 200
 
 
+@pytest.mark.parametrize("rotation", [0, 90, 180, 270])
+def test_both_rasterizers_place_a_block_on_the_pixel_the_chain_predicts(
+    tmp_path, rotation
+):
+    """The strongest thing that can be said about two rasterizers.
+
+    The page is 288 by 216 points and the block sits at whole points, so at
+    200 DPI every edge falls on a whole pixel and the chain's prediction is an
+    integer with no rounding to hide behind. Both engines must put the block
+    exactly there, at every rotation. This is what the corpus comparison's
+    claim rests on: where two renders of a page differ, they differ inside the
+    glyphs, not in where the page is
+    (`artifacts/render-rasterizer-comparison/`).
+    """
+
+    fixture = PdfFixture()
+    page = fixture.add_page(width=288, height=216, rotation=rotation)
+    block = (36, 72, 108, 144)
+    page.image(block, Image.new("L", (4, 4), 0))
+    pdf = fixture.save(tmp_path / f"exact-{rotation}.pdf")
+
+    placed = {}
+    for engine in ("pymupdf", "pdfium"):
+        derivative = render_page_derivative(
+            pdf_path=pdf,
+            page_number=1,
+            profile_name="review",
+            output_dir=tmp_path / engine,
+            rasterizer=engine,
+        )
+        matrix = composed(derivative)
+        corners = [
+            apply(matrix, user_space_point(point, derivative))
+            for point in (block[:2], block[2:])
+        ]
+        predicted = (
+            round(min(point[0] for point in corners)),
+            round(min(point[1] for point in corners)),
+            round(max(point[0] for point in corners)),
+            round(max(point[1] for point in corners)),
+        )
+        image = Image.open(derivative.artifact_path).convert("L")
+        placed[engine] = (
+            predicted,
+            image.point(lambda value: 255 if value < 128 else 0).getbbox(),
+        )
+
+    assert placed["pymupdf"][0] == placed["pymupdf"][1]
+    assert placed["pdfium"][0] == placed["pdfium"][1]
+    assert placed["pymupdf"] == placed["pdfium"]
+
+
 def test_pdfium_and_the_legacy_raster_agree_within_recorded_tolerance(tmp_path):
     """Two independent rasterizers, compared by a stated measure.
 
