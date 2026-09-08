@@ -535,7 +535,7 @@ def _extract_pages(
             # so the routing decision is the same decision either way.
             inventory = inventory_page(page, native_text=page.get_text())
             routing = route_page(inventory)
-            reader_layer = reader_layers.get(page_no) if reader_layers else None
+            reader_layer = reader_layers.get(page_no)
             if settings.native_reader_token_layer and reader_layer is None:
                 raise ValueError(
                     f"{path.name}: the reader returned no page {page_no}"
