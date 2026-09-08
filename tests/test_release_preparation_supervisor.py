@@ -54,6 +54,7 @@ from corridor.models import (
     BaselineFormatObject,
     DueWorkOccurrence,
     DueWorkReceipt,
+    IssueCoverageDeclaration,
     Project,
     ProjectRecordRevision,
     ReleaseCandidate,
@@ -74,6 +75,8 @@ from corridor.release_preparation import (
     PREPARED,
     PREPARING,
     preparation_standing,
+    preparation_idempotency_key,
+    request_preparation,
 )
 from corridor.release_preparation_supervisor import (
     PreparationSupervisionRefused,
@@ -83,7 +86,11 @@ from corridor.release_preparation_supervisor import (
     retained_output_template,
 )
 from corridor.release_preparation_worker import run_preparation_request
-from corridor.release_authorization import retrieve_released_artifact
+from corridor.release_authorization import (
+    authorize_release_package,
+    retrieve_released_artifact,
+)
+from corridor.release_candidate import MIXED_READING, prepare_release_candidate
 
 import test_issue_path_end_to_end as issue_path
 from packet_review_support import Rendition, configure_issue, subject, support
@@ -813,6 +820,187 @@ def _released_text(factory, package, artifact_type, store):
         ).decode("utf-8")
 
 
+def _request_same_coverage(factory, prior_request_id, *, at):
+    """Submit a fresh request against the same confirmed accepted revision."""
+
+    with factory() as binding:
+        prior = binding.get_one(ReleasePreparationRequest, prior_request_id)
+        declaration = binding.get_one(
+            IssueCoverageDeclaration, prior.coverage_declaration_id
+        )
+        request = request_preparation(
+            binding,
+            project_id=int(prior.project_id),
+            declaration=declaration,
+            accepted_revision_id=int(prior.accepted_revision_id),
+            requested_by=COORDINATOR,
+            requested_at=at,
+            idempotency_key=preparation_idempotency_key(
+                binding, project_id=int(prior.project_id), declaration=declaration
+            ),
+        )
+        reading = bind_report_preparation_reading(
+            binding, request=request, bound_at=at
+        )
+        binding.commit()
+        return reading
+
+
+def test_an_intervening_authorization_refuses_the_frozen_request(
+    factory, adopted, client, store
+):
+    """Authorization can advance the predecessor without an accepted change.
+
+    C binds to A, then the already prepared B is authorized at the same
+    accepted revision C holds. Re-selecting B during candidate binding would
+    give C a B-to-C detailed summary and A-to-C lifecycle counts. Only a new
+    request may bind to B; replaying C must never move its frozen predecessor.
+    """
+
+    with factory() as setup:
+        configure_issue(
+            setup, setup.get_one(Project, adopted.project_id),
+            principal=COORDINATOR, effective_from=issue_path.FEBRUARY,
+            ucm=UCM_RENDERER, artifacts=(SUMMARY, WEEKLY, CHASE),
+        )
+        setup.commit()
+    _enable(factory, adopted)
+    _take_weekly_reading(factory)
+    first = _prepare(factory, client, adopted, at=WORKER_AT)
+    assert first.handler_result["outcome"] == "prepared", first.handler_result
+    _authorize(client, adopted)
+    (package_a,) = _packages(factory, adopted)
+
+    _accept_station(
+        factory, adopted, 3, "1149+00", "1149+20", at=SECOND_DECISIONS_AT
+    )
+    _weekly_reading(factory, LATER_READING_AT)
+    second = _prepare(factory, client, adopted, at=SECOND_WORKER_AT)
+    assert second.handler_result["outcome"] == "prepared", second.handler_result
+    frozen = _request_same_coverage(
+        factory, int(second.handler_result["request_id"]),
+        at=SECOND_WORKER_AT + timedelta(seconds=10),
+    )
+    assert frozen.previous_package_id == package_a.id
+    with factory() as approving:
+        authorize_release_package(
+            approving,
+            project_id=adopted.project_id,
+            candidate_id=int(second.handler_result["candidate_id"]),
+            releaser=RELEASER,
+            authorized_at=SECOND_WORKER_AT + timedelta(seconds=20),
+            store=store,
+        )
+        approving.commit()
+    _, package_b = _packages(factory, adopted)
+    assert package_b.accepted_revision_id == frozen.accepted_revision_id
+
+    refused = _run_supervisor(
+        factory, at=SECOND_WORKER_AT + timedelta(minutes=1)
+    )
+    assert refused.handler_result["request_id"] == frozen.request_id
+    assert refused.handler_result["outcome"] == "refused", refused.handler_result
+    assert refused.handler_result["candidate_id"] is None
+    with factory() as reading:
+        attempt = reading.scalars(
+            select(ReleasePreparationAttempt).where(
+                ReleasePreparationAttempt.request_id == frozen.request_id
+            )
+        ).one()
+        assert attempt.refusal_code == MIXED_READING
+        assert "previous authorized package changed" in attempt.reason
+        assert reading.scalar(
+            select(func.count()).select_from(ReleaseCandidate).where(
+                ReleaseCandidate.project_id == adopted.project_id
+            )
+        ) == 2
+        old_request = reading.get_one(
+            ReleasePreparationRequest, int(frozen.request_id)
+        )
+        replay = bind_report_preparation_reading(
+            reading, request=old_request,
+            bound_at=SECOND_WORKER_AT + timedelta(minutes=2),
+        )
+        assert replay.id == frozen.id
+        assert replay.previous_package_id == package_a.id
+        assert _floor(replay) == _floor(frozen)
+
+    fresh = _request_same_coverage(
+        factory, int(frozen.request_id),
+        at=SECOND_WORKER_AT + timedelta(minutes=3),
+    )
+    assert fresh.request_id != frozen.request_id
+    assert fresh.previous_package_id == package_b.id
+    retry = _run_supervisor(
+        factory, at=SECOND_WORKER_AT + timedelta(minutes=4)
+    )
+    assert retry.handler_result["outcome"] == "prepared", retry.handler_result
+    _authorize(client, adopted)
+    _, _, package_c = _packages(factory, adopted)
+    assert package_c.previous_package_id == package_b.id
+    summary = _released_text(factory, package_c, "accepted_change_summary", store)
+    report = _released_text(factory, package_c, "weekly_coordination_report", store)
+    assert "Nothing was accepted into the project record in that window" in summary
+    assert "accepted as the source stated" not in report
+
+
+def test_authorizing_the_first_package_during_rendering_refuses_attachment(
+    factory, adopted, client, store
+):
+    """Explicitly no predecessor must remain true at the attach transaction."""
+
+    _enable(factory, adopted)
+    _take_weekly_reading(factory)
+    first = _prepare(factory, client, adopted, at=WORKER_AT)
+    assert first.handler_result["outcome"] == "prepared", first.handler_result
+    frozen = _request_same_coverage(
+        factory, int(first.handler_result["request_id"]),
+        at=WORKER_AT + timedelta(seconds=10),
+    )
+    assert frozen.previous_package_id is None
+    with factory() as reading:
+        request = reading.get_one(ReleasePreparationRequest, int(frozen.request_id))
+        inputs = resolve_preparation_inputs(
+            reading, request, reading=frozen, store=store
+        )
+
+    def authorize_while_unlocked(_bound):
+        with factory() as approving:
+            authorize_release_package(
+                approving,
+                project_id=adopted.project_id,
+                candidate_id=int(first.handler_result["candidate_id"]),
+                releaser=RELEASER,
+                authorized_at=WORKER_AT + timedelta(minutes=1),
+                store=store,
+            )
+            approving.commit()
+
+    outcome = prepare_release_candidate(
+        factory,
+        project_id=adopted.project_id,
+        prepared_by=COORDINATOR,
+        preparation=inputs.preparation,
+        source_cutoff=request.source_cutoff,
+        prepared_at=WORKER_AT + timedelta(seconds=20),
+        coverage_declaration_id=int(request.coverage_declaration_id),
+        templates=inputs.templates,
+        first_issue_behavior=inputs.first_issue_behavior,
+        template_bytes=inputs.template_bytes,
+        binding=inputs.binding,
+        report_receipt_id=inputs.report_receipt_id,
+        report_result_sha256=inputs.report_result_sha256,
+        store=store,
+        on_rendered=authorize_while_unlocked,
+    )
+    assert not outcome.prepared
+    assert outcome.refusal_code == MIXED_READING
+    assert "previous authorized package changed" in outcome.refusal_reason
+    assert len(_one(factory, ReleaseCandidate, adopted)) == 1
+    assert len(_packages(factory, adopted)) == 1
+    assert _reading_for(factory, int(frozen.request_id)).previous_package_id is None
+
+
 def test_released_content_keeps_changes_since_the_authorized_issue(
     factory, adopted, client, store
 ):
@@ -896,6 +1084,7 @@ def test_released_content_keeps_changes_since_the_authorized_issue(
     report = _released_text(factory, package_c, "weekly_coordination_report", store)
     assert "3 proposed changes accepted as the source stated them" in report
     assert "Since the last approved issue" in report
+    assert f"previous approved issue {package_a.id}," in report
     assert "Since the last weekly reading" not in report
 
     # Neither receipt nor released bytes can be rewritten to make the windows

@@ -72,12 +72,11 @@ class PreparationInputs:
     template_bytes: bytes
     follow_up_plans: Sequence[Any] = ()
     binding: AnalyticsBinding | None = None
-    # Which retained reading the ``preparation`` mapping above *is* (#690).
-    # The mapping is the receipt's own result and says nothing about which
-    # receipt it came from, so a candidate prepared from it could not name the
-    # reading it measured and the next preparation could not follow the chain
-    # back to this window's watermarks. These two carry that identity into the
-    # candidate's own input declaration.
+    # Which retained weekly reading supplies the frozen revision and standing
+    # (#690). External lifecycle counts use the request's comparison window
+    # (#709), whose explicit predecessor and floors travel in ``preparation``
+    # and are checked under the candidate builder's project lock. These two
+    # still name the unmodified weekly receipt in the input declaration.
     report_receipt_id: int | None = None
     report_result_sha256: str | None = None
 

@@ -589,6 +589,9 @@ def resolve_preparation_inputs(
             disposition_ceiling=int(reading.through_disposition_id),
         ),
         comparison_baseline=AUTHORIZED_PACKAGE_COMPARISON,
+        previous_authorized_package_id=(
+            None if reading.previous_package_id is None else int(reading.previous_package_id)
+        ),
         prior_delta_floor=int(reading.prior_delta_floor),
         prior_disposition_floor=int(reading.prior_disposition_floor),
     )

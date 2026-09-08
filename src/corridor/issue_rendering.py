@@ -1032,6 +1032,7 @@ def _reading_identity(**parts: Any) -> str:
     if preparation.get("comparison_baseline") == AUTHORIZED_PACKAGE_COMPARISON:
         payload["comparison_window"] = {
             "baseline": AUTHORIZED_PACKAGE_COMPARISON,
+            "previous_authorized_package_id": preparation["previous_authorized_package_id"],
             "prior_delta_floor": int(preparation["prior_delta_floor"]),
             "prior_disposition_floor": int(preparation["prior_disposition_floor"]),
         }
@@ -1426,9 +1427,17 @@ def read_weekly_report(
         f"every decision up to number {count_inputs[1]}"
     )
     if reading.preparation.get("comparison_baseline") == AUTHORIZED_PACKAGE_COMPARISON:
+        previous_package_id = reading.preparation["previous_authorized_package_id"]
         delta_floor = int(reading.preparation["prior_delta_floor"])
         disposition_floor = int(reading.preparation["prior_disposition_floor"])
         count_inputs = (delta_floor, disposition_floor, *count_inputs)
+        if previous_package_id is not None:
+            count_inputs = (previous_package_id, *count_inputs)
+        count_description = (
+            "no previous approved issue, "
+            if previous_package_id is None
+            else f"previous approved issue {previous_package_id}, "
+        ) + count_description
         count_description += (
             f", counting new proposals after number {delta_floor} and "
             f"decisions after number {disposition_floor}; waiting work is "
