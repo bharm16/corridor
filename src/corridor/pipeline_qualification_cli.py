@@ -139,7 +139,7 @@ def _shadow(args) -> int:
     return 0 if receipt["repeatability_pass"] and receipt["retained_required_rows_pass"] else 1
 
 
-def _acceptance(session, args):
+def _acceptance(session, args, actor: HumanPrincipal):
     """ADR-0095's recorded acceptance, read from the maintainer's own file.
 
     The file holds the decision, the configuration and revision accepted, the
@@ -156,8 +156,7 @@ def _acceptance(session, args):
     project = session.scalar(select(Project).where(Project.slug == args.project))
     if project is None:
         raise ValueError(f"no project is registered as {args.project!r}")
-    return record_acceptance(session, acceptance, project_id=project.id, scope=scope,
-                             actor=HumanPrincipal(args.actor))
+    return record_acceptance(session, acceptance, project_id=project.id, scope=scope, actor=actor)
 
 
 def _maintenance(args, session_factory) -> int:
@@ -170,7 +169,7 @@ def _maintenance(args, session_factory) -> int:
     actor = HumanPrincipal(args.actor) if args.command in {"policy", "accept", "select"} else args.actor
     with session_factory() as session, session.begin():
         if args.command == "accept":
-            result = pipeline_receipt(_acceptance(session, args))
+            result = pipeline_receipt(_acceptance(session, args, actor))
         elif args.command == "policy":
             policy = QualificationPolicy.model_validate_json(args.policy.read_text())
             row = register_qualification_policy(session, policy, actor=actor, contract_paths=args.contract)
