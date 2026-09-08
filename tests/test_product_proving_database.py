@@ -225,9 +225,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # which is keyed by that registration's own id and so adds no sequence,
     # and the report-preparation reading one request is bound to beside the
     # Due Work occurrence published for it, each keyed by its own bigserial
-    # and so two sequences between them.
-    assert fingerprint.table_count == 195
-    assert fingerprint.sequence_count == 179
+    # and so two sequences between them. #447 adds six pipeline relations:
+    # two registries keyed by their digests, and four receipt tables keyed by
+    # bigserial, adding four sequences.
+    assert fingerprint.table_count == 201
+    assert fingerprint.sequence_count == 183
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
