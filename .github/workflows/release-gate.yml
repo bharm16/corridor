@@ -159,6 +159,12 @@ jobs:
     # time and measured.
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    outputs:
+      pytest_1: ${{ steps.measure.outputs.pytest_1 }}
+      pytest_2: ${{ steps.measure.outputs.pytest_2 }}
+      pytest_3: ${{ steps.measure.outputs.pytest_3 }}
+      pytest_4: ${{ steps.measure.outputs.pytest_4 }}
+      pytest_5: ${{ steps.measure.outputs.pytest_5 }}
     strategy:
       fail-fast: false
       matrix:
@@ -184,12 +190,18 @@ jobs:
       # concurrently with the two uv syncs; it carries the measurements and
       # the reason each piece is still there (#595).
       - run: scripts/ci_environment.sh
-      - run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
+      - id: measure
+        run: make test-shard SHARDS=5 SHARD=${{ matrix.shard }}
   slow:
     # Keep each module on one worker: loadfile avoids repeating its expensive
     # acceptance fixtures across processes. Full coverage is unchanged.
     needs: classify
     if: ${{ needs.classify.outputs.behavior_required == 'true' }}
+    outputs:
+      slow_1: ${{ steps.measure.outputs.slow_1 }}
+      slow_2: ${{ steps.measure.outputs.slow_2 }}
+      slow_3: ${{ steps.measure.outputs.slow_3 }}
+      slow_4: ${{ steps.measure.outputs.slow_4 }}
     strategy:
       fail-fast: false
       matrix:
@@ -210,12 +222,15 @@ jobs:
           enable-cache: true
       # See the pytest job: the same setup, for the same measured reason.
       - run: scripts/ci_environment.sh
-      - run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}
+      - id: measure
+        run: make test-slow-shard SHARDS=4 SHARD=${{ matrix.shard }}
   migration:
     # The migration-adjacent path set the retired `migration-test.yml`
     # trigger carried, now asked of the classifier instead.
     needs: classify
     if: ${{ needs.classify.outputs.migration_required == 'true' }}
+    outputs:
+      migration_1: ${{ steps.measure.outputs.migration_1 }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -231,7 +246,8 @@ jobs:
       # The same setup the behavior gates run, for the same measured reason
       # (#595).
       - run: scripts/ci_environment.sh
-      - run: make test-migrations
+      - id: measure
+        run: make test-migrations
   release-gate:
     # The required context. It fails closed: every job result is matched
     # against exactly what the classifier asked for, never against
@@ -305,6 +321,9 @@ jobs:
         if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
+          CORRIDOR_PYTEST_RECEIPTS: ${{ toJSON(needs.pytest.outputs) }}
+          CORRIDOR_SLOW_RECEIPTS: ${{ toJSON(needs.slow.outputs) }}
+          CORRIDOR_MIGRATION_RECEIPTS: ${{ toJSON(needs.migration.outputs) }}
           PYTEST_SHARDS: "5"
           SLOW_SHARDS: "4"
           MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}

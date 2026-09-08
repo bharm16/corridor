@@ -108,8 +108,13 @@ def main(argv: list[str] | None = None) -> int:
     junit.unlink(missing_ok=True)
     receipt_path = args.output / f"receipt-{args.suite}-{args.shard}.json"
     receipt_path.unlink(missing_ok=True)
+    child_environment = os.environ.copy()
+    # Only this parent publishes the authoritative receipt. Tests must not
+    # accidentally write fake fixture outputs into the current Actions step.
+    for name in ("GITHUB_OUTPUT", "GITHUB_STEP_SUMMARY", "GITHUB_ENV", "GITHUB_PATH"):
+        child_environment.pop(name, None)
     started = time.monotonic()
-    status = subprocess.run(pytest_command(args.suite, files, args.workers, junit), cwd=ROOT).returncode if files else 5
+    status = subprocess.run(pytest_command(args.suite, files, args.workers, junit), cwd=ROOT, env=child_environment).returncode if files else 5
     elapsed = time.monotonic() - started
     if junit.exists():
         count, totals = measured_cases(junit, assigned)
@@ -131,7 +136,11 @@ def main(argv: list[str] | None = None) -> int:
         "test_count": count, "per_file_seconds": totals,
     }
     receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-    print("CORRIDOR_TEST_RECEIPT " + json.dumps(receipt, separators=(",", ":"), allow_nan=False), flush=True)
+    encoded = json.dumps(receipt, separators=(",", ":"), allow_nan=False)
+    if os.environ.get("GITHUB_OUTPUT"):
+        with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+            output.write(f"{args.suite}_{args.shard}={encoded}\n")
+    print("CORRIDOR_TEST_RECEIPT " + encoded, flush=True)
     return 0 if status == 5 and count == 0 else status
 
 

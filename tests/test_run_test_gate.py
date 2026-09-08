@@ -45,8 +45,11 @@ def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp
     monkeypatch.setenv("GITHUB_SHA", "a" * 40)
     monkeypatch.setenv("GITHUB_RUN_ID", "123")
     monkeypatch.setenv("GITHUB_RUN_ATTEMPT", "1")
+    step_output = tmp_path / "github-output"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(step_output))
     def run(command, **kwargs):
         assert not set(gate.CHECK_OWNED_FILES).intersection(command)
+        assert "GITHUB_OUTPUT" not in kwargs["env"]
         junit = Path(next(arg.split("=", 1)[1] for arg in command if arg.startswith("--junitxml=")))
         junit.write_text('<testsuites><testcase classname="tests.test_example" time="1"><failure/></testcase></testsuites>')
         return SimpleNamespace(returncode=1)
@@ -56,6 +59,9 @@ def test_required_runner_preserves_failure_and_does_not_repeat_source_checks(tmp
     assert receipt["exit_code"] == 1
     assert receipt["test_count"] == 1
     assert receipt["per_file_seconds"] == dict.fromkeys(gate.CHECK_OWNED_FILES, 0.0) | {"tests/test_example.py": 1.0}
+    key, encoded = step_output.read_text().strip().split("=", 1)
+    assert key == "pytest_1"
+    assert json.loads(encoded) == receipt
 
 
 def test_missing_report_cannot_reuse_an_earlier_green_receipt(tmp_path, monkeypatch):

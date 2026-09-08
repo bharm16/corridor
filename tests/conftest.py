@@ -189,6 +189,36 @@ class LazyWorkerDatabase:
         self.provisioned = True
 
 
+def _migration_cases_own_their_databases(config) -> bool:
+    if getattr(getattr(config, "option", None), "markexpr", "") != "migration":
+        return False
+    arguments = getattr(config, "args", ())
+    owner = ROOT / "tests/test_migration_baseline.py"
+    return bool(arguments) and all(
+        Path(str(argument).split("::", 1)[0]).resolve() == owner
+        for argument in arguments
+    )
+
+
+def _protect_migration_identity_source(config) -> None:
+    """Reuse the real source identity for migration checks, read-only.
+
+    Every case in the migration contract provisions its own target database.
+    Giving its source-identity lookup an additional empty worker database
+    rebuilt the same head just to compare identities. Keep the actual source
+    URL and prevent accidental writes to it instead.
+    """
+    source = _local_postgres_url(_configured_database_url())
+
+    def read_only_source(dialect, connection_record, args, parameters):
+        if dialect.name == "postgresql" and parameters.get("dbname") == source.database:
+            options = parameters.get("options", os.environ.get("PGOPTIONS", ""))
+            parameters["options"] = options + " -c default_transaction_read_only=on"
+
+    event.listen(Engine, "do_connect", read_only_source)
+    config._corridor_migration_identity_guard = read_only_source
+
+
 def pytest_configure(config) -> None:
     worker_id = os.environ.get("PYTEST_XDIST_WORKER")
     if worker_id is None:
@@ -197,6 +227,9 @@ def pytest_configure(config) -> None:
     # without an analytical workload to amortize it. This is a client setting,
     # not a change to the developer's PostgreSQL server or production runtime.
     os.environ.setdefault("PGOPTIONS", "-c jit=off")
+    if _migration_cases_own_their_databases(config):
+        _protect_migration_identity_source(config)
+        return
     if worker_id is None:
         if _xdist_is_enabled(config):
             # Capture the original URL before any worker rewrites DATABASE_URL.
@@ -240,6 +273,10 @@ def pytest_configure(config) -> None:
 
 
 def pytest_unconfigure(config) -> None:
+    identity_guard = getattr(config, "_corridor_migration_identity_guard", None)
+    if identity_guard is not None:
+        event.remove(Engine, "do_connect", identity_guard)
+        return
     state = getattr(config, "_corridor_pytest_database", None)
     if state is not None:
         event.remove(Engine, "do_connect", state.on_connect)

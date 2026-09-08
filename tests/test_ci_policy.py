@@ -507,13 +507,32 @@ def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_c
         assert job["env"]["CORRIDOR_CI_WEIGHTS"] == (
             "${{ needs.classify.outputs.timing_weights }}"
         )
-        assert job["steps"][-1] == {"run": command}
+        assert job["steps"][-1] == {"id": "measure", "run": command}
     for job in _workflow(GATE)["jobs"].values():
         assert all(
             "actions/upload-artifact" not in step.get("uses", "")
             and "actions/download-artifact" not in step.get("uses", "")
             for step in job["steps"]
         ), "artifact transport can fail after tests already passed"
+
+
+def test_every_matrix_shard_has_a_unique_receipt_output_read_by_the_summary():
+    """Each matrix child writes its own key; the summary receives all keys."""
+    summary = _job("release-gate")["steps"][-1]
+    seen = set()
+    for suite in ("pytest", "slow", "migration"):
+        job = _job(suite)
+        count = 1 if suite == "migration" else _shard_count(suite)
+        slots = {f"{suite}_{number}" for number in range(1, count + 1)}
+        assert not seen.intersection(slots)
+        seen.update(slots)
+        assert job["outputs"] == {
+            slot: "${{ steps.measure.outputs." + slot + " }}" for slot in slots
+        }
+        assert len([step for step in job["steps"] if step.get("id") == "measure"]) == 1
+        assert summary["env"][f"CORRIDOR_{suite.upper()}_RECEIPTS"] == (
+            "${{ toJSON(needs." + suite + ".outputs) }}"
+        )
 
 
 def test_the_classifier_shares_one_validated_timing_output():
@@ -540,6 +559,9 @@ def test_budget_enforcement_extends_the_fail_closed_summary():
     )
     assert finish["env"] == {
         "GH_TOKEN": "${{ github.token }}",
+        "CORRIDOR_PYTEST_RECEIPTS": "${{ toJSON(needs.pytest.outputs) }}",
+        "CORRIDOR_SLOW_RECEIPTS": "${{ toJSON(needs.slow.outputs) }}",
+        "CORRIDOR_MIGRATION_RECEIPTS": "${{ toJSON(needs.migration.outputs) }}",
         "PYTEST_SHARDS": str(_shard_count("pytest")),
         "SLOW_SHARDS": str(_shard_count("slow")),
         "MIGRATION_REQUIRED": "${{ needs.classify.outputs.migration_required }}",

@@ -149,6 +149,25 @@ def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now
     return max(_elapsed(_attempt_start(run), now), cost_floor)
 
 
+def receipts_from_outputs(suites: dict[str, int]) -> list[dict]:
+    """Current proof arrives with job results, before logs are downloadable."""
+    receipts = []
+    for suite, shards in suites.items():
+        supplied = json.loads(os.environ[f"CORRIDOR_{suite.upper()}_RECEIPTS"])
+        slots = {f"{suite}_{number}" for number in range(1, shards + 1)}
+        if not isinstance(supplied, dict) or set(supplied) != slots:
+            raise EvidenceError(f"{suite} job outputs do not cover the exact partition")
+        for number in range(1, shards + 1):
+            encoded = supplied[f"{suite}_{number}"]
+            if not isinstance(encoded, str) or not encoded:
+                raise EvidenceError(f"{suite}/{number} has no receipt output")
+            receipt = logged_json((RECEIPT_MARKER + " " + encoded).encode(), RECEIPT_MARKER)
+            if not isinstance(receipt, dict) or receipt.get("suite") != suite or receipt.get("shard") != number:
+                raise EvidenceError("receipt is bound to the wrong output slot")
+            receipts.append(receipt)
+    return receipts
+
+
 def finish(repository: str, run_id: str) -> int:
     suites = {"pytest": int(os.environ["PYTEST_SHARDS"]), "slow": int(os.environ["SLOW_SHARDS"])}
     if os.environ["MIGRATION_REQUIRED"] == "true":
@@ -167,14 +186,7 @@ def finish(repository: str, run_id: str) -> int:
     names = [f"{suite} ({number})" if suite in ("pytest", "slow") else suite for suite, shards in suites.items() for number in range(1, shards + 1)]
     if any(name not in latest or latest[name]["conclusion"] != "success" for name in names):
         raise EvidenceError("required test jobs did not all succeed")
-    def receipt(name):
-        log = github(f"repos/{repository}/actions/jobs/{latest[name]['id']}/logs", binary=True)
-        value = logged_json(log, RECEIPT_MARKER)
-        if value is None:
-            raise EvidenceError(f"successful job has no timing receipt: {name}")
-        return value
-    with ThreadPoolExecutor(max_workers=4) as executor:
-        receipts = list(executor.map(receipt, names))
+    receipts = receipts_from_outputs(suites)
     history = previous_reports(repository, run_id)
     now = datetime.now(timezone.utc).isoformat()
     report = aggregate_receipts(receipts, expected, verified_gate_seconds(receipts, run, jobs, now))

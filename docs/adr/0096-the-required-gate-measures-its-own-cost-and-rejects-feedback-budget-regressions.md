@@ -30,8 +30,9 @@ Timing evidence cannot excuse a failed, cancelled, or unexpectedly skipped job.
 
 Every required behavior shard and migration command writes local JUnit and a
 receipt with run, revision, attempt, suite and shard identity, elapsed time,
-test count, exit status, and per-file timings. It emits that receipt as one
-`CORRIDOR_TEST_RECEIPT` JSON line in its existing job log. The summary requires exactly the expected set
+test count, exit status, and per-file timings. It emits that receipt through
+a uniquely named matrix job output and as a `CORRIDOR_TEST_RECEIPT` JSON line
+in its log. The summary requires exactly the expected set
 of successful receipts and rejects missing, duplicate, stale, or inconsistent
 evidence. An empty shard is valid only when the complete suite still has
 executed tests; successful status alone cannot prove coverage. GitHub job
@@ -54,11 +55,15 @@ release-gate job logs and emits one compact `timing_weights` job output. Every
 shard receives that same output through `CORRIDOR_CI_WEIGHTS`. Its measured
 per-file durations become the next partition's weights automatically; the
 checked-in duration files remain the bootstrap when no usable report exists.
-The summary reads current successful job logs through GitHub's read-only API,
-validates their receipts and metadata, writes the run summary, and emits one
+The summary reads current receipts directly from completed job outputs,
+validates their identities against GitHub job metadata, writes the summary, and emits one
 `CORRIDOR_TEST_FEEDBACK` JSON line even when the budget fails. These existing
 logs retain the evidence without a separate upload that can fail after the
 tests have already passed.
+Current job logs are not a dependency: GitHub may not make them downloadable
+until the workflow has finished. Only historical completed-workflow logs are
+read through the API. Pytest children do not inherit Actions command-file
+paths; the owning runner alone publishes its receipt after pytest exits.
 This removes the requirement to run two additional local timing suites after
 every change that alters test cost. Missing history starts a visible bootstrap;
 missing current receipts fails closed. No classifier or summary package
@@ -83,11 +88,14 @@ Test connections default to JIT disabled, avoiding compilation overhead for
 short transactional queries; the server and production defaults are unchanged.
 
 The migration target collects only its owning migration file and runs its
-independent cases on two workers. The same eleven checks measured 48.91 seconds
-serially in CI; the parallel command measured 32.34 seconds on the isolated
-local stack. Every case keeps its database isolation and production-identity
-guard, including the worker database that guard may need. Whole-tree collection
-supplies no additional migration proof.
+independent cases on two workers. The genuine fresh-install proof still builds
+from scratch. Supported-upgrade cases clone a migrated predecessor template,
+then seed their own rows and execute every real transition and assertion.
+The production-identity comparison reads the original configured source through
+a read-only connection instead of building another empty worker database just
+to compare identities. The eleven-case command measured 21.65 seconds locally
+after these changes; the preceding CI run took 50.05 seconds. Whole-tree
+collection supplies no additional migration proof.
 
 `make check` owns `tests/test_architecture.py` and
 `tests/test_source_scan_support.py`. These source checks are omitted from

@@ -119,7 +119,8 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   worst setup draw taken in the run rather than the average one: serial setup
   steps add their draws, concurrent ones do not (#595).
 - **CI measures and reuses its own timings.** Each test command records its
-  receipt in its job log. The required summary validates those logs, writes
+  receipt in a unique job output and its log. The required summary validates
+  current job outputs, writes
   the feedback report to the run summary, and retains it in its own log.
   The next run shares one validated timing output with every shard. No artifact
   upload is required after a test passes.

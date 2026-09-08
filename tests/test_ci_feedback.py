@@ -1,4 +1,4 @@
-"""Validated job-log records supply timing without another artifact failure."""
+"""Job outputs supply current proof; completed logs supply timing history."""
 
 from datetime import datetime, timedelta, timezone
 import importlib.util
@@ -165,12 +165,14 @@ def _finish_api(monkeypatch, *, defect=None):
     jobs = _jobs(start, end)
     jobs[-1].update(completed_at=None, conclusion=None)
     jobs[-1]["started_at"] = end
-    logs = {12: _log(ci.RECEIPT_MARKER, report["receipts"][0]),
-            13: _log(ci.RECEIPT_MARKER, report["receipts"][1])}
+    outputs = {receipt["suite"]: {f"{receipt['suite']}_1": json.dumps(receipt)} for receipt in report["receipts"]}
     if defect == "missing receipt":
-        logs[13] = b"100 passed, 1 warning in 2s\n"
+        outputs["slow"] = {}
     elif defect == "malformed receipt":
-        logs[13] = (ci.RECEIPT_MARKER + " {broken}\n").encode()
+        outputs["slow"]["slow_1"] = "{broken}"
+    elif defect == "wrong slot":
+        changed = dict(report["receipts"][1], shard=2)
+        outputs["slow"]["slow_1"] = json.dumps(changed)
     elif defect == "failed job":
         jobs[3]["conclusion"] = "failure"
     calls = []
@@ -181,9 +183,6 @@ def _finish_api(monkeypatch, *, defect=None):
             return {"status": "in_progress", "run_attempt": 1, "created_at": start}
         if "/jobs?filter=all" in path:
             return {"jobs": jobs}
-        if path.endswith("/logs"):
-            assert binary is True
-            return logs[int(path.rsplit("/", 2)[1])]
         pytest.fail(f"unexpected GitHub endpoint: {path}")
 
     monkeypatch.setattr(ci, "github", github)
@@ -194,10 +193,12 @@ def _finish_api(monkeypatch, *, defect=None):
     for key, value in {"PYTEST_SHARDS": "1", "SLOW_SHARDS": "1", "MIGRATION_REQUIRED": "false",
                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_SHA": "a" * 40}.items():
         monkeypatch.setenv(key, value)
+    for suite, output in outputs.items():
+        monkeypatch.setenv(f"CORRIDOR_{suite.upper()}_RECEIPTS", json.dumps(output))
     return calls
 
 
-def test_finish_fetches_exact_successful_job_logs_and_publishes_one_report(tmp_path, monkeypatch, capsys):
+def test_finish_uses_job_outputs_without_fetching_unpublished_current_logs(tmp_path, monkeypatch, capsys):
     calls = _finish_api(monkeypatch)
     summary = tmp_path / "summary"
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(summary))
@@ -207,14 +208,12 @@ def test_finish_fetches_exact_successful_job_logs_and_publishes_one_report(tmp_p
     report = ci.logged_json(output.encode(), ci.REPORT_MARKER)
     assert ci.validate_report(report)["expected"]["run_id"] == "100"
     assert "Current gate:" in summary.read_text()
-    assert sorted(path for path in calls if path.endswith("/logs")) == [
-        "repos/owner/repo/actions/jobs/12/logs", "repos/owner/repo/actions/jobs/13/logs"
-    ]
+    assert not any(path.endswith("/logs") for path in calls)
     assert not any("artifact" in path for path in calls)
 
 
 def test_finish_refuses_missing_malformed_failed_or_incomplete_current_proof(monkeypatch, capsys):
-    for defect in ("missing receipt", "malformed receipt", "failed job", "missing file"):
+    for defect in ("missing receipt", "malformed receipt", "wrong slot", "failed job", "missing file"):
         _finish_api(monkeypatch, defect=defect)
         with pytest.raises(ValueError):
             ci.finish("owner/repo", "100")

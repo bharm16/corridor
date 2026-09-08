@@ -21,6 +21,36 @@ RUN_ID = "101_deadbeef"
 TEMPLATE = f"corridor_pytest_{RUN_ID}_tmpl"
 
 
+def test_migration_cases_keep_the_source_identity_read_only_without_worker_databases(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", SOURCE_URL)
+    monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
+    monkeypatch.setattr(harness, "_validated_admin_url", lambda *_: pytest.fail("configuration connected to PostgreSQL"))
+    config = SimpleNamespace(args=[str(harness.ROOT / "tests/test_migration_baseline.py")], option=SimpleNamespace(markexpr="migration", keyword="", collectonly=False))
+    harness.pytest_configure(config)
+    try:
+        assert os.environ["DATABASE_URL"] == SOURCE_URL
+        assert not hasattr(config, "_corridor_pytest_controller")
+        assert not hasattr(config, "_corridor_pytest_database")
+        callback = config._corridor_migration_identity_guard
+        source_parameters = {"dbname": "source_database", "options": "-c jit=off"}
+        callback(SimpleNamespace(name="postgresql"), None, [], source_parameters)
+        assert source_parameters["options"].endswith("-c default_transaction_read_only=on")
+        for database in ("postgres", "corridor_baseline_fresh_123"):
+            parameters = {"dbname": database}
+            callback(SimpleNamespace(name="postgresql"), None, [], parameters)
+            assert parameters == {"dbname": database}
+    finally:
+        harness.pytest_unconfigure(config)
+    assert not event.contains(Engine, "do_connect", callback)
+
+
+def test_migration_database_ownership_does_not_exempt_a_broader_selection():
+    owner = str(harness.ROOT / "tests/test_migration_baseline.py")
+    for args, mark in [([str(harness.ROOT / "tests")], "migration"), ([owner, "tests/test_facts.py"], "migration"), ([owner], "not slow")]:
+        config = SimpleNamespace(args=args, option=SimpleNamespace(markexpr=mark))
+        assert not harness._migration_cases_own_their_databases(config)
+
+
 def _controller(monkeypatch):
     monkeypatch.delenv("PYTEST_XDIST_WORKER", raising=False)
     monkeypatch.setenv("DATABASE_URL", SOURCE_URL)
