@@ -2,7 +2,9 @@
 
 The shadow command creates a guarded disposable database and uses only retained
 answers. All other commands are deliberate maintenance operations on the chosen
-database; selection is never a side effect of measuring or recording a gate.
+database; selection is never a side effect of measuring a gate, recording one,
+or recording the maintainer's acceptance (ADR-0095). `accept` and `select` are
+two separate acts, and `select` stands on exactly one named basis.
 """
 
 from __future__ import annotations
@@ -14,8 +16,11 @@ import os
 from pathlib import Path
 import sys
 
+from sqlalchemy import select
+
 from corridor.pipeline_contracts import (
-    MeasuredEvidence, ObservationPlan, PipelineScope, QualificationPolicy, canonical_text,
+    MaintainerAcceptance, MeasuredEvidence, ObservationPlan, PipelineScope,
+    QualificationPolicy, canonical_text,
 )
 from corridor.principals import HumanPrincipal
 
@@ -134,6 +139,27 @@ def _shadow(args) -> int:
     return 0 if receipt["repeatability_pass"] and receipt["retained_required_rows_pass"] else 1
 
 
+def _acceptance(session, args):
+    """ADR-0095's recorded acceptance, read from the maintainer's own file.
+
+    The file holds the decision, the configuration and revision accepted, the
+    scope, the evidence relied on, the limits it does not establish and the
+    maintainer's own words. Nothing here is inferred: a field the decision
+    requires and the file omits is a refusal, not a default.
+    """
+    from corridor.models import Project
+    from corridor.pipeline_qualification import record_acceptance
+
+    document = json.loads(args.acceptance.read_bytes())
+    acceptance = MaintainerAcceptance.model_validate(document["acceptance"])
+    scope = PipelineScope.model_validate(document["scope"])
+    project = session.scalar(select(Project).where(Project.slug == args.project))
+    if project is None:
+        raise ValueError(f"no project is registered as {args.project!r}")
+    return record_acceptance(session, acceptance, project_id=project.id, scope=scope,
+                             actor=HumanPrincipal(args.actor))
+
+
 def _maintenance(args, session_factory) -> int:
     from corridor.pipeline_qualification import (
         pipeline_receipt, record_quality, record_qualification, record_repeatability,
@@ -141,9 +167,11 @@ def _maintenance(args, session_factory) -> int:
     )
     if session_factory is None:
         raise ValueError("maintenance commands require the explicit make pipeline-qualification adapter")
-    actor = HumanPrincipal(args.actor) if args.command in {"policy", "select"} else args.actor
+    actor = HumanPrincipal(args.actor) if args.command in {"policy", "accept", "select"} else args.actor
     with session_factory() as session, session.begin():
-        if args.command == "policy":
+        if args.command == "accept":
+            result = pipeline_receipt(_acceptance(session, args))
+        elif args.command == "policy":
             policy = QualificationPolicy.model_validate_json(args.policy.read_text())
             row = register_qualification_policy(session, policy, actor=actor, contract_paths=args.contract)
             result = {"policy_sha256": row.policy_sha256, "scope_sha256": row.scope_sha256, "actor": row.actor}
@@ -162,8 +190,8 @@ def _maintenance(args, session_factory) -> int:
                 quality_ids=args.quality, evidence=evidence, actor=actor))
         else:
             result = pipeline_receipt(select_qualified_pipeline(session, args.qualification,
-                actor=actor, reason=args.reason, expected_selection_id=args.expected_selection,
-                enabled=not args.disable))
+                acceptance_id=args.acceptance, actor=actor, reason=args.reason,
+                expected_selection_id=args.expected_selection, enabled=not args.disable))
         print(canonical_text(result))
     return 0
 
@@ -190,14 +218,22 @@ def main(argv=None, *, session_factory=None) -> int:
     gate.add_argument("--repeatability", type=int, action="append", default=[])
     gate.add_argument("--quality", type=int, action="append", default=[])
     gate.add_argument("--evidence", type=Path, action="append", default=[])
-    selection = commands.add_parser("select", help="explicit maintainer selection; never implied by a passing gate")
-    selection.add_argument("--qualification", type=int, required=True)
+    acceptance = commands.add_parser(
+        "accept", help="record the maintainer's own acceptance as a selection basis (ADR-0095); it is not a gate result")
+    acceptance.add_argument("--acceptance", type=Path, required=True,
+                            help="the acceptance document: decision, configuration, revision, scope, evidence, limits and words")
+    acceptance.add_argument("--project", required=True, help="project slug the accepted scope belongs to")
+    selection = commands.add_parser(
+        "select", help="explicit maintainer selection on one basis; never implied by a passing gate or an acceptance")
+    basis = selection.add_mutually_exclusive_group(required=True)
+    basis.add_argument("--qualification", type=int, help="a complete and passing qualification")
+    basis.add_argument("--acceptance", type=int, help="a recorded maintainer acceptance (ADR-0095)")
     predecessor = selection.add_mutually_exclusive_group(required=True)
     predecessor.add_argument("--expected-selection", type=int)
     predecessor.add_argument("--initial", action="store_true")
     selection.add_argument("--reason", required=True)
     selection.add_argument("--disable", action="store_true", help="append explicit rollback to incumbent routing")
-    for command in (policy, repeated, quality, gate, selection):
+    for command in (policy, repeated, quality, gate, acceptance, selection):
         command.add_argument("--actor", required=True)
     args = parser.parse_args(argv)
     return _shadow(args) if args.command == "shadow" else _maintenance(args, session_factory)
