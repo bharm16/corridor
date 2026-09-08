@@ -48,6 +48,7 @@ from typing import Any, Literal, Protocol
 
 from sqlalchemy.orm import Session
 
+from corridor.models import UnreadableCellResolution
 from corridor.page_inventory import FIXED_POINT_SCALE, PageRoutingDecision, PdfRect
 from corridor.token_layers import (
     READER_ENGINE,
@@ -56,7 +57,6 @@ from corridor.token_layers import (
     provider_confidence,
     textract_token_layer,
 )
-from corridor.models import UnreadableCellResolution
 from corridor.unreadable_cells import CellReadingRefused, current_resolution
 from corridor.verify import normalize
 

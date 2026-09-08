@@ -84,15 +84,15 @@ from corridor.render_profiles import (
     render_page_derivatives,
 )
 from corridor.retention import open_reference, register_processing_artifact
-from corridor.source_segments import (
-    SPREADSHEET_SUFFIXES,
-    append_ingested_source_segments,
-)
 from corridor.scanned_reading import (
     ScannedReader,
     open_scanned_reader,
     read_routed_page,
     recovered_text,
+)
+from corridor.source_segments import (
+    SPREADSHEET_SUFFIXES,
+    append_ingested_source_segments,
 )
 from corridor.token_layers import (
     OcrRequest,
