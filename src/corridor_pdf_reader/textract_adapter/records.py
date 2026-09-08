@@ -25,6 +25,7 @@ from typing import Any
 PROVIDER = "aws-textract"
 OPERATION = "AnalyzeDocument"
 FEATURE_TYPES: tuple[str, ...] = ("TABLES",)
+NATIVE_GEOMETRY_PURPOSE = "native-table-geometry-assistance"
 
 CUSTOMER_STAGES: tuple[str, ...] = ("compatibility", "shadow", "authoritative")
 EXPERIMENT_STAGE = "experiment"
@@ -58,14 +59,14 @@ class ProviderPosture:
 
 
 PROVIDER_POSTURE = ProviderPosture(
-    identity="aws-textract-analyze-document-tables-posture-1",
+    identity="aws-textract-analyze-document-tables-posture-2",
     document="docs/operations/textract-provider-posture.md",
-    digest="1a222e3c92be1777921f1201bc2c993389cc237c924e9f8e9b557a1537322b3f",
+    digest="1dbe087d66f756f56f559c0233cc0fa1fd4fce8dbf9544709139d7c1c1b22e71",
     provider=PROVIDER,
     operation=OPERATION,
     feature_types=FEATURE_TYPES,
     region="us-east-2",
-    permitted_purposes=("scanned-page-reading", "image-region-reading", "extraction-measurement"),
+    permitted_purposes=("scanned-page-reading", "image-region-reading", NATIVE_GEOMETRY_PURPOSE, "extraction-measurement"),
     retention="unverified",
     ai_services_opt_out="unverified",
     permissions="unverified",
@@ -220,11 +221,26 @@ def mismatches(
             f"posture-digest: record {record.record_id!r} accepts digest {record.posture_digest[:12]!r}, "
             f"the posture document's digest is {posture.digest[:12]!r}"
         )
-    if isinstance(record, CustomerAuthorization) and posture.status != "accepted":
-        found.append(
-            f"posture-status: the posture is {posture.status!r}; no customer page may be "
-            "transmitted until the maintainer accepts it"
-        )
+    if isinstance(record, CustomerAuthorization):
+        if posture.status != "accepted":
+            found.append(
+                f"posture-status: the posture is {posture.status!r}; no customer page may be "
+                "transmitted until the maintainer accepts it"
+            )
+        # Status alone cannot turn unknown operations evidence into verified
+        # facts. The maintainer records evidence for the actual calling account
+        # and workload role in the exact posture document before asserting these
+        # states; the boundary does not query AWS or infer them from a signature.
+        for field, state, required in (
+            ("retention", posture.retention, "verified"),
+            ("ai-services-opt-out", posture.ai_services_opt_out, "optOut"),
+            ("permissions", posture.permissions, "verified"),
+        ):
+            if state != required:
+                found.append(
+                    f"posture-{field}: the posture records {state!r}; customer processing "
+                    f"requires {required!r} with evidence for the actual calling account and workload role"
+                )
     if record.region != request.region:
         found.append(f"region: request names {request.region!r}, record {record.record_id!r} covers {record.region!r}")
     if request.source_class not in record.source_classes:

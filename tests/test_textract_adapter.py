@@ -37,6 +37,7 @@ from corridor_pdf_reader.textract_adapter.boundary import (
 )
 from corridor_pdf_reader.textract_adapter.identity import (
     ADAPTER_VERSION,
+    NativeGlyphs,
     NormalizationConfiguration,
     RequestConfiguration,
     adapter_identity,
@@ -45,6 +46,7 @@ from corridor_pdf_reader.textract_adapter.identity import (
     reading_digest,
 )
 from corridor_pdf_reader.textract_adapter.records import (
+    NATIVE_GEOMETRY_PURPOSE,
     PROVIDER_POSTURE,
     CustomerAuthorization,
     ExperimentScope,
@@ -60,7 +62,8 @@ POSTURE_DOCUMENT = REPO_ROOT / PROVIDER_POSTURE.document
 # The posture the maintainer has not yet accepted refuses every customer
 # record; the tests of the other fields run against an accepted copy so each
 # assertion names exactly the field it is about.
-ACCEPTED_POSTURE = replace(PROVIDER_POSTURE, status="accepted")
+ACCEPTED_POSTURE = replace(PROVIDER_POSTURE, status="accepted", retention="verified", ai_services_opt_out="optOut", permissions="verified")
+POSTURE_HISTORY = REPO_ROOT / "docs/operations/textract-provider-postures/history.json"
 DATASET = "pdf-reader-comparison true-pairs/exact ten development pairs"
 
 
@@ -92,6 +95,7 @@ class RecordedService:
         self.calls: list[dict[str, Any]] = []
 
     def analyze_document(self, *, Document: dict[str, Any], FeatureTypes: list[str]) -> dict[str, Any]:
+        assert set(Document) == {"Bytes"} and isinstance(Document["Bytes"], bytes)
         self.calls.append({"bytes": len(Document["Bytes"]), "features": list(FeatureTypes)})
         if self.failures:
             raise ClientError(self.failures.pop(0))
@@ -194,6 +198,8 @@ REFUSALS = {
     "project": (authorization(), request(project="project-9"), {"project"}),
     "source-class": (authorization(), request(source_class="email"), {"source-class"}),
     "purpose-by-record": (authorization(), request(purpose="image-region-reading"), {"purpose"}),
+    "native-geometry-purpose-by-record": (authorization(), request(purpose=NATIVE_GEOMETRY_PURPOSE), {"purpose"}),
+    "native-geometry-record-for-ocr": (authorization(purposes=frozenset({NATIVE_GEOMETRY_PURPOSE})), request(), {"purpose"}),
     "purpose-outside-posture": (authorization(purposes=frozenset({"anything"})), request(purpose="anything"), {"purpose"}),
     "region-in-request": (authorization(), request(region="us-west-2"), {"region"}),
     "region-in-record": (authorization(region="us-west-2"), request(), {"region"}),
@@ -252,10 +258,48 @@ def test_a_customer_record_is_refused_while_the_posture_is_only_proposed(tmp_pat
     with pytest.raises(TextractProcessingFailure) as caught:
         open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service)
 
-    assert [entry.split(":")[0] for entry in caught.value.mismatches] == ["posture-status"]
+    assert [entry.split(":")[0] for entry in caught.value.mismatches] == [
+        "posture-status", "posture-retention", "posture-ai-services-opt-out", "posture-permissions",
+    ]
     assert caught.value.outbound_requests == 0
     assert service.calls == 0
     assert mismatches(experiment(), experiment_request()) == ()
+
+
+@pytest.mark.parametrize(("field", "state", "reason"), [
+    ("retention", "unverified", "posture-retention"),
+    ("ai_services_opt_out", "unverified", "posture-ai-services-opt-out"),
+    ("ai_services_opt_out", "optIn", "posture-ai-services-opt-out"),
+    ("permissions", "unverified", "posture-permissions"),
+])
+def test_an_accepted_label_and_customer_signature_do_not_replace_operational_evidence(tmp_path, field, state, reason):
+    service = FailingService()
+    posture = replace(ACCEPTED_POSTURE, **{field: state})
+
+    with pytest.raises(TextractProcessingFailure) as caught:
+        open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service, posture=posture)
+
+    assert [entry.split(":")[0] for entry in caught.value.mismatches] == [reason]
+    assert caught.value.outbound_requests == service.calls == 0
+    assert not (tmp_path / "cache").exists()
+
+
+@pytest.mark.parametrize("old_identity", [False, True])
+def test_a_previous_posture_digest_cannot_authorize_the_current_posture(tmp_path, old_identity):
+    previous = json.loads(POSTURE_HISTORY.read_text())["postures"][0]
+    record = authorization(
+        posture_identity=previous["identity"] if old_identity else PROVIDER_POSTURE.identity,
+        posture_digest=previous["digest"],
+    )
+    service = FailingService()
+
+    with pytest.raises(TextractProcessingFailure) as caught:
+        open_boundary(record, request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service, posture=ACCEPTED_POSTURE)
+
+    expected = {"posture-digest", "posture-identity"} if old_identity else {"posture-digest"}
+    assert {entry.split(":")[0] for entry in caught.value.mismatches} == expected
+    assert caught.value.outbound_requests == service.calls == 0
+    assert not (tmp_path / "cache").exists()
 
 
 def test_a_raster_outside_the_declared_configuration_is_refused_before_any_request(tmp_path):
@@ -500,7 +544,7 @@ def test_native_glyphs_fill_textract_geometry_and_textract_words_are_never_store
     configuration = RequestConfiguration(dpi=72)
     raster = rasterize_page(pdf, 1, configuration)
     service = RecordedService(response_around_total())
-    adapter = opened(tmp_path, service, configuration=configuration)
+    adapter = opened(tmp_path, service, experiment(), experiment_request(), configuration=configuration)
     glyphs = native_glyphs(pdf, 1)
 
     words = adapter.analyze_page(raster, rendition_sha256="scan", page_number=1)
@@ -516,6 +560,73 @@ def test_native_glyphs_fill_textract_geometry_and_textract_words_are_never_store
     assert remapped.binding.raw_response_digest == words.binding.raw_response_digest
     assert remapped.binding.normalized_reading_digest != words.binding.normalized_reading_digest
     assert len(service.calls) == 1, "one response, two readings, one charge"
+
+
+@pytest.mark.parametrize("glyphs", [None, NativeGlyphs(), NativeGlyphs(characters=[{"text": " "}]), NativeGlyphs(characters=[{"text": None}]), NativeGlyphs(clipped=[{"text": "Total"}])])
+def test_native_geometry_purpose_refuses_an_ocr_fallback_before_any_request(tmp_path, glyphs):
+    service = FailingService()
+    adapter = opened(
+        tmp_path, service,
+        authorization(purposes=frozenset({NATIVE_GEOMETRY_PURPOSE})),
+        request(purpose=NATIVE_GEOMETRY_PURPOSE),
+    )
+
+    with pytest.raises(TextractProcessingFailure) as caught:
+        adapter.analyze_page(raster_of(tmp_path), rendition_sha256="r", page_number=1, native_glyphs=glyphs)
+
+    assert caught.value.reason == "authorization-refused"
+    assert caught.value.mismatches[0].startswith("purpose:")
+    assert caught.value.outbound_requests == service.calls == 0
+    assert adapter.receipt.as_dict()["counts"]["failures"] == 1
+    assert adapter.receipt.as_dict()["counts"]["outbound_requests"] == 0
+    assert not adapter.receipt.bindings
+
+
+def test_the_named_native_geometry_purpose_uses_tables_bytes_and_only_native_values(tmp_path):
+    pdf = minimal_pdf(tmp_path / "native.pdf", text="Total")
+    raster = rasterize_page(pdf, 1, CONFIGURATION)
+    service = RecordedService(response_around_total())
+    adapter = opened(
+        tmp_path, service,
+        authorization(source_classes=frozenset({"native-pdf"}), purposes=frozenset({NATIVE_GEOMETRY_PURPOSE})),
+        request(source_class="native-pdf", purpose=NATIVE_GEOMETRY_PURPOSE),
+    )
+
+    reading = adapter.analyze_page(raster, rendition_sha256="native", page_number=1, native_glyphs=native_glyphs(pdf, 1))
+
+    assert [cell["text"] for cell in reading.page["tables"][0]["cells"]] == ["Total", ""]
+    assert reading.binding.normalization == {"text_source": "pdfium-glyphs", "parser": METHOD, "remap_margin": 0.0, "rescue_runs": False}
+    assert all("word_ids" not in cell for cell in reading.page["tables"][0]["cells"])
+    assert service.calls == [{"bytes": len(raster.png), "features": ["TABLES"]}]
+    assert adapter.scope.fields["authorization_boundary"]["purpose"] == NATIVE_GEOMETRY_PURPOSE
+    assert adapter.scope.fields["request"]["operation"] == "AnalyzeDocument"
+    assert adapter.scope.fields["request"]["submission"] == "bytes"
+
+
+def test_image_region_reading_is_permitted_with_native_header_evidence(tmp_path):
+    """The boundary does not classify regions: a native header is not a veto
+    on a declared image-region request. The consuming route must select the
+    native header and the unconfirmed image-region reading independently."""
+    pdf = minimal_pdf(tmp_path / "header.pdf", text="Header")
+    response = Page()
+    response.line([response.word("HEADER", (100, 82, 140, 93))])
+    word = response.word("125", (100, 310, 132, 321))
+    cell = response.cell(1, 1, (90, 300, 160, 330), [word])
+    response.table((90, 300, 160, 330), [cell])
+    adapter = opened(
+        tmp_path, RecordedService(response.response()),
+        authorization(source_classes=frozenset({"mixed-pdf"}), purposes=frozenset({"image-region-reading"})),
+        request(source_class="mixed-pdf", purpose="image-region-reading"),
+    )
+
+    native = native_glyphs(pdf, 1)
+    reading = adapter.analyze_page(rasterize_page(pdf, 1, CONFIGURATION), rendition_sha256="mixed", page_number=1)
+
+    assert "".join(char["text"] for char in native.characters) == "Header"
+    assert reading.page["tables"][0]["cells"][0]["text"] == "125"
+    assert reading.page["outside"][0]["text"] == "HEADER", "provider text remains evidence, not a replacement for native values"
+    assert reading.binding.normalization["text_source"] == "textract-words"
+    assert adapter.receipt.calls == 1
 
 
 def test_run_mate_rescue_and_the_polygon_margin_are_off_by_default():
@@ -554,6 +665,27 @@ def test_the_adapter_binds_to_the_posture_document_by_digest():
     assert front_matter["ai_services_opt_out"] == PROVIDER_POSTURE.ai_services_opt_out
     assert front_matter["permissions"] == PROVIDER_POSTURE.permissions
     assert front_matter["bound_by"] == "src/corridor_pdf_reader/textract_adapter/records.py"
+
+
+def test_previous_posture_bytes_and_bindings_are_preserved_as_history():
+    history = json.loads(POSTURE_HISTORY.read_text())
+    assert history["kind"] == "textract-provider-posture-history"
+    first = history["postures"][0]
+    assert first["identity"] == "aws-textract-analyze-document-tables-posture-1"
+    assert first["digest"] == "1a222e3c92be1777921f1201bc2c993389cc237c924e9f8e9b557a1537322b3f"
+    assert first["status"] == "proposed"
+    assert first["superseded_by"] == "aws-textract-analyze-document-tables-posture-2"
+    identities = []
+    for posture in history["postures"]:
+        document = REPO_ROOT / posture["document"]
+        assert hashlib.sha256(document.read_bytes()).hexdigest() == posture["digest"]
+        front_matter = yaml.safe_load(document.read_text().split("---\n")[1])
+        assert front_matter["identity"] == posture["identity"]
+        assert front_matter["status"] == posture["status"]
+        assert posture["identity"] != PROVIDER_POSTURE.identity
+        assert posture["digest"] != PROVIDER_POSTURE.digest
+        identities.append(posture["identity"])
+    assert len(identities) == len(set(identities))
 
 
 def test_the_posture_is_a_separate_record_from_any_customer_authorization():

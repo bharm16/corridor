@@ -63,6 +63,7 @@ from corridor_pdf_reader.textract_adapter.identity import (
     request_id,
 )
 from corridor_pdf_reader.textract_adapter.records import (
+    NATIVE_GEOMETRY_PURPOSE,
     PROVIDER_POSTURE,
     AuthorizationRecord,
     CustomerAuthorization,
@@ -401,11 +402,29 @@ class AuthorizedTextract:
     ) -> PageReading:
         """The reader's page for this raster, from the scope or from one counted call.
 
-        With `native_glyphs`, Textract supplies geometry only and the page's
-        text is the document's own glyphs (the measured lane A); Textract's
-        words are never stored on such a page.
+        With `native_glyphs`, Textract supplies geometry only and the reading's
+        text is the document's own glyphs (the measured lane A). That input is
+        required for the named native geometry purpose; it must never silently
+        become an OCR reading. The raw response remains provider evidence.
+        The consuming route selects values per region on mixed native/image
+        pages; this boundary does not classify the page from a native header.
         """
         self.receipt.pages_requested += 1
+        if self.request.purpose == NATIVE_GEOMETRY_PURPOSE and (
+            native_glyphs is None
+            or not any(isinstance(char.get("text"), str) and char["text"].strip() for char in native_glyphs.characters)
+        ):
+            failure = TextractProcessingFailure(
+                "authorization-refused",
+                mismatches=(
+                    f"purpose: {NATIVE_GEOMETRY_PURPOSE!r} requires usable native glyphs; "
+                    "Textract words cannot substitute for them",
+                ),
+                outbound_requests=0,
+                request=self.request,
+            )
+            self.receipt.failures.append(failure.record())
+            raise failure
         if raster.dpi != self.configuration.dpi or raster.mode != self.configuration.mode:
             failure = TextractProcessingFailure(
                 "raster-configuration-mismatch",
