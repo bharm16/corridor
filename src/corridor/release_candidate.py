@@ -68,6 +68,10 @@ adopted baseline: the baseline is the customer's own artifact adopted as a
 starting record, not an issue Corridor authorized and returned. Before the first
 authorized package the predecessor is explicitly absent, and the configured
 artifacts render current accepted state without inventing a prior issue.
+When the supervisor has frozen an external comparison window, that explicit
+predecessor travels with it. Binding under the project lock refuses if another
+authorization advanced the chain; selecting a new predecessor while retaining
+the old floors would let the report and change summary contradict each other.
 
 **No clock.** The source cutoff, the effective instant and the preparation
 instant are all supplied by the caller. Nothing here reads the wall clock, so a
@@ -157,6 +161,7 @@ from corridor.object_storage import ObjectStore, content_key, content_store
 from corridor.presentation import field_label
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
+from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
 from corridor.review_packet_reading import read_open_deltas
 from corridor.workbook_render import RenderProfile, render_project_record_workbook
 
@@ -793,6 +798,25 @@ def bind_preparation(
             )
 
     package = latest_authorized_package(session, project_id)
+    previous_package_id = None if package is None else int(package.id)
+    if preparation.get("comparison_baseline") == AUTHORIZED_PACKAGE_COMPARISON:
+        frozen_previous = preparation.get("previous_authorized_package_id")
+        if "previous_authorized_package_id" not in preparation or (
+            frozen_previous is not None
+            and (type(frozen_previous) is not int or frozen_previous <= 0)
+        ):
+            raise PreparationRefused(
+                MIXED_READING,
+                "an external comparison window requires an explicit previous "
+                "authorized package identity or an explicit none for a first issue",
+            )
+        if frozen_previous != previous_package_id:
+            raise PreparationRefused(
+                MIXED_READING,
+                "the previous authorized package changed after this request "
+                "bound its comparison window; nothing is attached and a fresh "
+                "preparation request is needed",
+            )
     previous_issue = (
         None
         if package is None
@@ -853,7 +877,7 @@ def bind_preparation(
     return BoundPreparation(
         project_id=project_id,
         accepted_revision_id=reading.accepted_revision_id,
-        previous_package_id=None if package is None else int(package.id),
+        previous_package_id=previous_package_id,
         source_cutoff=source_cutoff,
         prepared_at=prepared_at,
         coverage=coverage,

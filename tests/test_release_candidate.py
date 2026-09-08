@@ -74,6 +74,7 @@ from corridor.release_candidate import (
     ARTIFACT_MISSING,
     CANDIDATE_IDENTITY_CONFLICT,
     INPUTS_CHANGED_WHILE_RENDERING,
+    MIXED_READING,
     RENDERER_FAILED,
     UNSUPPORTED_ISSUE_CONFIGURATION,
     BoundPreparation,
@@ -90,6 +91,7 @@ from corridor.release_candidate import (
     latest_authorized_package,
     render_candidate_artifacts,
 )
+from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
 
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
@@ -1675,6 +1677,33 @@ def test_every_artifact_dereferences_the_same_five_shared_inputs(
         assert owner.coverage_declaration_id == bound.coverage.declaration_id
         assert owner.output_template_format_id == bound.output_template_format_id
         assert owner.field_mapping_format_id == bound.field_mapping_format_id
+
+
+@pytest.mark.parametrize(
+    "predecessor",
+    [
+        pytest.param({}, id="missing"),
+        pytest.param({"previous_authorized_package_id": False}, id="boolean"),
+        pytest.param({"previous_authorized_package_id": 0}, id="zero"),
+        pytest.param({"previous_authorized_package_id": -1}, id="negative"),
+        pytest.param({"previous_authorized_package_id": "1"}, id="text"),
+    ],
+)
+def test_an_external_window_requires_an_explicit_typed_predecessor(
+    session, adopted, predecessor
+):
+    _configure(session, adopted, artifacts=[WEEKLY])
+    preparation = _preparation(
+        adopted.project.id, adopted.revision_id,
+        comparison_baseline=AUTHORIZED_PACKAGE_COMPARISON,
+        prior_delta_floor=0, prior_disposition_floor=0,
+        **predecessor,
+    )
+    with pytest.raises(PreparationRefused) as refused:
+        _bind(session, adopted, preparation=preparation)
+    assert refused.value.code == MIXED_READING
+    assert "explicit previous authorized package" in refused.value.sentence
+    assert _candidates(session, adopted) == ()
 
 
 def test_a_weekly_reading_from_another_project_refuses_preparation(

@@ -38,6 +38,10 @@ need a migration, and the runtime already retains one durable append-only
 receipt per attempt; the reading and its watermarks stand on that receipt. That
 also makes the pass a read-only Due Work handler: the runtime finalizes its
 result and no domain lock is held.
+
+External issue preparation reuses ``count_delta_window`` with the previous
+authorized package's floors and its request's frozen ceilings (#709). Its
+counts are a separate reading; the internal weekly receipt stays unchanged.
 """
 
 from __future__ import annotations
@@ -64,6 +68,7 @@ from corridor.models import (
 # module is the lower layer and the runtime imports its execution, never the
 # reverse.
 HANDLER_KEY = "report_preparation"
+AUTHORIZED_PACKAGE_COMPARISON = "previous_authorized_package"
 
 _RESULT_SCHEMA_VERSION = "report-preparation-result-v1"
 
@@ -130,30 +135,13 @@ def execute_report_preparation(
         )
     )
 
-    resolved = {"accept": 0, "edit": 0, "reject": 0}
-    for disposition, count in session.execute(
-        select(DeltaDisposition.disposition, func.count())
-        .where(
-            DeltaDisposition.project_id == project_id,
-            DeltaDisposition.id > disposition_floor,
-            DeltaDisposition.id <= disposition_ceiling,
-        )
-        .group_by(DeltaDisposition.disposition)
-    ).all():
-        if disposition in resolved:
-            resolved[disposition] = int(count)
-
-    proposed_new = int(
-        session.scalar(
-            select(func.count())
-            .select_from(ProposedDelta)
-            .where(
-                ProposedDelta.project_id == project_id,
-                ProposedDelta.id > delta_floor,
-                ProposedDelta.id <= delta_ceiling,
-            )
-        )
-        or 0
+    window_counts = count_delta_window(
+        session,
+        project_id=project_id,
+        delta_floor=delta_floor,
+        delta_ceiling=delta_ceiling,
+        disposition_floor=disposition_floor,
+        disposition_ceiling=disposition_ceiling,
     )
 
     superseded = int(
@@ -216,13 +204,59 @@ def execute_report_preparation(
         "through_delta_id": delta_ceiling,
         "through_disposition_id": disposition_ceiling,
         "accepted_revision_id": int(accepted_revision_id or 0),
+        **window_counts,
+        "open_actionable": len(open_ids - deferred_ids),
+        "open_deferred": len(deferred_ids),
+        "superseded": superseded,
+    }
+
+
+def count_delta_window(
+    session: Session,
+    *,
+    project_id: int,
+    delta_floor: int,
+    delta_ceiling: int,
+    disposition_floor: int,
+    disposition_ceiling: int,
+) -> dict[str, int]:
+    """Count only the append-only rows inside a caller's frozen watermarks.
+
+    Weekly schedules and authorized issues have different predecessors. They
+    share the counting rule, while each caller owns both ends of its window.
+    Current open/deferred standing stays on the original preparation receipt.
+    """
+
+    resolved = {"accept": 0, "edit": 0, "reject": 0}
+    for disposition, count in session.execute(
+        select(DeltaDisposition.disposition, func.count())
+        .where(
+            DeltaDisposition.project_id == project_id,
+            DeltaDisposition.id > disposition_floor,
+            DeltaDisposition.id <= disposition_ceiling,
+        )
+        .group_by(DeltaDisposition.disposition)
+    ).all():
+        if disposition in resolved:
+            resolved[disposition] = int(count)
+
+    proposed_new = int(
+        session.scalar(
+            select(func.count())
+            .select_from(ProposedDelta)
+            .where(
+                ProposedDelta.project_id == project_id,
+                ProposedDelta.id > delta_floor,
+                ProposedDelta.id <= delta_ceiling,
+            )
+        )
+        or 0
+    )
+    return {
         "resolved_accepted": resolved["accept"],
         "resolved_edited": resolved["edit"],
         "resolved_rejected": resolved["reject"],
         "proposed_new": proposed_new,
-        "open_actionable": len(open_ids - deferred_ids),
-        "open_deferred": len(deferred_ids),
-        "superseded": superseded,
     }
 
 

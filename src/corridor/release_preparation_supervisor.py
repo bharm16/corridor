@@ -40,6 +40,9 @@ receipt identity and its result digest, freezes the window's ceilings, and
 takes its floors from the reading bound to the **previous authorized package**
 — ADR-0086 is explicit that only an authorized package advances the external
 comparison baseline. Every retry of the same request reuses that row.
+The resolver counts this external window before rendering; passing through
+the weekly receipt's counts would silently shorten a skipped issue (#709).
+The retained weekly receipt and its digest are never rewritten.
 
 **One occurrence, one request.** Due Work coalesces cadence occurrences onto a
 slot, and a slot cannot name a request. Publication creates one occurrence per
@@ -97,6 +100,10 @@ from corridor.release_preparation_worker import (
     PreparationInputs,
     record_failed_attempt,
     run_preparation_request,
+)
+from corridor.report_preparation import (
+    AUTHORIZED_PACKAGE_COMPARISON,
+    count_delta_window,
 )
 
 
@@ -538,7 +545,7 @@ def resolve_preparation_inputs(
 
     | input                     | owner                                       |
     | ------------------------- | ------------------------------------------- |
-    | ``preparation``           | the request-bound report-preparation receipt |
+    | ``preparation``           | bound weekly standing and external window   |
     | ``template_bytes``        | the object bound to the registration        |
     | template/mapping identity | the request's exact Issue Profile           |
     | template sections         | the released renderer contract              |
@@ -568,6 +575,29 @@ def resolve_preparation_inputs(
             "the report-preparation reading this request was bound to no "
             "longer digests to what was bound"
         )
+
+    # Recount only the immutable lifecycle window. The receipt owns the frozen
+    # revision and current standing; this request owns the external comparison
+    # floors and ceilings. A later weekly close must change neither on replay.
+    preparation.update(
+        count_delta_window(
+            session,
+            project_id=int(reading.project_id),
+            delta_floor=int(reading.prior_delta_floor),
+            delta_ceiling=int(reading.through_delta_id),
+            disposition_floor=int(reading.prior_disposition_floor),
+            disposition_ceiling=int(reading.through_disposition_id),
+        ),
+        comparison_baseline=AUTHORIZED_PACKAGE_COMPARISON,
+        previous_authorized_package_id=(
+            None if reading.previous_package_id is None else int(reading.previous_package_id)
+        ),
+        prior_delta_floor=int(reading.prior_delta_floor),
+        prior_disposition_floor=int(reading.prior_disposition_floor),
+    )
+    # This weekly date label does not describe the external issue's window.
+    # Its predecessor and watermarks carry the comparison without a clock.
+    preparation.pop("window_start", None)
 
     inventory = effective_issue_inventory(
         session, int(request.project_id), _aware_utc(request.source_cutoff)
