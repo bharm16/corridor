@@ -265,6 +265,7 @@ def _child(period: MeasurementPeriod, key: str, delta_id: int,
     supersessions = [e for e in history if e.family == EventFamily.DELTA_SUPERSESSION
                     and e.payload.get("prior_delta_id") == delta_id]
     creations = [e for e in history if e.family == EventFamily.PROPOSED_DELTA_CREATION
+                 and e.payload.get("outcome") in {None, "created"} and not e.payload.get("refusal_code")
                  and (e.payload.get("delta_id") == delta_id
                       or delta_id in e.payload.get("delta_ids", []))]
     last = decisions[-1] if decisions else None
@@ -407,6 +408,12 @@ def _source_key(event: AnalyticsEvent) -> str | None:
 def _source_events(events: list[AnalyticsEvent], family: EventFamily) -> dict[str, AnalyticsEvent]:
     values: dict[str, AnalyticsEvent] = {}
     for event in events:
+        if event.payload.get("outcome") == "replayed":
+            continue
+        if family == EventFamily.SOURCE_CAPTURE:
+            outcome = event.payload.get("outcome")
+            if outcome not in {None, "captured"} or (event.payload.get("receipt") and outcome != "captured"):
+                continue
         if event.family == family and (key := _source_key(event)):
             values.setdefault(key, event)
     return values
@@ -437,6 +444,7 @@ def _coverage(period, arrivals, captures) -> list[dict[str, Any]]:
 
 def _latencies(child, shown, events) -> dict[str, float | None]:
     created = next((e for e in events if e.family == EventFamily.PROPOSED_DELTA_CREATION
+                    and e.payload.get("outcome") in {None, "created"} and not e.payload.get("refusal_code")
                     and (e.payload.get("delta_id") == child["delta_id"]
                          or child["delta_id"] in e.payload.get("delta_ids", []))), None)
     key = (_source_key(created) if created else None) or ""

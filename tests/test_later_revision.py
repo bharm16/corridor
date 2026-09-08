@@ -844,6 +844,6 @@ def test_the_proposed_delta_creation_event_is_emitted(
     assert event.payload["project_id"] == project.id
     assert event.payload["source_revision"] == capture.content_sha256
     assert event.payload["delta_ids"] == list(capture.delta_ids)
-    assert event.binding.mapping_identity == manifest.revision
+    assert event.binding.mapping_identity == f"{manifest.identity}:{manifest.version}"
     assert collected.by_family(EventFamily.SOURCE_ARRIVAL)
     assert collected.by_family(EventFamily.SOURCE_CAPTURE)

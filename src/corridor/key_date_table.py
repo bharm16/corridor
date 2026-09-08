@@ -87,7 +87,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.analytics import AnalyticsBinding, default_binding
+from corridor.analytics import AnalyticsBinding
+from corridor.measurement_collection import binding_for_source
 from corridor.connectors.pull_connector import SourceEnvelope
 from corridor.delta_generation import accepted_values, fact_value, revision_label
 from corridor.extraction_runs import record_extraction_run
@@ -409,17 +410,7 @@ def capture_key_date_table(
         deltas=proposals,
         is_complete_enumerative_source=is_complete_enumerative_source,
         row_accounting_sealed=row_accounting_sealed,
-        analytics_binding=analytics_binding
-        or default_binding(
-            source_configuration={
-                "channel": envelope.channel,
-                "source_kind": "key_date_table",
-                "complete_enumerative_source": is_complete_enumerative_source,
-                "row_accounting_sealed": row_accounting_sealed,
-            },
-            template_identity=envelope.external_identity,
-            mapping_identity=KEY_DATE_TABLE_FAMILY,
-        ),
+        analytics_binding=analytics_binding or binding_for_source(session, delivery),
     )
     impacts = _impacts(
         appended,

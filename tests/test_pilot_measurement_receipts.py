@@ -193,3 +193,231 @@ def test_native_model_usage_reconciles_with_actual_billing_once(session, project
     history_cost = derive_measurement([window], [*receipts, historical])["periods"][0]["provider_cost"]
     assert history_cost["historical_experiment_cost_usd"] == "0.125"
     assert history_cost["actual_cost_usd"] == "0.00"
+
+
+def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, adopted, store, tmp_path, monkeypatch):
+    import json
+    from sqlalchemy import func, select
+    from corridor.analytics import capture_events
+    from corridor.later_revision import capture_later_revision
+    from corridor.principals import HumanPrincipal
+    from corridor.source_delivery import DeliveryBinding, DeliveryObservation, envelope_of, record_delivery
+    from corridor.source_intake import validate_and_stage
+
+    from later_revision_support import BASELINE_ROWS, workbook_bytes
+    from test_pilot_measurement import BINDING
+
+    configure(session, adopted)
+    inventory = effective_issue_inventory(session, adopted.project.id, CUTOFF)
+    identity = observed_database_identity(session)
+    deployment = replace(BINDING, code_revision="producer-first", database_identity=identity,
+                         source_configuration={"identity": "fixture-folder", "version": "1"},
+                         connector_configuration={"transport": "pull", "channel": "fixture-folder"},
+                         issue_profile_identity=inventory.profile_identity,
+                         issue_profile_version=inventory.profile_version, issue_profile_sha256=inventory.content_sha256,
+                         template_identity=f"{inventory.output_template.identity}:{inventory.output_template.version}",
+                         mapping_identity=f"{inventory.field_mapping.identity}:{inventory.field_mapping.version}")
+    configuration = tmp_path / "measurement-binding.json"
+    configuration.write_text(json.dumps(deployment.as_dict()))
+    monkeypatch.setenv("CORRIDOR_ANALYTICS_BINDING_FILE", str(configuration))
+    monkeypatch.setenv("CORRIDOR_CODE_REVISION", "producer-first")
+    incoming = [list(row) for row in BASELINE_ROWS]
+    incoming[0][3] = "18 in"
+    body = workbook_bytes(tmp_path / "incoming.xlsx", incoming)
+    project_id = adopted.project.id
+    delivery_binding = DeliveryBinding(customer="fixture-customer", project_id=project_id,
+                                       project_slug=adopted.project.slug, transport="pull",
+                                       channel="fixture-folder", configuration_identity="fixture-folder", configuration_version="1")
+    session.commit()
+    with capture_events() as captured:
+        started = session.scalar(select(func.now()))
+        staged = validate_and_stage(body, "incoming.xlsx", customer_id="fixture-customer", project_id=project_id)
+        observation = DeliveryObservation(external_identity="fixture-ucm", external_version="revision-2",
+                                          content_digest=staged.sha256, bytes_reference=str(staged.stored_path),
+                                          metadata={"filename": "incoming.xlsx", "byte_count": len(body), "source_class": "matrix"})
+        delivered = record_delivery(session, delivery_binding, observation, disposition="stored",
+                                    service_identity="fixture-connector", run_identity="first-arrival")
+        with session.begin_nested():
+            result = capture_later_revision(session, project=adopted.project, staged=staged,
+                                            envelope=envelope_of(delivery_binding, observation, delivered),
+                                            principal=HumanPrincipal("local:coordinator"))
+        session.commit()
+    window = period(project_id=project_id, start=started, end=started + timedelta(hours=1), declared_at=started,
+                    binding=deployment, database_identity=identity,
+                    issue_profile_identity=inventory.profile_identity, issue_profile_version=inventory.profile_version,
+                    issue_profile_sha256=inventory.content_sha256, domain_receipts_complete=True)
+    receipts = read_domain_receipts(session, [window], events=captured.events)
+    targets = [e for e in receipts if e.occurred_at >= started
+               and e.family in {EventFamily.SOURCE_ARRIVAL, EventFamily.SOURCE_CAPTURE,
+                               EventFamily.PROPOSED_DELTA_CREATION}]
+    assert len(targets) == 3
+    assert all(e.payload.get("binding_event_ids") for e in targets)
+    assert all("unavailable_binding_fields" not in e.payload for e in targets)
+    assert all(e.binding.code_revision == "producer-first" for e in targets)
+    measured = derive_measurement([window], [*captured.events, *receipts])["periods"][0]
+    assert measured["cohort_status"] == "bound"
+    assert measured["coverage"][0]["captured_within_window"] == 1
+    assert len(result.delta_ids) == 1
+
+    # A later deployment reuses the same source, document and delta. Its
+    # observations are retries, never a second donor for the original binds.
+    second_started = session.scalar(select(func.now()))
+    second_deployment = replace(deployment, code_revision="producer-second")
+    configuration.write_text(json.dumps(second_deployment.as_dict()))
+    monkeypatch.setenv("CORRIDOR_CODE_REVISION", "producer-second")
+    with capture_events() as later_events:
+        reused = record_delivery(session, delivery_binding, observation, disposition="stored",
+                                 service_identity="fixture-connector", run_identity="retry")
+        replay = capture_later_revision(session, project=adopted.project, staged=staged,
+                                        envelope=envelope_of(delivery_binding, observation, reused),
+                                        principal=HumanPrincipal("local:coordinator"))
+        assert replay.delta_ids == result.delta_ids
+        refused = record_delivery(session, delivery_binding,
+                                   replace(observation, external_identity="refused-delivery", bytes_reference=""),
+                                   disposition="terminally_refused", refusal_reason="fixture refusal",
+                                   service_identity="fixture-connector", run_identity="refusal")
+        rollback = session.begin_nested()
+        ghost_rows = [list(row) for row in incoming]
+        ghost_rows[0][3] = "24 in"
+        ghost_body = workbook_bytes(tmp_path / "rolled-back.xlsx", ghost_rows)
+        ghost_staged = validate_and_stage(ghost_body, "rolled-back.xlsx", customer_id="fixture-customer", project_id=project_id)
+        ghost_observation = replace(observation, external_version="rolled-back", content_digest=ghost_staged.sha256,
+                                    bytes_reference=str(ghost_staged.stored_path))
+        ghost_delivery = record_delivery(session, delivery_binding, ghost_observation, disposition="stored",
+                                         service_identity="fixture-connector", run_identity="rolled-back")
+        ghost = capture_later_revision(session, project=adopted.project, staged=ghost_staged,
+                                       envelope=envelope_of(delivery_binding, ghost_observation, ghost_delivery),
+                                       principal=HumanPrincipal("local:coordinator"))
+        rollback.rollback()
+        session.commit()
+    for family in (EventFamily.SOURCE_ARRIVAL, EventFamily.SOURCE_CAPTURE, EventFamily.PROPOSED_DELTA_CREATION):
+        assert any(e.payload.get("outcome") == "replayed" for e in later_events.by_family(family))
+    assert any(e.payload.get("outcome") == "created" for e in later_events.by_family(EventFamily.PROPOSED_DELTA_CREATION))
+    first_window = replace(window, end=second_started)
+    second_window = replace(window, period_id="later-producer", start=second_started, declared_at=second_started,
+                            end=second_started + timedelta(hours=1), binding=second_deployment)
+    all_events = [*captured.events, *later_events.events]
+    exported = read_domain_receipts(session, [first_window, second_window], events=all_events)
+    by_receipt = {(e.family, e.payload["receipt_id"]): e for e in exported}
+    for original in targets:
+        current = by_receipt[original.family, original.payload["receipt_id"]]
+        assert current.payload["binding_event_ids"] == original.payload["binding_event_ids"]
+        assert current.binding.code_revision == "producer-first"
+    assert (EventFamily.SOURCE_CAPTURE, ghost.document_id) not in by_receipt
+    assert all((EventFamily.PROPOSED_DELTA_CREATION, i) not in by_receipt for i in ghost.delta_ids)
+    assert by_receipt[EventFamily.SOURCE_ARRIVAL, refused.delivery_id].binding.code_revision == "producer-second"
+    report = derive_measurement([first_window, second_window], [*all_events, *exported])
+    assert all(p["cohort_status"] == "bound" for p in report["periods"])
+    assert report["periods"][1]["captured_source_arrivals"] == 0
+    unknown = read_domain_receipts(session, [first_window, second_window], events=later_events.events)
+    old_capture = next(e for e in unknown if e.family == EventFamily.SOURCE_CAPTURE
+                       and e.payload["document_id"] == result.document_id)
+    assert old_capture.payload["outcome"] == "unavailable"
+    assert old_capture.payload["attempt_outcomes"] == ["replayed"]
+    assert "binding_event_ids" not in old_capture.payload
+
+
+def test_metadata_only_registration_is_not_a_durable_capture(session, project, store, tmp_path, monkeypatch):
+    import json
+    from sqlalchemy import func, select
+    from corridor.analytics import capture_events
+    from corridor.ingest import ingest_document
+    from corridor.source_delivery import DeliveryBinding, DeliveryObservation, record_delivery
+    from corridor.source_intake import validate_and_stage
+    from later_revision_support import BASELINE_ROWS, workbook_bytes
+    from test_pilot_measurement import BINDING
+
+    identity = observed_database_identity(session)
+    binding = replace(BINDING, database_identity=identity,
+                      source_configuration={"identity": "fixture-folder", "version": "1"},
+                      connector_configuration={"transport": "pull", "channel": "fixture-folder"})
+    config = tmp_path / "binding.json"
+    config.write_text(json.dumps(binding.as_dict()))
+    monkeypatch.setenv("CORRIDOR_ANALYTICS_BINDING_FILE", str(config))
+    session.commit()
+    with capture_events() as captured:
+        started = session.scalar(select(func.now()))
+        staged = validate_and_stage(workbook_bytes(tmp_path / "missing.xlsx", BASELINE_ROWS), "missing.xlsx")
+        delivered = record_delivery(session, DeliveryBinding("fixture-customer", project.id, project.slug,
+                                    "pull", "fixture-folder", "fixture-folder", "1"),
+                                    DeliveryObservation("lost-source", "v1", staged.sha256, str(staged.stored_path),
+                                                        metadata={"source_class": "matrix"}),
+                                    disposition="stored", service_identity="fixture", run_identity="lost-source")
+        staged.stored_path.unlink()  # Simulate loss of this fixture's already-staged bytes.
+        document = ingest_document(session, project_id=project.id, path=staged.stored_path,
+                                   doc_type="matrix", images_dir=tmp_path / "images", expected_sha256=staged.sha256,
+                                   source_delivery_id=delivered.delivery_id)
+        session.commit()
+    assert document.parse_status == "failed"
+    window = period(project_id=project.id, database_identity=identity, binding=binding, start=started,
+                    declared_at=started, end=started + timedelta(hours=1), domain_receipts_complete=True)
+    receipts = read_domain_receipts(session, [window], events=captured.events)
+    capture = next(e for e in receipts if e.family == EventFamily.SOURCE_CAPTURE)
+    assert capture.payload["outcome"] == "unavailable"
+    report = derive_measurement([window], [*captured.events, *receipts])["periods"][0]
+    assert report["captured_source_arrivals"] == 0
+    assert report["coverage"][0]["captured_within_window"] == 0
+
+
+def test_competing_worker_replay_cannot_claim_the_winning_delta_binding(session, project):
+    from concurrent.futures import ThreadPoolExecutor
+    from queue import Queue
+    import time
+    from sqlalchemy import func, select
+    from corridor.analytics import capture_events
+    from corridor.proposed_deltas import ExistingSubjectTarget, ProposedDeltaValues, create_proposed_delta_group
+    from test_pilot_measurement import BINDING
+
+    project_id = project.id
+    identity = observed_database_identity(session)
+    session.commit()
+    engine = session.get_bind()
+    worker = create_engine(engine.url.set(username="corridor_worker", password="corridor_worker"))
+    values = (ProposedDeltaValues(change_type="modify", target=ExistingSubjectTarget("concurrent-subject", "size"),
+                                  accepted_value="12 in", proposed_value="18 in"),)
+    first_binding = replace(BINDING, code_revision="winning-code", database_identity=identity)
+    retry_binding = replace(first_binding, code_revision="retrying-code")
+    pids = Queue()
+
+    def competing_call():
+        with Session(worker) as other:
+            pids.put(other.scalar(select(func.pg_backend_pid())))
+            result = create_proposed_delta_group(other, project_id=project_id, source_family="matrix",
+                                                 source_revision="concurrent-version", deltas=values,
+                                                 analytics_binding=retry_binding)
+            ids = tuple(r.id for r in result)
+            other.commit()
+            return ids
+
+    try:
+        with capture_events() as captured, Session(worker) as first:
+            first_pid = first.scalar(select(func.pg_backend_pid()))
+            written = create_proposed_delta_group(first, project_id=project_id, source_family="matrix",
+                                                  source_revision="concurrent-version", deltas=values,
+                                                  analytics_binding=first_binding)
+            original_ids = tuple(r.id for r in written)
+            with ThreadPoolExecutor(max_workers=1) as pool:
+                future = pool.submit(competing_call)
+                blocked = False
+                try:
+                    other_pid = pids.get(timeout=5)
+                    deadline = time.monotonic() + 5
+                    while time.monotonic() < deadline:
+                        if first_pid in session.scalar(select(func.pg_blocking_pids(other_pid))):
+                            blocked = True
+                            break
+                        time.sleep(0.02)
+                finally:
+                    first.commit()  # Release the real unique-key wait even if the test fails.
+                assert future.result(timeout=5) == original_ids
+            assert blocked, "the second call must reach the uncommitted competing insert"
+        events = captured.by_family(EventFamily.PROPOSED_DELTA_CREATION)
+        assert [(e.payload["outcome"], e.binding.code_revision) for e in events] == [
+            ("created", "winning-code"), ("replayed", "retrying-code")]
+        receipt = next(e for e in read_domain_receipts(session, [period(project_id=project_id, database_identity=identity)],
+                                                       events=events)
+                       if e.family == EventFamily.PROPOSED_DELTA_CREATION)
+        assert receipt.payload["binding_event_ids"] == [events[0].event_id]
+        assert receipt.binding.code_revision == "winning-code"
+    finally:
+        worker.dispose()

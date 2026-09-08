@@ -55,6 +55,19 @@ def binding_for_session(session, binding: AnalyticsBinding | None = None) -> Ana
                    database_identity=identity)
 
 
+def binding_for_source(session, delivery=None, binding: AnalyticsBinding | None = None) -> AnalyticsBinding:
+    """Bind the actual delivery configuration beside the measured deployment."""
+    base = binding_for_session(session, binding)
+    if delivery is None:
+        return base
+    return replace(base,
+                   source_configuration={**base.source_configuration,
+                                         "identity": delivery.configuration_identity,
+                                         "version": delivery.configuration_version},
+                   connector_configuration={**base.connector_configuration,
+                                            "transport": delivery.transport, "channel": delivery.channel})
+
+
 def collect_observation(event: AnalyticsEvent) -> AnalyticsEvent:
     """Validate and emit one explicit analytical observation, retaining its identity.
 

@@ -383,7 +383,11 @@ def source_arrival_event(
     channel: str = "upload",
     filename: str,
     content_sha256: str,
-    byte_count: int,
+    byte_count: int | None,
+    source_delivery_id: int | None = None,
+    occurred_at: datetime | None = None,
+    outcome: str = "staged",
+    disposition: str | None = None,
     metric_labels: dict[str, str] | None = None,
 ) -> AnalyticsEvent:
     """Construct a source_arrival event."""
@@ -400,8 +404,13 @@ def source_arrival_event(
             "filename": filename,
             "content_sha256": content_sha256,
             "byte_count": byte_count,
+            "source_delivery_id": source_delivery_id,
+            "source_identity": f"delivery:{source_delivery_id}" if source_delivery_id is not None else None,
+            "outcome": outcome,
+            "disposition": disposition,
         },
         binding=binding,
+        occurred_at=occurred_at or datetime.now(timezone.utc),
         metric_labels=labels,
     )
 
@@ -414,7 +423,11 @@ def source_capture_event(
     channel: str = "upload",
     storage_key: str,
     content_sha256: str,
-    byte_count: int,
+    byte_count: int | None,
+    document_id: int | None = None,
+    source_delivery_id: int | None = None,
+    occurred_at: datetime | None = None,
+    outcome: str = "staged",
     metric_labels: dict[str, str] | None = None,
 ) -> AnalyticsEvent:
     """Construct a source_capture event."""
@@ -431,8 +444,14 @@ def source_capture_event(
             "storage_key": storage_key,
             "content_sha256": content_sha256,
             "byte_count": byte_count,
+            "document_id": document_id,
+            "source_delivery_id": source_delivery_id,
+            "source_identity": f"delivery:{source_delivery_id}" if source_delivery_id is not None else
+                f"document:{document_id}" if document_id is not None else None,
+            "outcome": outcome,
         },
         binding=binding,
+        occurred_at=occurred_at or datetime.now(timezone.utc),
         metric_labels=labels,
     )
 

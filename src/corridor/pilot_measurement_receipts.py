@@ -81,6 +81,18 @@ def read_domain_receipts(
                            and e.binding.database_identity == origin
                            and e.binding.customer_id == customer_id
                            and _same_receipt_event(e, payload, row, at)]
+                if family == EventFamily.SOURCE_CAPTURE:
+                    outcomes = {e.payload.get("outcome", e.metric_labels.get("status")) for e in matches}
+                    if len(outcomes) > 1:
+                        raise ValueError("conflicting capture outcomes for one document registration")
+                    payload["outcome"] = next(iter(outcomes)) if outcomes else "unavailable"
+                    payload["attempt_outcomes"] = sorted({
+                        e.payload["outcome"] for e in observed_events
+                        if e.family == family and e.payload.get("document_id") == row.id
+                        and e.payload.get("project_id") == project_id
+                        and e.binding.database_identity == origin and e.binding.customer_id == customer_id
+                        and at <= e.occurred_at < through and e.payload.get("outcome")
+                    })
                 if matches and len({json.dumps(e.binding.as_dict(), sort_keys=True) for e in matches}) == 1:
                     binding = matches[0].binding
                     payload["binding_event_ids"] = [e.event_id for e in matches]
@@ -318,7 +330,8 @@ def _same_receipt_event(event, payload, row, at) -> bool:
         return (p.get("package_identity") == row.package_identity and status == "authorized"
                 and p.get("principal_subject") == row.authorized_by_principal)
     if family == EventFamily.SOURCE_ARRIVAL:
-        return p.get("source_identity") == f"delivery:{row.id}" or p.get("source_delivery_id") == row.id
+        return (status == "recorded" and p.get("disposition") == row.disposition
+                and (p.get("source_identity") == f"delivery:{row.id}" or p.get("source_delivery_id") == row.id))
     if family == EventFamily.SOURCE_CAPTURE:
-        return p.get("document_id") == row.id
+        return status in {"captured", "unavailable"} and p.get("document_id") == row.id
     return False

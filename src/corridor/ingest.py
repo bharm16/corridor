@@ -60,7 +60,10 @@ from corridor.models import (
     DocumentQuarantine,
     PageProcessingFailure,
     ProcessingArtifact,
+    SourceDelivery,
 )
+from corridor.analytics import emit_event, source_capture_event
+from corridor.measurement_collection import binding_for_source
 from corridor.page_inventory import (
     PageInventory,
     PageRoutingDecision,
@@ -255,6 +258,7 @@ def ingest_document(
             append_ingested_source_segments(session, existing, path)
         _quarantine_unmodeled_semantics(session, existing)
         session.flush()
+        _emit_registered_capture(session, existing, path, outcome="replayed")
         return existing
 
     if registered is not None:
@@ -278,6 +282,7 @@ def ingest_document(
     )
     session.add(document)
     session.flush()
+    _emit_registered_capture(session, document, path, outcome="unavailable" if source_file_missing else "captured")
     _quarantine_unmodeled_semantics(session, document)
 
     if source_file_missing:
@@ -313,6 +318,20 @@ def ingest_document(
     )
     session.flush()
     return document
+
+
+def _emit_registered_capture(session, document: Document, path: Path, *, outcome: str) -> None:
+    """Registration binds native identity; staging or re-ingest cannot relabel it."""
+    delivery = session.get(SourceDelivery, document.source_delivery_id) if document.source_delivery_id else None
+    binding = binding_for_source(session, delivery)
+    emit_event(source_capture_event(
+        binding, customer_id=binding.customer_id, project_id=document.project_id,
+        channel=delivery.channel if delivery else "upload", document_id=int(document.id),
+        source_delivery_id=document.source_delivery_id, content_sha256=document.sha256,
+        storage_key=delivery.bytes_reference if delivery else str(path),
+        byte_count=path.stat().st_size if path.exists() else None,
+        occurred_at=document.created_at if outcome != "replayed" else datetime.now(timezone.utc), outcome=outcome,
+    ))
 
 
 def reparse_document(

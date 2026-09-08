@@ -81,6 +81,18 @@ and outcome. A later retry, refusal, shared coverage declaration or matching
 content digest cannot label an older receipt with a newer runtime binding.
 Portfolio presentations carry each project's issue-profile/template/mapping
 context; missing context leaves a quiet zero-click conclusion unavailable.
+Source arrival is emitted when `record_delivery` creates its immutable row,
+using that row's ID and `received_at`; registered capture names the actual
+Document ID and `created_at`. Staging and retry events are identified as such.
+Each newly created Proposed Delta names its own ID and native creation time.
+The producer uses an ID watermark and PostgreSQL's inserting-transaction status
+to distinguish its insert from a concurrent winner or a replay, including
+savepoints; this requires no added role or schema. PostgreSQL documents these
+[transaction functions](https://www.postgresql.org/docs/16/functions-info.html#FUNCTIONS-PG-SNAPSHOT)
+and [subtransaction semantics](https://www.postgresql.org/docs/16/subxacts.html).
+Missing-file metadata registration emits unavailable capture. The export keeps
+that outcome, excludes it from capture/latency numerators, and leaves historical
+registration without capture evidence unavailable rather than inferring success.
 
 Enable governed structured product-log collection for the whole declared
 window before setting `interaction_capture_complete`. Verify the connected
