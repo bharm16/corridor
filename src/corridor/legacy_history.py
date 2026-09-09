@@ -219,7 +219,8 @@ def support_designations_at_capture(batch: HistoryBatch) -> tuple[dict[str, Any]
         link = evidence.get(support["evidence_link_id"])
         if link is None:
             raise HistoryRefused("support designation lost its original Evidence Link")
-        result.append({"designation": support, "evidence": link})
+        result.append({"designation": support, "evidence": link,
+                       "authority": support_designation_authority(batch, support)})
     return tuple(result)
 
 
@@ -233,3 +234,40 @@ def backfill_evidence_sources(session: Session, batch: HistoryBatch) -> tuple[di
         from legacy_history_evidence_migrations where batch_id=:batch and project_id=:project
         order by legacy_evidence_link_id
     """), {"project": batch.project_id, "batch": batch.id}).mappings())
+
+
+def support_designation_authority(batch: HistoryBatch, designation: dict) -> dict:
+    """Read original human or exact released-policy lineage, never infer it from a label.
+
+    This reconstructs retained provenance; it does not authorize a new support
+    decision or claim that the source satisfies a readiness requirement.
+    """
+    from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
+
+    actor = designation["designated_by"]
+    machine_actors = {"corridor:automatic-carry-forward", "corridor:dependency-admission",
+                      "corridor:active-run-declaration", "corridor:event-admission"}
+    if actor == "corridor:automatic-carry-forward":
+        matches = [row for row in history_rows(batch, "automatic_carry_forward_receipts")
+                   if row["dependency_id"] == designation["dependency_id"]
+                   and row["new_evidence_link_id"] == designation["evidence_link_id"]]
+        if len(matches) == 1:
+            receipt = matches[0]
+            approvals = [row for row in history_rows(batch, "policy_approvals")
+                         if row["id"] == receipt["policy_approval_id"]
+                         and row["family"] == receipt["family"] == "automatic-carry-forward"
+                         and row["policy_version"] == receipt["policy_version"]
+                         and row["policy_sha256"] == receipt["policy_sha256"]]
+            if len(approvals) == 1:
+                return {"kind": "released_policy", "original_actor": actor,
+                        "receipt": receipt, "approval": approvals[0]}
+    elif actor not in machine_actors:
+        try:
+            HumanPrincipal(actor)
+        except InvalidHumanPrincipal:
+            pass
+        else:
+            return {"kind": "human", "original_actor": actor,
+                    "original_time": designation["designated_at"]}
+    return {"kind": "unknown", "original_actor": actor,
+            "reason": "Retained history does not prove a human identity or one matching released-policy receipt."}

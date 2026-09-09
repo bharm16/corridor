@@ -123,6 +123,11 @@ reader was proved. `compatibility` means active routing cannot retire yet.
 | `support_assessment_sources` | native_lineage | Keep original lineage for the lifetime of the referencing record and released artifacts. |
 | `audit_log` | compatibility | Remove active compatibility routing only after every consuming surface proves native field and record coverage, selected as-of readings, and rollback-window closure; retain original history under the customer retention and backup policy. |
 
+| `policy_approvals` | compatibility | Retain the exact authorizing human, policy version and digest with every policy-authored historical act. |
+| `policy_runs` | compatibility | Retain original run identity and counts with the policy outcomes they authorize. |
+| `recorded_verbal_origin_backfill_receipts` | native_lineage | Retain original executor/origin/statement mapping for the life of its referencing history. |
+| `recorded_verbal_origin_fact_digests` | native_lineage | Retain old and replacement Fact digests; never lose the original source identity. |
+
 ## What the compatibility reader proves
 
 - Native FactDecision readings at a retained project revision reconstruct original
@@ -234,3 +239,10 @@ Application/database writer cutover for all legacy value classes remains #458.
 Additional validation: `tests/test_coordination_history.py`, existing
 `tests/test_work_decisions.py`, `tests/test_follow_up_plans.py`,
 `tests/test_statement_coordination.py`, and `tests/test_work_list.py`.
+
+The support-history reader now distinguishes a namespaced human designation from
+an exact automatic-carry-forward receipt and its matching PolicyApproval family,
+version and digest. Known system actors are never classified as humans merely
+because their labels contain a colon. Missing or ambiguous policy lineage stays
+explicitly unknown. This provenance reconstruction does not convert support into
+Ready or authorize a new support designation.

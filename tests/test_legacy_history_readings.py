@@ -72,3 +72,24 @@ def test_native_revision_projection_preserves_authority_across_a_correction():
     assert old["revision"]["human_principal"] == "local:first"
     assert old["sources"][0]["source_segment_id"] == 41
     assert record_decisions_as_of(batch, revision_id=2)[0]["fact"]["text_value"] == "20+00"
+
+
+def test_support_history_preserves_policy_authority_and_refuses_missing_approval():
+    from corridor.legacy_history import support_designations_at_capture
+
+    values = dict(
+        operative_support=[{"id": 1, "dependency_id": 9, "evidence_link_id": 4,
+                            "designated_by": "corridor:automatic-carry-forward", "designated_at": "2026-02-01T00:00:00+00:00", "role": "publication", "field_name": None}],
+        evidence_links=[{"id": 4, "document_id": 6, "quote": "Original supporting words."}],
+        automatic_carry_forward_receipts=[{"audit_log_id": 7, "dependency_id": 9, "new_evidence_link_id": 4,
+            "policy_approval_id": 8, "family": "automatic-carry-forward", "policy_version": "support-v1", "policy_sha256": "a" * 64}],
+        policy_approvals=[{"id": 8, "family": "automatic-carry-forward", "policy_version": "support-v1",
+                           "policy_sha256": "a" * 64, "approved_by": "local:approver"}],
+    )
+    reading = support_designations_at_capture(_batch(**values))[0]
+    assert reading["authority"]["kind"] == "released_policy"
+    assert reading["authority"]["original_actor"] == "corridor:automatic-carry-forward"
+    assert reading["authority"]["approval"]["approved_by"] == "local:approver"
+    missing = support_designations_at_capture(_batch(**{**values, "policy_approvals": []}))[0]
+    assert missing["authority"]["kind"] == "unknown"
+    assert missing["evidence"]["quote"] == "Original supporting words."
