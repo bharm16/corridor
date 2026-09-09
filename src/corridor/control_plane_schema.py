@@ -25,6 +25,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
 
 
 CONTROL_PLANE_METADATA = MetaData(schema="control_plane")
@@ -112,6 +113,44 @@ OPERATIONS_ROLE = "corridor_control_operations"
 RESOLVER_ROLE = "corridor_control_resolver"
 
 
+def _role_is_bounded(connection, role):
+    return connection.scalar(text(
+        "select not rolcanlogin and not rolsuper and not rolcreatedb "
+        "and not rolcreaterole and not rolbypassrls "
+        "from pg_catalog.pg_roles where rolname = :role"
+    ), {"role": role})
+
+
+def _ensure_control_plane_role(connection, role):
+    """Converge on a concurrently created cluster role using fresh catalog state.
+
+    Registries in separate databases share pg_authid. An IF NOT EXISTS lookup
+    does not serialize their CREATE ROLE statements. Roll back only the failed
+    savepoint, classify the exact provider diagnostic, then verify the winner's
+    role before allowing the current database bootstrap to continue.
+    """
+    if role not in {OPERATIONS_ROLE, RESOLVER_ROLE}:
+        raise ValueError("unknown control-plane role")
+    bounded = _role_is_bounded(connection, role)
+    if bounded is not None:
+        if not bounded:
+            raise ValueError("existing control-plane role has incompatible capabilities")
+        return
+    savepoint = connection.begin_nested()
+    try:
+        connection.execute(text(f"create role {role} nologin nosuperuser nocreatedb nocreaterole nobypassrls"))
+    except DBAPIError as error:
+        savepoint.rollback()
+        original = error.orig
+        code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+        constraint = getattr(getattr(original, "diag", None), "constraint_name", None)
+        collision = code == "42710" or (code == "23505" and constraint == "pg_authid_rolname_index")
+        if not collision or _role_is_bounded(connection, role) is not True:
+            raise
+    else:
+        savepoint.commit()
+
+
 def initialize_control_plane(engine: Engine) -> None:
     """Bootstrap through an explicitly supplied schema-owner connection.
 
@@ -151,13 +190,7 @@ def initialize_control_plane(engine: Engine) -> None:
         connection.execute(text("alter table control_plane.disposition_plans add column if not exists provider_resources_sha256 varchar(64)"))
         connection.execute(text("alter table control_plane.disposition_plans add column if not exists provider_resources json"))
         for role in (OPERATIONS_ROLE, RESOLVER_ROLE):
-            connection.execute(
-                text(
-                    f"do $$ begin if not exists (select 1 from pg_roles where rolname = '{role}') "
-                    f"then create role {role} nologin nosuperuser nocreatedb nocreaterole nobypassrls; "
-                    "end if; end $$"
-                )
-            )
+            _ensure_control_plane_role(connection, role)
         database = connection.dialect.identifier_preparer.quote(
             connection.scalar(text("select current_database()"))
         )
