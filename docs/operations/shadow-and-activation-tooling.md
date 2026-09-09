@@ -26,8 +26,9 @@ already be stored. #606 resolves the registered mapping and produces native #518
 identities without a model call. No connector or provider is selected implicitly.
 
 The capture and frozen receipt share one transaction. Commit once after success;
-roll back on failure. Retries return the previously frozen result, while a changed
-configuration for the same source digest refuses relabeling it. The artifact keeps
+roll back on failure. Retries return the previously frozen result. A delivery and shadow configuration
+have one receipt; different external delivery versions are not equated merely
+because their bytes match. The native document-delivery binding still applies. The artifact keeps
 native delta/group identities and lifecycle, typed values, mapping, source segment
 locators, fact links, delivery identity, actual database freeze time and delivery
 watermark. A comparison successor must have both a later delivery identity and a
@@ -99,3 +100,11 @@ validating the named human principal. In customer/shadow deployments that contex
 requires the actual schema owner on that exact session; it grants no bypass to a
 second session, request metadata or a runtime login. Compatibility intake retains
 its independent database-free authorization and storage boundary.
+
+The database's `seal_shadow_run` trigger owns the actual freeze instant, delivery
+watermark, native delta values/lifecycle, groups and source provenance. Caller
+values cannot backdate a receipt or hide a delivery already in the database. Its
+only canonical JSON representation is PostgreSQL `payload::text`, identified as
+`postgresql-jsonb-text-v1`. `read_shadow_run` exports those exact bytes and their
+SHA alongside the verified parsed payload; Python never recreates the output
+digest through its own JSON serializer. There is no second stored payload copy.

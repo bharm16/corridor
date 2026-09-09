@@ -137,3 +137,55 @@ def test_shadow_deployment_source_append_rechecks_actual_worker(shadow, monkeypa
         with pytest.raises(ShadowRefused, match="actual corridor_worker"):
             append_source_segments(owner, project_id=project_id, document_id=None,
                 recorded_verbal_origin_id=None, segments=[])
+
+
+def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shadow):
+    import json
+    from dataclasses import asdict
+    from corridor.shadow_receipts import read_shadow_run
+    database, engines, project_id, staged, envelope, approved, compatibility = shadow
+    with Session(engines["corridor_worker"]) as worker, worker.begin():
+        output = run_shadow_ucm(worker, project=worker.get(Project, project_id), staged=staged,
+            envelope=envelope, compatibility_receipt=compatibility, authorization=approved,
+            customer=CUSTOMER, environment="synthetic-shadow", source_configuration="seal-first",
+            principal=PRINCIPAL, deletion_date=DELETE, now=NOW)
+        exported = read_shadow_run(worker, output["identity"])
+        assert exported.payload == output
+        assert sha256(exported.payload_text.encode()).hexdigest() == exported.output_sha256
+        assert json.loads(exported.payload_text) == output
+    # This comparison input already exists before the attempted forged freeze.
+    with database.session_factory.begin() as owner:
+        project = owner.get(Project, project_id)
+        _, reference = deliver(owner, project, staged.stored_path.read_bytes(),
+            external_identity="already-seen-comparison-revision")
+        reference_id = owner.scalar(text("select id from source_deliveries where idempotency_key=:key and disposition='stored'"),
+            {"key": reference.idempotency_key})
+        reference_at = owner.scalar(text("select received_at from source_deliveries where id=:id"), {"id": reference_id})
+    forged = output | {"identity": "f" * 64, "source_configuration": "seal-second",
+        "frozen_at": "1900-01-01T00:00:00+00:00", "source_delivery_watermark": 0,
+        "canonicalization": "caller-json", "source_provenance": [], "groups": []}
+    with Session(engines["corridor_worker"]) as worker, worker.begin():
+        sealed = worker.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256,recorded_at) values (:identity,:project,cast(:payload as jsonb),'forged','1900-01-01') returning payload,output_sha256,recorded_at"),
+            {"identity": forged["identity"], "project": project_id, "payload": json.dumps(forged)}).one()
+        assert sealed.payload["source_delivery_watermark"] >= reference_id
+        assert datetime.fromisoformat(sealed.payload["frozen_at"]) >= reference_at
+        assert sealed.recorded_at == datetime.fromisoformat(sealed.payload["frozen_at"])
+        assert sealed.output_sha256 != "forged"
+        assert sealed.payload["source_provenance"]
+        assert sealed.payload["groups"]
+        assert sealed.payload["canonicalization"] == "postgresql-jsonb-text-v1"
+        exported = read_shadow_run(worker, forged["identity"])
+        assert json.loads(asdict(exported)["payload_text"]) == sealed.payload
+        for problem in ("project_id", "document_id", "delivery_id", "delta_id", "delta_value"):
+            corrupt = json.loads(json.dumps(output))
+            corrupt["identity"] = "e" * 64
+            corrupt["source_configuration"] = "seal-invalid"
+            if problem == "delta_id":
+                corrupt["deltas"][0]["id"] = -1
+            elif problem == "delta_value":
+                corrupt["deltas"][0]["proposed_value"] = "invented"
+            else:
+                corrupt[problem] = -1
+            with pytest.raises(DBAPIError, match="shadow"), worker.begin_nested():
+                worker.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:identity,:project,cast(:payload as jsonb),'forged')"),
+                    {"identity": corrupt["identity"], "project": project_id, "payload": json.dumps(corrupt)})

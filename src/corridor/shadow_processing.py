@@ -21,9 +21,9 @@ from corridor.compatibility_intake import CompatibilityReceipt
 from corridor.later_revision import capture_later_revision
 from corridor.models import Project, ProposedDelta
 from corridor.native_provider_boundary import CustomerAuthorization
-from corridor.proposed_deltas import derive_live_delta_state
 from corridor.source_delivery import require_stored_envelope
 from corridor.shadow_capabilities import ShadowRefused, verify_runtime
+from corridor.shadow_receipts import verified_shadow_payload
 
 VERSION = "shadow-ucm-v1"
 
@@ -171,15 +171,14 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         "is_complete_enumerative_source": is_complete_enumerative_source,
         "row_accounting_sealed": row_accounting_sealed})
     session.execute(text("select pg_advisory_xact_lock(hashtextextended(:key,0))"), {"key": f"shadow:{project.id}"})
-    saved = session.execute(text("select payload, output_sha256 from shadow_runs where identity=:id"), {"id": identity}).first()
+    saved = session.execute(text("select payload, payload::text as payload_text, output_sha256 from shadow_runs where identity=:id"), {"id": identity}).first()
     if saved:
-        if digest(saved.payload) != saved.output_sha256:
-            raise ShadowRefused("frozen output digest mismatch")
-        return saved.payload
-    # A native source version can be frozen once only: replay with changed
-    # governance/configuration cannot relabel already produced native deltas.
-    if session.scalar(text("select count(*) from shadow_runs where project_id=:id and payload->>'source_sha256'=:sha"), {"id": project.id, "sha": staged.sha256}):
-        raise ShadowRefused("source already frozen under a different shadow configuration")
+        return verified_shadow_payload(saved.payload, saved.payload_text, saved.output_sha256)
+    # A delivery/configuration has one receipt. Distinct external delivery
+    # versions are not conflated merely because their byte digests agree.
+    if session.scalar(text("select count(*) from shadow_runs where project_id=:id and payload->>'delivery_id'=:delivery and payload->>'source_configuration'=:configuration"),
+        {"id": project.id, "delivery": str(delivery.id), "configuration": source_configuration}):
+        raise ShadowRefused("delivery already frozen under different run authorization or retention")
     capture = capture_later_revision(session, project=project, staged=staged,
         envelope=envelope, principal=principal,
         is_complete_enumerative_source=is_complete_enumerative_source,
@@ -188,39 +187,24 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
     for row in session.scalars(select(ProposedDelta).where(ProposedDelta.id.in_(capture.delta_ids)).order_by(ProposedDelta.id)):
         item = {column.name: getattr(row, column.name) for column in ProposedDelta.__table__.columns}
         item["created_at"] = row.created_at.isoformat()
-        item["lifecycle"] = asdict(derive_live_delta_state(session, row.id))
-        if item["lifecycle"]["deferred_until"] is not None:
-            item["lifecycle"]["deferred_until"] = item["lifecycle"]["deferred_until"].isoformat()
         deltas.append(item)
-    provenance = session.scalars(text("""
-        select jsonb_build_object('fact_id',fs.fact_id,'role',fs.role,
-            'ordinal',fs.ordinal,'segment',to_jsonb(s))
-        from fact_sources fs join source_segments s on s.id=fs.source_segment_id
-        where fs.document_id=:document and fs.project_id=:project
-        order by fs.fact_id,fs.role,fs.ordinal
-    """), {"document": capture.document_id, "project": project.id}).all()
-    groups = session.scalars(text("""
-        select to_jsonb(g) from delta_groups g where g.project_id=:project
-        and g.document_id=:document order by g.id
-    """), {"document": capture.document_id, "project": project.id}).all()
     payload = {"version": VERSION, "identity": identity, "project_id": project.id,
         "customer": customer, "environment": environment, "source_configuration": source_configuration,
         "operator": principal.subject, "authorization": authorization.record_id,
-        "frozen_at": session.scalar(text("select clock_timestamp()")).isoformat(), "deletion_date": deletion_date.isoformat(),
+        "deletion_date": deletion_date.isoformat(),
         "provider_posture": "deterministic-no-model", "ingress": envelope.channel,
         "source_sha256": staged.sha256, "delivery_id": delivery.id,
-        "source_delivery_watermark": session.scalar(text("select coalesce(max(id),0) from source_deliveries")),
         "compatibility_receipt_sha256": compatibility_receipt.receipt_sha256,
         "compatibility_environment": compatibility["environment"],
         "document_id": capture.document_id, "fact_ids": list(capture.fact_ids),
         "accepted_baseline_revision": capture.accepted_baseline_revision,
-        "mapping": asdict(capture.field_mapping), "groups": groups,
+        "mapping": asdict(capture.field_mapping),
         "accounting": capture.accounting.as_payload(),
         "is_complete_enumerative_source": is_complete_enumerative_source,
         "row_accounting_sealed": row_accounting_sealed,
-        "source_provenance": provenance, "deltas": deltas}
+        "deltas": deltas}
     # JSON normalization also rejects non-serializable native contract changes.
     payload = json.loads(canonical_bytes(payload))
-    session.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:id,:project,cast(:payload as jsonb),:digest)"),
-        {"id": identity,"project": project.id,"payload": canonical_bytes(payload).decode(),"digest": digest(payload)})
-    return payload
+    saved = session.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:id,:project,cast(:payload as jsonb),'') returning payload, payload::text as payload_text, output_sha256"),
+        {"id": identity,"project": project.id,"payload": canonical_bytes(payload).decode()}).one()
+    return verified_shadow_payload(saved.payload, saved.payload_text, saved.output_sha256)
