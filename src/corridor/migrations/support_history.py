@@ -48,10 +48,13 @@ declare original operative_support; link evidence_links; fact facts; subject_uui
  scope_row support_scope_lineage; digest text; source_key text; result bigint;
  actor text; policy_identity text; policy_run bigint; policy_approval bigint; failure text;
  receipt automatic_carry_forward_receipts; active fact_decisions; revision bigint; prior_revision bigint;
- target_decision bigint; replacement bigint; previous_receipt bigint;
+ target_decision bigint; replacement bigint; previous_receipt bigint; locator_matches bigint; prior_native support_history_receipts;
 begin
  if session_user='corridor_web' and not coalesce(p_project=any(current_project_partition()),false) then
   raise exception 'support history outside project partition' using errcode='23514';
+ end if;
+ if p_batch is not null and current_setting('transaction_isolation')<>'read committed' then
+  raise exception 'support migration requires read committed post-lock visibility' using errcode='23514';
  end if;
  perform id from projects where id=p_project for update;
  select s.* into original from operative_support s join dependencies d on d.id=s.dependency_id
@@ -87,20 +90,38 @@ begin
   insert into support_scope_lineage(project_id,subject_id,legacy_dependency_id,field_name,fact_subject_key)
    values(p_project,subject_uuid,original.dependency_id,original.field_name,source_key) returning * into scope_row;
  end if;
- select r.id into result from support_history_receipts r join fact_decisions d on d.id=r.fact_decision_id
-  where r.scope_id=scope_row.id and r.batch_id is not distinct from p_batch
-   and r.original_scope_sha256=digest and r.outcome='native' and r.source_segment_id=p_segment
-   and d.superseded_by is null and d.disposition='include' order by r.id desc limit 1;
- if found then return result; end if;
+ if p_batch is null and not exists(select 1 from support_history_receipts admitted
+   where admitted.scope_id=scope_row.id and admitted.batch_id is not null and admitted.outcome='native'
+    and not exists(select 1 from legacy_history_reversals v where v.batch_id=admitted.batch_id)) then
+  raise exception 'support refresh requires an active reviewed native admission' using errcode='23514';
+ end if;
  select max(id) into previous_receipt from support_history_receipts where scope_id=scope_row.id;
- if p_segment is null or not exists(select 1 from source_segments where id=p_segment
-  and project_id=p_project and document_id=link.document_id and page_no=link.page_no
-  and exact_text=link.quote and kind in ('prose_span','pdf_span')
-  and content_sha256=encode(sha256(convert_to(exact_text,'UTF8')),'hex')) then
+ select * into prior_native from support_history_receipts where scope_id=scope_row.id and outcome='native' order by id desc limit 1;
+ select count(*) into locator_matches from source_segments
+  where project_id=p_project and document_id=link.document_id and page_no=link.page_no
+    and exact_text=link.quote and kind in ('prose_span','pdf_span')
+    and content_sha256=encode(sha256(convert_to(exact_text,'UTF8')),'hex');
+ if locator_matches>1 then failure:='ambiguous_exact_source_locator';
+ elsif locator_matches<>1 or p_segment is null or not exists(select 1 from source_segments where id=p_segment
+   and project_id=p_project and document_id=link.document_id and page_no=link.page_no
+   and exact_text=link.quote and kind in ('prose_span','pdf_span')
+   and content_sha256=encode(sha256(convert_to(exact_text,'UTF8')),'hex')) then
   failure:='missing_exact_source_locator';
  end if;
+ if prior_native.original_scope_sha256=digest and prior_native.source_segment_id=p_segment then
+  if not exists(select 1 from fact_decisions where id=prior_native.fact_decision_id and superseded_by is null and disposition='include') then
+   failure:=coalesce(failure,'native_authority_advanced');
+  elsif failure is null and prior_native.id=previous_receipt
+    and (p_batch is null or prior_native.batch_id is not distinct from p_batch) then
+   return prior_native.id;
+  end if;
+ end if;
  if valid_coordination_history_actor(original.designated_by) then
-  actor:=original.designated_by;
+  if session_user='corridor_worker' then
+   failure:=coalesce(failure,'worker_requires_recorded_policy_transfer');
+  else
+   actor:=original.designated_by;
+  end if;
  elsif original.designated_by='corridor:automatic-carry-forward' then
   select r.* into receipt from automatic_carry_forward_receipts r
    join audit_log a on a.id=r.audit_log_id

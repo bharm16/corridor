@@ -127,6 +127,7 @@ def native_publication_support(session: Session, dependency_ids) -> dict[tuple[i
           and exists(select 1 from support_history_receipts admitted where admitted.scope_id=l.id and admitted.batch_id is not null
             and admitted.outcome='native' and not exists(select 1 from legacy_history_reversals v where v.batch_id=admitted.batch_id))
           and support_scope_source(l.project_id,r.legacy_support_id)->>'digest'=r.original_scope_sha256
+          and jsonb_array_length(support_scope_source(l.project_id,r.legacy_support_id)->'segments')=1
           and s.content_sha256=encode(sha256(convert_to(s.exact_text,'UTF8')),'hex')
     """), {"ids": ids}).mappings()
     result = {}

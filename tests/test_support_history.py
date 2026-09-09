@@ -102,3 +102,47 @@ def test_missing_locator_is_an_explicit_gap_and_cannot_hide_as_native(session, s
     assert [(row["outcome"], row["reason"]) for row in receipts] == [("retained_compatibility", "missing_exact_source_locator")]
     assert native_publication_support(session, (dependency.id,)) == {}
     assert support_scope_identities(session, project.id)[0].reason == "missing_exact_source_locator"
+
+
+def test_direct_sql_cannot_replay_old_human_support_over_a_later_native_decision(session, support_case):
+    from corridor.fact_decisions import record_human_fact_decision
+    from corridor.facts import append_supporting_documentation_fact
+    from corridor.models import Fact
+
+    project, dependency, _document, segment, _link, scope, batch = support_case
+    receipt = migrate_support_history(session, batch)[0]
+    original_fact = session.get(Fact, session.scalar(text("select fact_id from fact_decisions where id=:id"), {"id": receipt["fact_decision_id"]}))
+    record_human_fact_decision(session, original_fact, principal=HumanPrincipal("local:later-authority"),
+        command_type="resolve_support", disposition="restore", idempotency_key="later-native-support-withdrawal",
+        expected_predecessor=receipt["fact_decision_id"])
+    before = session.scalar(text("select count(*) from fact_decisions where project_id=:p"), {"p": project.id})
+    descriptor = session.scalar(text("select support_scope_source(:p,:s)"), {"p": project.id, "s": scope.id})
+    outcome_id = session.scalar(text("select refresh_support_scope(:p,:s,:f,:segment,:digest)"),
+        {"p": project.id, "s": scope.id, "f": original_fact.id, "segment": segment.id, "digest": descriptor["digest"]})
+    assert session.scalar(text("select reason from support_history_receipts where id=:id"), {"id": outcome_id}) == "native_authority_advanced"
+    assert session.scalar(text("select count(*) from fact_decisions where project_id=:p"), {"p": project.id}) == before
+    assert native_publication_support(session, (dependency.id,)) == {}
+    # Repeating after the refusal must remain a refusal, not turn the gap
+    # receipt itself into a route around the original-act replay check.
+    assert session.scalar(text("select refresh_support_scope(:p,:s,:f,:segment,:digest)"),
+        {"p": project.id, "s": scope.id, "f": original_fact.id, "segment": segment.id, "digest": descriptor["digest"]}) == outcome_id
+
+
+def test_direct_sql_cannot_select_an_arbitrary_duplicate_locator_or_refresh_withdrawn_admission(session, support_case):
+    from sqlalchemy.exc import DBAPIError
+
+    project, dependency, document, segment, _link, scope, batch = support_case
+    receipt = migrate_support_history(session, batch)[0]
+    fact_id = session.scalar(text("select fact_id from fact_decisions where id=:id"), {"id": receipt["fact_decision_id"]})
+    duplicate = SourceSegment(project_id=project.id, document_id=document.id, kind="prose_span", exact_text=segment.exact_text,
+        content_sha256=segment.content_sha256, ordinal=3, page_no=1, start_offset=100, end_offset=100+len(segment.exact_text))
+    session.add(duplicate)
+    session.flush()
+    descriptor = session.scalar(text("select support_scope_source(:p,:s)"), {"p": project.id, "s": scope.id})
+    outcome_id = session.scalar(text("select refresh_support_scope(:p,:s,:f,:segment,:digest)"),
+        {"p": project.id, "s": scope.id, "f": fact_id, "segment": segment.id, "digest": descriptor["digest"]})
+    assert session.scalar(text("select reason from support_history_receipts where id=:id"), {"id": outcome_id}) == "ambiguous_exact_source_locator"
+    reverse_history(session, batch, actor=session.scalar(text("select session_user")), reason="withdraw native admission")
+    with pytest.raises(DBAPIError, match="active reviewed native admission"), session.begin_nested():
+        session.execute(text("select refresh_support_scope(:p,:s,:f,:segment,:digest)"),
+            {"p": project.id, "s": scope.id, "f": fact_id, "segment": segment.id, "digest": descriptor["digest"]})
