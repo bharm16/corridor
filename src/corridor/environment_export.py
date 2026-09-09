@@ -18,7 +18,7 @@ import subprocess
 import tarfile
 import tempfile
 
-from corridor.environment_disposition import DispositionRefused
+from corridor.disposition_contracts import DispositionRefused, json_digest as digest
 from corridor.principals import require_human_principal
 
 
@@ -48,7 +48,6 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
     The function executes pg_dump, checks its exit status, preserves all object
     versions/delete markers, then repeats object inventory and the freeze guard.
     """
-    from corridor.aws_environment_disposition import digest
     actor = require_human_principal(principal).subject
     if "custody" in inventory:
         raise DispositionRefused("export inventory must precede its custody receipt")

@@ -54,6 +54,12 @@ from corridor.control_plane import (
     EnvironmentRegistration,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.disposition_contracts import (
+    AwsDispositionResources,
+    DispositionRefused,
+    EnvironmentDestructionError,
+    require_no_rds_replicas,
+)
 
 
 # The one server-owned handler key this disposition runs under. It matches
@@ -79,14 +85,6 @@ _PROVIDER_METHOD = {
     "backups": "expire_backups",
 }
 _PLAN_STATUSES = frozenset({"dry_run", "executed", "refused", "partial"})
-
-
-class DispositionRefused(ValueError):
-    """A hold, retention obligation, open reference, or stale plan stopped disposition."""
-
-
-class EnvironmentDestructionError(RuntimeError):
-    """A provider-native destruction step failed; the sequence is resumable."""
 
 
 @dataclass(frozen=True)
@@ -281,42 +279,6 @@ class SyntheticEnvironmentDestroyer:
         return f"synthetic:{registration.environment_id}/backups-expire-{stamp}"
 
 
-@dataclass(frozen=True)
-class AwsDispositionResources:
-    """Exact provider inventory approved beside the disposition plan.
-
-    An RDS instance identifier is not the SQL database name. Retain both the
-    ARN and immutable DbiResourceId so identifier reuse cannot delete a new DB.
-    This profile covers same-region RDS backups, one S3 namespace and dedicated
-    customer-managed keys. Other stores/copies require a wider inventory first.
-    """
-
-    customer_id: str
-    environment_id: str
-    deployment_id: str
-    account_id: str
-    region: str
-    database_host: str
-    database_port: int
-    database_name: str
-    db_instance_identifier: str
-    db_instance_arn: str
-    db_resource_id: str
-    object_namespace_ref: str
-    final_snapshot_identifier: str
-    kms_key_arns: tuple[str, ...]
-    whole_environment: dict[str, Any] | None = None
-
-    def require_registration(self, registration: EnvironmentRegistration) -> None:
-        for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
-            if getattr(self, name) != getattr(registration, name):
-                raise DispositionRefused("AWS resource inventory differs from the registered environment")
-
-    @property
-    def sha256(self) -> str:
-        return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
 class AwsEnvironmentDestroyer:
     """Verified AWS deletion, with pending work returned as resumable failure.
 
@@ -381,7 +343,6 @@ class AwsEnvironmentDestroyer:
         row = rows[0]
         if (row.get("DBInstanceArn"), row.get("DbiResourceId")) != (resource.db_instance_arn, resource.db_resource_id):
             raise DispositionRefused("RDS identifier now names a different physical instance")
-        from corridor.aws_environment_disposition import require_no_rds_replicas
         require_no_rds_replicas(row)
         if row.get("DBInstanceStatus") == "deleting":
             raise EnvironmentDestructionError("RDS deletion is still pending")

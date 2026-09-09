@@ -13,11 +13,12 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from dataclasses import asdict, replace
-from hashlib import sha256
 import json
 
-from corridor.environment_disposition import (
-    AwsEnvironmentDestroyer, DispositionRefused, EnvironmentDestructionError,
+from corridor.environment_disposition import AwsEnvironmentDestroyer
+from corridor.disposition_contracts import (
+    DispositionRefused, EnvironmentDestructionError,
+    json_digest as digest, provider_rows, require_no_rds_replicas,
 )
 
 # Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
@@ -33,30 +34,6 @@ _STATELESS_TYPES = frozenset({"AWS::S3::BucketPolicy", "AWS::IAM::Role", "AWS::I
     "AWS::SecretsManager::SecretTargetAttachment", "AWS::CloudWatch::Alarm",
     "AWS::ApplicationAutoScaling::ScalableTarget", "AWS::ApplicationAutoScaling::ScalingPolicy",
     "AWS::CDK::Metadata"})
-
-
-def digest(value) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
-def _pages(client, operation, field, **parameters):
-    return [row for page in client.get_paginator(operation).paginate(**parameters)
-            for row in page.get(field, [])]
-
-
-def rds_replica_relationships(row):
-    """Keep the provider's physical-source replication relationships explicit."""
-    return {"db_resource_id": row["DbiResourceId"],
-            "read_replica_instances": sorted(row.get("ReadReplicaDBInstanceIdentifiers", [])),
-            "read_replica_clusters": sorted(row.get("ReadReplicaDBClusterIdentifiers", [])),
-            "read_replica_source": row.get("ReadReplicaSourceDBInstanceIdentifier")}
-
-
-def require_no_rds_replicas(row):
-    observed = rds_replica_relationships(row)
-    if observed["read_replica_instances"] or observed["read_replica_clusters"] or observed["read_replica_source"]:
-        raise DispositionRefused("live RDS replicas require expanded custody and disposition inventory")
-    return observed
 
 
 def observe_stack_inventory(clients, resources, *, application_stack_id, data_stack_id):
@@ -83,7 +60,7 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
                      "ArtifactBucketName": resources.object_namespace_ref.removeprefix("s3:").rstrip("/")})
         if any(outputs.get(key) != value for key, value in expected.items()):
             raise DispositionRefused("stack outputs do not bind this registered environment")
-        rows = _pages(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
+        rows = provider_rows(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
         for row in rows:
             if row["ResourceType"] not in _DATA_TYPES | _STATELESS_TYPES:
                 raise DispositionRefused(f"uncovered stack resource type: {row['ResourceType']}")
@@ -101,10 +78,10 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
     if len(clusters) != 1:
         raise DispositionRefused("selected platform requires exactly one application cluster")
     bucket_names = {r["physical_id"] for r in result if r["type"] == "AWS::S3::Bucket"}
-    buckets = {r["Name"]: r["CreationDate"].isoformat() for r in _pages(clients["s3"], "list_buckets", "Buckets") if r["Name"] in bucket_names}
+    buckets = {r["Name"]: r["CreationDate"].isoformat() for r in provider_rows(clients["s3"], "list_buckets", "Buckets") if r["Name"] in bucket_names}
     if set(buckets) != bucket_names:
         raise DispositionRefused("declared buckets are not all positively observed in the customer account")
-    source_rows = _pages(clients["rds"], "describe_db_instances", "DBInstances",
+    source_rows = provider_rows(clients["rds"], "describe_db_instances", "DBInstances",
                          Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
     if len(source_rows) != 1 or source_rows[0].get("DBInstanceArn") != resources.db_instance_arn:
         raise DispositionRefused("replica inventory must observe the approved physical source database")
@@ -241,7 +218,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             # may still be draining a writer, and an already submitted task may
             # become runnable after an export is frozen.
             for desired in ("RUNNING", "PENDING"):
-                if _pages(ecs, "list_tasks", "taskArns", cluster=cluster, desiredStatus=desired):
+                if provider_rows(ecs, "list_tasks", "taskArns", cluster=cluster, desiredStatus=desired):
                     raise DispositionRefused("application tasks must be drained before export or deletion")
             services = self._ids("AWS::ECS::Service")
             for start in range(0, len(services), 10):
@@ -255,7 +232,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         inv = self._inventory()
         known = {(r["stack_id"], r["logical_id"]): (r["type"], r["physical_id"]) for r in inv["resources"]}
         for stack_id in (inv["application_stack_id"], inv["data_stack_id"]):
-            rows = _pages(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
+            rows = provider_rows(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
             for row in rows:
                 if row["ResourceStatus"] == "DELETE_COMPLETE":
                     continue
@@ -271,7 +248,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         from the source region's empty list.
         """
         resources = self.resources
-        source_rows = _pages(self._clients["rds"], "describe_db_instances", "DBInstances",
+        source_rows = provider_rows(self._clients["rds"], "describe_db_instances", "DBInstances",
                              Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
         relationships = {"db_resource_id": resources.db_resource_id, "source_absent": True}
         if source_rows:
@@ -288,16 +265,16 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             for name in ("rds", "backup"):
                 if clients[name].meta.region_name != region:
                     raise DispositionRefused("backup client region differs from inventory")
-            snapshots = _pages(clients["rds"], "describe_db_snapshots", "DBSnapshots",
+            snapshots = provider_rows(clients["rds"], "describe_db_snapshots", "DBSnapshots",
                 SnapshotType="manual", Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
-            backups = _pages(clients["rds"], "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resources.db_resource_id)
+            backups = provider_rows(clients["rds"], "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resources.db_resource_id)
             if region != resources.region and (snapshots or backups):
                 raise DispositionRefused("remote RDS copies require expanded custody and disposition inventory")
             for snapshot in snapshots:
                 attributes = clients["rds"].describe_db_snapshot_attributes(DBSnapshotIdentifier=snapshot["DBSnapshotIdentifier"])["DBSnapshotAttributesResult"]
                 if any(a.get("AttributeValues") for a in attributes.get("DBSnapshotAttributes", []) if a["AttributeName"] == "restore"):
                     raise DispositionRefused("shared snapshot requires external copy custody inventory")
-            if _pages(clients["backup"], "list_recovery_points_by_resource", "RecoveryPoints", ResourceArn=resources.db_instance_arn):
+            if provider_rows(clients["backup"], "list_recovery_points_by_resource", "RecoveryPoints", ResourceArn=resources.db_instance_arn):
                 raise DispositionRefused("AWS Backup recovery points require expanded disposition inventory")
         s3 = self._clients["s3"]
         for bucket in self._ids("AWS::S3::Bucket"):
@@ -326,7 +303,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         return relationships
 
     def _owned_buckets(self):
-        rows = _pages(self._clients["s3"], "list_buckets", "Buckets")
+        rows = provider_rows(self._clients["s3"], "list_buckets", "Buckets")
         expected = self._inventory().get("bucket_creation_dates", {})
         for row in rows:
             if row["Name"] in self._ids("AWS::S3::Bucket") and (
@@ -357,7 +334,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             self._require_quiescent()
             self._delete_stack(self._inventory()["application_stack_id"])
         rds = self._clients["rds"]
-        rows = _pages(rds, "describe_db_instances", "DBInstances", Filters=[{"Name": "dbi-resource-id", "Values": [self.resources.db_resource_id]}])
+        rows = provider_rows(rds, "describe_db_instances", "DBInstances", Filters=[{"Name": "dbi-resource-id", "Values": [self.resources.db_resource_id]}])
         for row in rows:
             if row.get("DbiResourceId") != self.resources.db_resource_id or row.get("DBInstanceArn") != self.resources.db_instance_arn:
                 raise DispositionRefused("database physical identity changed")
@@ -396,7 +373,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         logs = self._clients["logs"]
         pending = False
         for group in self._ids("AWS::Logs::LogGroup") + self._inventory()["implicit_log_groups"]:
-            rows = _pages(logs, "describe_log_groups", "logGroups", logGroupNamePrefix=group)
+            rows = provider_rows(logs, "describe_log_groups", "logGroups", logGroupNamePrefix=group)
             if any(row["logGroupName"] == group for row in rows):
                 self._mutate(logs.delete_log_group, logGroupName=group)
                 pending = True

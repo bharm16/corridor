@@ -11,8 +11,7 @@ from dataclasses import asdict
 from datetime import datetime
 import re
 
-from corridor.aws_environment_disposition import digest
-from corridor.environment_disposition import DispositionRefused
+from corridor.disposition_contracts import DispositionRefused, json_digest as digest
 
 
 _REQUIRED_PHASES = ("restore", "state_verification", "cleanup", "backup_expiration")

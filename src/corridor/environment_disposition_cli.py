@@ -19,7 +19,8 @@ import sys
 import tempfile
 from types import SimpleNamespace
 
-from corridor.aws_environment_disposition import AwsStackEnvironmentDestroyer, digest, observe_stack_inventory
+from corridor.aws_environment_disposition import AwsStackEnvironmentDestroyer, observe_stack_inventory
+from corridor.disposition_contracts import json_digest as digest
 from corridor.control_plane import ControlPlane
 from corridor.disposition_evidence import disposition_gate_payload
 from corridor.environment_disposition import (
