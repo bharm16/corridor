@@ -145,8 +145,9 @@ reader was proved. `compatibility` means active routing cannot retire yet.
   evidence identity at capture.
 
 **Historical support limitation:** operative_support was mutated in place,
-including designated_by/designated_at. A previous designation can only be
-reconstructed when a retained audit/transfer/decision receipt contains it. The
+including designated_by/designated_at. Retained audit and transfer receipts can
+describe a previous designation, but only protected decision evidence can
+authenticate its original acceptance authority. The
 current support API therefore names its supported capture instant; it does not
 invent arbitrary earlier readings. Generic mutable Dependency as-of reconstruction
 is also not certified by this batch. Existing preserved receipts remain available
@@ -176,6 +177,14 @@ these contracts intentionally retain output shape. Field-origin declarations are
 comparison inputs; they are not independent proof of a native production read
 path. Actual reader integration and architecture enforcement remain required.
 
+`collect_native_reader_coverage` observes the public readers and project-scoped
+database populations at a current and selected historical revision. It refuses
+provider-backed storage, reports unsupported classes and source readback gaps,
+and detects authority drift during collection. The comparison entry point
+`compare_native_reader_surfaces` collects native evidence itself and preserves
+every collection blocker. Its reference readings still require independent
+retained custody; matching a native reading against itself proves no migration.
+
 `legacy_cutover.assess_cutover` evaluates declared start/end, cohort, traffic
 owner, decision authority, zero-divergence threshold and maximum observation gap.
 Missing cohort samples, duplicate/out-of-window observations and divergence fail
@@ -196,6 +205,8 @@ outcomes. `reverse --batch ... --executor ... --reason ...` appends the reversal
 SHA-256, allowing offline verification without reproducing JSONB key order.
 Every action requires `--project` and `--output`; exports contain source/history
 content and belong in the customer's retained custody namespace.
+Publication uses an owner-only temporary file and atomic replacement. Symlink
+destinations are refused; a failed publication preserves the previous export.
 
 Validation seams are `test_legacy_history.py`, `test_legacy_history_readings.py`,
 `test_reader_coverage.py`, `test_legacy_cutover.py`, `test_current_record.py`, and
