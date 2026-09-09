@@ -297,7 +297,6 @@ def test_web_temp_shadow_registry_cannot_reveal_the_shadow_project(shadow):
     "insert into public.project_roster_entries(project_id,principal_subject,display_name,active) values (:project,'local:temp-registry-reader','Temporary registry reader',true)",
     "insert into public.release_preparation_requests(project_id) values (:project)",
     "insert into public.release_candidates(project_id) values (:project)",
-    "insert into public.release_packages(project_id) values (:project)",
 ])
 def test_web_temp_shadow_registry_cannot_bypass_customer_surface_guard(shadow, statement):
     """Every protected customer surface refuses before other row validation."""

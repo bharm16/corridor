@@ -23,7 +23,7 @@ create table public.shadow_runs (
     recorded_at timestamptz not null default now()
 );
 create function public.seal_shadow_run() returns trigger
-language plpgsql security definer set search_path = pg_catalog, public as $$
+language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 declare
     scope record;
     delivery record;
@@ -154,9 +154,9 @@ revoke all on public.shadow_projects, public.shadow_runs from public, corridor_w
 grant select on public.shadow_projects, public.shadow_runs to corridor_worker;
 grant insert on public.shadow_runs to corridor_worker;
 create function public.guard_shadow_customer_surface() returns trigger
-language plpgsql security definer set search_path = public as $$
+language plpgsql security definer set search_path = pg_catalog, public, pg_temp as $$
 begin
-    if exists (select 1 from shadow_projects where project_id = new.project_id) then
+    if exists (select 1 from public.shadow_projects where project_id = new.project_id) then
         raise exception 'shadow project cannot enter customer coordination or release' using errcode = '42501';
     end if;
     return new;
@@ -171,8 +171,8 @@ for each row execute function public.guard_shadow_customer_surface();
 create trigger shadow_release_package before insert or update on public.release_packages
 for each row execute function public.guard_shadow_customer_surface();
 create function public.shadow_project_visible(p_id bigint) returns boolean
-language sql stable security definer set search_path = public as $$
-select not exists (select 1 from shadow_projects where project_id = p_id)
+language sql stable security definer set search_path = pg_catalog, public, pg_temp as $$
+select not exists (select 1 from public.shadow_projects where project_id = p_id)
 $$;
 revoke all on function public.shadow_project_visible(bigint) from public;
 grant execute on function public.shadow_project_visible(bigint) to corridor_web;
@@ -181,7 +181,8 @@ create policy shadow_project_acl on public.projects for all to public
 using (true) with check (true);
 create policy shadow_projects_hidden on public.projects as restrictive
 for select to corridor_web using (public.shadow_project_visible(id));
-create function public.preserve_shadow_receipt() returns trigger language plpgsql as $$
+create function public.preserve_shadow_receipt() returns trigger language plpgsql
+set search_path = pg_catalog, public, pg_temp as $$
 begin raise exception 'shadow registry and receipts are immutable' using errcode = '42501'; end; $$;
 revoke all on function public.preserve_shadow_receipt() from public;
 create trigger immutable_shadow_project before update or delete on public.shadow_projects
