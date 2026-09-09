@@ -25,3 +25,13 @@ reduces elapsed time; these partition calculations do not promise a passing gate
 This run also delayed one ordinary hosted runner roughly 37 seconds before its
 first action. The wheel cache itself restored approximately 167 MiB successfully.
 That provisioning delay is distinct from package installation and collection.
+
+The same run's migration command measured 47.83 seconds, above its unchanged
+45-second limit. Its consolidated-baseline downgrade-refusal case spent 6.42
+seconds first building a fresh current head and then undoing the successor before
+reaching the actual baseline refusal. That case now clones the existing supported
+baseline template, checks its actual starting head, and exercises the same
+baseline-to-base refusal. The distinct fresh-current-head fingerprint and exact
+supported upgrade/downgrade tests remain unchanged. This removes duplicate setup
+and successor rollback from the refusal case; CI still measures the migration
+budget and runs every required migration test.
