@@ -11,6 +11,7 @@ events refuse the pass instead of silently advancing past missing evidence.
 from copy import deepcopy
 from dataclasses import dataclass
 from hashlib import sha256
+import json
 from typing import Any, Mapping, Protocol
 from urllib.parse import quote, urlsplit
 
@@ -71,6 +72,13 @@ class RecordedGraphTransport:
             return self._versions[item_id, version_id]
         except KeyError:
             raise ValueError("recorded exact version unavailable; checkpoint unchanged") from None
+
+    @property
+    def content_sha256(self) -> str:
+        return sha256(json.dumps({"pages": self._pages, "versions": [
+            [item, version, sha256(body).hexdigest()]
+            for (item, version), body in sorted(self._versions.items())
+        ]}, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 class Microsoft365PullConnector:
@@ -135,7 +143,7 @@ class Microsoft365PullConnector:
                     raise ValueError("Graph item is outside the configured location")
                 version, name = row.get("eTag"), row.get("name")
             else:
-                if row.get("isDraft"):
+                if row.get("isDraft") is not False:
                     raise ValueError("Graph draft is not inbound shared-mailbox evidence")
                 version = row.get("changeKey")
                 name = sha256(native_id.encode()).hexdigest() + ".eml"

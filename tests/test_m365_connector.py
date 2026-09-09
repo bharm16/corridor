@@ -26,7 +26,7 @@ def test_recorded_mail_retains_exact_mime_thread_and_workbook_attachment(session
     from corridor.config import settings
     from corridor.connectors.microsoft365 import GraphLocation, RecordedGraphTransport, Microsoft365PullConnector
     from corridor.m365_replay import replay_graph
-    from corridor.models import Project, Document, InboundMessage, SourceDelivery, ProjectRecordRevision
+    from corridor.models import Project, Document, InboundMessage, SourceDelivery, ProjectRecordRevision, ConnectorCheckpointAdvance, ConnectorCheckpointAdvanceDelivery
     from corridor.object_storage import content_store
 
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
@@ -43,33 +43,53 @@ def test_recorded_mail_retains_exact_mime_thread_and_workbook_attachment(session
     message.set_content("We will finish in October.")
     message.add_attachment(attachment, maintype="application", subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="matrix.xlsx")
     raw = message.as_bytes()
+    reply = EmailMessage(policy=SMTP)
+    reply["From"], reply["To"] = "utility@example.test", "project@example.test"
+    reply["Message-ID"], reply["References"] = "<reply@example.test>", "<first@example.test>"
+    reply.set_content("Confirming the October timing.")
     project = Project(slug="graph-recording-mail", name="Graph fixture", is_synthetic=True)
     session.add(project)
     session.flush()
     session.execute(text("set local role corridor_worker"))
     location = GraphLocation("tenant", "mailbox", "shared-project", "inbox", "shared")
-    pages = {location.delta_url: {"value": [{"id": "immutable-message", "changeKey": "change-one", "isDraft": False}],
+    pages = {location.delta_url: {"value": [{"id": "immutable-message", "changeKey": "change-one", "isDraft": False},
+        {"id": "immutable-reply", "changeKey": "change-two", "isDraft": False}],
         "@odata.deltaLink": location.delta_url + "?$deltatoken=one"}}
 
     def replay():
         connector = Microsoft365PullConnector(location, RecordedGraphTransport(pages=pages,
-            versions={("immutable-message", "change-one"): raw}))
+            versions={("immutable-message", "change-one"): raw, ("immutable-reply", "change-two"): reply.as_bytes()}))
         return replay_graph(session, project=project, customer="fixture", connector=connector,
-            run_identity="mail-fixture", attachment_doc_types={sha256(attachment).hexdigest(): "matrix"})
+            run_identity="mail-fixture", attachment_doc_types={"immutable-message": {sha256(attachment).hexdigest(): "matrix"}})
 
     with session.begin_nested() as crash:
         replay()
         crash.rollback()
     first, repeated = replay(), replay()
     assert first == repeated
+    assert first["registered"][0]["thread_id"] == first["registered"][1]["thread_id"]
+    advance = session.scalar(select(ConnectorCheckpointAdvance).where(ConnectorCheckpointAdvance.schedule_id == first["schedule_id"]))
+    assert advance.checkpoint_token == first["checkpoint_token"]
+    assert session.scalar(select(func.count(ConnectorCheckpointAdvanceDelivery.id)).where(ConnectorCheckpointAdvanceDelivery.advance_id == advance.id)) == 2
     inbound = session.get_one(InboundMessage, first["registered"][0]["message_id"])
     delivery = session.get_one(SourceDelivery, inbound.push_delivery_id)
     assert inbound.route_evidence_json["boundary"] == "pull_configuration"
     assert content_store().get(delivery.bytes_reference, sha256=delivery.content_sha256) == raw
     assert inbound.headers_json["message_id"] == "<first@example.test>"
     assert inbound.attachments_json[0]["document_id"] is not None
-    assert session.scalar(select(func.count(Document.id)).where(Document.project_id == project.id)) == 2
+    assert session.scalar(select(func.count(Document.id)).where(Document.project_id == project.id)) == 3
     assert session.scalar(select(func.count(ProjectRecordRevision.id)).where(ProjectRecordRevision.project_id == project.id)) == 0
+
+    next_token = location.delta_url + "?$deltatoken=two"
+    def next_round():
+        return replay_graph(session, project=project, customer="fixture", run_identity="next-round",
+            connector=Microsoft365PullConnector(location, RecordedGraphTransport(
+                pages={first["checkpoint_token"]: {"value": [], "@odata.deltaLink": next_token}}, versions={})))
+    assert next_round() == next_round()
+    from corridor.source_delivery import current_checkpoint_token
+    assert current_checkpoint_token(session, first["schedule_id"]) == next_token
+    assert replay() == first
+    assert current_checkpoint_token(session, first["schedule_id"]) == next_token
 
     library = GraphLocation("tenant", "library", "drive")
     library_connector = Microsoft365PullConnector(library, RecordedGraphTransport(
@@ -131,5 +151,17 @@ def test_incomplete_or_unhandled_graph_round_never_advances(page):
     connector = Microsoft365PullConnector(location, RecordedGraphTransport(
         pages={location.delta_url: {**page, "@odata.deltaLink": location.delta_url + "?$deltatoken=one"}}, versions={}))
     with pytest.raises(ValueError):
+        connector.list_changes()
+    assert connector.current_checkpoint is None
+
+
+@pytest.mark.parametrize("draft_fields", [{}, {"isDraft": None}, {"isDraft": 0}, {"isDraft": ""}, {"isDraft": True}])
+def test_mail_requires_explicit_non_draft_status(draft_fields):
+    from corridor.connectors.microsoft365 import GraphLocation, RecordedGraphTransport, Microsoft365PullConnector
+    location = GraphLocation("tenant", "mailbox", "shared", "inbox", "shared")
+    connector = Microsoft365PullConnector(location, RecordedGraphTransport(
+        pages={location.delta_url: {"value": [{"id": "message", "changeKey": "v1", **draft_fields}],
+            "@odata.deltaLink": location.delta_url + "?$deltatoken=one"}}, versions={}))
+    with pytest.raises(ValueError, match="draft"):
         connector.list_changes()
     assert connector.current_checkpoint is None

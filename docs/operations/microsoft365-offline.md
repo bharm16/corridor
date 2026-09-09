@@ -2,8 +2,8 @@
 
 The #497 offline build implements the four-method PullConnector contract for
 one explicitly configured SharePoint/OneDrive library or one shared-mailbox
-folder. It has no credential discovery, network implementation, or installed
-live polling factory. Personal mailboxes are refused. The replay command accepts
+folder. It has no credential discovery or network implementation. Its registered
+offline factory refuses automatic execution. Personal mailboxes are refused. The replay command accepts
 only synthetic projects and recorded transports.
 
 ```bash
@@ -11,16 +11,19 @@ make m365-replay ARGS="tests/fixtures/m365-mail-recording.json --project-id 1 --
 ```
 
 Use an existing synthetic project's ID. Output is printed only after the
-database transaction commits. Keep the returned `checkpoint_token` and pass it
-with `--cursor` when replaying the next recorded round. A failed transaction
-prints no advance. The normal Source Delivery ledger retains each outcome;
+database transaction commits. A disabled connector configuration owns the
+normal append-only checkpoint history, including the covered delivery IDs.
+The next recorded round starts at that durable checkpoint; optional `--cursor`
+must agree with it. A failed transaction records and prints no advance.
+The normal Source Delivery ledger retains each outcome;
 retrying the same recording converges on the same delivery and source records.
 
 The recording contains `location`, a `pages` map keyed by exact Graph request
 URL, and `versions`, each with native `item_id`, `version_id`, `body_base64`,
 and `sha256`. Library records also require a `doc_types` map from native file ID
-to the configured source type. Optional `attachment_doc_types` maps MIME part
-digests to their configured source types. MIME is the exact recorded response
+to the configured source type. Optional `attachment_doc_types` maps native
+message IDs to a per-message map of MIME part digests and configured source
+types. Unknown messages or absent part digests refuse. MIME is the exact recorded response
 to the message's `$value` request, never reconstructed from Graph JSON.
 
 Each item retains its tenant/resource/item identity, native eTag or changeKey,
