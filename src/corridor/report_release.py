@@ -38,6 +38,7 @@ from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_reading import validate_frozen_reading
 from corridor.project_reading import FrozenProjectReading
 from corridor.presentation import label, provenance_label
+from corridor.accepted_field_reading import visible_native_statements, native_field_visible
 from corridor.report import Report, assert_no_bare_cells, build_report, render
 
 if TYPE_CHECKING:
@@ -543,6 +544,7 @@ def _record_context(report: Report, *, report_run: ReportRun | None) -> dict:
         "Assertion": "Assertion",
         "Derivation": "Derivation",
         "WorkDecision": "Work Decision",
+        "RecordDecision": "Record Decision",
         "Verbal": "Verbal",
     }
     provenance_classes = sorted(
@@ -572,6 +574,25 @@ def _record_context(report: Report, *, report_run: ReportRun | None) -> dict:
         ],
         "document_only": report.document_only,
     }
+    if report.evaluation.native_population is not None:
+        native = report.evaluation.native_population
+        section = next((section for section in report.sections if section.title == "Accepted statements"), None)
+        visible = tuple(section.rows) if section is not None else ()
+        displayed_statements = visible_native_statements(native, document_only=report.document_only)
+        if len(visible) != len(displayed_statements):
+            raise ReleaseRefusal("native statement identities differ from the frozen visible rows")
+        from corridor.accepted_field_reading import native_reader_input_manifest
+
+        context["native_population_sha256"] = native.fingerprint
+        context["native_reader_input_manifest"] = native_reader_input_manifest(native, document_only=report.document_only)
+        context["native_statement_display"] = [{"subject_key": statement.subject_key,
+            "reading_revision_id": native.revision_id,
+            "field_decisions": {name: {"fact_id": field.fact_id, "decision_id": field.decision_id,
+                "revision_id": field.revision_id, "actor": field.actor,
+                "source_segment_ids": [source.source_segment_id for source in field.sources]}
+                for name, field in statement.fields.items() if native_field_visible(field, document_only=report.document_only)},
+            "report_fields": {cell.label: cell.value for cell in row}}
+            for statement, row in zip(displayed_statements, visible, strict=True)]
     if report_run is not None:
         context["report_run"] = {
             "id": report_run.id,
@@ -639,7 +660,8 @@ def _party_statement_report_fields(report: Report) -> dict[int, dict[str, str]]:
 def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> None:
     """Prove retained statement fields are visible in the exact prepared bytes."""
     displays = tuple(context.get("party_statement_display", ()))
-    if not displays:
+    native_displays = tuple(context.get("native_statement_display", ()))
+    if not displays and not native_displays:
         return
     try:
         visible_text = reader_independent_text(
@@ -662,6 +684,12 @@ def _validate_party_statement_pdf_context(pdf_bytes: bytes, context: dict) -> No
             expected_pairs[
                 reader_independent_text(f"{field_labels[field_id]} {value}")
             ] += 1
+    for display in native_displays:
+        fields = display.get("report_fields")
+        if not isinstance(fields, dict) or not fields.get("Accepted wording") or not display.get("field_decisions"):
+            raise ReleaseRefusal("frozen native statement fields are incomplete")
+        for field_label, value in fields.items():
+            expected_pairs[reader_independent_text(f"{field_label} {value}")] += 1
     if any(
         visible_text.count(expected) < count
         for expected, count in expected_pairs.items()

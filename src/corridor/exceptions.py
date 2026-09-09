@@ -443,9 +443,9 @@ def evaluate_native_population(population: AcceptedFieldPopulation, *, today=Non
         raise NativeReadingRefused("native accepted dates cannot be replaced by a caller's scalar overrides")
     found = []
     for record in population.open_records:
-        dated = [source.document_date for source in record.source_passages if source.document_date]
+        dated = [source.document_date for source in record.checked_source_passages if source.document_date]
         facts = _Facts(record, is_ready=False, readiness_lapsed=False,
-            has_verified_evidence=bool(record.source_passages),
+            has_verified_evidence=bool(record.checked_source_passages),
             last_evidenced_at=max(dated) if dated else None, has_closure=record.is_closed,
             contradicted_fields=[], superseded_scopes=())
         found.extend(_apply(facts, today, thresholds, committed_date=publication.committed_dates[record.id]))

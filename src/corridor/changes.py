@@ -64,7 +64,7 @@ from corridor.models import (
 )
 from corridor.report_diff_reference import BaselineDrift, baseline_for_run
 from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal, read_entries, digest_is_intact
-from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text
+from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text, visible_native_statements, native_field_visible
 
 
 @dataclass
@@ -287,6 +287,20 @@ def native_reading_snapshot(evaluation: Evaluation) -> dict:
                 for name, field in record.fields.items()},
         } for record in population.open_records},
         "external_party_commitments": {},
+        "accepted_statements": [{"subject_key": statement.subject_key,
+            "reading_revision_id": statement.reading_revision_id,
+            "fields": {name: {"value": str(field.value), "fact_id": field.fact_id,
+                "fact_subject_key": field.fact_subject_key, "decision_id": field.decision_id,
+                "revision_id": field.revision_id, "actor": field.actor,
+                "source_segment_ids": [source.source_segment_id for source in field.sources]}
+                for name, field in statement.fields.items() if native_field_visible(field, document_only=evaluation.statement_publication.document_only)},
+            "coverage_blockers": list(statement.coverage_blockers)}
+            for statement in visible_native_statements(population, document_only=evaluation.statement_publication.document_only)],
+        "inactive_record_decisions": {**{record.subject_key: {"state": "removed" if record.removal_decision_id else "closed",
+            "decision_id": record.removal_decision_id or record.fields["closure_result"].decision_id}
+            for record in population.records if record.removal_decision_id is not None or record.is_closed},
+            **{subject: {"state": "reversed", "decision_kind": "delta_review_packet_reversal", "decision_id": identity}
+                for subject, identity in population.withdrawn_subjects}},
         "follow_up_plan_scope": population.follow_up_scope,
         "follow_up_plans": [{"plan_id": plan.plan_id, "delta_id": plan.delta_id, "revision_id": plan.revision_id,
             "target_subject_identity": plan.target_subject_identity, "question": plan.open_question,
@@ -534,6 +548,15 @@ def diff_since_last(
             # was thrown out as junk is the one mistake this report cannot
             # afford (ADR-0032). Dismissal is a decision with a reason on
             # it, so the change carries the reason rather than a guess.
+            inactive = current.get("inactive_record_decisions", {}).get(ref)
+            if current_native and inactive and inactive["state"] == "reversed":
+                diff.changes.append(Change(ref, "reversed", "record addition decision was explicitly reversed", before[ref].get("id")))
+                continue
+            if current_native and inactive and inactive["state"] == "removed":
+                diff.changes.append(Change(ref, "apparent_removal", "accepted apparent removal; source history retained", before[ref].get("id")))
+                continue
+            if current_native and inactive is None:
+                raise NativeReadingRefused("native record left the population without an explicit lifecycle decision")
             dismissal = _dismissal_of(session, before[ref].get("id"))
             if dismissal is not None:
                 diff.changes.append(

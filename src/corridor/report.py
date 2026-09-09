@@ -14,7 +14,7 @@ anything: rendering refuses to emit a value that carries neither.
 
 from __future__ import annotations
 
-from corridor.accepted_field_reading import accepted_field_text
+from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
 from corridor.presentation import field_label
 
 import html
@@ -75,11 +75,13 @@ class Assertion:
     fact_id: int | None = None
     decision_id: int | None = None
     revision_id: int | None = None
+    locator_validation_status: str | None = None
 
     @property
     def marker(self) -> str:
         if self.locator is not None:
-            return f"[D{self.document_id} {self.locator} · F{self.fact_id} · decision {self.decision_id} · revision {self.revision_id}]"
+            check = "" if self.locator_validation_status == "valid" else f" · source check {self.locator_validation_status or 'not_checked'}"
+            return f"[D{self.document_id} {self.locator} · F{self.fact_id} · decision {self.decision_id} · revision {self.revision_id}{check}]"
         return f"[D{self.document_id} p.{self.page_no}]"
 
 
@@ -166,6 +168,30 @@ class WorkDecision:
 
 
 @dataclass(frozen=True)
+class RecordDecision:
+    """An accepted native field's exact decision, independent of source quality."""
+    decision_id: int
+    revision_id: int
+    actor: str
+    decided_at: date
+    fact_id: int
+    source_refs: tuple[str, ...] = ()
+    decision_kind: str = "fact_decision"
+
+    @property
+    def resolves(self):
+        return bool(self.decision_id and self.revision_id and self.actor and self.fact_id)
+
+    @property
+    def marker(self):
+        return f"[Record decision {self.decision_id} · {self.actor} {self.decided_at} · revision {self.revision_id}]"
+
+    @property
+    def drill(self):
+        return f"Fact {self.fact_id}; decision {self.decision_id}; revision {self.revision_id}; " + ", ".join(self.source_refs)
+
+
+@dataclass(frozen=True)
 class Verbal:
     """What an External Party told a named recorder, not a document claim."""
 
@@ -197,7 +223,7 @@ class Verbal:
 class Cell:
     label: str
     value: str
-    provenance: Assertion | Derivation | WorkDecision | Verbal | None = None
+    provenance: Assertion | Derivation | WorkDecision | RecordDecision | Verbal | None = None
 
 
 @dataclass
@@ -395,7 +421,8 @@ def build_report(
 def native_source_assertion(source):
     """Adapt an exact native cell locator without inventing a PDF page."""
     return Assertion(source.document_id, source.filename, source.page_no, source.quote,
-        source.locator, source.source_segment_id, source.fact_id, source.decision_id, source.revision_id)
+        source.locator, source.source_segment_id, source.fact_id, source.decision_id, source.revision_id,
+        source.locator_validation_status)
 
 
 def build_native_report(session, reading: FrozenProjectReading, *, document_only=False):
@@ -411,7 +438,7 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
         statement_publication=reading.statement_publication,
         covered_records=tuple((record.id, record.ref_code) for record in records),
         coverage_note=f"Project Record revision {population.revision_id}; {len(population.excluded_source_rows)} source row(s) explicitly excluded at adoption.")
-    supported = tuple(record.id for record in records if record.source_passages)
+    supported = tuple(record.id for record in records if record.checked_source_passages)
     report.summary = [
         _derived(label("constraints"), str(len(records)), ids, scope=EMPTY_LEDGER),
         _derived(documentation_review_label(True), "0", ids, scope=EMPTY_LEDGER),
@@ -432,7 +459,7 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
         return Cell(display_name, value, provenance)
     for record in records:
         appendix.rows.append([
-            _derived("Ref", record.ref_code, (record.id,), input_refs=(f"revision:{record.adoption_revision_id}",)),
+            _derived("Ref", record.ref_code, (record.id,), input_refs=(f"revision:{record.identity_revision_id}",)),
             field_cell(record, "utility_id", "Source ID"), field_cell(record, "external_org", label("organization")),
             _derived("Title", record.title, (record.id,), input_refs=tuple(field.origin for name in ("utility_type", "external_org") if (field := record.fields.get(name)))),
             field_cell(record, "station_from", "Station from"), field_cell(record, "station_to", "Station to"),
@@ -454,11 +481,40 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
             Cell("Open question", plan.open_question, authority),
             Cell(label("assigned_to"), plan.responsible_principal or plan.responsible_organization or "—", authority),
             Cell("Return date", plan.return_date.date().isoformat() if plan.return_date else "—", authority)])
+    statement_section = Section("Accepted statements", columns=["Statement", "Accepted wording", "Recorded timing", label("applies_to"), "Source traceability"],
+        note="Statement fields retain their own Record Decisions. Timing is not converted into a Constraint date without its released projection policy.")
+    for statement in visible_native_statements(population, document_only=document_only):
+        word = statement.fields["statement_wording"]
+        def decided(field):
+            return RecordDecision(field.decision_id, field.revision_id, field.actor, field.decided_at.date(),
+                                  field.fact_id, tuple(source.reference for source in field.sources))
+        wording = decided(word)
+        timing = statement.fields.get("statement_timing")
+        scope = statement.fields.get("applies_to")
+        timing_visible = timing is not None and native_field_visible(timing, document_only=document_only)
+        scope_visible = scope is not None and native_field_visible(scope, document_only=document_only)
+        scope_text = ", ".join(statement.applies_to_subject_keys)
+        if statement.applies_to_dependency_ids:
+            scope_text += ("; " if scope_text else "") + "retained Constraint references " + ", ".join(map(str, statement.applies_to_dependency_ids))
+        sources = "; ".join(f"{source.filename or source.source_class or 'Recorded source'} · {source.locator} · {source.locator_validation_status}"
+                            for source in statement.sources if not document_only or source.document_id is not None)
+        statement_section.rows.append([
+            Cell("Statement", statement.subject_key, wording), Cell("Accepted wording", str(statement.wording), wording),
+            (Cell("Recorded timing", "; ".join(item.text for item in statement.timings) or "not recorded", decided(timing))
+             if timing_visible else _derived("Recorded timing", "withheld in this source mode" if timing else "not recorded",
+                 (statement.subject_key,), input_refs=(f"revision:{population.revision_id}",))),
+            (Cell(label("applies_to"), scope_text or "not yet known", decided(scope))
+             if scope_visible else _derived(label("applies_to"), "withheld in this source mode" if scope else "not yet known",
+                 (statement.subject_key,), input_refs=(f"revision:{population.revision_id}",))),
+            Cell("Source traceability", sources or "Source reference unavailable", wording),
+        ])
+    if population.coverage_blockers:
+        report.coverage_note += " " + "; ".join(population.coverage_blockers)
     report.diff = diff_since_last(session, population.project_id, evaluation=evaluation,
                                   committed_dates=report.committed_dates, document_only=document_only)
     report.sections = [
         Section(label("milestone_readiness"), empty_message="No key dates are linked to these Constraints."),
-        follow_up,
+        follow_up, statement_section,
         _exceptions_summary(evaluation), _changes_since_last(report.diff, committed_events={}), appendix, accepted,
     ]
     assert_no_bare_cells(report)
@@ -1363,7 +1419,7 @@ def assert_no_bare_cells(report: Report) -> None:
         for c in report.cells
         if c.provenance is None
         or (
-            isinstance(c.provenance, (Derivation, WorkDecision, Verbal))
+            isinstance(c.provenance, (Derivation, WorkDecision, RecordDecision, Verbal))
             and not c.provenance.resolves
         )
     ]
@@ -1388,7 +1444,7 @@ def render(report: Report, *, banner: str = "") -> str:
         p = cell.provenance
         if isinstance(p, Assertion):
             kind = "assertion"
-        elif isinstance(p, WorkDecision):
+        elif isinstance(p, (WorkDecision, RecordDecision)):
             kind = "decision"
         elif isinstance(p, Verbal):
             kind = "verbal"
@@ -1413,12 +1469,13 @@ def render(report: Report, *, banner: str = "") -> str:
                 f"<h2>{html.escape(section.title)}</h2>{note}"
                 f'<p class="empty">{html.escape(section.empty_message)}</p>'
             )
-        is_party_statements = section.title == label("organization_commitments")
+        is_party_statements = section.title in {label("organization_commitments"), "Accepted statements"}
         table_classes = {
             label("milestone_readiness"): "milestone-readiness",
             label("critical_items"): "critical-items",
             label("follow_up_plan"): "coordination",
             label("organization_commitments"): "party-statements",
+            "Accepted statements": "party-statements",
             label("constraint_alerts"): "exceptions",
             "Changes since last report": "changes",
             "Aging": "aging",

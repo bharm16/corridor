@@ -120,7 +120,7 @@ def freeze_project_reading(
             statement_publication=statement_publication, dependency_ids=population.record_ids,
             document_only=document_only)
         return FrozenProjectReading(project, tuple(browse(session, project_id, limit=100_000, evaluation=evaluation)),
-                                    evaluation, statement_publication, population)
+                                    evaluation, statement_publication, population, population.coverage_blockers)
     if revision_id is not None:
         raise NativeReadingRefused("legacy population has no complete revision-bound native accepted-field mapping")
     current_ids = tuple(

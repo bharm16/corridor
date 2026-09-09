@@ -7,7 +7,7 @@ spreadsheet that loses the provenance is just the matrix they already had.
 
 from __future__ import annotations
 
-from corridor.accepted_field_reading import accepted_field_text
+from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
 from corridor.presentation import field_label
 
 from pathlib import Path
@@ -249,6 +249,15 @@ def native_population_workbook(reading: FrozenProjectReading, path, *, internal_
                 sources.append([record.subject_key, record.source_row_key, field_label(name), printed, held.fact_id,
                     held.decision_id, held.revision_id, passage.source_segment_id if passage else None,
                     passage.filename if passage else None, passage.locator if passage else None, passage.quote if passage else None])
+    statements = book.create_sheet("Accepted statements")
+    statements.append(["Statement", "Field", "Accepted value", "Fact", "Record Decision", "Revision", "Decided by", "Source traceability"])
+    for statement in visible_native_statements(population, document_only=reading.statement_publication.document_only):
+        for name, field in statement.fields.items():
+            if not native_field_visible(field, document_only=reading.statement_publication.document_only):
+                continue
+            statements.append([statement.subject_key, field_label(name), str(field.value), field.fact_id,
+                field.decision_id, field.revision_id, field.actor,
+                "; ".join(f"{source.filename or source.source_class} · {source.locator} · {source.locator_validation_status}" for source in field.sources)])
     plans = book.create_sheet("Follow-up Plans")
     plans.append(["Plan", "Proposed Delta", "Open question", "Responsible person", "Responsible organization", "Return date", "Recorded by", "Revision", "Support Assessments", "Source Segments"])
     for plan in population.follow_up_plans:

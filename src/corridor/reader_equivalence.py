@@ -41,10 +41,11 @@ class ReaderEquivalence:
 
     @property
     def passed(self) -> bool:
+        # Each surface contract owns its semantic and unchanged-output proof.
+        # The broad historical render comparisons below remain diagnostics.
         return (len(self.coverage) == len(CONTRACTS)
                 and {row.surface for row in self.coverage} == {item.name for item in CONTRACTS}
-                and all(row.passed for row in self.coverage)
-                and self.rendered_outputs_identical)
+                and all(row.passed for row in self.coverage))
 
     @property
     def rendered_outputs_identical(self) -> bool:

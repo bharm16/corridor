@@ -348,7 +348,7 @@ def browse_native_population(evaluation: Evaluation, *, org_id=None, resolution_
             continue
         passages = record.source_passages
         found = evaluation.for_dependency(record.id)
-        row = LedgerRow(record, record.org_name, False, len(passages), len(passages),
+        row = LedgerRow(record, record.org_name, False, len(passages), len(record.checked_source_passages),
             len(record.fields), False, evaluation.statement_publication.by_dependency[record.id], found)
         if ready is not None and row.is_ready is not ready:
             continue

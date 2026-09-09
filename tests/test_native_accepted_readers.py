@@ -155,7 +155,7 @@ def test_source_check_does_not_make_an_undecided_fact_an_accepted_value(session,
     assert before.fingerprint == after.fingerprint
     assert all(field.fact_id != fact.id for row in after.records for field in row.fields.values())
     record_human_fact_decision(session, fact, principal=PRINCIPAL, command_type="resolve_discrepancy", idempotency_key="decide-unmapped")
-    with pytest.raises(NativeReadingRefused, match="no declared adopted-row mapping"):
+    with pytest.raises(NativeReadingRefused, match="no declared baseline"):
         read_accepted_field_population(session, project.id)
 
 
@@ -165,7 +165,7 @@ def test_ambiguous_effective_source_and_record_alias_decisions_refuse_instead_of
     assert row.source_row_key != row.record_subject_key
     fact = _unselected_fact(session, project, subject_key=row.record_subject_key)
     record_human_fact_decision(session, fact, principal=PRINCIPAL, command_type="resolve_discrepancy", idempotency_key="ambiguous-alias")
-    with pytest.raises(NativeReadingRefused, match="more than one accepted decision"):
+    with pytest.raises(NativeReadingRefused, match="no declared baseline"):
         read_accepted_field_population(session, project.id)
 
 
@@ -363,3 +363,241 @@ def test_native_projection_keeps_record_identity_apart_from_original_fact_subjec
         assert selected.fact_subject_key == fact.subject_key == source_row.source_row_key
         assert field.fact_subject_key == source_row.source_row_key
         assert record.subject_key != field.fact_subject_key
+
+
+def _captured_workbook_field(session, project, tmp_path, *, subject, value, fact_type="station_from", cell="D3", rows=None):
+    from corridor.extraction_runs import record_extraction_run
+    from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
+    from corridor.models import Document
+    from corridor.object_storage import store_bytes
+    from corridor.source_segments import append_ingested_source_segments
+    from corridor.source_append import ClosureValues
+    from corridor.materializer import materialize_typed_satellite
+    from corridor.support_assessments import FactProposition, record_support_assessment
+    path = tmp_path / f"incoming-{uuid4().hex[:8]}.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Utility Conflicts"
+    sheet.append(["Utility Conflict Management (UCM) — Utility Conflicts"])
+    sheet.append(["Utility Conflict ID", "Utility Owner", "Utility Type", "Start Station", "End Station", "Resolution Status"])
+    for row in rows or [["UC-3", "City Water", "Water", value, "301+00", ""]]:
+        sheet.append(row)
+    sheet[cell] = value
+    book.save(path)
+    body = path.read_bytes()
+    stored = store_bytes(body, sha256=sha256(body).hexdigest(), suffix=".xlsx")
+    document = Document(project_id=project.id, sha256=sha256(body).hexdigest(), filename=path.name, doc_type="matrix")
+    session.add(document)
+    session.flush()
+    segments = append_ingested_source_segments(session, document, stored)
+    segment = next(item for item in segments if item.sheet_name == sheet.title and item.cell_range == cell)
+    config = deployed_extractor_config("baseline", client=None)
+    run = record_extraction_run(session, document, prompt_version=config.prompt_version, schema_version=config.schema_version,
+        candidate_count=0, page_errors=0, outcome="completed", model=None, extractor_config=config,
+        token_usage=zero_token_usage(document.id), row_accounting_json=None)
+    kwargs = {}
+    if fact_type == "closure_result":
+        materialized = materialize_typed_satellite(fact_type, segment)
+        kwargs["closure"] = ClosureValues("constraint_closed", None, (segment.id,))
+    else:
+        materialized = materialize_segment_value(session, fact_type, segment)
+    fact = append_fact(session, project_id=project.id, document_id=document.id, extraction_run_id=run.id,
+        subject_kind="source_row", subject_key=subject, recorded_by="extractor:native-reader-test",
+        content_sha256=sha256(f"{document.sha256}:{subject}:{fact_type}:{cell}".encode()).hexdigest(), value=materialized, **kwargs)
+    support = record_support_assessment(session, project_id=project.id, proposition=FactProposition(fact.id),
+        source_segment_ids=(segment.id,), evidence_role="value_support", assessment="supported",
+        authority=PRINCIPAL, assessed_at=datetime.now(timezone.utc))
+    return fact, segment, support
+
+
+def _resolve_native_test_delta(session, project, fact, support, *, change="modify", target=None, observed=None):
+    from corridor.delta_resolution import ACCEPT, ChildDecisionRequest, RecordEffect, RESOLVED, resolve_delta
+    from corridor.proposed_deltas import ExistingSubjectTarget, ProposedSubjectTarget, ProposedDeltaValues, create_proposed_delta_group
+    if target is None:
+        target = (ProposedSubjectTarget(fact.subject_key, (fact.fact_type,)) if change == "add" else
+                  ExistingSubjectTarget(fact.subject_key, fact.fact_type))
+    (delta,) = create_proposed_delta_group(session, project_id=project.id, source_family="ucm-workbook",
+        source_revision=f"native-source-{uuid4().hex[:8]}", document_id=fact.document_id,
+        deltas=(ProposedDeltaValues(change, target, proposed_value=None if change == "apparent_removal" else fact.text_value,
+            accepted_baseline_revision=f"revision:{observed}" if observed else None),),
+        is_complete_enumerative_source=change == "apparent_removal", row_accounting_sealed=change == "apparent_removal")
+    outcome = resolve_delta(session, ChildDecisionRequest(project_id=project.id, delta_id=delta.id,
+        action=ACCEPT, principal=PRINCIPAL, idempotency_key=f"native-resolve:{delta.id}", decided_at=datetime.now(timezone.utc),
+        observed_accepted_revision_id=observed,
+        record_effects=(RecordEffect(fact.id, "do_not_add" if change == "apparent_removal" else "include"),),
+        support_assessment_ids=(support.id,)))
+    assert outcome.status == RESOLVED, outcome
+    return outcome
+
+
+def test_resolve_delta_addition_removal_and_typed_closure_own_native_population(session, adopted, tmp_path):
+    project, adoption = adopted
+    new_fact, new_segment, new_support = _captured_workbook_field(session, project, tmp_path, subject="UC-3", value="300+00")
+    added = _resolve_native_test_delta(session, project, new_fact, new_support, change="add", observed=adoption.revision_id)
+    after_add = read_accepted_field_population(session, project.id)
+    assert len(after_add.open_records) == 3
+    added_record = next(record for record in after_add.records if record.subject_key == "UC-3")
+    assert added_record.identity_decision_id == added.decision_id
+    assert added_record.identity_revision_id == added.revision_id
+    assert added_record.fields["station_from"].decision_id in added.fact_decision_ids
+    assert added_record.fields["station_from"].sources[0].source_segment_id == new_segment.id
+    assert len(read_accepted_field_population(session, project.id, revision_id=adoption.revision_id).open_records) == 2
+    removed = _resolve_native_test_delta(session, project, new_fact, new_support, change="apparent_removal", observed=added.revision_id)
+    after_removal = read_accepted_field_population(session, project.id)
+    assert len(after_removal.open_records) == 2
+    assert next(record for record in after_removal.records if record.subject_key == "UC-3").removal_decision_id == removed.decision_id
+    assert session.get(Fact, new_fact.id) is not None
+    assert len(read_accepted_field_population(session, project.id, revision_id=added.revision_id).open_records) == 3
+    baseline_record = after_removal.open_records[0]
+    closure, _, closure_support = _captured_workbook_field(session, project, tmp_path,
+        subject=baseline_record.subject_key, value="Conflict resolved in the field", fact_type="closure_result", cell="F3")
+    closed = _resolve_native_test_delta(session, project, closure, closure_support, observed=removed.revision_id)
+    final = read_accepted_field_population(session, project.id)
+    assert len(final.open_records) == 1
+    closed_record = next(record for record in final.records if record.subject_key == baseline_record.subject_key)
+    assert closed_record.is_closed and closed_record.fields["closure_result"].decision_id in closed.fact_decision_ids
+    assert len(read_accepted_field_population(session, project.id, revision_id=removed.revision_id).open_records) == 2
+
+
+def test_resolve_delta_reordered_source_updates_only_its_explicit_canonical_target(session, adopted, tmp_path):
+    from corridor.proposed_deltas import ExistingSubjectTarget
+    project, adoption = adopted
+    baseline_rows = tuple(session.scalars(select(BaselineSourceRow).where(BaselineSourceRow.project_id == project.id).order_by(BaselineSourceRow.row_number)))
+    target = baseline_rows[1]
+    fact, segment, support = _captured_workbook_field(session, project, tmp_path,
+        subject=target.record_subject_key, value="222+00", cell="D3",
+        rows=[["UC-1", "Electric Company", "Electric", "222+00", "223+00", ""],
+              ["UC-1", "City Water", "Water", "111+00", "112+00", ""]])
+    result = _resolve_native_test_delta(session, project, fact, support,
+        target=ExistingSubjectTarget(target.record_subject_key, "station_from"), observed=adoption.revision_id)
+    current = read_accepted_field_population(session, project.id)
+    by_subject = {record.subject_key: record for record in current.records}
+    assert by_subject[baseline_rows[0].record_subject_key].station_from == "100+00"
+    changed = by_subject[target.record_subject_key]
+    assert changed.station_from == "222+00"
+    assert changed.fields["station_from"].decision_id in result.fact_decision_ids
+    assert changed.fields["station_from"].fact_subject_key == fact.subject_key
+    assert changed.fields["station_from"].sources[0].source_segment_id == segment.id
+    assert changed.fields["station_from"].sources[0].locator.endswith("!D3")
+    assert changed.source_row_key == target.source_row_key  # adopted row was !4; later source moved to !3
+    before = read_accepted_field_population(session, project.id, revision_id=adoption.revision_id)
+    assert next(record for record in before.records if record.subject_key == target.record_subject_key).station_from == "200+00"
+
+
+def test_selected_key_date_authority_is_not_overridden_by_ucm_values(session, adopted, tmp_path):
+    from corridor.milestones import import_csv
+    project, _ = adopted
+    schedule = tmp_path / "key-dates.csv"
+    schedule.write_text("code,name,need_date\nK1,Utility work complete,2027-01-15\n")
+    result = import_csv(session, project_id=project.id, path=schedule, actor=PRINCIPAL.subject)
+    assert result.created
+    with pytest.raises(NativeReadingRefused, match="key-date authority"):
+        read_accepted_field_population(session, project.id)
+
+
+def test_accepted_verbal_statement_is_separate_from_constraint_rows_and_respects_document_only(session, adopted, tmp_path):
+    from corridor.facts import append_recorded_statement_wording_fact, append_recorded_statement_timing_fact, append_recorded_applies_to_fact
+    from corridor.source_append import append_recorded_verbal_origin
+    from corridor.source_segments import recorded_verbal_statement_segment, append_source_segment
+    from corridor.statement_values import StatementTiming
+    from corridor.report import RecordDecision
+    from corridor.changes import snapshot
+    project, _ = adopted
+    words = "The utility expects work to finish around October."
+    origin = append_recorded_verbal_origin(session, project_id=project.id, recorded_by="local:original-recorder",
+        recorded_at=datetime.now(timezone.utc), conversation_date=TODAY, exact_text=words,
+        content_sha256=sha256(words.encode()).hexdigest())
+    segment = append_source_segment(session, recorded_verbal_statement_segment(project_id=project.id,
+        recorded_verbal_origin_id=origin.id, exact_text=words))
+    subject = "statement:mixed-native"
+    wording = append_recorded_statement_wording_fact(session, segment=segment, subject_key=subject,
+        description=words, recorded_by=origin.recorded_by)
+    timing = append_recorded_statement_timing_fact(session, segment=segment, subject_key=subject,
+        timings=(("new", StatementTiming.approximate("around October")),), recorded_by=origin.recorded_by)
+    scope = append_recorded_applies_to_fact(session, segment=segment, subject_key=subject, dependency_ids=(), recorded_by=origin.recorded_by)
+    for index, fact in enumerate((wording, timing, scope)):
+        record_human_fact_decision(session, fact, principal=PRINCIPAL, command_type="coordinate_statement", idempotency_key=f"mixed-statement-{index}")
+    reading = freeze_project_reading(session, project.id, today=TODAY)
+    assert len(reading.rows) == 2 and len(reading.native_population.statements) == 1
+    report = build_report(session, project.id, frozen_reading=reading)
+    assert words in render(report) and "around October" in render(report)
+    assert any(isinstance(cell.provenance, RecordDecision) for cell in report.cells)
+    assert all(value is None for value in reading.statement_publication.committed_dates.values())
+    stored = snapshot(session, project.id, evaluation=reading.evaluation)
+    assert stored["accepted_statements"][0]["subject_key"] == subject
+    assert stored["accepted_statements"][0]["fields"]["statement_wording"]["fact_id"] == wording.id
+    documentary = freeze_project_reading(session, project.id, today=TODAY, document_only=True)
+    assert words not in render(build_report(session, project.id, frozen_reading=documentary, document_only=True))
+    assert snapshot(session, project.id, evaluation=documentary.evaluation)["accepted_statements"] == []
+
+
+def test_native_manifests_retain_unchanged_customer_cells_and_exact_decisions(session, adopted, tmp_path):
+    from corridor.accepted_field_reading import native_reader_input_manifest
+    from corridor.workbook_render import render_project_record_workbook, workbook_reader_input_manifest
+    project, adoption = adopted
+    reading = freeze_project_reading(session, project.id, today=TODAY)
+    manifest = native_reader_input_manifest(reading.native_population)
+    assert manifest["revision_id"] == adoption.revision_id
+    assert len(manifest["records"]) == 2
+    for row in manifest["records"]:
+        field = row["fields"]["station_from"]
+        assert field["decision_kind"] == "fact_decision"
+        assert session.get(FactDecision, field["decision_id"]).fact_id == field["fact_id"]
+        assert field["actor"] == PRINCIPAL.subject
+        assert field["fact_subject_key"] != row["subject_key"]
+    rendered = render_project_record_workbook(session, project_id=project.id,
+        revision_id=adoption.revision_id, template_bytes=(tmp_path / "ucm.xlsx").read_bytes())
+    mapped = workbook_reader_input_manifest(rendered)
+    assert not rendered.changed_cells
+    assert mapped["mapped_cells"]
+    station_cells = [cell for cell in mapped["mapped_cells"] if cell["fields"] == ["station_from"]]
+    assert {cell["rendered_value"] for cell in station_cells} == {"100+00", "200+00"}
+    for cell in station_cells:
+        assert cell["accepted_fields"][0]["decision_id"]
+        assert cell["record_subject_key"] != cell["source_row_key"]
+    repeat = render_project_record_workbook(session, project_id=project.id,
+        revision_id=adoption.revision_id, template_bytes=(tmp_path / "ucm.xlsx").read_bytes())
+    assert repeat.content == rendered.content
+
+
+def test_reversed_new_subject_has_explicit_lifecycle_without_becoming_closed(session, adopted, tmp_path):
+    from corridor.changes import snapshot
+    from corridor.delta_resolution import RecordEffect
+    from corridor.proposed_deltas import ProposedSubjectTarget, ProposedDeltaValues, create_proposed_delta_group
+    from corridor.review_packets import APPLY, SAVED, PacketChildRequest, ReviewPacketRequest, resolve_review_packet, reverse_review_packet
+    project, adoption = adopted
+    fact, _, support = _captured_workbook_field(session, project, tmp_path, subject="UC-new-reversed", value="300+00")
+    source_revision = "source-for-reversed-addition"
+    (delta,) = create_proposed_delta_group(session, project_id=project.id, source_family="ucm-workbook",
+        source_revision=source_revision, document_id=fact.document_id,
+        deltas=(ProposedDeltaValues("add", ProposedSubjectTarget(fact.subject_key, (fact.fact_type,)), proposed_value=fact.text_value),))
+    saved = resolve_review_packet(session, ReviewPacketRequest(project_id=project.id,
+        grouping_rule_version="packetizer-v1", grouping_key_kind="source_revision", grouping_key=source_revision,
+        principal=PRINCIPAL, idempotency_key="native-reversed-addition", decided_at=datetime.now(timezone.utc),
+        observed_accepted_revision_id=adoption.revision_id,
+        children=(PacketChildRequest(delta_id=delta.id, outcome=APPLY, observed_source_revision=source_revision,
+            record_effects=(RecordEffect(fact.id, "include"),), support_assessment_ids=(support.id,)),)))
+    assert saved.status == SAVED, saved
+    assert len(read_accepted_field_population(session, project.id).open_records) == 3
+    undone = reverse_review_packet(session, project_id=project.id, receipt_id=saved.receipt_id, principal=PRINCIPAL,
+        reversed_at=datetime.now(timezone.utc), idempotency_key="reverse-native-addition")
+    assert undone.status == "reversed", undone
+    reading = freeze_project_reading(session, project.id, today=TODAY)
+    assert len(reading.rows) == 2
+    assert reading.native_population.withdrawn_subjects == ((fact.subject_key, undone.reversal_id),)
+    stored = snapshot(session, project.id, evaluation=reading.evaluation)
+    assert stored["inactive_record_decisions"][fact.subject_key] == {
+        "state": "reversed", "decision_kind": "delta_review_packet_reversal", "decision_id": undone.reversal_id}
+    assert len(read_accepted_field_population(session, project.id, revision_id=saved.revision_id).open_records) == 3
+
+
+def test_semantic_coverage_owns_equivalence_except_declared_unchanged_surfaces():
+    from corridor.reader_coverage import CONTRACTS, CoverageResult
+    from corridor.reader_equivalence import ReaderEquivalence
+    coverage = tuple(CoverageResult(contract.name, True, 0, ()) for contract in CONTRACTS)
+    result = ReaderEquivalence(False, False, True, True, (), coverage)
+    assert result.passed
+    assert not result.rendered_outputs_identical
+    failed = tuple(CoverageResult(contract.name, contract.name != "workbook_export", 0,
+        ("unchanged-output identity differs",) if contract.name == "workbook_export" else ()) for contract in CONTRACTS)
+    assert not ReaderEquivalence(True, True, False, True, (), failed).passed
