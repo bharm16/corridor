@@ -7,15 +7,29 @@ No command here switches accepted writers or deletes history.
 
 from dataclasses import replace
 import argparse
-import json
 import os
 from pathlib import Path
+import stat
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
 from corridor.legacy_history import (
     backfill_evidence_sources, capture_history, inventory_history, read_history, reverse_history,
 )
+from corridor.pilot_measurement_cli import write_private_json
+
+
+def _write_export(path: Path, result: dict) -> None:
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError:
+        pass
+    else:
+        if not stat.S_ISREG(metadata.st_mode):
+            raise ValueError("history export destination must be a regular file")
+    # The shared writer creates a private temporary file beside the destination
+    # and publishes with rename; failures leave the preceding export intact.
+    write_private_json(path, result)
 
 
 def main(argv=None):
@@ -99,8 +113,7 @@ def main(argv=None):
                         result["canonical_history"] = session.scalar(text(
                             "select payload::text from legacy_history_batches where id=:id and project_id=:project"),
                             {"id": batch.id, "project": args.project})
-    args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n")
+    _write_export(args.output, result)
     return 0
 
 
