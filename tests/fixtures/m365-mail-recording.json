@@ -1,0 +1,30 @@
+{
+  "location": {
+    "tenant_id": "fixture-tenant",
+    "kind": "mailbox",
+    "resource_id": "shared-project",
+    "folder_id": "inbox",
+    "mailbox_type": "shared"
+  },
+  "pages": {
+    "https://graph.microsoft.com/v1.0/users/shared-project/mailFolders/inbox/messages/delta": {
+      "value": [
+        {
+          "id": "immutable-message-one",
+          "changeKey": "change-one",
+          "isDraft": false,
+          "receivedDateTime": "2026-09-09T12:00:00Z"
+        }
+      ],
+      "@odata.deltaLink": "https://graph.microsoft.com/v1.0/users/shared-project/mailFolders/inbox/messages/delta?$deltatoken=fixture-complete"
+    }
+  },
+  "versions": [
+    {
+      "item_id": "immutable-message-one",
+      "version_id": "change-one",
+      "body_base64": "RnJvbTogdXRpbGl0eUBleGFtcGxlLnRlc3QNClRvOiBwcm9qZWN0QGV4YW1wbGUudGVzdA0KTWVzc2FnZS1JRDogPGdyYXBoLWZpeHR1cmVAZXhhbXBsZS50ZXN0Pg0KU3ViamVjdDogU3ludGhldGljIGNvb3JkaW5hdGlvbiB1cGRhdGUNCkRhdGU6IFdlZCwgMDkgU2VwIDIwMjYgMTI6MDA6MDAgKzAwMDANCkNvbnRlbnQtVHlwZTogdGV4dC9wbGFpbjsgY2hhcnNldD11dGYtOA0KDQpXZSB3aWxsIGZpbmlzaCBpbiBPY3RvYmVyLg0K",
+      "sha256": "5b5c491d2a46c0748ad719e9f2fd09234af5a0ab712b67ab1b3faac25708175b"
+    }
+  ]
+}

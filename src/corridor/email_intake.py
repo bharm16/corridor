@@ -65,6 +65,8 @@ from corridor.push_intake import (
     bind_credential,
 )
 from corridor.source_intake import IntakeRefused, validate_and_stage
+from corridor.source_delivery import DeliveryBinding, require_stored_envelope
+from corridor.connectors.pull_connector import SourceEnvelope
 
 
 class InboundMailRefused(ValueError):
@@ -293,16 +295,38 @@ def receive_pushed_message(
             created=False,
         )
     return _register_bound_message(
-        session, binding=binding, receipt=receipt, raw_bytes=raw_bytes,
+        session, binding=binding, envelope=receipt.envelope, delivery_id=receipt.delivery_id,
+        staged_path=receipt.staged_path, raw_bytes=raw_bytes,
         attachment_doc_types=attachment_doc_types,
     )
+
+
+def receive_pulled_message(session: Session, *, envelope: SourceEnvelope,
+                           attachment_doc_types: dict[str, str] | None = None) -> ReceivedMessage:
+    """Parse exact stored shared-mailbox bytes inside the connector's boundary."""
+    from corridor.object_storage import content_store
+
+    delivery = require_stored_envelope(session, envelope)
+    if delivery.transport != "pull" or delivery.channel != "m365-shared-mailbox-v1":
+        raise InboundMailRefused("source is not a stored shared-mailbox pull delivery")
+    raw = content_store().get(delivery.bytes_reference, sha256=delivery.content_sha256)
+    path = store_bytes(raw, sha256=delivery.content_sha256, suffix=".eml")
+    binding = DeliveryBinding(customer=delivery.customer, project_id=delivery.project_id,
+        project_slug=envelope.project, transport="pull", channel=delivery.channel,
+        configuration_identity=delivery.configuration_identity,
+        configuration_version=delivery.configuration_version)
+    return _register_bound_message(session, binding=binding, envelope=envelope,
+        delivery_id=delivery.id, staged_path=path, raw_bytes=raw,
+        attachment_doc_types=attachment_doc_types)
 
 
 def _register_bound_message(
     session: Session,
     *,
-    binding: PushBinding,
-    receipt,
+    binding: PushBinding | DeliveryBinding,
+    envelope: SourceEnvelope,
+    delivery_id: int,
+    staged_path: Path,
     raw_bytes: bytes,
     attachment_doc_types: dict[str, str] | None = None,
 ) -> ReceivedMessage:
@@ -311,7 +335,7 @@ def _register_bound_message(
     # The first parse in the whole path, and it happens with the customer and
     # project already decided by the credential.
     message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-    digest = receipt.envelope.content_digest
+    digest = envelope.content_digest
 
     same_bytes = session.scalars(
         select(InboundMessage).where(
@@ -372,11 +396,11 @@ def _register_bound_message(
         sender=sender,
     )
     evidence = {
-        "boundary": "push_credential",
+        "boundary": "pull_configuration" if isinstance(binding, DeliveryBinding) else "push_credential",
         "customer": binding.customer,
         "channel": binding.channel,
         "credential_id": binding.credential_id,
-        "delivery_identity": receipt.envelope.delivery_identity,
+        "delivery_identity": envelope.delivery_identity,
         # The bound project is the only candidate there has ever been; the key
         # keeps its shape for the readback the global-address path also feeds.
         "candidate_project_ids": [binding.project_id],
@@ -387,7 +411,7 @@ def _register_bound_message(
 
     inbound = InboundMessage(
         raw_sha256=digest,
-        storage_path=str(receipt.staged_path),
+        storage_path=str(staged_path),
         message_id=message_id,
         sender=sender,
         subject=str(message.get("Subject") or ""),
@@ -398,7 +422,7 @@ def _register_bound_message(
         project_id=binding.project_id,
         route_status="routed",
         route_evidence_json=evidence,
-        push_delivery_id=receipt.delivery_id,
+        push_delivery_id=delivery_id,
     )
     session.add(inbound)
     session.flush()
