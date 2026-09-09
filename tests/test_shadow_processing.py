@@ -281,3 +281,29 @@ def test_shadow_runtime_rechecks_authority_reachable_through_set_role(shadow, gr
                 owner.execute(text(f'revoke update on public.release_candidates from "{authority}"'))
                 owner.execute(text(f'drop role if exists "{intermediary}"'))
                 owner.execute(text(f'drop role if exists "{authority}"'))
+
+
+def test_web_temp_shadow_registry_cannot_reveal_the_shadow_project(shadow):
+    """The login owns TEMP, but cannot substitute the definer's registry."""
+    _database, engines, project_id, *_ = shadow
+    with Session(engines["corridor_web"]) as web:
+        web.execute(text("create temporary table shadow_projects(project_id bigint) on commit drop"))
+        web.execute(text("grant select on pg_temp.shadow_projects to public"))
+        assert web.scalar(text("select public.shadow_project_visible(:project)"), {"project": project_id}) is False
+        assert web.scalar(text("select count(*) from public.projects where id=:project"), {"project": project_id}) == 0
+
+
+@pytest.mark.parametrize("statement", [
+    "insert into public.project_roster_entries(project_id,principal_subject,display_name,active) values (:project,'local:temp-registry-reader','Temporary registry reader',true)",
+    "insert into public.release_preparation_requests(project_id) values (:project)",
+    "insert into public.release_candidates(project_id) values (:project)",
+    "insert into public.release_packages(project_id) values (:project)",
+])
+def test_web_temp_shadow_registry_cannot_bypass_customer_surface_guard(shadow, statement):
+    """Every protected customer surface refuses before other row validation."""
+    _database, engines, project_id, *_ = shadow
+    with Session(engines["corridor_web"]) as web:
+        web.execute(text("create temporary table shadow_projects(project_id bigint) on commit drop"))
+        web.execute(text("grant select on pg_temp.shadow_projects to public"))
+        with pytest.raises(DBAPIError, match="shadow project cannot enter customer coordination or release"), web.begin_nested():
+            web.execute(text(statement), {"project": project_id})
