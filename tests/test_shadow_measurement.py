@@ -125,3 +125,22 @@ def test_native_comparison_refuses_unmapped_policy_field(shadow, tmp_path):
         with pytest.raises(NativeShadowComparisonRefused, match="registered scalar mapping"):
             compare_shadow_runs(worker, prediction_identity=first["identity"], reference_identity="f"*64,
                                 policy=policy, reference_dataset_id="synthetic-reference")
+
+
+def test_reference_removal_retains_subject_inventory_when_selected_baseline_field_is_blank(shadow, tmp_path):
+    database, engines, project_id, *_ = shadow
+    rows = deepcopy(BASELINE_ROWS[:-1])  # UC-3 has no Action Due Date in the adopted workbook.
+    predicted = delivery(database, project_id, tmp_path, rows, "blank-field-removal")
+    with Session(engines["corridor_worker"]) as worker, worker.begin():
+        first = capture(worker, project_id, *predicted)
+    rows[0][11] = "later source observation"
+    later = delivery(database, project_id, tmp_path, rows, "blank-field-reference")
+    with Session(engines["corridor_worker"]) as worker, worker.begin():
+        second = capture(worker, project_id, *later)
+    policy = ComparisonPolicy("dates-only", ("action_due_date",), ("action_due_date",), "seed", 30)
+    with Session(engines["corridor_worker"]) as worker:
+        result = compare_shadow_runs(worker, prediction_identity=first["identity"], reference_identity=second["identity"],
+                                    policy=policy, reference_dataset_id="synthetic-reference")
+        removed = next(d["target_subject_identity"] for d in first["deltas"] if d["change_type"] == "apparent_removal")
+        assert result["baseline"]["values"][removed] == {}
+        assert result["findings"] == []

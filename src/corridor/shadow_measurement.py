@@ -147,12 +147,13 @@ def _baseline(session, payload, policy):
              and revision.recorded_at <= _at(payload["frozen_at"]), "accepted baseline revision is outside this shadow freeze")
     values = defaultdict(dict)
     for row in read_project_record_as_of_revision(session, payload["project_id"], adoption.revision_id):
+        values.setdefault(row.subject_key, {})
         if row.fact_type in policy.fields:
             fact = session.get(Fact, row.fact_id)
             _require(fact is not None and fact.project_id == payload["project_id"], "accepted baseline Fact disappeared")
             _require(row.fact_type not in values[row.subject_key], "accepted baseline has duplicate subject/field values")
             values[row.subject_key][row.fact_type] = fact_value(fact)
-    _require(bool(values), "accepted baseline has no mapped fields in this comparison")
+    _require(bool(values), "accepted baseline has no native subject inventory")
     return FrozenRevision(payload["accepted_baseline_revision"], payload["project_id"], source.content_sha256,
                           revision.recorded_at, dict(values))
 
