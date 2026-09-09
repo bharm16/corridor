@@ -45,8 +45,13 @@ updates/deletion are refused, and downgrade refuses while custody remains.
 region, code/database/image revisions, governance/security/disposition revisions,
 web role and exact route-manifest digest. Evidence artifacts have fixed digests,
 observation times, exact configuration identity and successful outcomes. Missing,
-failed, changed or future-dated evidence writes no activation. PDF, model and pull
-checkpoint gates apply only when those capabilities are selected.
+failed, changed or future-dated evidence writes no activation. Every selected
+customer image requires the #766 built-image audit, including a deterministic
+UCM-only activation. Its actual image identity, code revision, both Python
+environments, executable/system-package absence and retained PDFium dependency
+notices must agree. Fixture audit observations exercise this validation but do
+not prove any deployed image. Model and pull checkpoint gates apply only when
+those capabilities are selected.
 
 `collect_boundary_smoke` reads privileges as the actual `corridor_web` login and
 calls the deployed authenticated HTTP client. It requires the service's health

@@ -28,7 +28,7 @@ BOUNDARY_VERSION = "live-pilot-web-boundary-v1"
 BASE_GATES = frozenset({"customer_authorization", "identity_offboarding", "intake_hardening",
     "disposition", "due_work_recovery", "adopted_baseline", "single_project_workflow",
     "shadow_processing", "measurement_readiness", "customer_routing", "project_partition",
-    "selected_ingress", "selected_source_class", "web_boundary"})
+    "selected_ingress", "selected_source_class", "web_boundary", "pdf_image_audit"})
 
 
 class ActivationRefused(ValueError):
@@ -191,6 +191,8 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
             or payload.get("boundary_state") != "enforced"
             or not _complete_route_observations(payload.get("observations", []))):
             raise ActivationRefused("web boundary lacks actual deployment smoke")
+        if gate == "pdf_image_audit" and not _valid_image_audit(payload, configuration):
+            raise ActivationRefused("image audit does not prove engine absence and notices for this image")
         if gate == "disposition" and (payload.get("inventory_digest") != configuration.disposition_inventory_digest
             or not payload.get("external_receipt_reference") or not payload.get("rehearsal_receipt_sha256")):
             raise ActivationRefused("disposition lacks matching inventory and external rehearsal custody")
@@ -239,10 +241,51 @@ def _complete_route_observations(observations):
     return approved == set(PILOT_ROUTES) and disabled
 
 
+def _valid_image_audit(payload, configuration):
+    """Inspect #766's recorded observations, never promote a lone clear flag.
+
+    The producer's v1 contract binds Docker's immutable image_id. A deployment
+    using a registry manifest digest needs an explicit producer attestation
+    relating it to that image_id; a mutable image tag is never sufficient.
+    """
+    try:
+        audit = payload["built_image_audit"]
+        observed = audit["audited"]
+        environments = observed["environments"]
+        notices = observed["notices"]
+        installed = notices["installed_in_image"]
+        return (
+            payload["image_digest"] == configuration.image_digest
+            and audit["schema_version"] == "corridor.built-image-engine-audit.v1"
+            and audit["image"]["image_id"] == configuration.image_digest
+            and audit["revision"] == configuration.code_revision
+            and audit["working_tree_dirty"] is False
+            and audit["clear_of_retired_engines"] is True
+            and audit["findings"] == []
+            and set(environments) == {"application", "render_worker"}
+            and all(item["present"] == [] and not item.get("error")
+                    for item in environments.values())
+            and "tesseract" in observed["executables"]
+            and all(value is None for value in observed["executables"].values())
+            and "tesseract-ocr" in observed["system_packages"]
+            and all(value is None for value in observed["system_packages"].values())
+            and not observed.get("native_matrix_runtime", {}).get("error")
+            and observed["native_matrix_runtime"]["code_revision"] == configuration.code_revision
+            and notices["manifest_present"] is True
+            and notices["missing_files"] == []
+            and notices["declared_files"] > 0
+            and notices["files_on_disk"] >= notices["declared_files"]
+            and "pypdfium2" in notices["packages"]
+            and set(installed) == set(notices["packages"])
+            and all(entries and all(entry["dist_info"] and entry["licence_files"]
+                                    for entry in entries) for entries in installed.values())
+        )
+    except (KeyError, TypeError, AttributeError, ValueError):
+        return False
+
+
 def _required_gates(configuration):
     required = set(BASE_GATES)
-    if configuration.processes_pdf:
-        required |= {"pdf_image_audit"}
     if configuration.model_provider_posture != "deterministic-no-model":
         required |= {"model_provider_governance"}
     if configuration.pulls_source:

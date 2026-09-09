@@ -34,6 +34,23 @@ def evidence(tmp_path, configuration, **overrides):
                 "boundary_state": "enforced",
                 "observations": [{"method": method, "template": route, "status": 200}
                     for method, route in PILOT_ROUTES] + [{"method": "GET", "template": "/disabled", "status": 404}]}
+        if gate == "pdf_image_audit":
+            payload |= {"image_digest": configuration.image_digest,
+                "built_image_audit": {
+                    "schema_version": "corridor.built-image-engine-audit.v1",
+                    "image": {"image_id": configuration.image_digest},
+                    "revision": configuration.code_revision, "working_tree_dirty": False,
+                    "clear_of_retired_engines": True, "findings": [],
+                    "audited": {
+                        "environments": {"application": {"present": []}, "render_worker": {"present": []}},
+                        "executables": {"tesseract": None}, "system_packages": {"tesseract-ocr": None},
+                        "native_matrix_runtime": {"code_revision": configuration.code_revision},
+                        "notices": {"manifest_present": True, "missing_files": [], "declared_files": 1,
+                            "files_on_disk": 1, "packages": ["pypdfium2"],
+                            "installed_in_image": {"pypdfium2": [{"dist_info": "fixture-pdfium.dist-info",
+                                "licence_files": ["fixture-LICENSE"]}]}}
+                    }
+                }}
         if gate == "disposition":
             payload |= {"inventory_digest": configuration.disposition_inventory_digest,
                 "external_receipt_reference": "fixture-control-plane/receipt",
@@ -92,9 +109,9 @@ def test_tampered_evidence_and_conditional_provider_gate_are_refused(tmp_path, c
     with pytest.raises(ActivationRefused, match="digest changed"):
         activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
             custody=tmp_path / "custody", now=NOW)
-    pdf = replace(configuration, processes_pdf=True)
-    with pytest.raises(ActivationRefused, match="pdf_image_audit"):
-        activate(pdf, evidence=evidence(tmp_path, pdf), operator="local:operator", revision="pdf",
+    model = replace(configuration, model_provider_posture="fixture-approved-provider")
+    with pytest.raises(ActivationRefused, match="model_provider_governance"):
+        activate(model, evidence=evidence(tmp_path, model), operator="local:operator", revision="model",
             custody=tmp_path / "custody", now=NOW)
 
 
@@ -175,3 +192,26 @@ def test_runtime_refuses_invented_gate_digests(tmp_path, configuration):
     path = tmp_path / "invented.json"
     path.write_bytes(body)
     assert not processing_authorized(configuration, EvidenceArtifact(path, sha256(body).hexdigest()))
+
+
+@pytest.mark.parametrize("defect", ["different-image", "retired-engine", "missing-notices", "clear-flag-only"])
+def test_ucm_only_activation_requires_matching_built_image_observations(tmp_path, configuration, defect):
+    assert configuration.processes_pdf is False
+    artifacts = evidence(tmp_path, configuration)
+    payload = artifacts["pdf_image_audit"].read()
+    if defect == "different-image":
+        payload["built_image_audit"]["image"]["image_id"] = "sha256:other"
+    elif defect == "retired-engine":
+        payload["built_image_audit"]["audited"]["environments"]["render_worker"]["present"] = ["retired-fixture-engine"]
+    elif defect == "missing-notices":
+        payload["built_image_audit"]["audited"]["notices"]["missing_files"] = ["fixture-LICENSE"]
+    else:
+        payload["built_image_audit"] = {"clear_of_retired_engines": True}
+    body = json.dumps(payload).encode()
+    path = artifacts["pdf_image_audit"].path
+    path.write_bytes(body)
+    artifacts["pdf_image_audit"] = EvidenceArtifact(path, sha256(body).hexdigest())
+    with pytest.raises(ActivationRefused, match="image audit"):
+        activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
+            custody=tmp_path / "custody", now=NOW)
+    assert not (tmp_path / "custody").exists()
