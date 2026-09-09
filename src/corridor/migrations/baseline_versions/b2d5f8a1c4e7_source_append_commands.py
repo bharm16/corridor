@@ -11590,6 +11590,9 @@ def upgrade() -> None:
         )
     op.execute(OUTGOING_REQUEST_PARTITION_POLICIES)
 
+    from corridor.migrations import email_spine
+
+    email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -11600,6 +11603,9 @@ def downgrade() -> None:
     downgrade removes it whole rather than opening it to raw writes.
     """
 
+    from corridor.migrations import email_spine
+
+    email_spine.downgrade(op)
     if op.get_bind().scalar(sa.text("select exists (select 1 from public.customer_environment_binding)")):
         raise RuntimeError("a bound customer environment cannot downgrade its routing attestation")
     op.execute("drop table public.customer_environment_binding")

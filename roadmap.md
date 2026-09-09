@@ -278,9 +278,13 @@ earlier.
     change**, with collection, immutable-receipt derivation and reproducible
     fixture reports. #535 still binds and verifies the actual measured
     deployment; real #424/#498 findings remain open.
-13. #450 schedule source, #455 email source, #456 minutes source, **only for
-    the source classes the partner actually produces**. Other source classes
-    are parallel work.
+13. #455 email source: fixture-backed MIME segments, thread outcomes, and
+    Proposed Deltas are implemented through the normal bound-email route;
+    [capture and replay contract](docs/operations/email-source.md).
+    #456's five minutes capabilities are fixed and ready for an agent.
+    Reusable source software does not wait for partner selection; #450 schedule
+    source remains parallel work. Actual source/account configuration, signed
+    authorization, deployments, customer runs and pilot findings are later proof.
 
 **Exit:** the slice runs end to end on one partner project with the partner's
 own workbook and one connected source, and the adopted project runs in
@@ -360,8 +364,10 @@ cohort surface.
   median.
 - **Additional connectors** beyond the partner's own: #497 Microsoft 365
   SharePoint, OneDrive, and shared project mailbox.
-- **Partner-triggered, `needs-triage` until named:** #562 project contact
-  resolution, #563 delivery of a sealed release to the partner's document
+- **Ready for an agent:** #562 project contact resolution has a fixed
+  `project-contacts-v1` CSV/adopted-UCM input contract and fixture acceptance.
+  It remains optional for the pilot; role-only follow-up bundles remain valid.
+- **Partner-triggered, `needs-triage` until named:** #563 delivery of a sealed release to the partner's document
   system, and read-only spatial context (station, small map, project limits)
   once a partner's data confirms usable coordinates. None blocks the pilot.
 - **Operations tooling**, runbooks, and support ergonomics.

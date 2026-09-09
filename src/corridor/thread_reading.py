@@ -199,6 +199,7 @@ def read_thread(
         session.add(candidate)
         session.flush()
         reading = InboundThreadReading(
+            project_id=thread.project_id,
             thread_id=thread_id,
             closing_message_id=closing.id,
             resolution="concluded",
@@ -210,6 +211,7 @@ def read_thread(
     elif resolution == "unresolved":
         question = _verified_open_question(packet, by_ref)
         reading = InboundThreadReading(
+            project_id=thread.project_id,
             thread_id=thread_id,
             closing_message_id=closing.id,
             resolution="unresolved",

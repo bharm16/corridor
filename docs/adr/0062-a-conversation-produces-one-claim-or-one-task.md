@@ -22,3 +22,19 @@ An email thread can argue with itself: "it's a 12" — "no it's a 16" — "actua
 ## Consequences
 
 Ticket #372 (email intake) carries thread storage, binding inheritance, and the conversation-outcome rule. ADR-0061's timeline packet consumes the per-turn record. The trust boundary is unchanged: turns are quoted data; nothing in a conversation instructs the system; claims still enter the record only through the ordinary admission rules.
+
+## Spine implementation (#455, 2026-09-08)
+
+Under ADR-0076, the conclusion is a Source Fact and any material difference is
+an unaccepted Proposed Delta. The normalized envelope already binds the customer
+and project before this reading. Exact MIME parts replace copied page quotations
+for new bound mail; prior legacy evidence remains readable.
+
+A later source reading that reopens the question supersedes the thread's prior
+unaccepted delta without fabricating a new conclusion. The existing
+DeltaSupersession relation names either its replacement delta or the immutable
+source reading when no replacement delta exists. Returning to the accepted
+wording likewise creates no new delta. This changes no accepted decision and
+does not supersede an independent thread. See the
+[email capture contract](../operations/email-source.md) for the public seams,
+typed locators, budgets and fixture proof.

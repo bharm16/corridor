@@ -571,7 +571,7 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
     which is the same honest unknown a corpus document carries.
     """
 
-    if inbound.body_text.strip() and inbound.document_id is None:
+    if (inbound.body_text.strip() or inbound.push_delivery_id is not None) and inbound.document_id is None:
         body_document = ingest_document(
             session,
             project_id=inbound.project_id,
@@ -623,7 +623,8 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
 def _attachment_parts(message) -> tuple[tuple[str, bytes], ...]:
     return tuple(
         (str(part.get_filename() or ""), part.get_payload(decode=True))
-        for part in message.iter_attachments()
+        for part in message.walk()
+        if part.get_filename() or part.get_content_disposition() == "attachment"
         if part.get_payload(decode=True) is not None
     )
 

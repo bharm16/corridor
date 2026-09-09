@@ -683,12 +683,13 @@ class InboundThreadReading(Base):
     __tablename__ = "inbound_thread_readings"
     __table_args__ = (
         UniqueConstraint("thread_id", "closing_message_id"),
+        UniqueConstraint("project_id", "id", name="uq_inbound_thread_readings_project_id"),
         CheckConstraint(
             "resolution in ('concluded', 'unresolved')",
             name="ck_inbound_thread_reading_resolution",
         ),
         CheckConstraint(
-            "(resolution = 'concluded') = (candidate_id is not null)",
+            "(resolution = 'concluded') = (candidate_id is not null or source_fact_id is not null)",
             name="ck_inbound_thread_reading_claim",
         ),
         CheckConstraint(
@@ -698,6 +699,7 @@ class InboundThreadReading(Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     thread_id: Mapped[int] = mapped_column(
         ForeignKey("inbound_threads.id"), index=True
     )
@@ -706,6 +708,10 @@ class InboundThreadReading(Base):
     # The one proposed claim of a concluded conversation — a pending Candidate
     # that enters the record only through ordinary admission.
     candidate_id: Mapped[int | None] = mapped_column(ForeignKey("candidates.id"))
+    source_fact_id: Mapped[int | None] = mapped_column(ForeignKey("facts.id"))
+    proposed_delta_id: Mapped[int | None] = mapped_column(ForeignKey("proposed_deltas.id"))
+    input_sha256: Mapped[str | None] = mapped_column(String(64))
+    question_segment_id: Mapped[int | None] = mapped_column(ForeignKey("source_segments.id"))
     # The one open question of an unresolved conversation, in the thread's own
     # words, on the standing owner's list for the bound row.
     open_question: Mapped[str | None] = mapped_column(Text)
@@ -1210,7 +1216,7 @@ class SourceSegment(Base):
             name="fk_source_segments_document_scope",
         ),
         CheckConstraint(
-            "kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement', 'pdf_span', 'pdf_cell')",
+            "kind in ('spreadsheet_cell', 'prose_span', 'recorded_verbal_statement', 'pdf_span', 'pdf_cell', 'email_span')",
             name="ck_source_segments_kind",
         ),
         CheckConstraint(
@@ -1245,7 +1251,10 @@ class SourceSegment(Base):
             "(kind = 'recorded_verbal_statement' and document_id is null "
             "and recorded_verbal_origin_id is not null and sheet_name is null "
             "and cell_range is null and page_no is null and start_offset is null "
-            "and end_offset is null)",
+            "and end_offset is null) or "
+            "(kind = 'email_span' and document_id is not null and recorded_verbal_origin_id is null "
+            "and sheet_name is null and cell_range is null and page_no is null "
+            "and start_offset >= 0 and end_offset > start_offset)",
             name="ck_source_segments_locator",
         ),
         CheckConstraint(
@@ -1257,8 +1266,22 @@ class SourceSegment(Base):
             "(kind not in ('pdf_span', 'pdf_cell') and rendition_sha256 is null "
             "and reading_sha256 is null and reader_identity is null and location_json is null "
             "and span_stream is null and table_index is null and cell_row is null "
+            "and cell_column is null and row_span is null and column_span is null) or "
+            "(kind = 'email_span' and rendition_sha256 is null and reading_sha256 is null "
+            "and reader_identity is null and location_json is not null "
+            "and location_json ->> 'scheme' = 'email-mime-v1' "
+            "and span_stream is null and table_index is null and cell_row is null "
             "and cell_column is null and row_span is null and column_span is null)",
             name="ck_source_segments_reading",
+        ),
+        CheckConstraint(
+            "kind <> 'email_span' or (start_offset is not null and end_offset is not null "
+            "and location_json is not null and "
+            "coalesce(location_json ->> 'scheme' = 'email-mime-v1', false) "
+            "and coalesce(location_json ->> 'section' in "
+            "('header', 'body', 'quoted_history', 'signature', 'draft', 'html', 'attachment'), false) "
+            "and coalesce(jsonb_typeof(location_json -> 'part_path') = 'array', false))",
+            name="ck_source_segments_email_complete",
         ),
         CheckConstraint(
             "kind not in ('pdf_span', 'pdf_cell') or (page_no is not null and "
@@ -1359,7 +1382,7 @@ class Fact(Base):
             f"fact_type in ({_SINGLE_VALUED_FACT_TYPES_SQL}, "
             f"{_STRUCTURED_SATELLITE_FACT_TYPES_SQL}, "
             "'statement_wording', 'statement_timing', "
-            "'supporting_documentation_in_use')",
+            "'supporting_documentation_in_use', 'email_header', 'email_attachment')",
             name="ck_facts_type",
         ),
         CheckConstraint(
@@ -1373,6 +1396,8 @@ class Fact(Base):
             "and length(trim(subject_key)) > 0) "
             "or (fact_type = 'supporting_documentation_in_use' "
             "and subject_kind = 'record_subject' "
+            "and length(trim(subject_key)) > 0) or "
+            "(fact_type in ('email_header', 'email_attachment') and subject_kind = 'email_message' "
             "and length(trim(subject_key)) > 0)",
             name="ck_facts_subject",
         ),
@@ -1424,7 +1449,11 @@ class Fact(Base):
             "and date_range_start is null and date_range_end is null "
             "and external_org_value_id is null "
             "and document_value_id is not null "
-            "and transformation = 'supporting_document_revision_v1')",
+            "and transformation = 'supporting_document_revision_v1') or "
+            "(fact_type in ('email_header', 'email_attachment') and text_value is not null "
+            "and length(text_value) > 0 and date_value is null and date_range_start is null "
+            "and date_range_end is null and external_org_value_id is null "
+            "and document_value_id is null and transformation = 'exact_email_part_v1')",
             name="ck_facts_typed_value",
         ),
         CheckConstraint(
@@ -1969,6 +1998,11 @@ class DeltaSupersession(Base):
     __table_args__ = (
         UniqueConstraint("prior_delta_id", name="uq_delta_supersessions_prior"),
         ForeignKeyConstraint(
+            ["project_id", "source_reading_id"],
+            ["inbound_thread_readings.project_id", "inbound_thread_readings.id"],
+            use_alter=True, name="fk_delta_supersessions_reading_scope",
+        ),
+        ForeignKeyConstraint(
             ["project_id", "prior_delta_id"],
             ["proposed_deltas.project_id", "proposed_deltas.id"],
             name="fk_delta_supersessions_prior",
@@ -1982,12 +2016,15 @@ class DeltaSupersession(Base):
             "prior_delta_id <> superseding_delta_id",
             name="ck_delta_supersessions_not_self",
         ),
+        CheckConstraint("superseding_delta_id is not null or source_reading_id is not null",
+                        name="ck_delta_supersessions_successor"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     prior_delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    superseding_delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    superseding_delta_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    source_reading_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str] = mapped_column(String(64))
     superseded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()

@@ -166,7 +166,7 @@ DERIVABLE_RECEIPT_ALTERNATIVES: dict[EventFamily, str] = {
     EventFamily.COVERAGE_CONFIRMATION: "IssueCoverageDeclaration with actor and confirmed_at",
     EventFamily.PREPARATION_REQUEST: "ReleasePreparationRequest with declaration and requested_at",
     EventFamily.PREPARATION_ATTEMPT: "ReleasePreparationAttempt with started_at and finished_at",
-    EventFamily.DELTA_SUPERSESSION: "DeltaSupersession naming the prior and superseding delta",
+    EventFamily.DELTA_SUPERSESSION: "DeltaSupersession naming the prior delta and superseding delta or source reading",
     EventFamily.WORK_OBSERVATION: "Attributable measured-time entry; never inferred from idle time",
     EventFamily.MEASUREMENT_SAMPLE: "Attributable sampling observation and retained evidence reference",
     EventFamily.PROVIDER_USAGE: "Actual provider call/billing receipt, retry or retained cache-use record",

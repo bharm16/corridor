@@ -350,6 +350,14 @@ def materialize_prose_wording(
     contract = FACT_TYPE_CONTRACTS["statement_wording"]
     _certify(value_segment, "statement_wording", contract)
     _certify(attribution_segment, "statement_wording", contract)
+    if value_segment.kind == "email_span" or attribution_segment.kind == "email_span":
+        if (value_segment.kind != "email_span" or attribution_segment.kind != "email_span"
+                or value_segment.document_id != attribution_segment.document_id
+                or value_segment.location_json.get("section") != "body"
+                or attribution_segment.location_json.get("section") != "header"
+                or attribution_segment.location_json.get("part_path") != []
+                or attribution_segment.location_json.get("header_name") != "from"):
+            raise FactValidationError("email wording requires authored text and its own From header")
     if not attribution.strip() or attribution not in attribution_segment.exact_text:
         raise FactValidationError(
             "statement attribution does not replay from declared source"
@@ -363,6 +371,18 @@ def materialize_prose_wording(
         ),
         text_value=validated_scalar_value(contract, value_segment.exact_text),
     )
+
+
+def materialize_email_metadata(segment: SourceSegment) -> MaterializedValue:
+    """Materialize retained transport evidence without accepted-record authority."""
+    section = (segment.location_json or {}).get("section")
+    if section not in {"header", "attachment"}:
+        raise FactValidationError("email metadata needs a header or attachment boundary")
+    fact_type = f"email_{section}"
+    contract = FACT_TYPE_CONTRACTS[fact_type]
+    _certify(segment, fact_type, contract)
+    return _sealed(fact_type=fact_type, transformation=contract.transformation,
+                   source_links=(("value_source", segment.id),), text_value=segment.exact_text)
 
 
 def materialize_quoted_statement_wording(
@@ -444,7 +464,7 @@ def transform(name: str, exact_text: str) -> str | date:
         return exact_text.strip()
     if name == PDF_TEXT_TRANSFORMATION:
         return clean_pdf_source_text(exact_text)
-    if name == "exact_prose_span_v1":
+    if name in {"exact_prose_span_v1", "exact_email_part_v1"}:
         return exact_text
     if name == "iso_date_cell_v1":
         try:

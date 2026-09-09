@@ -101,6 +101,10 @@ def append_ingested_source_segments(
     original = Path(path)
     from corridor.reader_segments import append_native_segments, read_native_pdf
 
+    if original.suffix.lower() == ".eml":
+        from corridor.email_segments import append_email_segments
+
+        return append_email_segments(session, document, original.read_bytes())
     if native_reading is not None or original.suffix.lower() == ".pdf":
         _require_registered_bytes(document, original)
         reading = native_reading or read_native_pdf(original, source_sha256=document.sha256)
@@ -191,6 +195,10 @@ def dereference_source_segment(
         recovered = _dereference_spreadsheet_cell(
             original, sheet_name=segment.sheet_name, cell_range=segment.cell_range
         )
+    elif segment.kind == "email_span":
+        from corridor.email_segments import replay_email_segment
+
+        recovered = replay_email_segment(document, segment, original)
     elif segment.kind == "prose_span":
         # Not an integrity failure: nothing was read, so nothing disagreed.
         raise FreshReadingUnavailable("prose_span", "pymupdf")

@@ -548,7 +548,11 @@ def _extract_message(path: Path) -> list[ExtractedPage]:
     elif message.get_content_type() == "text/plain":
         body = str(message.get_content() or "")
     if not body.strip():
-        raise ValueError(f"{path.name}: no plain-text body")
+        # This page is a display fallback only. #455 cites MIME parts directly,
+        # and preserves HTML/attachment-only messages without calling them prose.
+        body = "\n".join(f"{name}: {value}" for name, value in message.raw_items())
+    if not body.strip():
+        raise ValueError(f"{path.name}: no message headers or body")
     return [ExtractedPage(1, body, None, "text_layer")]
 
 
