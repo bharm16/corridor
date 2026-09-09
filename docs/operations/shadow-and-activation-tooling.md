@@ -62,3 +62,35 @@ written object. Reusing a revision is idempotent only with identical inputs.
 module does not enable a control-plane route: the deployment's authorized operator
 must use the receipt at that boundary. A synthetic receipt cannot discharge signed
 customer authorization or actual operational gate requirements.
+
+## Runtime enforcement
+
+Production processes must declare `CORRIDOR_DEPLOYMENT_DATA_CLASS` as `customer`,
+`synthetic`, or `shadow`. An empty or unknown production value refuses. The
+unconfigured development/test path remains available for existing fixtures.
+A shadow process cannot configure a customer router; its source commands check
+the actual worker login and provisioned shadow database instead.
+
+A customer deployment supplies trusted `CORRIDOR_ACTIVATION_CONFIGURATION_PATH`,
+`CORRIDOR_ACTIVATION_RECEIPT_PATH`, and `CORRIDOR_ACTIVATION_RECEIPT_SHA256`, together
+with its current `CORRIDOR_DEPLOYMENT_IMAGE_DIGEST`,
+`CORRIDOR_DEPLOYMENT_DATA_REGION`, customer/environment/deployment identity, and
+explicit live web boundary. The baked `CORRIDOR_CODE_REVISION` must match. Neither
+requests nor `session.info` can select these inputs. Routing checks before
+resolver SQL or credential resolution; every use rereads the files and receipt.
+Database revision and image identity are trusted deployment attestations; the web
+role gains no migration-table privilege.
+
+Push and production pull intake compare the actual delivery binding's customer,
+project, channel, configuration identity and configuration version before fetch
+or storage. Every source command checks the current project activation and actual
+database identity even if its caller supplied an existing session directly.
+Corrections to previously captured facts require current project activation,
+without pretending their historical source version is a new delivery under the
+current connector configuration.
+
+Human baseline adoption uses a separate explicit source-bootstrap context after
+validating the named human principal. In customer/shadow deployments that context
+requires the actual schema owner on that exact session; it grants no bypass to a
+second session, request metadata or a runtime login. Compatibility intake retains
+its independent database-free authorization and storage boundary.

@@ -134,6 +134,8 @@ class CustomerRouter:
     ) -> Session:
         if identity != self.identity or capability not in {"web", "worker"}:
             raise RouteRefused("customer environment unavailable")
+        from corridor.activation_runtime import require_customer_route
+        require_customer_route(identity)
         registration = self.control_plane.lookup(**asdict(identity))
         reference = (
             registration.web_credential_ref

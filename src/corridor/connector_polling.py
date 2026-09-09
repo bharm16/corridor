@@ -148,6 +148,14 @@ class LedgerWriter:
         self._run_identity = run_identity
         self.dispositions: Counter[str] = Counter()
 
+    def authorize_source(self, *, customer, project, channel):
+        """Prove the actual bound source before connector fetch or object storage."""
+        from corridor.activation_runtime import require_source_delivery
+        if (customer, project, channel) != (self._binding.customer, self._binding.project_slug, self._binding.channel):
+            raise ConnectorPollingRefusal("pull source differs from its server-owned delivery binding")
+        with self._session_factory() as reading:
+            require_source_delivery(reading, self._binding)
+
     def record(
         self,
         item: ChangeItem,

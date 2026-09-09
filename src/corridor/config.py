@@ -38,6 +38,14 @@ class Settings(BaseSettings):
     customer_environment_id: str = Field(default="", validation_alias="CORRIDOR_CUSTOMER_ENVIRONMENT_ID")
     deployment_id: str = Field(default="", validation_alias="CORRIDOR_DEPLOYMENT_ID")
     customer_routing_key: str = Field(default="", repr=False, validation_alias="CORRIDOR_CUSTOMER_ROUTING_KEY")
+    # #535: only deployment configuration selects activation custody. These
+    # are never populated from request headers, cookies, or source metadata.
+    deployment_data_class: str = Field(default="", validation_alias="CORRIDOR_DEPLOYMENT_DATA_CLASS")
+    activation_configuration_path: str = Field(default="", validation_alias="CORRIDOR_ACTIVATION_CONFIGURATION_PATH")
+    activation_receipt_path: str = Field(default="", validation_alias="CORRIDOR_ACTIVATION_RECEIPT_PATH")
+    activation_receipt_sha256: str = Field(default="", validation_alias="CORRIDOR_ACTIVATION_RECEIPT_SHA256")
+    deployment_image_digest: str = Field(default="", validation_alias="CORRIDOR_DEPLOYMENT_IMAGE_DIGEST")
+    deployment_data_region: str = Field(default="", validation_alias="CORRIDOR_DEPLOYMENT_DATA_REGION")
     # Content-addressed store written by `make corpus`. The queue resolves a
     # Document back to its PDF from here to compute quote highlights, and product
     # intake stages an uploaded file's exact bytes here before confirmation.

@@ -122,3 +122,18 @@ def test_changed_receipt_cannot_produce_shadow_facts(shadow):
                 principal=PRINCIPAL, deletion_date=DELETE, now=NOW)
         assert worker.scalar(text("select count(*) from shadow_runs")) == 0
         assert worker.scalar(text("select count(*) from proposed_deltas")) == 0
+
+
+def test_shadow_deployment_source_append_rechecks_actual_worker(shadow, monkeypatch):
+    from corridor.source_append import append_source_segments
+    database, engines, project_id, *_ = shadow
+    monkeypatch.setattr(settings, "deployment_data_class", "shadow")
+    monkeypatch.setattr(settings, "customer_id", CUSTOMER)
+    monkeypatch.setattr(settings, "customer_environment_id", "synthetic-shadow")
+    with Session(engines["corridor_worker"]) as worker:
+        assert append_source_segments(worker, project_id=project_id, document_id=None,
+            recorded_verbal_origin_id=None, segments=[]) == ()
+    with database.session_factory() as owner:
+        with pytest.raises(ShadowRefused, match="actual corridor_worker"):
+            append_source_segments(owner, project_id=project_id, document_id=None,
+                recorded_verbal_origin_id=None, segments=[])

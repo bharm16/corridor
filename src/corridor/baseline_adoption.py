@@ -390,6 +390,23 @@ def adopt_baseline(
     idempotency_key: str,
     images_dir: Path | str | None = None,
 ) -> BaselineAdoptionResult:
+    """Run the existing named-human baseline command under its owner bootstrap."""
+    from corridor.activation_runtime import owner_source_bootstrap
+    # Human validation precedes entering the separate source bootstrap context.
+    require_human_principal(principal)
+    with owner_source_bootstrap(session):
+        return _adopt_baseline(session, preview=preview, principal=principal,
+            idempotency_key=idempotency_key, images_dir=images_dir)
+
+
+def _adopt_baseline(
+    session: Session,
+    *,
+    preview: BaselinePreview,
+    principal: HumanPrincipal,
+    idempotency_key: str,
+    images_dir: Path | str | None = None,
+) -> BaselineAdoptionResult:
     """Adopt the complete previewed baseline in one Save, or write nothing.
 
     Runs in the caller's transaction.  Every refusal happens before the first
