@@ -139,6 +139,9 @@ def require_pull_delivery(ledger, *, customer, project, channel):
     """Only the production ledger can authorize source access in deployed lanes."""
     if runtime_data_class() in {"local", "synthetic"}:
         return
+    # Refuse stale deployment evidence before invoking even the ledger's
+    # session factory, which may itself open a routed customer session.
+    current_activation()
     # The concrete ledger owns the real session factory and DeliveryBinding.
     # An arbitrary caller-provided function claiming success proves neither.
     from corridor.connector_polling import LedgerWriter
