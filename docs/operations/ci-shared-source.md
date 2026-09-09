@@ -26,3 +26,11 @@ migration tests continue to provision and validate their own databases.
 
 The change removes a duplicate setup migration; no test, budget, runner,
 corpus-availability condition, or supported migration transition is removed.
+
+Removing the serial setup migration also exposes initially missing cluster-wide
+roles to independent worker/runtime/migration database bootstraps. The baseline
+now rolls back a losing CREATE ROLE savepoint and checks that exact role again
+before continuing through the unchanged capability-attribute checks. Only
+PostgreSQL duplicate-role/role-name-index races and concurrent catalog updates
+are handled; unrelated permission or DDL failures remain failures. No passwords,
+role attributes, grants, schema objects or migration revisions change.

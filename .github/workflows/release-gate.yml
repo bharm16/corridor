@@ -17,8 +17,8 @@ name: release-gate
 # transition is made (ADR-0093).
 #
 # `classify` and `release-gate` install no packages. The current capacity
-# trial adds one ordinary test runner, for ten test runners and at most
-# twelve downloading jobs including check and migration (ADR-0096).
+# trial adds one ordinary test runner, for eleven test runners and at most
+# thirteen downloading jobs including check and migration (ADR-0096).
 
 on:
   pull_request:

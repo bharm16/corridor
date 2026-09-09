@@ -690,3 +690,17 @@ def _drop_databases(admin_url: URL, database_names: tuple[str, ...]) -> None:
                 )
     finally:
         engine.dispose()
+
+
+@pytest.fixture
+def missing_cluster_role(runtime_database):
+    """Own one initially absent global role for cross-database bootstrap races."""
+    from corridor.db import engine
+
+    role = f"corridor_bootstrap_test_{uuid4().hex}"
+    independent = runtime_database.session_factory.kw["bind"]
+    try:
+        yield engine, independent, role
+    finally:
+        with engine.begin() as connection:
+            connection.execute(text(f'drop role if exists "{role}"'))
