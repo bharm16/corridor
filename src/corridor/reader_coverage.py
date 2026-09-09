@@ -58,6 +58,24 @@ class CoverageResult:
     blockers: tuple[str, ...]
 
 
+def _has_native_origin(contract: SurfaceContract, row: SemanticRecord,
+                       field: str, origin: object) -> bool:
+    if not isinstance(origin, str):
+        return False
+    assessment_prefix = "native_assessment:support_assessments:"
+    if origin.startswith(assessment_prefix):
+        identity = origin.removeprefix(assessment_prefix)
+        return (
+            (field == "source_support" or (
+                contract.name == "source_and_decision_history" and row.kind == "support"
+            ))
+            and identity.isascii() and identity.isdecimal() and int(identity) > 0
+        )
+    return origin.startswith(("revision:", "source_segment:", "native_decision:")) and bool(
+        origin.split(":", 1)[1].strip()
+    )
+
+
 def compare_surface(contract: SurfaceContract, legacy: SurfaceReading,
                     native: SurfaceReading) -> CoverageResult:
     """Compare the declared semantic contract without forgiving absent output."""
@@ -82,8 +100,8 @@ def compare_surface(contract: SurfaceContract, legacy: SurfaceReading,
                 blockers.append(f"{side} {key}: field or record inventory differs")
             if side == "native" and (
                 set(row.field_origins) != contract.fields
-                or any(not isinstance(origin, str) or not origin.startswith(("revision:", "source_segment:", "native_decision:"))
-                       or not origin.split(":", 1)[1].strip() for origin in row.field_origins.values())
+                or any(not _has_native_origin(contract, row, field, origin)
+                       for field, origin in row.field_origins.items())
             ):
                 blockers.append(f"native {key}: fields lack native decision/source lineage")
         if key in left and key in right and left[key].fields != right[key].fields:

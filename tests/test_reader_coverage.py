@@ -2,6 +2,8 @@
 
 from dataclasses import replace
 
+import pytest
+
 from corridor.reader_coverage import (
     CONTRACTS, SemanticRecord, SurfaceReading, compare_all_surfaces, compare_surface,
 )
@@ -39,3 +41,36 @@ def test_all_seven_surfaces_are_required_even_when_no_records_exist():
     assert all(item.passed for item in compare_all_surfaces(readings, readings))
     assert not all(item.passed for item in compare_all_surfaces(readings, readings[:-1]))
     assert not all(item.passed for item in compare_all_surfaces(readings, (*readings, readings[0])))
+
+
+@pytest.mark.parametrize("field", ["accepted_values", "authority"])
+def test_support_assessment_is_not_accepted_value_authority(field):
+    contract = CONTRACTS[2]
+    record = SemanticRecord("current", "subject-1", {name: None for name in contract.fields},
+                            {name: "revision:9" for name in contract.fields})
+    reading = SurfaceReading(contract.name, (record,), contract.record_kinds)
+    supported = replace(record, field_origins={**record.field_origins,
+                        "source_support": "native_assessment:support_assessments:17"})
+    assert compare_surface(contract, reading, replace(reading, records=(supported,))).passed
+    forged = replace(supported, field_origins={**supported.field_origins,
+                     field: "native_assessment:support_assessments:17"})
+    assert not compare_surface(contract, reading, replace(reading, records=(forged,))).passed
+
+
+@pytest.mark.parametrize("kind", ["source", "decision", "correction", "reversal", "support"])
+def test_assessment_history_origin_applies_only_to_support_rows(kind):
+    contract = CONTRACTS[6]
+    record = SemanticRecord(kind, "17", {name: None for name in contract.fields},
+                            {name: "native_assessment:support_assessments:17" for name in contract.fields})
+    reading = SurfaceReading(contract.name, (record,), contract.record_kinds)
+    assert compare_surface(contract, reading, reading).passed == (kind == "support")
+
+
+@pytest.mark.parametrize("identity", ["", "0", "-1", "17:other", "unknown", "١٧"])
+def test_assessment_history_requires_a_concrete_database_identity(identity):
+    contract = CONTRACTS[6]
+    record = SemanticRecord("support", "17", {name: None for name in contract.fields},
+                            {name: f"native_assessment:support_assessments:{identity}"
+                             for name in contract.fields})
+    reading = SurfaceReading(contract.name, (record,), contract.record_kinds)
+    assert not compare_surface(contract, reading, reading).passed
