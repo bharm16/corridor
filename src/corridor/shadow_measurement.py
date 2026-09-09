@@ -240,6 +240,7 @@ def compare_shadow_runs(session, *, prediction_identity: str, reference_identity
         frozen = freeze_predictions(baseline, policy, _predictions(p, baseline, policy, source_values, references), frozen_at=frozen_at)
         successor = FrozenRevision(reference_identity, p["project_id"], r["source_sha256"], reference_delivery.received_at, selected)
         measurement = compare_revisions(frozen, successor, reference_dataset_id=reference_dataset_id)
+        measurement["source_population"] = ["ucm_revision"]
         measurement["native_receipts"] = {"prediction": {"identity": prediction_identity, "output_sha256": predicted.output_sha256},
             "reference": {"identity": reference_identity, "output_sha256": reference.output_sha256},
             "accepted_baseline_revision": p["accepted_baseline_revision"], "mapping": p["mapping"],

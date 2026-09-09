@@ -44,7 +44,7 @@ def delivery(database, project_id, tmp_path, rows, label):
     return staged, envelope, approved, compatibility.receipt
 
 
-def test_native_adapter_compares_frozen_predictions_with_later_complete_source(shadow, tmp_path):
+def test_native_adapter_compares_frozen_predictions_with_later_complete_source(shadow, tmp_path, monkeypatch, capsys):
     database, engines, project_id, staged, envelope, approved, compatibility = shadow
     with Session(engines["corridor_worker"]) as worker, worker.begin():
         first = capture(worker, project_id, staged, envelope, approved, compatibility)
@@ -68,6 +68,26 @@ def test_native_adapter_compares_frozen_predictions_with_later_complete_source(s
         assert result["reference_is_semantic_gold"] is False
         assert worker.scalar(text("select count(*) from project_record_revisions")) == before
         assert not worker.new and not worker.dirty and not worker.deleted
+    import json
+    import stat
+    from pathlib import Path
+    from corridor.shadow_comparison_cli import main
+    policy_path = tmp_path/"comparison-policy.json"
+    policy_path.write_text(json.dumps({key: POLICY.payload()[key] for key in
+        ("identity", "fields", "material_fields", "sampling_seed", "minimum_material_cases")}))
+    monkeypatch.setenv("SYNTHETIC_SHADOW_DATABASE_URL", engines["corridor_worker"].url.render_as_string(hide_password=False))
+    capsys.readouterr()
+    assert main(["native", "--database-url-env", "SYNTHETIC_SHADOW_DATABASE_URL", "--prediction-run", first["identity"],
+        "--reference-run", second["identity"], "--policy", str(policy_path), "--reference-dataset", "synthetic-working-reference",
+        "--output-dir", str(tmp_path/"native-measurement")]) == 0
+    artifact = json.loads(capsys.readouterr().out)
+    assert json.loads(Path(artifact["comparison"]["path"]).read_text()) == result
+    for exported in artifact["native_freeze_receipts"].values():
+        path = Path(exported["path"])
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
+        frozen = json.loads(path.read_text())
+        assert frozen["canonicalization"] == "postgresql-jsonb-text-v1"
+        assert json.loads(frozen["payload_text"])["identity"] in {first["identity"], second["identity"]}
 
 
 @pytest.mark.parametrize("already_delivered,complete", [(True, True), (False, False)])
