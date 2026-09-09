@@ -320,15 +320,34 @@ def _work_list(surface, session, project_id, revision, instant, inventory):
     expected_by_id = {p.plan_id: p for p in expected_plans}
     public_by_id = {p.plan_id: p for p in public_plans}
     native_plans = {r["id"]: r for r in inventory["delta_follow_up_plans"]}
+    native_deltas = {r["id"]: r for r in inventory["proposed_deltas"]}
+    invalid_plans = set()
+    seen_plans = set()
+    for plan in public_plans:
+        if plan.plan_id in seen_plans:
+            invalid_plans.add(plan.plan_id)
+        seen_plans.add(plan.plan_id)
+
+    def recorded_time(value):
+        return datetime.fromisoformat(value) if value is not None else None
+
     for identity, plan in public_by_id.items():
         native = native_plans.get(identity)
+        delta = native_deltas.get(native["delta_id"]) if native is not None else None
         assessments = {e["support_assessment_id"] for e in inventory["delta_follow_up_plan_evidence"] if e["plan_id"] == identity}
         segments = {e["source_segment_id"] for e in inventory["support_assessment_sources"] if e["support_assessment_id"] in assessments}
-        if (native is None or plan.delta_id != native["delta_id"] or plan.revision_id != native["revision_id"]
+        if (native is None or delta is None or plan != expected_by_id.get(identity) or plan.delta_id != native["delta_id"] or plan.revision_id != native["revision_id"]
             or plan.open_question != native["open_question"] or plan.recorded_by != native["recorded_by_principal"]
+            or plan.responsible_principal != native["responsible_principal"]
+            or plan.responsible_organization != native["responsible_organization"]
+            or plan.return_date != recorded_time(native["return_date"])
+            or plan.recorded_at != recorded_time(native["recorded_at"])
+            or plan.target_subject_identity != delta["target_subject_identity"]
             or set(plan.support_assessment_ids) != assessments or set(plan.source_segment_ids) != segments):
-            surface.blockers.append(f"constraint_work: Follow-up Plan {identity} lacks its exact native act/evidence")
+            invalid_plans.add(identity)
     before = len(surface.blockers)
+    for identity in sorted(invalid_plans):
+        surface.blockers.append(f"proposed_delta: Follow-up Plan {identity} differs from its complete native act/target/evidence")
     expected = _ids(inventory, "proposed_deltas")
     surface.population("proposed_delta", "proposed_deltas scoped to project", sorted(expected))
     standings = {s.delta_id: s for s in actual.reading.standings}
@@ -339,7 +358,7 @@ def _work_list(surface, session, project_id, revision, instant, inventory):
     children = {c.delta_id: c for item in actual.items for c in item.children}
     for identity, standing in standings.items():
         child = children.get(identity)
-        plans = [p for p in public_plans if p.delta_id == identity]
+        plans = [p for p in public_plans if p.delta_id == identity and p.plan_id not in invalid_plans]
         expected_ids = {p.plan_id for p in expected_plans if p.delta_id == identity}
         if {p.plan_id for p in plans} != expected_ids:
             surface.blockers.append(f"proposed_delta: {identity} has an undisplayed native Follow-up Plan")
@@ -358,10 +377,14 @@ def _work_list(surface, session, project_id, revision, instant, inventory):
         surface.add("proposed_delta", identity, values, origins)
     surface.finish_kind("proposed_delta", before)
     before = len(surface.blockers)
+    for identity in sorted(invalid_plans):
+        surface.blockers.append(f"constraint_work: Follow-up Plan {identity} differs from its complete native act/target/evidence")
     surface.population("constraint_work", "current native Follow-up Plans and coordination authority", sorted(expected_by_id))
     if set(public_by_id) != set(expected_by_id):
         surface.blockers.append("constraint_work: public Follow-up Plan population differs from its native current census")
     for identity, plan in public_by_id.items():
+        if identity in invalid_plans:
+            continue  # Never label unchecked public values as native authority.
         standing = standings.get(plan.delta_id)
         surface.add("constraint_work", f"delta_follow_up_plans:{identity}", {
             "identity": {"table": "delta_follow_up_plans", "id": identity, "delta_id": plan.delta_id},
