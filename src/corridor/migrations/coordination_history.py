@@ -318,10 +318,12 @@ begin
   -- reviewed historical batch establishes complete native predecessor chains.
   return null;
  end if;
- if p_operation is null or p_operation not like 'coordinate:%' then
+ if p_operation is null or p_operation !~ '^coordinate:[0-9a-f-]{36}$' then
   raise exception 'live coordination requires a bounded operation identity' using errcode='23514';
  end if;
- return import_coordination_decision(p_project,p_legacy,null,p_operation);
+ -- A grouped revision is appendable only within its originating database
+ -- transaction. Reusing a caller's UUID tomorrow cannot rewrite its members.
+ return import_coordination_decision(p_project,p_legacy,null,p_operation||':'||pg_current_xact_id()::text);
 end; $$;
 create function sync_coordination_reversals(p_project bigint) returns bigint
  language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
