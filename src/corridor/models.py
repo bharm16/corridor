@@ -11542,3 +11542,40 @@ _coordination_reversal_lineage = _legacy_sa.Table(
     _legacy_sa.Column("legacy_statement_reversal_id", _legacy_sa.BigInteger, nullable=False),
     _legacy_sa.UniqueConstraint("legacy_statement_reversal_id", "reversal_id"),
 )
+
+
+_support_scope_lineage = _legacy_sa.Table(
+    "support_scope_lineage", Base.metadata,
+    _legacy_sa.Column("id", _legacy_sa.BigInteger, primary_key=True),
+    _legacy_sa.Column("project_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("projects.id"), nullable=False),
+    _legacy_sa.Column("subject_id", _legacy_pg.UUID(as_uuid=True), _legacy_sa.ForeignKey("coordination_record_subjects.id"), nullable=False),
+    _legacy_sa.Column("legacy_dependency_id", _legacy_sa.BigInteger, nullable=False),
+    _legacy_sa.Column("field_name", _legacy_sa.Text),
+    _legacy_sa.Column("fact_subject_key", _legacy_sa.Text, nullable=False),
+    _legacy_sa.UniqueConstraint("project_id", "legacy_dependency_id", "field_name", postgresql_nulls_not_distinct=True),
+    _legacy_sa.UniqueConstraint("project_id", "fact_subject_key"),
+)
+
+_support_history_receipts = _legacy_sa.Table(
+    "support_history_receipts", Base.metadata,
+    _legacy_sa.Column("id", _legacy_sa.BigInteger, primary_key=True),
+    _legacy_sa.Column("project_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("projects.id"), nullable=False),
+    _legacy_sa.Column("batch_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("legacy_history_batches.id")),
+    _legacy_sa.Column("scope_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("support_scope_lineage.id"), nullable=False),
+    _legacy_sa.Column("legacy_support_id", _legacy_sa.BigInteger, nullable=False),
+    _legacy_sa.Column("legacy_evidence_link_id", _legacy_sa.BigInteger, nullable=False),
+    _legacy_sa.Column("original_scope_sha256", _legacy_sa.Text, nullable=False),
+    _legacy_sa.Column("fact_decision_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("fact_decisions.id")),
+    _legacy_sa.Column("source_segment_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("source_segments.id")),
+    _legacy_sa.Column("outcome", _legacy_sa.Text, nullable=False),
+    _legacy_sa.Column("reason", _legacy_sa.Text, nullable=False),
+    _legacy_sa.Column("original_actor", _legacy_sa.Text, nullable=False),
+    _legacy_sa.Column("original_time", _legacy_sa.DateTime(timezone=True), nullable=False),
+    _legacy_sa.Column("policy_run_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("policy_runs.id")),
+    _legacy_sa.Column("policy_approval_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("policy_approvals.id")),
+    _legacy_sa.Column("recorded_at", _legacy_sa.DateTime(timezone=True), nullable=False, server_default=_legacy_sa.text("clock_timestamp()")),
+    _legacy_sa.Column("predecessor_receipt_id", _legacy_sa.BigInteger, _legacy_sa.ForeignKey("support_history_receipts.id")),
+    _legacy_sa.UniqueConstraint("scope_id", "batch_id", "original_scope_sha256", "predecessor_receipt_id", "outcome", postgresql_nulls_not_distinct=True),
+    _legacy_sa.CheckConstraint("original_scope_sha256 ~ '^[0-9a-f]{64}$'"),
+    _legacy_sa.CheckConstraint("outcome in ('native','retained_compatibility')"),
+)

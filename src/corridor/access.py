@@ -866,6 +866,8 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "coordination_decision_lineage",
         "coordination_record_reversals",
         "coordination_reversal_lineage",
+        "support_scope_lineage",
+        "support_history_receipts",
         "pipeline_observations",
         "pipeline_comparisons",
         "pipeline_qualifications",

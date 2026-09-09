@@ -11608,10 +11608,11 @@ def upgrade() -> None:
     from corridor import shadow_schema
 
     shadow_schema.install(op)
-    from corridor.migrations import legacy_history, coordination_history
+    from corridor.migrations import legacy_history, coordination_history, support_history
 
     legacy_history.upgrade(op)
     coordination_history.upgrade(op)
+    support_history.upgrade(op)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -11634,8 +11635,9 @@ def downgrade() -> None:
 
     from corridor import shadow_schema
 
-    from corridor.migrations import legacy_history, coordination_history
+    from corridor.migrations import legacy_history, coordination_history, support_history
 
+    support_history.downgrade(op)
     coordination_history.downgrade(op)
     legacy_history.downgrade(op)
     shadow_schema.uninstall(op)

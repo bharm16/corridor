@@ -239,8 +239,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # #564 adds two shadow bindings/receipts with natural keys, no sequences.
     # #513 adds three custody tables; native coordination adds seven tables,
     # using one UUID subject key and nine new sequences across both batches.
-    assert fingerprint.table_count == 221
-    assert fingerprint.sequence_count == 199
+    # Native publication support adds two append-only lineage/receipt tables.
+    assert fingerprint.table_count == 223
+    assert fingerprint.sequence_count == 201
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

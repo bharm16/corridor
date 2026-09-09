@@ -68,8 +68,8 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    # #456/#562 typed minutes scopes/timing and immutable project contact sources.
-    "d5e0887b2150e599a901ad845fb15db5aad8ffc53ae62e37d693f105075111cd"
+    # Isolated shadow receipts and original-authored history/support convergence.
+    "bf3db914cc16634b5cfec58f4ee27e9c1fd9a182a2f4343a6d4ed28254bf42b6"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
