@@ -15,7 +15,7 @@ from hashlib import sha256
 import json
 from uuid import uuid4
 
-from corridor.disposition_contracts import DispositionRefused, json_digest as digest, provider_rows
+from corridor.disposition_contracts import DispositionRefused, json_digest as digest, provider_rows, automated_backup_rows
 
 
 def result_digest(rows) -> str:
@@ -108,16 +108,31 @@ class AwsRestoreRehearsal:
         previous = self.control_plane.disposition_rehearsal_receipts(self.spec.environment_id, self.spec.operation_id)
         if any(row["evidence"].get("spec_sha256") != self.spec.sha256 for row in previous):
             raise DispositionRefused("rehearsal changed after its first persisted observation")
+        self._observed_target_resource_id(previous)
         return clients["rds"], previous
 
-    def _target(self, client):
+    def _observed_target_resource_id(self, previous):
+        identities = {row["evidence"]["target_resource_id"] for row in previous
+                      if row["evidence"].get("target_resource_id")}
+        if len(identities) > 1 or self.spec.source_resource_id in identities:
+            raise DispositionRefused("rehearsal observations do not bind one isolated physical target")
+        return next(iter(identities), None)
+
+    def _target(self, client, resource_id=None):
         try:
-            rows = client.describe_db_instances(DBInstanceIdentifier=self.spec.target_identifier)["DBInstances"]
+            rows = (provider_rows(client, "describe_db_instances", "DBInstances",
+                                  Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])
+                    if resource_id else client.describe_db_instances(
+                        DBInstanceIdentifier=self.spec.target_identifier)["DBInstances"])
         except client.exceptions.DBInstanceNotFoundFault:
+            return None
+        if not rows:
             return None
         if len(rows) != 1:
             raise DispositionRefused("restore target is not unique")
         target = rows[0]
+        if resource_id is not None and target["DbiResourceId"] != resource_id:
+            raise DispositionRefused("restore provider returned a different physical target")
         expected = {"corridor:rehearsal": self.spec.sha256}
         tags = {r["Key"]: r["Value"] for r in client.list_tags_for_resource(ResourceName=target["DBInstanceArn"])["TagList"]}
         if any(tags.get(key) != value for key, value in expected.items()):
@@ -136,7 +151,8 @@ class AwsRestoreRehearsal:
             else:
                 raise DispositionRefused("restore target identifier already exists")
             self._record("restore", "pending", target_identifier=self.spec.target_identifier)
-        target = self._target(client)
+        observed_resource_id = self._observed_target_resource_id(previous)
+        target = self._target(client, observed_resource_id)
         if target is not None:
             if target["DBInstanceStatus"] != "available":
                 return self._record("restore", "pending", target_resource_id=target["DbiResourceId"], provider_status=target["DBInstanceStatus"])
@@ -144,32 +160,41 @@ class AwsRestoreRehearsal:
                     s["VpcSecurityGroupId"] for s in target.get("VpcSecurityGroups", [])} != set(self.spec.security_group_ids):
                 raise DispositionRefused("restored target networking differs from the approved isolated target")
             return self._record("restore", "completed", target_resource_id=target["DbiResourceId"], target_arn=target["DBInstanceArn"], restore_time=self.spec.restore_time.isoformat())
+        if observed_resource_id is not None:
+            raise DispositionRefused("previously observed restore target is absent; this rehearsal cannot create another database")
         if any(row["phase"] == "cleanup" for row in previous):
             raise DispositionRefused("a cleaned rehearsal cannot silently create another restore")
         rows = provider_rows(client, "describe_db_instances", "DBInstances", Filters=[{"Name": "dbi-resource-id", "Values": [self.spec.source_resource_id]}])
         if len(rows) != 1 or rows[0]["DBInstanceArn"] != self.spec.source_instance_arn:
             raise DispositionRefused("source physical database differs from rehearsal")
-        source_backups = provider_rows(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups",
-                                DbiResourceId=self.spec.source_resource_id)
+        source_backups = automated_backup_rows(client, self.spec.source_resource_id)
         windows = [row.get("RestoreWindow", {}) for row in source_backups
                    if row.get("DbiResourceId") == self.spec.source_resource_id]
         if not any(window.get("EarliestTime") and window.get("LatestTime") and
                    window["EarliestTime"] <= self.spec.restore_time <= window["LatestTime"] for window in windows):
             raise DispositionRefused("requested point lies outside the observed PITR window")
-        self._mutate(client.restore_db_instance_to_point_in_time,
+        response = self._mutate(client.restore_db_instance_to_point_in_time,
             SourceDbiResourceId=self.spec.source_resource_id, TargetDBInstanceIdentifier=self.spec.target_identifier,
             RestoreTime=self.spec.restore_time, UseLatestRestorableTime=False,
             DBSubnetGroupName=self.spec.subnet_group, VpcSecurityGroupIds=list(self.spec.security_group_ids),
             PubliclyAccessible=False, DeletionProtection=False, CopyTagsToSnapshot=True,
             Tags=[{"Key": "corridor:rehearsal", "Value": self.spec.sha256}])
-        return self._record("restore", "pending", target_identifier=self.spec.target_identifier, provider_status="requested")
+        requested_target = response.get("DBInstance", {})
+        observed = {}
+        if requested_target.get("DbiResourceId"):
+            if (requested_target["DbiResourceId"] == self.spec.source_resource_id
+                    or requested_target.get("DBInstanceIdentifier") != self.spec.target_identifier):
+                raise DispositionRefused("restore request response does not identify the requested isolated target")
+            observed["target_resource_id"] = requested_target["DbiResourceId"]
+        return self._record("restore", "pending", target_identifier=self.spec.target_identifier,
+                            provider_status="requested", **observed)
 
     def verify(self, probe):
         client, previous = self._binding()
         completed = [r for r in previous if r["phase"] == "restore" and r["outcome"] == "completed"]
         if not completed:
             raise DispositionRefused("state checks require an observed available restore")
-        target = self._target(client)
+        target = self._target(client, self._observed_target_resource_id(previous))
         if target is None or target["DBInstanceStatus"] != "available" or target["DbiResourceId"] != completed[-1]["evidence"]["target_resource_id"]:
             raise DispositionRefused("restored target changed before verification")
         observed = probe(target)
@@ -204,7 +229,7 @@ class AwsRestoreRehearsal:
         self._record("cleanup", "completed", target_resource_id=resource_id)
         snapshots = provider_rows(client, "describe_db_snapshots", "DBSnapshots", SnapshotType="manual",
                            Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])
-        backups = provider_rows(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resource_id)
+        backups = automated_backup_rows(client, resource_id)
         for snapshot in snapshots:
             if snapshot["DbiResourceId"] != resource_id:
                 raise DispositionRefused("temporary snapshot ownership differs")

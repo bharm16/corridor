@@ -185,3 +185,13 @@ def test_manual_and_automated_backups_use_their_own_delete_operations(aws):
     with pytest.raises(EnvironmentDestructionError, match="verify absence"):
         destroyer.expire_backups(registration)
     assert calls == ["guard", "guard"]
+
+
+def test_modeled_missing_automated_backup_completes_expiration(aws):
+    registration, resource, destroyer, stubs, _ = aws
+    identity(stubs)
+    stubs["rds"].add_response("describe_db_snapshots", {"DBSnapshots": []},
+        {"SnapshotType": "manual", "Filters": [{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}]})
+    stubs["rds"].add_client_error("describe_db_instance_automated_backups", "DBInstanceAutomatedBackupNotFound",
+        http_status_code=404, expected_params={"DbiResourceId": resource.db_resource_id})
+    assert "/declared-rds-backups-absent/" in destroyer.expire_backups(registration)

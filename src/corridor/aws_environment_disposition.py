@@ -18,7 +18,7 @@ import json
 from corridor.environment_disposition import AwsEnvironmentDestroyer
 from corridor.disposition_contracts import (
     DispositionRefused, EnvironmentDestructionError,
-    json_digest as digest, provider_rows, require_no_rds_replicas,
+    json_digest as digest, provider_rows, require_no_rds_replicas, automated_backup_rows,
 )
 
 # Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
@@ -267,7 +267,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
                     raise DispositionRefused("backup client region differs from inventory")
             snapshots = provider_rows(clients["rds"], "describe_db_snapshots", "DBSnapshots",
                 SnapshotType="manual", Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
-            backups = provider_rows(clients["rds"], "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resources.db_resource_id)
+            backups = automated_backup_rows(clients["rds"], resources.db_resource_id)
             if region != resources.region and (snapshots or backups):
                 raise DispositionRefused("remote RDS copies require expanded custody and disposition inventory")
             for snapshot in snapshots:

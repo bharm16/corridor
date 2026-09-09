@@ -59,6 +59,7 @@ from corridor.disposition_contracts import (
     DispositionRefused,
     EnvironmentDestructionError,
     require_no_rds_replicas,
+    automated_backup_rows,
 )
 
 
@@ -420,12 +421,11 @@ class AwsEnvironmentDestroyer:
                 pending = True
                 if snapshot.get("Status") != "deleting":
                     self._mutate(client.delete_db_snapshot, DBSnapshotIdentifier=snapshot["DBSnapshotIdentifier"])
-        for page in client.get_paginator("describe_db_instance_automated_backups").paginate(DbiResourceId=resource.db_resource_id):
-            for backup in page.get("DBInstanceAutomatedBackups", []):
-                if backup.get("DbiResourceId") != resource.db_resource_id:
-                    raise DispositionRefused("RDS automated backup differs from the approved instance")
-                pending = True
-                self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
+        for backup in automated_backup_rows(client, resource.db_resource_id):
+            if backup.get("DbiResourceId") != resource.db_resource_id:
+                raise DispositionRefused("RDS automated backup differs from the approved instance")
+            pending = True
+            self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
         if pending:
             raise EnvironmentDestructionError("RDS backup expiration requested; verify absence on retry")
         return self._evidence("declared-rds-backups-absent")
