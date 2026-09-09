@@ -72,9 +72,9 @@ LEGACY_ACCEPTED_TABLES = (
     "dispute_settlements",
 )
 
-# Two sessions racing on pg_authid raise the first; a session losing the
-# create race raises the second. Nothing else is retried.
-_ROLE_RACE = ("tuple concurrently updated", "already exists")
+# Global roles can be created by migrations in different databases. A loser
+# sees duplicate_object, or the pg_authid role-name unique index if its lookup
+# preceded the other transaction's commit. Retry only those catalog races.
 _ROLE_RETRIES = 10
 
 
@@ -93,8 +93,14 @@ def _login_roles() -> dict[str, str]:
     return roles
 
 
-def _apply_role_ddl(connection, statement: str) -> None:
-    """Run one cluster-role statement, retrying only a catalog race."""
+def _apply_role_ddl(connection, statement: str, *, creating_role: str | None = None) -> None:
+    """Converge on a concurrently created role, then let callers harden it.
+
+    Repeating CREATE after another migration commits can never succeed. Once
+    the failed savepoint is rolled back, a fresh catalog read must establish
+    that exact role before treating a create collision as success. Keep error
+    classification on provider diagnostics, never password-bearing SQL text.
+    """
 
     for attempt in range(_ROLE_RETRIES):
         savepoint = connection.begin_nested()
@@ -102,7 +108,15 @@ def _apply_role_ddl(connection, statement: str) -> None:
             connection.exec_driver_sql(statement)
         except DBAPIError as error:
             savepoint.rollback()
-            raced = any(reason in str(error) for reason in _ROLE_RACE)
+            original = error.orig
+            code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+            constraint = getattr(getattr(original, "diag", None), "constraint_name", None)
+            create_collision = creating_role is not None and (
+                code == "42710" or (code == "23505" and constraint == "pg_authid_rolname_index")
+            )
+            if create_collision and not _role_missing(connection, creating_role):
+                return
+            raced = create_collision or "tuple concurrently updated" in str(original)
             if not raced or attempt == _ROLE_RETRIES - 1:
                 raise
             time.sleep(0.05 * (attempt + 1))
@@ -149,7 +163,7 @@ def upgrade() -> None:
     for role in OWNER_ROLES:
         identifier = _quote(connection, "quote_ident", role)
         if _role_missing(connection, role):
-            _apply_role_ddl(connection, f"create role {identifier} nologin noinherit")
+            _apply_role_ddl(connection, f"create role {identifier} nologin noinherit", creating_role=role)
         if _role_attributes_differ(
             connection,
             role,
@@ -171,6 +185,7 @@ def upgrade() -> None:
                 connection,
                 f"create role {identifier} login password {password} "
                 f"nosuperuser nocreatedb nocreaterole noinherit nobypassrls",
+                creating_role=role,
             )
         if _role_attributes_differ(
             connection,
