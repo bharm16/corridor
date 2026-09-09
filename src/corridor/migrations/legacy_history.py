@@ -132,6 +132,10 @@ end; $$;
 
 
 def upgrade(op):
+    # PostgreSQL may check this function's EXECUTE privilege while planning
+    # the guard even when session_user is not the web login. The command
+    # owner needs the read-only sealed-scope reader, never the scope opener.
+    op.execute("grant execute on function current_project_partition() to corridor_fact_decision_writer")
     # All table names and predicates are trusted, versioned program constants.
     # JSONB text supplies one database-native canonical digest on every replay.
     clauses = []
