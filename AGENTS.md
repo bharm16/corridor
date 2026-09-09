@@ -46,7 +46,8 @@ Use non-overlapping gates appropriate to the changed behavior
 as amended by [ADR-0087](docs/adr/0087-the-migration-window-and-the-feedback-budget-are-enforced-numbers.md),
 [ADR-0088](docs/adr/0088-the-required-gate-runs-the-whole-suite-in-parallel-not-a-path-selected-subset.md),
 [ADR-0093](docs/adr/0093-the-required-gate-is-one-always-triggered-workflow-with-a-fail-closed-summary.md)
-and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects-feedback-budget-regressions.md)):
+and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects-feedback-budget-regressions.md),
+as amended by [ADR-0097](docs/adr/0097-ci-verifies-correctness-and-reports-shared-runner-timing.md)):
 
 - **Documentation-only edits: run `make check`.** It requires no database or
   CDK toolchain; CI skips infrastructure installation and synthesis too.
@@ -91,8 +92,10 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   classifier/job pair fails it. **Never rewrite it as `success or skipped ->
   pass`** — that is how a behavior job skipped by a broken condition reports
   green (ADR-0093). After these result checks, the same required job validates
-  every timing receipt and enforces `tests/feedback-budget.json`. Missing,
-  duplicate, stale, or failed receipts fail the gate (ADR-0096).
+  every timing receipt. Missing, duplicate, stale, failed or incomplete proof
+  fails the gate. Elapsed-time targets in `tests/feedback-budget.json` produce
+  visible warnings and reports; they do not invalidate successful correctness
+  evidence on shared runners. Job timeouts remain enforced (ADR-0097).
 - **Path scoping lives on the jobs, never on a trigger.** A workflow skipped
   by a trigger-level path filter leaves its checks *pending*, and a required
   check that never reports blocks the pull request forever. A job skipped by
@@ -139,11 +142,17 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   `tests/durations*.json` are bootstrap weights. Routine changes do not require
   local full-suite timing reruns or duration-only follow-up PRs. Use
   `make test-timing` or `make test-slow-timing` only to diagnose a local cost.
-- **Read the feedback report when the budget fails.** It records current gate
-  time, rolling median/p90, migration time, and the expensive files. Repair the
-  measured cost and rerun the affected seam; the next required CI run measures
-  the revision. An under-budget repair may pass despite slow historical runs.
-  Changing the budget requires a new ADR, not a threshold increase to clear CI.
+- **Investigate timing warnings from evidence.** The feedback report retains
+  current gate time, rolling median/p90, migration time and expensive files.
+  Distinguish hosted queue/provisioning delay from setup and test work, then
+  repair the measured cost. Do not rerun successful tests merely to draw a
+  luckier time. Target changes require a new ADR; the current targets remain
+  unchanged and advisory (ADR-0097).
+- **Warm dependency caches on `main`.** The dependency-only cache workflow
+  populates the same unpruned root and root/render profiles used by PRs.
+  PR-scoped caches cannot warm sibling PRs. The warmer runs no test suite,
+  PostgreSQL setup or deployment; details are in
+  [the cache guide](docs/operations/ci-wheel-cache.md).
 - **Match workers to the runner and fixtures.** Private Linux CI uses two
   xdist workers per runner. Ordinary tests use `worksteal`; slow tests use
   `loadfile` with `--no-loadscope-reorder` so each module fixture is built once
