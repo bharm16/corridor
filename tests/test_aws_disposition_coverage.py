@@ -281,3 +281,25 @@ def test_rehearsal_receipts_survive_customer_disposition_and_are_immutable(custo
         registry.record_disposition_rehearsal(**{**receipt, "outcome": "completed"})
     with pytest.raises(DBAPIError, match="immutable"), owner.begin() as connection:
         connection.execute(text("delete from control_plane.disposition_rehearsal_receipts where receipt_id='restore-observed'"))
+
+
+def test_restore_probe_uses_corridor_object_store_digest_contract(tmp_path):
+    from contextlib import nullcontext
+    from hashlib import sha256
+    from corridor.environment_rehearsal import sql_restore_probe
+    from corridor.object_storage import LocalFilesystemStore
+    storage = LocalFilesystemStore(tmp_path / "objects")
+    checksum = sha256(b"retained source").hexdigest()
+    storage.put("source", b"retained source", sha256=checksum)
+    statements = []
+    class Connection:
+        info = SimpleNamespace(host="restore.example", port=5432, dbname="corridor")
+        def transaction(self):
+            return nullcontext()
+        def execute(self, sql):
+            statements.append(sql)
+            return SimpleNamespace(fetchall=lambda: [("earlier",)])
+    observed = sql_restore_probe(Connection(), target={"Endpoint": {"Address": "restore.example", "Port": 5432}, "DBName": "corridor"},
+        queries={"earlier_state": "select fixture from synthetic_rehearsal"}, object_store=storage, object_digests={"source": checksum})
+    assert statements[0] == "SET TRANSACTION READ ONLY"
+    assert observed == {"query_digests": {"earlier_state": result_digest([("earlier",)])}, "object_digests": {"source": checksum}}
