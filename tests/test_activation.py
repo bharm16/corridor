@@ -238,3 +238,92 @@ def test_operator_validate_writes_nothing_and_freeze_publishes_receipt(tmp_path,
     assert frozen["outcome"] == "frozen"
     receipt = EvidenceArtifact(Path(frozen["receipt_path"]), frozen["receipt_sha256"])
     assert processing_authorized(configuration, receipt)
+
+
+@pytest.mark.parametrize("grant_kind", ["table_select", "column_select", "ownership"])
+def test_boundary_smoke_checks_set_role_and_inherited_read_capabilities(runtime_database, configuration, grant_kind):
+    """The actual login can assume an intermediary with non-SET inherited ACLs."""
+    import os
+    from types import SimpleNamespace
+    from uuid import uuid4
+
+    from sqlalchemy import create_engine, text
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.orm import Session
+
+    from corridor.activation import collect_boundary_smoke
+    from corridor.config import settings
+
+    suffix = uuid4().hex
+    intermediary = f"boundary_bridge_{suffix}"
+    authority = f"boundary_reader_{suffix}"
+    relation = f"boundary_revoked_{suffix}"
+    cases = [{"method": method, "template": route, "url": route, "expected_status": 200}
+        for method, route in PILOT_ROUTES]
+    cases.append({"method": "GET", "template": "/fixture-disabled", "url": "/fixture-disabled", "expected_status": 404})
+    calls = []
+
+    def request(method, url, **kwargs):
+        calls.append((method, url))
+        return SimpleNamespace(status_code=404 if url == "/fixture-disabled" else 200,
+            text="fixture response", json=lambda: {"checks": [{"component": "live_pilot_web_boundary",
+                "healthy": True, "detail": "enforced"}]})
+
+    web_engine = create_engine(make_url(settings.database_url).set(database=runtime_database.name,
+        username="corridor_web", password=os.environ.get("CORRIDOR_WEB_DB_PASSWORD", "corridor_web")))
+    created = False
+    try:
+        with runtime_database.session_factory.begin() as owner:
+            owner.execute(text("insert into customer_environment_binding(singleton,customer_id,environment_id,deployment_id) values (true,:customer,:environment,:deployment)"),
+                {"customer": configuration.customer, "environment": configuration.environment, "deployment": configuration.deployment_id})
+            owner.execute(text(f'create role "{intermediary}" nologin noinherit'))
+            owner.execute(text(f'create role "{authority}" nologin noinherit'))
+            owner.execute(text(f'create table public."{relation}" (secret text)'))
+            owner.execute(text(f'insert into public."{relation}" values (\'retained fixture value\')'))
+            # Default privileges may grant web access to a new owner table;
+            # this relation is explicitly revoked before the drift exercise.
+            owner.execute(text(f'revoke all on public."{relation}" from public, corridor_web'))
+            owner.execute(text(f'grant "{authority}" to "{intermediary}" with inherit true'))
+            owner.execute(text(f'grant "{authority}" to "{intermediary}" with set false'))
+            owner.execute(text(f'grant "{intermediary}" to corridor_web with inherit false'))
+            owner.execute(text(f'grant "{intermediary}" to corridor_web with set true'))
+        created = True
+        with Session(web_engine) as web:
+            assert collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)["outcome"] == "passed"
+        with runtime_database.session_factory.begin() as owner:
+            if grant_kind == "ownership":
+                owner.execute(text(f'alter table public."{relation}" owner to "{authority}"'))
+            else:
+                privilege = "select(secret)" if grant_kind == "column_select" else "select"
+                owner.execute(text(f'grant {privilege} on public."{relation}" to "{authority}"'))
+        with Session(web_engine) as web:
+            assert web.scalar(text("select has_table_privilege(current_user,:relation,'SELECT')"), {"relation": relation}) is False
+            assert web.scalar(text("select has_any_column_privilege(current_user,:relation,'SELECT')"), {"relation": relation}) is False
+            assert web.scalar(text("select pg_has_role(session_user,:role,'SET')"), {"role": authority}) is False
+            web.execute(text(f'set role "{intermediary}"'))
+            assert web.scalar(text(f'select secret from public."{relation}"')) == "retained fixture value"
+            web.execute(text("reset role"))
+            calls.clear()
+            with pytest.raises(ActivationRefused, match="revoked relation"):
+                collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
+            assert calls == []
+        with runtime_database.session_factory.begin() as owner:
+            owner.execute(text(f'grant "{intermediary}" to corridor_web with set false'))
+        with Session(web_engine) as web:
+            # MEMBER alone, with neither INHERIT nor SET, conveys no read.
+            assert web.scalar(text("select pg_has_role(session_user,:role,'MEMBER')"), {"role": authority}) is True
+            assert collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)["outcome"] == "passed"
+        with runtime_database.session_factory.begin() as owner:
+            owner.execute(text(f'grant "{intermediary}" to corridor_web with inherit true'))
+        with Session(web_engine) as web:
+            with pytest.raises(ActivationRefused, match="revoked relation"):
+                collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
+    finally:
+        web_engine.dispose()
+        if created:
+            with runtime_database.session_factory.begin() as owner:
+                owner.execute(text(f'drop table public."{relation}"'))
+                owner.execute(text(f'revoke "{intermediary}" from corridor_web'))
+                owner.execute(text(f'revoke "{authority}" from "{intermediary}"'))
+                owner.execute(text(f'drop role "{intermediary}"'))
+                owner.execute(text(f'drop role "{authority}"'))
