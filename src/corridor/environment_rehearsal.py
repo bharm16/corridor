@@ -15,8 +15,7 @@ from hashlib import sha256
 import json
 from uuid import uuid4
 
-from corridor.environment_disposition import DispositionRefused
-from corridor.aws_environment_disposition import _pages, digest
+from corridor.disposition_contracts import DispositionRefused, json_digest as digest, provider_rows
 
 
 def result_digest(rows) -> str:
@@ -147,10 +146,10 @@ class AwsRestoreRehearsal:
             return self._record("restore", "completed", target_resource_id=target["DbiResourceId"], target_arn=target["DBInstanceArn"], restore_time=self.spec.restore_time.isoformat())
         if any(row["phase"] == "cleanup" for row in previous):
             raise DispositionRefused("a cleaned rehearsal cannot silently create another restore")
-        rows = _pages(client, "describe_db_instances", "DBInstances", Filters=[{"Name": "dbi-resource-id", "Values": [self.spec.source_resource_id]}])
+        rows = provider_rows(client, "describe_db_instances", "DBInstances", Filters=[{"Name": "dbi-resource-id", "Values": [self.spec.source_resource_id]}])
         if len(rows) != 1 or rows[0]["DBInstanceArn"] != self.spec.source_instance_arn:
             raise DispositionRefused("source physical database differs from rehearsal")
-        source_backups = _pages(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups",
+        source_backups = provider_rows(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups",
                                 DbiResourceId=self.spec.source_resource_id)
         windows = [row.get("RestoreWindow", {}) for row in source_backups
                    if row.get("DbiResourceId") == self.spec.source_resource_id]
@@ -185,7 +184,7 @@ class AwsRestoreRehearsal:
         if not verified:
             raise DispositionRefused("cleanup requires persisted state verification")
         resource_id = verified[-1]["evidence"]["target_resource_id"]
-        targets = _pages(client, "describe_db_instances", "DBInstances",
+        targets = provider_rows(client, "describe_db_instances", "DBInstances",
                          Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])
         if len(targets) > 1:
             raise DispositionRefused("temporary physical database is not unique")
@@ -203,9 +202,9 @@ class AwsRestoreRehearsal:
             return self._record("cleanup", "pending", target_resource_id=resource_id,
                                 target_identifier=target["DBInstanceIdentifier"])
         self._record("cleanup", "completed", target_resource_id=resource_id)
-        snapshots = _pages(client, "describe_db_snapshots", "DBSnapshots", SnapshotType="manual",
+        snapshots = provider_rows(client, "describe_db_snapshots", "DBSnapshots", SnapshotType="manual",
                            Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])
-        backups = _pages(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resource_id)
+        backups = provider_rows(client, "describe_db_instance_automated_backups", "DBInstanceAutomatedBackups", DbiResourceId=resource_id)
         for snapshot in snapshots:
             if snapshot["DbiResourceId"] != resource_id:
                 raise DispositionRefused("temporary snapshot ownership differs")
