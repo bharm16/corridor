@@ -201,3 +201,16 @@ def test_a_declared_partner_with_no_data_still_gets_every_finding():
     missing = result["cohorts"][0]["partners"]["absent-partner"]["findings"]
     assert len(missing) == len(CRITERIA)
     assert all(f["result"] == "insufficient_evidence" for f in missing)
+
+
+def test_source_latency_joins_an_arrival_in_the_preceding_retained_week():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    second = replace(p, period_id="second", start=START+timedelta(days=7), end=START+timedelta(days=14))
+    contract["cohorts"][0]["period_ids"].append("second")
+    arrival = event(EventFamily.SOURCE_ARRIVAL, hour=6*24, source_identity="delivery:1", source_class="matrix", receipt={"table": "source_deliveries", "id": 1})
+    delta = event(EventFamily.PROPOSED_DELTA_CREATION, hour=8*24, delta_id=1, source_identity="delivery:1", source_class="matrix", receipt={"table": "proposed_deltas", "id": 1})
+    result = derive_report(derive_measurement([p, second], [arrival, delta]), contract, evidence)
+    latency = pooled(result)["source_latency"]
+    assert latency["calendar_seconds"]["median"] == 2*86400
+    assert latency["business_days"]["median"] == 1

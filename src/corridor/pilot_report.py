@@ -166,12 +166,13 @@ def _latencies(children):
     return result
 
 
-def _source_latencies(rows, calendar):
+def _source_latencies(rows, calendar, history_rows):
     readings = []
     for row in rows:
         observations = row["observations"]
         arrivals = {}
-        for obs in observations:
+        history = [o for r in history_rows if project_key(r["declaration"]) == project_key(row["declaration"]) for o in r["observations"]]
+        for obs in sorted(history, key=lambda o: (o["occurred_at"], o["event_id"])):
             p = obs["payload"]
             if obs["family"] == "source_arrival" and p.get("source_identity"):
                 arrivals.setdefault(p["source_identity"], obs)
@@ -229,7 +230,7 @@ def _packages(rows):
     return result
 
 
-def _aggregate(rows, work, baselines, calendar):
+def _aggregate(rows, work, baselines, calendar, history_rows):
     packets = [p for row in rows for p in row["packets"]]
     # Repeated presentations may duplicate a child; a delta is one diagnostic
     # within its project/period, never one count per containing packet.
@@ -271,7 +272,7 @@ def _aggregate(rows, work, baselines, calendar):
                                   complete=all(type(c.get("necessary")) is bool for c in children)),
         "packages": _packages(rows),
         "manual_reconstruction": distribution([p["manual_reconstruction"]["minutes"] for p in interrupting], len(interrupting), "interrupting-packet minutes"),
-        "source_latency": _source_latencies(rows, calendar),
+        "source_latency": _source_latencies(rows, calendar, history_rows),
         "source_class": {}, "configuration_bindings": [r["declaration"] for r in rows]}
     observed_classes = {(o["payload"].get("source_class") or "unattributed") for r in rows for o in r["observations"]}
     for source in sorted({c["source_class"] for c in children if c["source_class"]} | {c["source_class"] for c in coverage} | observed_classes):
@@ -344,8 +345,8 @@ def derive_report(measurement, declaration, evidence):
         partners = {}
         for partner in sorted({r["declaration"]["partner_id"] for r in rows} | set(declaration.get("shape", {}).get("partners", {}))):
             owned = [r for r in rows if r["declaration"]["partner_id"] == partner]
-            partners[partner] = {"pooled": _aggregate(owned, work, baselines, declaration.get("business_calendar")),
-                "volume_strata": {s: _aggregate([r for r in owned if r["volume_stratum"] == s], work, baselines, declaration.get("business_calendar")) for s in VOLUME_STRATA}}
+            partners[partner] = {"pooled": _aggregate(owned, work, baselines, declaration.get("business_calendar"), measurement["periods"]),
+                "volume_strata": {s: _aggregate([r for r in owned if r["volume_stratum"] == s], work, baselines, declaration.get("business_calendar"), measurement["periods"]) for s in VOLUME_STRATA}}
         cohorts.append({"declaration": cohort, "partners": partners})
     samples = {}
     native_populations = {}

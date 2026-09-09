@@ -162,10 +162,9 @@ provider/model/prompt/policy dimensions, declared configuration, package members
 repair time, missing or mixed-revision artifacts and stale-candidate failures.
 Every rate prints its numerator, denominator and unit. Time distributions print
 median and nearest-rank p90. Source-to-delta latency includes native deltas that
-were never surfaced as packets. An arrival outside the retained period is not
-guessed: its latency remains unavailable. The native export's complete history
-can be retained in a larger declared observation window when that evidence is
-needed.
+were never surfaced as packets. An arrival is joined across retained weeks by exact customer/database/project
+origin and source identity. An arrival absent from the entire retained history
+is not guessed: its latency remains unavailable.
 
 The checkpoint evaluates each partner and cohort separately. Relevant time,
 latency, precision and reconstruction gates are also evaluated for every volume
