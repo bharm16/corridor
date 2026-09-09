@@ -27,6 +27,17 @@ digest of the decoded bytes. Its separately registered Document and own parser
 own attachment-derived facts and rendition provenance; an outer email cannot
 attribute an attachment's content to the sender as a concluded body statement.
 Unsupported attachments retain the intake refusal and their bytes in raw MIME.
+Encapsulated `message/rfc822` parts retain their original decoded bytes as separate
+`.eml` Documents; they never become the outer sender's authored body. MIME
+framing bytes follow [RFC 2046 section 5.1.1](https://www.rfc-editor.org/rfc/rfc2046#section-5.1.1).
+
+The bound intake accepts trusted `attachment_doc_types` declarations keyed by the
+delivered digest. A declared matrix/workbook enters the normal scheduled extraction
+pass and produces Facts cited to its own cells/reading. Absent a declaration, the
+receipt explicitly records `source_type_status: unresolved` and preserves `other`;
+the source's filename or prose cannot guess whether it is a matrix, minutes or a
+plan (ADR-0007/0030). Actual source classification is intake configuration, not
+missing parser software. Fixtures prove the declared workbook's full Fact handoff.
 
 The bounded provider receives only retained segment references and untrusted
 text. Its strict response selects one closing segment as `concluded` or

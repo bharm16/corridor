@@ -59,7 +59,7 @@ def session():
         transaction.rollback()
 
 
-def deliver(session, raw, project=None):
+def deliver(session, raw, project=None, *, attachment_doc_types=None):
     if project is None:
         project = Project(slug=f"email-{uuid4().hex[:12]}", name="Synthetic email project", is_synthetic=True)
         session.add(project)
@@ -68,7 +68,7 @@ def deliver(session, raw, project=None):
                                  channel="project_alias", material=f"{project.slug}@example.test")
     received = receive_pushed_message(session,
         credential=PushCredential(channel="project_alias", material=f"{project.slug}@example.test"),
-        raw_bytes=raw)
+        raw_bytes=raw, attachment_doc_types=attachment_doc_types)
     inbound = session.get(InboundMessage, received.message_id)
     delivery = session.get(SourceDelivery, inbound.push_delivery_id)
     return project, SourceEnvelope(
@@ -227,8 +227,8 @@ def test_attachment_bytes_and_cells_keep_their_own_document_provenance(session):
     from corridor.storage import stored_file
 
     workbook = Workbook()
-    workbook.active.append(["Utility ID", "Notes"])
-    workbook.active.append(["UC-7", "Attachment evidence"])
+    workbook.active.append(["Utility Conflict ID", "Utility Owner", "Utility Type", "Utility Conflict Description", "Comments"])
+    workbook.active.append(["UC-7", "Fixture Utility", "Water", "Relocate pipe", "Attachment evidence"])
     stream = BytesIO()
     workbook.save(stream)
     attachment = stream.getvalue()
@@ -238,12 +238,12 @@ def test_attachment_bytes_and_cells_keep_their_own_document_provenance(session):
     message.set_content("We will finish in October.\n")
     message.add_attachment(attachment, maintype="application",
         subtype="vnd.openxmlformats-officedocument.spreadsheetml.sheet", filename="utility.xlsx")
-    project, envelope = deliver(session, message.as_bytes())
+    project, envelope = deliver(session, message.as_bytes(), attachment_doc_types={sha256(attachment).hexdigest(): "matrix"})
     capture_email_thread(session, envelope, client=ClosingStatement())
     child = session.scalar(select(Document).where(Document.project_id == project.id, Document.sha256 == sha256(attachment).hexdigest()))
     assert child is not None and child.source_delivery_id is None
     cell = session.scalar(select(SourceSegment).where(SourceSegment.document_id == child.id,
-        SourceSegment.cell_range == "B2"))
+        SourceSegment.cell_range == "E2"))
     assert dereference_source_segment(child, cell, stored_file(child)) == "Attachment evidence"
     boundary_fact = session.scalar(select(Fact).where(Fact.project_id == project.id, Fact.fact_type == "email_attachment"))
     assert boundary_fact.text_value == child.sha256
@@ -251,6 +251,15 @@ def test_attachment_bytes_and_cells_keep_their_own_document_provenance(session):
     parent = session.get(Document, boundary.document_id)
     assert parent.id != child.id
     assert dereference_source_segment(parent, boundary, stored_file(parent)) == child.sha256
+    from corridor.extract_project import extractable_document
+    from corridor.pipeline import extract_any
+    from corridor.facts import replay_fact
+
+    assert extractable_document(child) is True
+    extract_any(session, child)
+    child_fact = session.scalar(select(Fact).where(Fact.document_id == child.id, Fact.fact_type == "notes"))
+    assert child_fact is not None
+    assert replay_fact(session, child, child_fact, stored_file(child)) == "Attachment evidence"
 
 
 def test_html_only_retains_sources_and_an_explicit_question(session):
@@ -318,6 +327,73 @@ def test_worker_capability_runs_capture_and_cannot_write_accepted_authority(sess
         assert reading.proposed_delta_id is not None
         assert session.scalar(text("select has_table_privilege(current_user, 'fact_decisions', 'INSERT')")) is False
         session.execute(text("reset role"))
+
+
+def test_worker_cannot_insert_a_source_reading_around_the_append_command(session):
+    from sqlalchemy import text
+    from sqlalchemy.exc import IntegrityError
+    from corridor.models import SourceSegment
+
+    project, _ = deliver(session, message_bytes(body="Maybe October?\n"))
+    inbound = session.scalar(select(InboundMessage).where(InboundMessage.project_id == project.id))
+    segment = session.scalar(select(SourceSegment).where(SourceSegment.document_id == inbound.document_id).order_by(SourceSegment.id).limit(1))
+    with pytest.raises(IntegrityError, match="requires its append command"), session.begin_nested():
+        session.execute(text("set local role corridor_worker"))
+        session.execute(text("""insert into inbound_thread_readings
+            (project_id, thread_id, closing_message_id, resolution, open_question, question_segment_id, input_sha256)
+            values (:project, :thread, :message, 'unresolved', 'bypassed', :segment, :digest)"""),
+            {"project": project.id, "thread": inbound.thread_id, "message": inbound.id,
+             "segment": segment.id, "digest": "a" * 64})
+
+
+def test_encapsulated_message_keeps_exact_bytes_and_cannot_become_outer_sender_words(session):
+    from hashlib import sha256
+    from corridor.email_spine import capture_email_thread
+    from corridor.models import Document
+    from corridor.storage import stored_file
+
+    original = (b"From: Original <ORIGINAL@EXAMPLE.TEST>\nMessage-ID: <original@example.test>\n"
+                b"Content-Type: text/plain; charset=utf-8\n\nWe promised September.\n")
+    raw = (b'From: Outer <OUTER@EXAMPLE.TEST>\nMessage-ID: <forward@example.test>\n'
+           b'Content-Type: multipart/mixed; boundary="forward--"\n\n'
+           b'--forward--\nContent-Type: text/plain; charset=utf-8\n\nPlease review the attached message.\n\n'
+           b'--forward--\nContent-Type: message/rfc822\nContent-Disposition: inline\n\n'
+           + original + b'\n--forward----\n')
+    project, envelope = deliver(session, raw)
+    spans = read_mime_segments(raw)
+    assert [span.exact_text for span in spans if span.section == "body"] == ["Please review the attached message.\n"]
+    reading = capture_email_thread(session, envelope, client=ClosingStatement())
+    assert session.get(Fact, reading.source_fact_id).text_value == "Please review the attached message.\n"
+    child = session.scalar(select(Document).where(Document.project_id == project.id,
+        Document.sha256 == sha256(original).hexdigest()))
+    assert child is not None and child.doc_type == "other"
+    assert stored_file(child).read_bytes() == original
+    assert child.source_delivery_id is None
+
+
+@pytest.mark.parametrize("with_attachment", [False, True])
+def test_draft_status_does_not_depend_on_a_nonempty_body(session, with_attachment):
+    from corridor.email_spine import capture_email_thread
+
+    class DraftQuestion:
+        model = "fixture"
+        def complete(self, *, system, user, schema):
+            import json
+            segments = json.loads(user)["turns"][-1]["segments"]
+            return {"resolution": "unresolved", "segment_id": next(s["id"] for s in segments if s["header_name"] == "subject"),
+                    "read_segment_ids": [s["id"] for s in segments]}
+
+    message = EmailMessage()
+    message["From"] = "Utility <UTILITY@EXAMPLE.TEST>"
+    message["Message-ID"] = "<draft-empty@example.test>"
+    message["X-Unsent"] = "1"
+    message["Subject"] = "Draft review pending"
+    if with_attachment:
+        message.add_attachment(b"unreleased", maintype="application", subtype="octet-stream", filename="draft.txt")
+    project, envelope = deliver(session, message.as_bytes())
+    reading = capture_email_thread(session, envelope, client=DraftQuestion())
+    assert reading.open_question == "Draft review pending" and reading.source_fact_id is None
+    assert session.scalars(select(Fact).where(Fact.project_id == project.id)).all() == []
 
 
 def test_a_return_to_the_accepted_wording_supersedes_only_the_unaccepted_change(session):

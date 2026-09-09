@@ -135,6 +135,8 @@ def read_thread(
     ).all()
     if not turns:
         raise ThreadReadingRefused("this thread has no retained turns")
+    if any(turn.push_delivery_id is not None for turn in turns):
+        raise ThreadReadingRefused("bound email threads use the email_spine capture command")
     if len(turns) > budget.max_turns:
         raise ThreadReadingBudgetExceeded(
             f"thread has {len(turns)} turns; the bounded case allows {budget.max_turns}"

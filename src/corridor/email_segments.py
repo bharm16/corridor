@@ -10,11 +10,13 @@ bytes by digest; the attachment Document owns interpretation of those bytes.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import base64
 from email import policy
 from email.parser import BytesParser
 from hashlib import sha256
 from pathlib import Path
 import re
+import quopri
 
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.source_segment_errors import SourceSegmentLocatorMismatch
@@ -23,6 +25,83 @@ from corridor.source_segment_errors import SourceSegmentLocatorMismatch
 MIME_SCHEME = "email-mime-v1"
 MAX_PARTS = 200
 MAX_TEXT_CHARACTERS = 400_000
+
+
+def _raw_body(raw):
+    pieces = re.split(br"\r?\n\r?\n", raw, maxsplit=1)
+    return pieces[1] if len(pieces) == 2 else b""
+
+
+def _raw_children(raw, boundary):
+    """Retain MIME payload bytes without reserializing encapsulated messages."""
+    if not boundary:
+        raise ValueError("multipart MIME has no boundary")
+    delimiter = b"--" + boundary.encode("ascii")
+    result, current = [], None
+    for line in _raw_body(raw).splitlines(keepends=True):
+        marker = line.rstrip(b"\r\n").rstrip(b" \t")
+        if marker in (delimiter, delimiter + b"--"):
+            if current is not None:
+                child = b"".join(current)
+                # RFC 2046: the CRLF introducing a delimiter belongs to the
+                # delimiter, not the preceding part's decoded payload.
+                child = child[:-2] if child.endswith(b"\r\n") else child.removesuffix(b"\n")
+                result.append(child)
+            if marker == delimiter + b"--":
+                return result
+            current = []
+        elif current is not None:
+            current.append(line)
+    raise ValueError("multipart MIME has no closing boundary")
+
+
+def _is_attachment(part):
+    return bool(part.get_filename() or part.get_content_disposition() == "attachment"
+                or part.get_content_maintype() not in {"text", "multipart"})
+
+
+def _parts(message, raw):
+    pending = [(message, (), raw)]
+    count = 0
+    while pending:
+        part, path, source = pending.pop()
+        count += 1
+        if count > MAX_PARTS or len(path) > 20:
+            raise ValueError("MIME part count or nesting exceeds the reading budget")
+        yield part, path, source
+        if part.is_multipart() and not _is_attachment(part):
+            children = list(part.iter_parts())
+            originals = _raw_children(source, part.get_boundary())
+            if len(children) != len(originals):
+                raise ValueError("MIME parser and raw part boundaries disagree")
+            pending.extend(reversed([(child, (*path, index), original)
+                for index, (child, original) in enumerate(zip(children, originals, strict=True))]))
+
+
+def _attachment_bytes(part, source):
+    payload = part.get_payload(decode=True)
+    if payload is not None:
+        return payload
+    # message/rfc822 is represented as child Message objects by email.parser.
+    # as_bytes() would change folding/newlines and cannot establish its digest.
+    payload = _raw_body(source)
+    encoding = str(part.get("Content-Transfer-Encoding", "7bit")).lower()
+    if encoding == "base64":
+        return base64.b64decode(b"".join(payload.split()), validate=True)
+    if encoding == "quoted-printable":
+        return quopri.decodestring(payload)
+    if encoding not in {"7bit", "8bit", "binary"}:
+        raise ValueError("unsupported MIME transfer encoding")
+    return payload
+
+
+def mime_attachment_parts(raw: bytes) -> tuple[tuple[str, bytes], ...]:
+    """The same opaque attachment boundaries used for segmentation and intake."""
+    message = BytesParser(policy=policy.default).parsebytes(raw)
+    return tuple((str(part.get_filename() or (
+        "forwarded-message.eml" if part.get_content_type() == "message/rfc822" else "attachment.bin")),
+        _attachment_bytes(part, source))
+        for part, _path, source in _parts(message, raw) if _is_attachment(part))
 
 
 @dataclass(frozen=True)
@@ -48,7 +127,6 @@ def read_mime_segments(raw: bytes) -> tuple[MimeSegment, ...]:
     """Decode bounded MIME, preserving every nonempty header and body range."""
     message = BytesParser(policy=policy.default).parsebytes(raw)
     spans: list[MimeSegment] = []
-    parts = 0
     characters = 0
     draft = str(message.get("X-Unsent", "")).strip() == "1"
 
@@ -71,27 +149,14 @@ def read_mime_segments(raw: bytes) -> tuple[MimeSegment, ...]:
         spans.append(MimeSegment(len(spans) + 1, path, section, header_name,
                                  header_index, start, end, value))
 
-    def walk(part, path):
-        nonlocal parts
-        parts += 1
-        if parts > MAX_PARTS or len(path) > 20:
-            raise ValueError("MIME part count or nesting exceeds the reading budget")
+    def capture(part, path, source):
         for index, (name, value) in enumerate(part.raw_items()):
             add(path, "header", value, header_name=name.lower(), header_index=index)
-        if part.get_content_disposition() == "attachment" or part.get_filename():
-            payload = part.get_payload(decode=True)
-            if payload is None:
-                # Encapsulated message parts cannot claim an invented byte identity.
-                raise ValueError("encapsulated MIME attachment requires separately supplied bytes")
+        if _is_attachment(part):
+            payload = _attachment_bytes(part, source)
             add(path, "attachment", sha256(payload).hexdigest())
             return
         if part.is_multipart():
-            for index, child in enumerate(part.iter_parts()):
-                walk(child, (*path, index))
-            return
-        if part.get_content_maintype() != "text":
-            payload = part.get_payload(decode=True) or b""
-            add(path, "attachment", sha256(payload).hexdigest())
             return
         text = part.get_content()
         if not isinstance(text, str):
@@ -111,7 +176,8 @@ def read_mime_segments(raw: bytes) -> tuple[MimeSegment, ...]:
             add(path, section, text, start, start + len(line))
             start += len(line)
 
-    walk(message, ())
+    for part, path, source in _parts(message, raw):
+        capture(part, path, source)
     if any(part.defects for part in message.walk()):
         raise ValueError("malformed MIME cannot supply exact source segments")
     return tuple(spans)

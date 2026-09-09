@@ -11,6 +11,7 @@ All provider behavior is injectable; fixtures and deployment use the same seam.
 from __future__ import annotations
 
 from hashlib import sha256
+from email.utils import getaddresses
 import json
 from pathlib import Path
 from typing import Literal
@@ -210,7 +211,11 @@ def capture_email_thread(session, envelope: SourceEnvelope, *, client):
                     model=getattr(client, "model", None), extractor_config=config,
                     token_usage=usage if doc.id == document.id else zero_token_usage(doc.id))
             runs[doc.id] = run
-            if any(s.document_id == doc.id and s.location_json["section"] == "draft" for s in by_id.values()):
+            if any(s.document_id == doc.id and (
+                    s.location_json["section"] == "draft" or (
+                        s.location_json["section"] == "header" and s.location_json["part_path"] == []
+                        and s.location_json["header_name"] == "x-unsent" and s.exact_text.strip() == "1"))
+                    for s in by_id.values()):
                 continue
             for segment in by_id.values():
                 if segment.document_id == doc.id and segment.location_json["section"] in {"header", "attachment"}:
@@ -223,7 +228,10 @@ def capture_email_thread(session, envelope: SourceEnvelope, *, client):
                 and s.location_json["header_name"] == "from"]
             if len(senders) != 1 or not closing.sender:
                 raise EmailCaptureRefused("concluded thread requires one retained sender")
-            value = materialize_prose_wording(selected, senders[0], attribution=closing.sender)
+            addresses = getaddresses([senders[0].exact_text])
+            if len(addresses) != 1 or not addresses[0][1]:
+                raise EmailCaptureRefused("concluded thread requires unambiguous sender attribution")
+            value = materialize_prose_wording(selected, senders[0], attribution=senders[0].exact_text)
             fact = _append_value(session, document, runs[document.id], subject, value)
             key = (subject, "statement_wording")
             if accepted.get(key) != fact.text_value:

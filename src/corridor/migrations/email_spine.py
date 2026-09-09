@@ -171,12 +171,21 @@ grant select, update on inbound_threads to corridor_source_append;
 grant select on inbound_messages to corridor_source_append;
 create function preserve_email_thread_reading() returns trigger language plpgsql as $$
 begin
+    if tg_op = 'INSERT' then
+        if new.input_sha256 is not null and current_user <> 'corridor_source_append' then
+            raise exception 'email source reading requires its append command' using errcode = '23514';
+        end if;
+        return new;
+    end if;
     if old.input_sha256 is not null then
         raise exception 'email source reading is append-only' using errcode = '23514';
     end if;
+    if tg_op = 'UPDATE' and new.input_sha256 is not null then
+        raise exception 'legacy reading cannot be converted into a source reading' using errcode = '23514';
+    end if;
     return case when tg_op = 'DELETE' then old else new end;
 end; $$;
-create trigger trg_email_thread_reading_append_only before update or delete on inbound_thread_readings
+create trigger trg_email_thread_reading_append_only before insert or update or delete on inbound_thread_readings
     for each row execute function preserve_email_thread_reading();
 revoke all on function preserve_email_thread_reading() from public;
 """
