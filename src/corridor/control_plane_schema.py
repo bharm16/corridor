@@ -2,8 +2,9 @@
 
 The earlier identity implementation kept every receipt in the customer database.
 Whole-environment destruction therefore needs a different database and metadata
-root. This bootstrap owns exactly the registry and immutable external receipts;
-it refuses a database already containing any other application relation.
+root. This bootstrap owns exactly the registry, the immutable external receipts,
+and the disposition plans that produce them (#514); it refuses a database already
+containing any other application relation.
 """
 
 from __future__ import annotations
@@ -67,6 +68,29 @@ DESTRUCTION_RECEIPTS = Table(
     ),
     CheckConstraint("outcome in ('completed', 'failed')"),
 )
+# The dry-run disposition plan (#514, ADR-0080/0083). It records the whole
+# -environment manifest digest and its resolved retention precedence so the
+# executor can refuse a stale plan and resume a partial one. It carries no
+# customer content: the components it destroys are whole-environment units, and
+# the removed digests live on the destruction receipts, not here.
+DISPOSITION_PLANS = Table(
+    "disposition_plans",
+    CONTROL_PLANE_METADATA,
+    Column("plan_id", String(128), primary_key=True),
+    Column(
+        "environment_id",
+        ForeignKey("control_plane.customer_environments.environment_id"),
+        nullable=False,
+    ),
+    Column("manifest_sha256", String(64), nullable=False),
+    Column("status", String(16), nullable=False),
+    Column("resolved_retain_until", DateTime(timezone=True), nullable=True),
+    Column("created_by", String(128), nullable=False),
+    Column("created_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint(
+        "status in ('dry_run', 'executed', 'refused', 'partial')"
+    ),
+)
 
 OPERATIONS_ROLE = "corridor_control_operations"
 RESOLVER_ROLE = "corridor_control_resolver"
@@ -89,7 +113,11 @@ def initialize_control_plane(engine: Engine) -> None:
             ):
                 continue
             allowed = (
-                {"customer_environments", "destruction_receipts"}
+                {
+                    "customer_environments",
+                    "destruction_receipts",
+                    "disposition_plans",
+                }
                 if schema == "control_plane"
                 else set()
             )
@@ -137,6 +165,14 @@ def initialize_control_plane(engine: Engine) -> None:
         connection.execute(
             text(
                 f"grant update (enabled, hold, connector_configuration_ref) on control_plane.customer_environments to {OPERATIONS_ROLE}"
+            )
+        )
+        # A disposition plan is insert-once; only its status advances (dry_run ->
+        # executed/partial/refused). Column-scoped update keeps the manifest
+        # digest, retention and binding immutable after the dry run (#514).
+        connection.execute(
+            text(
+                f"grant update (status) on control_plane.disposition_plans to {OPERATIONS_ROLE}"
             )
         )
         connection.execute(

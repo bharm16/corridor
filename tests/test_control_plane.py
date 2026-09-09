@@ -37,6 +37,24 @@ def test_registered_environment_is_readable_without_customer_content(
     )
 
 
+def test_initialize_admits_the_disposition_plan_table_and_reruns_idempotently(
+    customer_environment_databases,
+):
+    from sqlalchemy import inspect as sa_inspect
+
+    owner, _, _ = customer_environment_databases
+    initialize_control_plane(owner)
+    # A re-run inspects the existing inventory; the disposition plan table (#514)
+    # must be in the allowlist or this raises "customer or unrelated relations".
+    initialize_control_plane(owner)
+    tables = set(sa_inspect(owner).get_table_names(schema="control_plane"))
+    assert {
+        "customer_environments",
+        "destruction_receipts",
+        "disposition_plans",
+    } <= tables
+
+
 def test_customer_binding_authenticates_the_exact_browser_session():
     from corridor.customer_routing import CustomerIdentity, CustomerSessionSigner
     from corridor.control_plane import RouteRefused
