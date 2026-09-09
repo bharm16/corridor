@@ -122,6 +122,9 @@ declare original work_decisions; subject_uuid uuid; prior bigint; revision bigin
  digest text; existing coordination_decision_lineage; prior_revision bigint; value jsonb;
  kind text; source_project bigint; operation text; expected_actor text; event_time timestamptz;
 begin
+ if session_user='corridor_web' and not coalesce(p_project=any(current_project_partition()),false) then
+  raise exception 'coordination migration outside project partition' using errcode='23514';
+ end if;
  perform id from projects where id=p_project for update;
  select * into original from work_decisions where id=p_legacy;
  if not found then raise exception 'original Coordination Decision is missing' using errcode='23514'; end if;
@@ -221,6 +224,11 @@ begin
    or jsonb_typeof(value->'milestone_ids')<>'array') then
   raise exception 'original Milestone Impact is not a lossless typed value' using errcode='23514';
  end if;
+ if original.field='milestone_impact' and exists(
+   select 1 from jsonb_array_elements_text(coalesce(value->'milestone_ids','[]'::jsonb)) member
+   where not exists(select 1 from milestones where id=member::bigint and project_id=p_project)) then
+  raise exception 'original Milestone Impact names a date outside project' using errcode='23514';
+ end if;
  if original.after_value is not null and original.field='deferral' and (
    value is distinct from jsonb_build_object('reason',original.deferral_reason,'return_date',original.deferral_return_date::text)) then
   raise exception 'original deferral disagrees with its typed fields' using errcode='23514';
@@ -251,6 +259,9 @@ create function migrate_coordination_history(p_project bigint,p_batch bigint) re
  language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare item jsonb; count bigint:=0; subject_uuid uuid; class_name text; reviewed jsonb; current_content jsonb; previously_imported boolean;
 begin
+ if session_user='corridor_web' and not coalesce(p_project=any(current_project_partition()),false) then
+  raise exception 'coordination migration outside project partition' using errcode='23514';
+ end if;
  perform id from projects where id=p_project for update;
  if not exists(select 1 from legacy_history_batches where id=p_batch and project_id=p_project)
   or exists(select 1 from legacy_history_reversals where batch_id=p_batch) then
@@ -377,7 +388,7 @@ def upgrade(op):
         if table != "coordination_record_subjects":
             op.execute(f"grant usage,select on sequence {table}_id_seq to corridor_fact_decision_writer")
         op.execute(f"alter table {table} enable row level security")
-        op.execute(f"create policy p_{table}_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
+        op.execute(f"create policy p_{table}_project_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
         op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer using(true) with check(true)")
     for name, signature, runtime in (
         ("import_coordination_decision", "(bigint,bigint,bigint,text)", False),

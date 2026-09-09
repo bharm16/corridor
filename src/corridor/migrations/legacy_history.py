@@ -160,7 +160,7 @@ def upgrade(op):
         op.execute(f"grant select,insert on {table} to corridor_fact_decision_writer")
         op.execute(f"grant usage,select on sequence {table}_id_seq to corridor_fact_decision_writer")
         op.execute(f"alter table {table} enable row level security")
-        op.execute(f"create policy p_{table}_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
+        op.execute(f"create policy p_{table}_project_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
         op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer using(true) with check(true)")
     for name, signature in (
         ("legacy_history_content", "(bigint)"),
@@ -183,6 +183,9 @@ create function backfill_legacy_evidence_sources(p_project_id bigint,p_batch_id 
 declare batch legacy_history_batches; item jsonb; link evidence_links;
  segment_id bigint; matches bigint; citation_id bigint; migrated bigint:=0; outcome text; reason text;
 begin
+ if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
+  raise exception 'evidence migration outside project partition' using errcode='23514';
+ end if;
  perform id from projects where id=p_project_id for update;
  select * into batch from legacy_history_batches where id=p_batch_id and project_id=p_project_id;
  if not found or exists(select 1 from legacy_history_reversals where batch_id=p_batch_id) then
