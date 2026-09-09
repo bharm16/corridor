@@ -224,6 +224,52 @@
     {%- else %}
     <p>No accepted value matches this search.</p>
     {%- endif %}
+    {% if history.coordination %}
+    <h3>Coordination decisions from the native record</h3>
+    <p class="quiet">Current decisions and the selected revision retain the original actor and decision time.</p>
+    {% call ui.record_table("Native coordination values, current and at the selected revision",
+        ["Coordination subject", "Field", "Current value", "Original actor and time", "At selected revision", "Original actor and time then"]) %}
+      {% for row in history.coordination %}
+      <tr>
+        <th scope="row">{{ row.subject_name }}</th>
+        <td>{{ row.field_name }}</td>
+        <td>{{ row.current_text if row.current_text is not none else not_recorded }}
+          {% if row.current %}<p class="quiet">Decision {{ row.current.id }} · revision {{ row.current.revision_id }}</p>{% endif %}</td>
+        <td>{% if row.current %}{{ row.current.recorded_by }}<br>{{ row.current.recorded_at }}{% else %}{{ not_recorded }}{% endif %}</td>
+        <td>{{ row.as_of_text if row.as_of_text is not none else not_recorded }}
+          {% if row.as_of %}<p class="quiet">Decision {{ row.as_of.id }} · revision {{ row.as_of.revision_id }}</p>{% endif %}
+          {% if history.as_of_revision_id and row.changed %}{{ ui.state(state_label("attention", "changed since that revision")) }}{% endif %}</td>
+        <td>{% if row.as_of %}{{ row.as_of.recorded_by }}<br>{{ row.as_of.recorded_at }}{% else %}{{ not_recorded }}{% endif %}</td>
+      </tr>
+      {% endfor %}
+    {% endcall %}
+    {% endif %}
+
+    {% if history.source_decisions %}
+    <h3>Source decisions and original authority</h3>
+    <p class="quiet">Native decisions include superseded history. Authority comes from each decision's own Project Record revision; source capture remains separately attributed.</p>
+    {% call ui.record_table("Native source-decision history and exact provenance",
+        ["Subject and field", "Decision", "Original authority", "Decided at", "Standing", "Source Fact and passages"]) %}
+      {% for decision in history.source_decisions %}
+      <tr>
+        <th scope="row">{{ decision.subject_name }} — {{ decision.field_name }}</th>
+        <td>{{ decision.disposition }}<p class="quiet">Decision {{ decision.decision_id }} · revision {{ decision.revision_id }} · {{ decision.command_type }}</p></td>
+        <td>{{ decision.authority_kind }}<br>{{ decision.authority if decision.authority else not_recorded }}</td>
+        <td>{{ decision.decided_at }}</td>
+        <td>{% if decision.effective_now %}Accepted now{% else %}Historical{% endif %}
+          {% if decision.superseded_by %}<p class="quiet">Superseded by decision {{ decision.superseded_by }}</p>{% endif %}
+          {% if decision.effective_at_revision %}<p class="quiet">Accepted at selected revision</p>{% endif %}</td>
+        <td>{% if decision.fact %}
+          <details><summary>Source Fact {{ decision.fact.fact_id }}</summary>
+            <p>Captured by {{ decision.fact.recorded_by }} at {{ decision.fact.recorded_at }}.</p>
+            {% for source in decision.fact.sources %}<p>{{ source.filename }} — {{ source.locator }} ({{ source.role }})</p><p class="passage"><q>{{ source.exact_text }}</q></p>
+            {% else %}<p>No exact source passage is recorded for this fact.</p>{% endfor %}
+          </details>
+          {% else %}Source Fact unavailable; no source provenance claimed.{% endif %}</td>
+      </tr>
+      {% endfor %}
+    {% endcall %}
+    {% endif %}
   {% endcall %}
 
   {% call ui.region("deltas", "Proposed changes and how they were settled", focus) %}
@@ -347,6 +393,28 @@
       Approving a release happens where releases are approved. This is the
       record of what was already approved, and it cannot approve anything.
     </p>
+    {% if history.publication_support or history.publication_support_as_of or history.publication_support_gaps %}
+    <h3>Publication support from the native record</h3>
+    <p class="quiet">Accepted document choices retain their native decision authority and the original citation context separately. Missing earlier context is reported as a gap.</p>
+    {% for title, readings in [("Current native publication support", history.publication_support),
+        ("Native publication support at revision " ~ history.as_of_revision_id, history.publication_support_as_of)] %}
+    {% if readings %}
+    {% call ui.record_table(title,
+        ["Constraint and scope", "Document and exact passage", "Decision authority and time", "Original citation context", "Native decision"]) %}
+      {% for support in readings %}
+      <tr>
+        <th scope="row">Constraint {{ support.dependency_id }} — {{ support.field_name if support.field_name else 'whole record' }}</th>
+        <td>Document {{ support.document_id }} · source segment {{ support.source_segment_id }}<p class="passage"><q>{{ support.exact_text }}</q></p></td>
+        <td>{{ support.authority_kind }}: {{ support.decision_actor }}<br>{{ support.decision_time }}</td>
+        <td>{{ support.original_actor }}<br>{{ support.original_time }}</td>
+        <td>{{ support.fact_decision_id }} · revision {{ support.revision_id }}</td>
+      </tr>
+      {% endfor %}
+    {% endcall %}
+    {% endif %}
+    {% endfor %}
+    {% for gap in history.publication_support_gaps %}<p>{{ ui.state(state_label("attention", gap)) }}</p>{% endfor %}
+    {% endif %}
   {% endcall %}
 
   {% call ui.region("audit", "Audit trail", focus) %}
@@ -372,6 +440,36 @@
     {%- else %}
     <p>No project-scoped audit entry has been recorded yet.</p>
     {%- endif %}
+    {% if history.retained_history %}
+    <h3>Retained compatibility history</h3>
+    <p class="quiet">This archive preserves original assertions and their limits. It does not make a compatibility reading a native accepted value. Search filters above apply to native values and source decisions; the retained snapshot below remains a bounded archive reading.</p>
+    {% if history.retained_history.batch_id %}
+    {{ ui.fact_list([
+      ("Retained snapshot", history.retained_history.batch_id),
+      ("Captured at", history.retained_history.captured_at),
+      ("Migration operator — not original author", history.retained_history.executor),
+      ("Snapshot digest", history.retained_history.digest),
+      ("Compatibility reading time", history.retained_history.as_of_time),
+      ("Retained source decisions at selected revision", history.retained_history.source_decisions_count),
+    ]) }}
+    {% endif %}
+    {% for gap in history.retained_history.gaps %}<p>{{ ui.state(state_label("attention", gap)) }}</p>{% endfor %}
+    {% for section in history.retained_history.sections %}
+    <h4>{{ section.title }}</h4>
+    <p class="quiet">{{ section.limitation }} {{ section.records|length }} of {{ section.total }} retained records shown.</p>
+    {% if section.records %}
+    {% call ui.record_table(section.title ~ " — explicitly retained compatibility history",
+        ["Original record", "Original actor", "Original recorded time", "Retained assertion and source references"]) %}
+      {% for record in section.records %}
+      <tr><th scope="row">{{ record.record_id }}</th>
+        <td>{{ record.actor if record.actor else 'Original actor not recorded' }}</td>
+        <td>{{ record.recorded_at if record.recorded_at else 'Original time not recorded' }}</td>
+        <td>{{ record.summary }}<details><summary>Exact retained fields and source references</summary><pre style="white-space:pre-wrap">{{ record.details }}</pre></details></td></tr>
+      {% endfor %}
+    {% endcall %}
+    {% endif %}
+    {% endfor %}
+    {% endif %}
     <p><a href="/projects/{{ project.slug }}/sources">Source history — every document delivered to this project</a></p>
   {% endcall %}
 </main>
