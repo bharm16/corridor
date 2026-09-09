@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from corridor.compatibility_intake import run_compatibility_intake
 from corridor.config import settings
-from corridor.field_mapping_manifest import DEMO_EXTERNAL_REFERENCES
+from corridor.field_mapping_manifest import DEMO_EXTERNAL_REFERENCES, MappingDeclaration
 from corridor.models import Project, ProposedDelta
 from corridor.native_provider_boundary import CustomerAuthorization
 from corridor.shadow_processing import ShadowRefused, provision_shadow_project, run_shadow_ucm, verify_runtime
@@ -47,7 +47,7 @@ def shadow(runtime_database, tmp_path):
     compatibility = run_compatibility_intake(body, "later.xlsx", authorization=approved,
         customer=CUSTOMER, project="shadow-ucm", operator=PRINCIPAL.subject,
         environment="synthetic-compatibility", deletion_date=DELETE,
-        external_references=DEMO_EXTERNAL_REFERENCES)
+        external_references=MappingDeclaration(external_references=DEMO_EXTERNAL_REFERENCES).external_reference_headings)
     engines = {}
     for role in ("corridor_worker", "corridor_web"):
         url = make_url(settings.database_url).set(database=runtime_database.name,

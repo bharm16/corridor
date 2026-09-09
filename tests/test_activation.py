@@ -6,6 +6,8 @@ import json
 
 import pytest
 
+from corridor.web_boundary import PILOT_ROUTES
+
 from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
     EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
 
@@ -27,7 +29,9 @@ def evidence(tmp_path, configuration, **overrides):
         if gate == "web_boundary":
             payload |= {"contract": "live-pilot-web-boundary-v1", "actual_login": "corridor_web",
                 "actual_database_role": "corridor_web", "route_manifest_digest": route_manifest_digest(),
-                "observations": [{"method": "GET", "template": "/", "status": 200}]}
+                "boundary_state": "enforced",
+                "observations": [{"method": method, "template": route, "status": 200}
+                    for method, route in PILOT_ROUTES] + [{"method": "GET", "template": "/disabled", "status": 404}]}
         if gate == "disposition":
             payload |= {"inventory_digest": configuration.disposition_inventory_digest,
                 "external_receipt_reference": "fixture-control-plane/receipt",

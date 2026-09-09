@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Callable
 
@@ -116,6 +117,13 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
         raise ActivationRefused("deployed smoke must exercise every enabled pilot route")
     if not any((case["method"].upper(), case["template"]) not in PILOT_ROUTES for case in cases):
         raise ActivationRefused("deployed smoke must exercise a disabled route")
+    health = request("GET", "/health")
+    if health.status_code != 200 or not any(
+        item.get("component") == "live_pilot_web_boundary"
+        and item.get("healthy") is True and item.get("detail") == "enforced"
+        for item in health.json().get("checks", [])
+    ):
+        raise ActivationRefused("deployed service does not report an enforced web boundary")
     observations = []
     for case in cases:
         key = (case["method"].upper(), case["template"])
@@ -130,7 +138,7 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
     return {"gate": "web_boundary", "outcome": "passed", "configuration": configuration.identity,
         "observed_at": now.isoformat(), "contract": BOUNDARY_VERSION,
         "actual_database_role": role[0], "actual_login": role[1],
-        "route_manifest_digest": route_manifest_digest(), "observations": observations}
+        "route_manifest_digest": route_manifest_digest(), "boundary_state": "enforced", "observations": observations}
 
 
 def activate(configuration: ActivationConfiguration, *, evidence: dict[str, EvidenceArtifact],
@@ -176,7 +184,8 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
             or payload.get("actual_database_role") != "corridor_web"
             or payload.get("contract") != BOUNDARY_VERSION
             or payload.get("route_manifest_digest") != configuration.boundary_route_digest
-            or not payload.get("observations")):
+            or payload.get("boundary_state") != "enforced"
+            or not _complete_route_observations(payload.get("observations", []))):
             raise ActivationRefused("web boundary lacks actual deployment smoke")
         if gate == "disposition" and (payload.get("inventory_digest") != configuration.disposition_inventory_digest
             or not payload.get("external_receipt_reference") or not payload.get("rehearsal_receipt_sha256")):
@@ -190,18 +199,40 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
     path = custody / (_digest({"environment": configuration.environment,
         "project": configuration.project_id, "revision": revision}) + ".json")
     body = _bytes(payload)
+    # Publish only a complete fsynced object. A crash before link leaves an
+    # unreferenced temporary file; a crash after link leaves a complete receipt.
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".activation-", dir=custody)
+    temporary = Path(temporary_name)
     try:
-        descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
-    except FileExistsError:
-        previous = json.loads(path.read_bytes())
-        if any(previous.get(key) != payload[key] for key in payload if key != "activated_at"):
-            raise ActivationRefused("activation revision already binds different evidence or configuration")
-        return EvidenceArtifact(path, sha256(path.read_bytes()).hexdigest())
-    with os.fdopen(descriptor, "wb") as stream:
-        stream.write(body)
-        stream.flush()
-        os.fsync(stream.fileno())
-    return EvidenceArtifact(path, sha256(body).hexdigest())
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            previous = json.loads(path.read_bytes())
+            if any(previous.get(key) != payload[key] for key in payload if key != "activated_at"):
+                raise ActivationRefused("activation revision already binds different evidence or configuration")
+            return EvidenceArtifact(path, sha256(path.read_bytes()).hexdigest())
+        return EvidenceArtifact(path, sha256(body).hexdigest())
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def _complete_route_observations(observations):
+    approved = set()
+    disabled = False
+    for item in observations:
+        key = (item.get("method"), item.get("template"))
+        status = item.get("status", 0)
+        if key in PILOT_ROUTES and 200 <= status < 400:
+            approved.add(key)
+        elif key not in PILOT_ROUTES and status == 404:
+            disabled = True
+        else:
+            return False
+    return approved == set(PILOT_ROUTES) and disabled
 
 
 def processing_authorized(configuration: ActivationConfiguration, receipt: EvidenceArtifact) -> bool:
