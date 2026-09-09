@@ -305,6 +305,7 @@ class AwsDispositionResources:
     object_namespace_ref: str
     final_snapshot_identifier: str
     kms_key_arns: tuple[str, ...]
+    whole_environment: dict[str, Any] | None = None
 
     def require_registration(self, registration: EnvironmentRegistration) -> None:
         for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
@@ -539,6 +540,7 @@ def plan_environment_disposition(
     as_of: datetime,
     plan_id: str | None = None,
     provider_resources: AwsDispositionResources | None = None,
+    provider_observer: Any = None,
 ) -> DispositionManifest:
     """Persist the whole-environment dry-run manifest, or refuse a held one."""
     actor = require_human_principal(principal).subject
@@ -552,6 +554,10 @@ def plan_environment_disposition(
     resolved, precedence = resolve_retention(schedules)
     if provider_resources is not None:
         provider_resources.require_registration(registration)
+        if provider_resources.whole_environment is not None:
+            if provider_observer is None or provider_observer.resources != provider_resources:
+                raise DispositionRefused("whole-environment planning requires fresh provider observation")
+            provider_observer.verify_plan(registration)
     resource_digest = provider_resources.sha256 if provider_resources is not None else None
     digest = manifest_digest(
         environment_id=environment_id,
@@ -583,6 +589,7 @@ def plan_environment_disposition(
             created_by=actor,
             created_at=created_at,
             provider_resources_sha256=resource_digest,
+            provider_resources=json.loads(json.dumps(asdict(provider_resources))) if provider_resources else None,
         )
     )
     return manifest
@@ -624,10 +631,17 @@ def execute_environment_disposition(
         raise DispositionRefused(
             "the environment or plan changed after the dry run; re-plan before executing"
         )
+    if (registration.hold and isinstance(destroyer, AwsEnvironmentDestroyer)
+            and destroyer.resources is not None and destroyer.resources.whole_environment is not None):
+        destroyer.cancel_pending_deletions_for_hold(control_plane, plan, observed_at=now)
     _guard_before_step(control_plane, plan, referential, now)
     if isinstance(destroyer, AwsEnvironmentDestroyer):
         if destroyer.resources is None or plan.provider_resources_sha256 != destroyer.resources.sha256:
             raise DispositionRefused("AWS resource inventory differs from the persisted dry-run plan")
+        if destroyer.resources.whole_environment is not None:
+            if plan.provider_resources != json.loads(json.dumps(asdict(destroyer.resources))):
+                raise DispositionRefused("provider inventory bytes differ from the persisted plan")
+            destroyer.prepare_execution(control_plane, plan, referential)
         def before_aws_delete():
             current = control_plane.inspect(plan.environment_id)
             _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)
@@ -642,14 +656,14 @@ def execute_environment_disposition(
     receipts = list(control_plane.destruction_receipts(plan.environment_id))
     if isinstance(destroyer, AwsEnvironmentDestroyer):
         evidence_kinds = {"postgresql": "rds-absent", "object_namespace": "s3-namespace-empty",
-                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent"}
+                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent", "environment": "whole-environment-absent"}
         for receipt in receipts:
             if receipt.operation_id != operation_id:
                 continue
             expected = (f"aws:{plan.environment_id}/{evidence_kinds.get(receipt.component)}/{plan.provider_resources_sha256}/{plan.manifest_sha256}"
                         if receipt.outcome == "completed" else
                         f"failure:{operation_id}/{receipt.component}/{plan.manifest_sha256}")
-            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed"):
+            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed" and destroyer.resources.whole_environment is None):
                 raise DispositionRefused("AWS resume receipts do not bind this plan and provider inventory")
     completed = {
         receipt.component
@@ -809,6 +823,12 @@ def _destroy(
 ) -> str:
     if component == "environment":
         if isinstance(destroyer, AwsEnvironmentDestroyer):
+            if destroyer.resources is not None and destroyer.resources.whole_environment is not None:
+                from botocore.exceptions import BotoCoreError, ClientError
+                try:
+                    return destroyer.delete_environment(registration)
+                except (BotoCoreError, ClientError) as exc:
+                    raise EnvironmentDestructionError("AWS final verification failed; no completion is established") from exc
             raise EnvironmentDestructionError("declared AWS components are gone; complete stack, logs, secrets and remote-copy disposal still require verified inventory coverage")
         # The terminal marker: the whole environment is gone once the four
         # provider components are. Its evidence is the control-plane operation.
