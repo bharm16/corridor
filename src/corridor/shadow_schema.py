@@ -39,6 +39,9 @@ declare
     watermark bigint;
     canonical_payload text;
 begin
+    if current_setting('transaction_isolation') <> 'read committed' then
+        raise exception 'shadow freeze requires read committed isolation' using errcode='25001';
+    end if;
     perform pg_advisory_xact_lock(hashtextextended('shadow:' || new.project_id::text, 0));
     if jsonb_typeof(new.payload) is distinct from 'object'
        or new.identity !~ '^[0-9a-f]{64}$'
@@ -128,6 +131,9 @@ begin
       'ingress_configuration_identity',delivery.configuration_identity,
       'ingress_configuration_version',delivery.configuration_version,
       'canonicalization','postgresql-jsonb-text-v1',
+      'fact_ids',(select coalesce(jsonb_agg(f.id order by f.id),'[]'::jsonb)
+        from public.facts f where f.project_id=new.project_id
+          and f.document_id=(new.payload->>'document_id')::bigint),
       'groups',(select coalesce(jsonb_agg(to_jsonb(g) order by g.id),'[]'::jsonb)
         from public.delta_groups g where g.project_id=new.project_id
           and g.document_id=(new.payload->>'document_id')::bigint),

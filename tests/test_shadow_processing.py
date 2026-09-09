@@ -166,7 +166,7 @@ def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shad
         reference_at = owner.scalar(text("select received_at from source_deliveries where id=:id"), {"id": reference_id})
     forged = output | {"identity": "f" * 64, "source_configuration": "seal-second",
         "frozen_at": "1900-01-01T00:00:00+00:00", "source_delivery_watermark": 0,
-        "canonicalization": "caller-json", "source_provenance": [], "groups": []}
+        "canonicalization": "caller-json", "source_provenance": [], "groups": [], "fact_ids": []}
     with Session(engines["corridor_worker"]) as worker, worker.begin():
         sealed = worker.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256,recorded_at) values (:identity,:project,cast(:payload as jsonb),'forged','1900-01-01') returning payload,output_sha256,recorded_at"),
             {"identity": forged["identity"], "project": project_id, "payload": json.dumps(forged)}).one()
@@ -175,6 +175,7 @@ def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shad
         assert sealed.recorded_at == datetime.fromisoformat(sealed.payload["frozen_at"])
         assert sealed.output_sha256 != "forged"
         assert sealed.payload["source_provenance"]
+        assert sealed.payload["fact_ids"] == output["fact_ids"]
         assert sealed.payload["groups"]
         assert sealed.payload["canonicalization"] == "postgresql-jsonb-text-v1"
         exported = read_shadow_run(worker, forged["identity"])
@@ -192,3 +193,19 @@ def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shad
             with pytest.raises(DBAPIError, match="shadow"), worker.begin_nested():
                 worker.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:identity,:project,cast(:payload as jsonb),'forged')"),
                     {"identity": corrupt["identity"], "project": project_id, "payload": json.dumps(corrupt)})
+
+    # A caller cannot hold an older MVCC snapshot, watch another committed
+    # delivery arrive, and then have the DB certify its stale watermark.
+    with engines["corridor_worker"].connect().execution_options(isolation_level="REPEATABLE READ") as connection:
+        with Session(bind=connection) as stale, stale.begin():
+            before = stale.scalar(text("select max(id) from source_deliveries"))
+            with database.session_factory.begin() as owner:
+                project = owner.get(Project, project_id)
+                binding = bind_credential(owner, PushCredential("webhook", f"secret-{project.slug}"))
+                later = accept_delivery(owner, binding, PushPayload(staged.stored_path.read_bytes(),
+                    staged.filename, transport_delivery_id="committed-after-stale-snapshot"))
+                assert later.delivery_id > before
+            stale_payload = output | {"identity": "d" * 64, "source_configuration": "stale-snapshot"}
+            with pytest.raises(DBAPIError, match="read committed"), stale.begin_nested():
+                stale.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:identity,:project,cast(:payload as jsonb),'forged')"),
+                    {"identity": stale_payload["identity"], "project": project_id, "payload": json.dumps(stale_payload)})
