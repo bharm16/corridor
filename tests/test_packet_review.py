@@ -1214,6 +1214,18 @@ def test_needs_coordination_plans_the_question_and_accepts_nothing(
     assert result.revision_id not in before
     after = read_review_items(session, project_id=project.id, as_of=CUTOFF)
     assert child.delta_id in after.reading.actionable_delta_ids
+    current_child = next(value for current_item in after.items for value in current_item.children
+                         if value.delta_id == child.delta_id)
+    (visible_plan,) = current_child.follow_up_plans
+    assert (visible_plan.plan_id, visible_plan.delta_id, visible_plan.revision_id) == (plan.id, child.delta_id, result.revision_id)
+    assert visible_plan.open_question == f"Who can confirm {reason}?"
+    assert visible_plan.responsible_organization == "AT&T Texas"
+    assert visible_plan.responsible_principal is None
+    assert visible_plan.return_date == RETURNS_AT
+    assert visible_plan.recorded_by == ALICE.subject
+    assert visible_plan.recorded_at == DECIDED_AT
+    assert current_child.accepted_value == child.accepted_value
+    assert after.follow_up_plans == (visible_plan,)
 
 
 def test_the_plan_cites_its_evidence_and_leaves_that_value_unaccepted(
@@ -1267,6 +1279,11 @@ def test_the_plan_cites_its_evidence_and_leaves_that_value_unaccepted(
         )
     ).all()
     assert cited == [assessment.id]
+    reread = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    (visible_plan,) = reread.follow_up_plans
+    assert visible_plan.plan_id == plan.id
+    assert visible_plan.support_assessment_ids == (assessment.id,)
+    assert visible_plan.source_segment_ids == (segment.id,)
     # The supported value stays unaccepted, and the change stays in Review.
     (child,) = item.children
     assert child.incoming_fact_id == fact.id
@@ -1366,4 +1383,22 @@ def test_undo_removes_the_plan_and_returns_the_change_to_review(
     # The change is back on its own item, decidable again, with nothing accepted.
     again = read_review_items(session, project_id=project.id, as_of=CUTOFF)
     assert child.delta_id in _held_out(again, reason).actionable.delta_ids
+    assert again.follow_up_plans == ()
+    assert all(not value.follow_up_plans for current_item in again.items for value in current_item.children)
     assert live_delta_status(session, child.delta_id) == "open"
+
+
+def test_review_follow_up_plan_respects_the_declared_reading_cutoff(session, project):
+    from datetime import timedelta
+
+    _burst(session, project, routine=3)
+    before = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _held_out(before, HELD_OUT_POSSIBLE_NEW_CONFLICT)
+    resolve_review_packet(session, _coordination(before, item, question="Confirm this conflict identity."))
+    early = read_review_items(session, project_id=project.id, as_of=DECIDED_AT - timedelta(seconds=1))
+    assert early.follow_up_plans == ()
+    later = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    (visible,) = later.follow_up_plans
+    assert visible.open_question == "Confirm this conflict identity."
+    assert visible.recorded_at == DECIDED_AT
+    assert visible.target_subject_identity == item.children[0].subject_identity
