@@ -1,0 +1,92 @@
+"""Activation freezes exact fixture evidence and refuses changed deployment inputs."""
+from dataclasses import replace
+from datetime import datetime, timezone
+from hashlib import sha256
+import json
+
+import pytest
+
+from corridor.activation import (ActivationConfiguration, ActivationRefused, BASE_GATES,
+    EvidenceArtifact, activate, processing_authorized, route_manifest_digest)
+
+NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
+
+
+@pytest.fixture
+def configuration():
+    return ActivationConfiguration("fixture-env", "fixture-customer", 1, "ucm-v1", "manual-upload",
+        511, 606, "us-east-2", "code-1", "db-1", "image-1", "governance-1", "security-1",
+        "a" * 64, "true", "corridor_web", route_manifest_digest())
+
+
+def evidence(tmp_path, configuration, **overrides):
+    result = {}
+    for gate in BASE_GATES:
+        payload = {"gate": gate, "outcome": "passed", "configuration": configuration.identity,
+            "observed_at": NOW.isoformat()}
+        if gate == "web_boundary":
+            payload |= {"contract": "live-pilot-web-boundary-v1", "actual_login": "corridor_web",
+                "actual_database_role": "corridor_web", "route_manifest_digest": route_manifest_digest(),
+                "observations": [{"method": "GET", "template": "/", "status": 200}]}
+        if gate == "disposition":
+            payload |= {"inventory_digest": configuration.disposition_inventory_digest,
+                "external_receipt_reference": "fixture-control-plane/receipt",
+                "rehearsal_receipt_sha256": "b" * 64}
+        payload |= overrides.get(gate, {})
+        body = json.dumps(payload).encode()
+        path = tmp_path / f"{gate}.json"
+        path.write_bytes(body)
+        result[gate] = EvidenceArtifact(path, sha256(body).hexdigest())
+    return result
+
+
+def test_successful_revision_replays_and_configuration_change_disables_it(tmp_path, configuration):
+    artifacts = evidence(tmp_path, configuration)
+    kwargs = dict(evidence=artifacts, operator="local:operator", revision="activation-1",
+        custody=tmp_path / "custody", now=NOW)
+    receipt = activate(configuration, **kwargs)
+    assert activate(configuration, **kwargs) == receipt
+    assert processing_authorized(configuration, receipt)
+    assert not processing_authorized(replace(configuration, security_revision="security-2"), receipt)
+    with pytest.raises(ActivationRefused, match="stale"):
+        activate(replace(configuration, source_configuration="ucm-v2"), **kwargs)
+
+
+@pytest.mark.parametrize("gate", sorted(BASE_GATES))
+def test_missing_or_failed_gate_writes_no_activation(tmp_path, configuration, gate):
+    artifacts = evidence(tmp_path, configuration, **{gate: {"outcome": "failed"}})
+    custody = tmp_path / "custody"
+    with pytest.raises(ActivationRefused, match="prerequisite"):
+        activate(configuration, evidence=artifacts, operator="local:operator", revision="one", custody=custody, now=NOW)
+    assert not custody.exists()
+    del artifacts[gate]
+    with pytest.raises(ActivationRefused, match="missing prerequisites"):
+        activate(configuration, evidence=artifacts, operator="local:operator", revision="one", custody=custody, now=NOW)
+
+
+@pytest.mark.parametrize("mode", ["", "false", "FALSE", "unrecognized"])
+def test_disabled_or_unknown_web_boundary_refuses_before_receipt(tmp_path, configuration, mode):
+    config = replace(configuration, boundary_mode=mode)
+    with pytest.raises(ActivationRefused):
+        activate(config, evidence=evidence(tmp_path, config), operator="local:operator",
+            revision="one", custody=tmp_path / "custody", now=NOW)
+    assert not (tmp_path / "custody").exists()
+
+
+def test_disposition_requires_actual_external_custody_and_matching_inventory(tmp_path, configuration):
+    with pytest.raises(ActivationRefused, match="disposition"):
+        activate(configuration, evidence=evidence(tmp_path, configuration,
+            disposition={"inventory_digest": "other"}), operator="local:operator",
+            revision="one", custody=tmp_path / "custody", now=NOW)
+
+
+def test_tampered_evidence_and_conditional_provider_gate_are_refused(tmp_path, configuration):
+    artifacts = evidence(tmp_path, configuration)
+    artifacts["adopted_baseline"].path.write_text('{}')
+    with pytest.raises(ActivationRefused, match="digest changed"):
+        activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
+            custody=tmp_path / "custody", now=NOW)
+    pdf = replace(configuration, processes_pdf=True)
+    with pytest.raises(ActivationRefused, match="pdf_image_audit"):
+        activate(pdf, evidence=evidence(tmp_path, pdf), operator="local:operator", revision="pdf",
+            custody=tmp_path / "custody", now=NOW)
