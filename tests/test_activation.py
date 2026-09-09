@@ -94,3 +94,50 @@ def test_tampered_evidence_and_conditional_provider_gate_are_refused(tmp_path, c
     with pytest.raises(ActivationRefused, match="pdf_image_audit"):
         activate(pdf, evidence=evidence(tmp_path, pdf), operator="local:operator", revision="pdf",
             custody=tmp_path / "custody", now=NOW)
+
+
+def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
+    runtime_database, configuration,
+):
+    """The HTTP adapter is synthetic; PostgreSQL runs as the real web login."""
+    import os
+    from types import SimpleNamespace
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.orm import Session
+    from corridor.activation import collect_boundary_smoke
+    from corridor.config import settings
+
+    cases = [{"method": method, "template": route, "url": route,
+        "expected_status": 200} for method, route in PILOT_ROUTES]
+    cases.append({"method": "GET", "template": "/fixture-disabled", "url": "/fixture-disabled",
+        "expected_status": 404})
+    boundary_state = "enforced"
+    def request(method, url, **kwargs):
+        return SimpleNamespace(status_code=404 if url == "/fixture-disabled" else 200,
+            text="fixture response", json=lambda: {"checks": [{"component": "live_pilot_web_boundary",
+                "healthy": True, "detail": boundary_state}]})
+    with runtime_database.session_factory() as owner:
+        with pytest.raises(ActivationRefused, match="actual corridor_web"):
+            collect_boundary_smoke(owner, configuration=configuration, request=request, cases=cases, now=NOW)
+    url = make_url(settings.database_url).set(database=runtime_database.name,
+        username="corridor_web", password=os.environ.get("CORRIDOR_WEB_DB_PASSWORD", "corridor_web"))
+    web_engine = create_engine(url)
+    try:
+        with Session(web_engine) as web:
+            observed = collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
+            assert observed["actual_login"] == "corridor_web"
+            assert len(observed["observations"]) == len(PILOT_ROUTES) + 1
+            boundary_state = "not_declared"
+            with pytest.raises(ActivationRefused, match="does not report an enforced"):
+                collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
+    finally:
+        web_engine.dispose()
+
+
+def test_incomplete_route_smoke_cannot_be_promoted_to_activation(tmp_path, configuration):
+    artifacts = evidence(tmp_path, configuration, web_boundary={"observations": [
+        {"method": "GET", "template": "/", "status": 200}]})
+    with pytest.raises(ActivationRefused, match="actual deployment smoke"):
+        activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
+            custody=tmp_path / "custody", now=NOW)
