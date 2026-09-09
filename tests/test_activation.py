@@ -149,3 +149,29 @@ def test_incomplete_route_smoke_cannot_be_promoted_to_activation(tmp_path, confi
     with pytest.raises(ActivationRefused, match="actual deployment smoke"):
         activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
             custody=tmp_path / "custody", now=NOW)
+
+
+@pytest.mark.parametrize("change", [
+    {"evidence": {}}, {"evidence": None}, {"operator": ""}, {"revision": "  "},
+    {"activated_at": "invalid"}, {"activated_at": "2026-09-09T00:00:00"},
+    {"activated_at": "2999-09-09T00:00:00+00:00"},
+])
+def test_runtime_refuses_incomplete_activation_receipt(tmp_path, configuration, change):
+    receipt = activate(configuration, evidence=evidence(tmp_path, configuration),
+        operator="local:operator", revision="one", custody=tmp_path / "custody", now=NOW)
+    payload = receipt.read() | change
+    body = json.dumps(payload).encode()
+    path = tmp_path / "incomplete.json"
+    path.write_bytes(body)
+    assert not processing_authorized(configuration, EvidenceArtifact(path, sha256(body).hexdigest()))
+
+
+def test_runtime_refuses_invented_gate_digests(tmp_path, configuration):
+    receipt = activate(configuration, evidence=evidence(tmp_path, configuration),
+        operator="local:operator", revision="one", custody=tmp_path / "custody", now=NOW)
+    payload = receipt.read()
+    payload["evidence"]["customer_authorization"] = "passed"
+    body = json.dumps(payload).encode()
+    path = tmp_path / "invented.json"
+    path.write_bytes(body)
+    assert not processing_authorized(configuration, EvidenceArtifact(path, sha256(body).hexdigest()))

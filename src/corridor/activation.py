@@ -14,6 +14,7 @@ from datetime import datetime, timezone
 from hashlib import sha256
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Callable
@@ -67,6 +68,7 @@ class ActivationConfiguration:
     boundary_role: str
     boundary_route_digest: str
     deployment_id: str
+    source_configuration_version: str = ""
     model_provider_posture: str = "deterministic-no-model"
     processes_pdf: bool = False
     pulls_source: bool = False
@@ -159,20 +161,14 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
     now = now or datetime.now(timezone.utc)
     values = asdict(configuration)
     if now.tzinfo is None or not operator or not revision or not all(
-        value for key, value in values.items() if key not in {"processes_pdf", "pulls_source"}
+        value for key, value in values.items() if key not in {"processes_pdf", "pulls_source", "source_configuration_version"}
     ):
         raise ActivationRefused("activation must identify every configuration, operator and revision")
     if configuration.boundary_mode not in {"true", "1", "yes", "on"} or configuration.boundary_role != "corridor_web":
         raise ActivationRefused("live pilot web boundary is disabled or uses the wrong role")
     if configuration.boundary_route_digest != route_manifest_digest():
         raise ActivationRefused("activation route manifest is stale")
-    required = set(BASE_GATES)
-    if configuration.processes_pdf:
-        required |= {"pdf_image_audit"}
-    if configuration.model_provider_posture != "deterministic-no-model":
-        required |= {"model_provider_governance"}
-    if configuration.pulls_source:
-        required |= {"delivery_checkpoint"}
+    required = _required_gates(configuration)
     if required - evidence.keys():
         raise ActivationRefused("missing prerequisites: " + ", ".join(sorted(required - evidence.keys())))
     receipts = {}
@@ -243,11 +239,36 @@ def _complete_route_observations(observations):
     return approved == set(PILOT_ROUTES) and disabled
 
 
+def _required_gates(configuration):
+    required = set(BASE_GATES)
+    if configuration.processes_pdf:
+        required |= {"pdf_image_audit"}
+    if configuration.model_provider_posture != "deterministic-no-model":
+        required |= {"model_provider_governance"}
+    if configuration.pulls_source:
+        required |= {"delivery_checkpoint"}
+    return required
+
+
 def processing_authorized(configuration: ActivationConfiguration, receipt: EvidenceArtifact) -> bool:
     """Any changed deployment/source/security input disables the old activation."""
     try:
         payload = receipt.read()
-    except (OSError, ActivationRefused):
+        if not isinstance(payload, dict):
+            return False
+        evidence = payload.get("evidence")
+        if not isinstance(evidence, dict) or set(evidence) != _required_gates(configuration):
+            return False
+        if not all(isinstance(value, str) and re.fullmatch(r"[0-9a-f]{64}", value)
+                   for value in evidence.values()):
+            return False
+        if not all(isinstance(payload.get(key), str) and payload[key].strip()
+                   for key in ("operator", "revision")):
+            return False
+        activated_at = datetime.fromisoformat(payload["activated_at"])
+        if activated_at.tzinfo is None or activated_at > datetime.now(timezone.utc):
+            return False
+    except (OSError, ActivationRefused, KeyError, TypeError, ValueError):
         return False
     return (payload.get("version") == VERSION
         and payload.get("configuration_digest") == configuration.identity

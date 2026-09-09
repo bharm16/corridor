@@ -58,14 +58,16 @@ def shadow(runtime_database, tmp_path):
         engine.dispose()
 
 
-def test_actual_worker_capture_freezes_native_identity_and_replays(shadow):
+@pytest.mark.parametrize("complete", [False, True])
+def test_actual_worker_capture_freezes_native_identity_and_replays(shadow, complete):
     database, engines, project_id, staged, envelope, approved, compatibility = shadow
     def run(session):
         return run_shadow_ucm(session, project=session.get(Project, project_id),
             staged=staged, envelope=envelope, compatibility_receipt=compatibility,
             authorization=approved, customer=CUSTOMER, environment="synthetic-shadow",
             source_configuration="manual-ucm-v1", principal=PRINCIPAL,
-            deletion_date=DELETE, now=NOW)
+            deletion_date=DELETE, now=NOW,
+            is_complete_enumerative_source=complete, row_accounting_sealed=complete)
     with Session(engines["corridor_worker"]) as worker, worker.begin():
         output = run(worker)
         native = worker.scalars(select(ProposedDelta).where(ProposedDelta.project_id == project_id)).all()
@@ -73,6 +75,11 @@ def test_actual_worker_capture_freezes_native_identity_and_replays(shadow):
         assert output["deltas"][0]["proposed_value"] == "18 in"
         assert output["deltas"][0]["lifecycle"]["status"] == "open"
         assert output["source_delivery_watermark"] >= output["delivery_id"]
+        assert output["is_complete_enumerative_source"] is complete
+        assert output["row_accounting_sealed"] is complete
+        assert output["accounting"]["sheet_name"] == "Utility Conflicts"
+        assert len(output["accounting"]["rows"]) == 3
+        assert output["accounting"]["removals"] == []
     with Session(engines["corridor_worker"]) as worker, worker.begin():
         assert run(worker) == output
     with database.session_factory.begin() as owner:

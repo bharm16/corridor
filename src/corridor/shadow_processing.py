@@ -162,13 +162,17 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
                    compatibility_receipt: CompatibilityReceipt,
                    authorization: CustomerAuthorization, customer: str,
                    environment: str, source_configuration: str, principal,
-                   deletion_date: date, now: datetime | None = None):
+                   deletion_date: date, now: datetime | None = None,
+                   is_complete_enumerative_source: bool = False,
+                   row_accounting_sealed: bool = False):
     """Capture and freeze exact native deltas; repeated inputs return one receipt.
 
     All operations share the caller's transaction. The caller commits once and
     must never commit a caught failure. The lock serializes competing runs of
     this source configuration before native lifecycle state is frozen.
     """
+    if type(is_complete_enumerative_source) is not bool or type(row_accounting_sealed) is not bool:
+        raise ShadowRefused("source completeness and row accounting must be explicit booleans")
     now = now or datetime.now(timezone.utc)
     if now.tzinfo is None or deletion_date <= now.date() or not source_configuration:
         raise ShadowRefused("aware time, future deletion and source configuration are required")
@@ -192,7 +196,9 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         "source_configuration": source_configuration, "delivery": delivery.id,
         "compatibility": compatibility_receipt.receipt_sha256,
         "authorization": authorization.record_id, "operator": principal.subject,
-        "deletion_date": deletion_date.isoformat()})
+        "deletion_date": deletion_date.isoformat(),
+        "is_complete_enumerative_source": is_complete_enumerative_source,
+        "row_accounting_sealed": row_accounting_sealed})
     session.execute(text("select pg_advisory_xact_lock(hashtextextended(:key,0))"), {"key": f"shadow:{project.id}"})
     saved = session.execute(text("select payload, output_sha256 from shadow_runs where identity=:id"), {"id": identity}).first()
     if saved:
@@ -204,7 +210,9 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
     if session.scalar(text("select count(*) from shadow_runs where project_id=:id and payload->>'source_sha256'=:sha"), {"id": project.id, "sha": staged.sha256}):
         raise ShadowRefused("source already frozen under a different shadow configuration")
     capture = capture_later_revision(session, project=project, staged=staged,
-        envelope=envelope, principal=principal)
+        envelope=envelope, principal=principal,
+        is_complete_enumerative_source=is_complete_enumerative_source,
+        row_accounting_sealed=row_accounting_sealed)
     deltas = []
     for row in session.scalars(select(ProposedDelta).where(ProposedDelta.id.in_(capture.delta_ids)).order_by(ProposedDelta.id)):
         item = {column.name: getattr(row, column.name) for column in ProposedDelta.__table__.columns}
@@ -236,6 +244,9 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         "document_id": capture.document_id, "fact_ids": list(capture.fact_ids),
         "accepted_baseline_revision": capture.accepted_baseline_revision,
         "mapping": asdict(capture.field_mapping), "groups": groups,
+        "accounting": capture.accounting.as_payload(),
+        "is_complete_enumerative_source": is_complete_enumerative_source,
+        "row_accounting_sealed": row_accounting_sealed,
         "source_provenance": provenance, "deltas": deltas}
     # JSON normalization also rejects non-serializable native contract changes.
     payload = json.loads(canonical_bytes(payload))
