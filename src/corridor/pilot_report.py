@@ -61,7 +61,8 @@ def rate(numerator, denominator, unit, *, complete=True):
             "status": "measured" if complete and denominator else "insufficient_evidence"}
 
 
-def _evidenced(value):
+def has_attributed_evidence(value):
+    """Require both a named actor and retained reference for a human assertion."""
     return bool(value.get("evidence_reference") and value.get("actor"))
 
 
@@ -76,7 +77,7 @@ def _baseline(log, declaration):
     start, end = instant(log["start"]), instant(log["end"])
     adopted = instant(log["adopted_at"])
     historical = log.get("matched_historical_event", {})
-    historical_valid = (_evidenced(historical) and historical.get("same_coordinator") is True
+    historical_valid = (has_attributed_evidence(historical) and historical.get("same_coordinator") is True
                         and historical.get("comparable_revision") is True
                         and historical.get("justification")
                         and instant(historical["agreed_at"]) < adopted)
@@ -85,11 +86,11 @@ def _baseline(log, declaration):
                       and (log.get("substantive_revision") is True or historical_valid))
     entries = log.get("work", [])
     configured = set(declaration["previously_performed_artifacts"])
-    valid_entries = (bool(entries) and all(_evidenced(e) and number(e.get("minutes"))
+    valid_entries = (bool(entries) and all(has_attributed_evidence(e) and number(e.get("minutes"))
                      and e.get("category") in {"record_maintenance", "report_preparation"}
                      and (e["category"] != "report_preparation" or e.get("artifact_type") in configured)
                      for e in entries))
-    adequate = bool(_evidenced(log) and log.get("approved_by") and start < end <= adopted
+    adequate = bool(has_attributed_evidence(log) and log.get("approved_by") and start < end <= adopted
                     and instant(log["approved_at"]) <= adopted
                     and (end - start).total_seconds() >= 14 * 86400 and representative
                     and log.get("complete_work_log") is True and valid_entries)
@@ -104,7 +105,7 @@ def _baseline(log, declaration):
 
 def _work(row, attestation):
     entries = [o for o in row["observations"] if o["family"] in {"work_observation", "artifact_repair"}]
-    categories = set(attestation.get("complete_time_categories", [])) if _evidenced(attestation) else set()
+    categories = set(attestation.get("complete_time_categories", [])) if has_attributed_evidence(attestation) else set()
     # The declaration explicitly attests disjoint measured intervals. Otherwise
     # review/repair could already sit inside maintenance and be counted twice.
     disjoint = attestation.get("disjoint_time_entries") is True
@@ -116,7 +117,7 @@ def _work(row, attestation):
         category = p.get("category", "manual_repair")
         if category not in COORDINATOR_CATEGORIES + OPERATIONS_CATEGORIES:
             continue
-        if not _evidenced(p) or not number(p.get("minutes")):
+        if not has_attributed_evidence(p) or not number(p.get("minutes")):
             unavailable.append(observation["event_id"])
             continue
         known[category].append(p["minutes"])
@@ -165,7 +166,7 @@ def _cohort_packets(rows):
         for observation in row["observations"]:
             p = observation["payload"]
             if (observation["event_id"] in invalid or p.get("sample_kind") != "packet_usefulness"
-                    or not _evidenced(p) or type(p.get("necessary")) is not bool):
+                    or not has_attributed_evidence(p) or type(p.get("necessary")) is not bool):
                 continue
             matches = [packet for key, packet in frozen.items()
                 if packet["project_key"] == project_key(row["declaration"]) and packet["item_key"] == p.get("item_key")
@@ -286,7 +287,7 @@ def _aggregate(rows, work, baselines, calendar, history_rows):
     full_weeks = all(instant(r["declaration"]["end"]) - instant(r["declaration"]["start"]) == timedelta(days=7) for r in rows)
     costs = [float(row["provider_cost"]["actual_cost_usd"]) if row["provider_cost"]["actual_cost_usd"] is not None
              and work[row["declaration"]["period_id"]]["attestation"].get("all_provider_costs_complete") is True
-             and _evidenced(work[row["declaration"]["period_id"]]["attestation"]) else None for row in rows]
+             and has_attributed_evidence(work[row["declaration"]["period_id"]]["attestation"]) else None for row in rows]
     current = [work[row["declaration"]["period_id"]]["same_work_minutes"] for row in rows]
     baseline = [baselines[row["declaration"]["period_id"]]["weekly_minutes"] for row in rows]
     net = rate(sum(x for x in current if number(x)), sum(x for x in baseline if number(x)), "same-work minutes",
@@ -389,7 +390,7 @@ def _validate_configuration(cohort, rows):
                 and change.get("code_revision") == current["code_revision"]
                 and change.get("prior_product_revision") == prior["product_revision"]
                 and change.get("product_revision") == current["product_revision"]]
-            if not any(_evidenced(change) and change.get("classification") in {
+            if not any(has_attributed_evidence(change) and change.get("classification") in {
                     "security_fix", "crash_fix", "data_loss_fix", "accessibility_fix", "behavior_restoring_fix"}
                     and change.get("affected_criteria") and change.get("reason")
                     and instant(before["end"]) <= instant(change["occurred_at"]) <= instant(after["start"])
