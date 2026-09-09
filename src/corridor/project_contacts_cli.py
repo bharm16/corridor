@@ -70,6 +70,7 @@ def main(argv=None):
             else:
                 result = [{"id": row.id, "record": row.values_json, "import_id": row.import_id,
                            "corrects_id": row.corrects_id, "corrected_by": row.corrected_by,
+                           "unresolved_reason": row.unresolved_reason, "correction_reason": row.correction_reason,
                            "recorded_at": row.recorded_at.isoformat(), "source_locators": row.source_locators}
                           for row in contact_history(session, project_id=args.project_id)]
     print(json.dumps(result, indent=2))

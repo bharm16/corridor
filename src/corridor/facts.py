@@ -1414,9 +1414,9 @@ def _replay_fact(
     exact = (replay_cell(segment) if replay_cell is not None
              else dereference_source_segment(document, segment, path))
     if fact.fact_type == "statement_timing":
-        from corridor.statement_timing_parser import statement_timing_options
+        from corridor.statement_timing_parser import promised_timing_options
 
-        options = [option.value for option in statement_timing_options(exact)]
+        options = [option.value for option in promised_timing_options(exact)]
         rows = session.scalars(select(FactStatementTiming).where(FactStatementTiming.fact_id == fact.id)
                                .order_by(FactStatementTiming.timing_role)).all()
         if not rows:

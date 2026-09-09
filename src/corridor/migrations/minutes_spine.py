@@ -139,7 +139,7 @@ def upgrade(op):
     op.execute("grant select,insert on minutes_captures to corridor_source_append")
     op.execute("grant usage,select on sequence minutes_captures_id_seq to corridor_source_append")
     op.execute("alter table minutes_captures enable row level security")
-    op.execute("create policy p_minutes_project on minutes_captures to corridor_web using(project_id=any(current_project_partition()))")
+    op.execute("create policy p_minutes_captures_project_partition on minutes_captures to corridor_web using(project_id=any(current_project_partition()))")
     op.execute("create policy p_minutes_internal on minutes_captures to corridor_worker,corridor_source_append using(true) with check(true)")
     op.execute(APPEND)
 

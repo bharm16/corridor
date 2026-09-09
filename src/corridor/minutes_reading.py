@@ -15,6 +15,7 @@ REASONS = {
     "person_attribution_unresolved": "The named speaker needs clarification",
     "predecessor_unresolved": "The earlier Commitment is not yet identified",
     "new_timing_unresolved": "Promised For needs clarification",
+    "required_by_is_not_promised_timing": "Required By does not state the party's Promised Timing",
     "completion_not_explicit": "The source does not clearly report completion",
     "scope_unresolved": "Applies To needs clarification",
     "source_statement_unresolved": "Statement needs clarification",

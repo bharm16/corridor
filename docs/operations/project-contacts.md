@@ -44,7 +44,11 @@ Original imports and corrections remain immutable and readable.
 
 Resolution selects the newest recorded occurrence of each source contact at the
 requested cutoff, then applies its validity interval. It does not resurrect an
-older address after its replacement expires. Independent active records with
+older address after its replacement expires. A refused row with a readable source
+contact ID also replaces that identity's prior occurrence for resolution: the
+contact stays unresolved until corrected or supplied in a valid later revision.
+Its raw cells and refusal reason remain in import accounting. Missing rows alone
+do not replace prior occurrences. Independent active records with
 different person/channel/address values remain ambiguous. Identical active
 records may share one resolved recipient while retaining all evidence references.
 

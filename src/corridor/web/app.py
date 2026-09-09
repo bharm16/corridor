@@ -8397,9 +8397,10 @@ async def correct_onboarding_contact(
         raise HTTPException(422, str(exc)) from exc
     except DBAPIError as exc:
         raise HTTPException(409, "contact correction conflicts with the retained predecessor") from exc
+    response = {"contact_id": changed.id, "corrects_id": changed.corrects_id,
+                "corrected_by": changed.corrected_by, "record": changed.values_json}
     session.commit()
-    return {"contact_id": changed.id, "corrects_id": changed.corrects_id,
-            "corrected_by": changed.corrected_by, "record": changed.values_json}
+    return response
 
 
 @app.get("/projects/{slug}/inbound")

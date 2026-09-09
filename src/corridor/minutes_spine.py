@@ -22,7 +22,7 @@ from sqlalchemy import func, select
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import injected_extractor_config, token_usage_delta, usage_snapshot, zero_token_usage
 from corridor.materializer import materialize_prose_wording, materialize_prose_scope, materialize_typed_satellite
-from corridor.models import (Document, Fact, FactSource, MinutesCapture, Project, ProjectRecordRevision, SourceSegment)
+from corridor.models import (Document, Fact, FactSource, MinutesCapture, Project, ProjectRecordRevision, SourceDelivery, SourceSegment)
 from corridor.operating_mode import is_adopted_baseline
 from corridor.prose_interpretation import read_typed_prose
 from corridor.prose_spans import prose_segment_filter
@@ -31,7 +31,7 @@ from corridor.proposed_deltas import ExistingSubjectTarget, ProposedDeltaValues,
 from corridor.reader_segments import replay_native_segments
 from corridor.record_projection import read_project_record_as_of_revision, record_value_payload
 from corridor.source_append import (ClosureValues, ScopeSubjectValues, TimingValues, append_fact, append_minutes_capture)
-from corridor.statement_timing_parser import statement_timing_options
+from corridor.statement_timing_parser import statement_timing_options, is_required_timing
 from corridor.statement_values import reports_completion, states_unknown_scope
 from corridor.storage import stored_file
 from corridor.subject_resolution import registered_subject_candidates
@@ -147,7 +147,7 @@ def _prepare(session, document):
     subjects = registered_subject_candidates(session, project.id)
     organizations = {subject.subject_id: subject for subject in subjects if subject.subject_type == "external_org"}
     people = {subject.subject_id: subject for subject in subjects if subject.subject_type == "person"}
-    timings = {index: (segment, option.value) for index, (segment, option) in enumerate(
+    timings = {index: (segment, option.value, is_required_timing(segment.exact_text, option)) for index, (segment, option) in enumerate(
         ((span.segment, option) for span in spans for option in statement_timing_options(span.segment.exact_text)), start=1)}
     predecessors = {}
     for (key, field), value in accepted.items():
@@ -167,7 +167,8 @@ def _prepare(session, document):
         "organizations": [{"id": key, "name": value.display_name, "aliases": list(value.aliases)} for key, value in organizations.items()],
         "people": [{"id": key, "name": value.display_name, "aliases": list(value.aliases)} for key, value in people.items()],
         "project_side_parties": project.project_side_parties,
-        "timings": [{"ref": ref, "segment_id": segment.id, **value} for ref, (segment, value) in timings.items()],
+        "timings": [{"ref": ref, "segment_id": segment.id, "purpose": "required_by" if required else "stated", **value}
+                    for ref, (segment, value, required) in timings.items()],
         "subjects": [{"ref": value.fact_id, "subject_key": key, "reference": value.text_value} for (key, field), value in accepted.items() if field == "utility_id"],
         "predecessors": [{"subject_key": key, **value} for key, value in predecessors.items()]}
     return project, spans, accepted, organizations, people, timings, predecessors, context
@@ -180,8 +181,11 @@ def inspect_minutes(session, document):
 
 def capture_minutes(session, document, *, client, source_family: str | None = None, source_revision: str | None = None):
     """Append one source revision's five-field reading; retry returns its receipt."""
-    family = source_family or document.registry_id or f"document:{document.sha256}"
-    version = source_revision or document.sha256
+    delivery = session.get(SourceDelivery, document.source_delivery_id) if document.source_delivery_id else None
+    if delivery and (delivery.project_id != document.project_id or delivery.content_sha256 != document.sha256):
+        raise MinutesCaptureRefused("minutes delivery is outside its registered source")
+    family = source_family or (delivery.external_identity if delivery else None) or document.registry_id or f"document:{document.sha256}"
+    version = source_revision or (delivery.external_version if delivery else None) or document.sha256
     digest = _digest({"document": document.sha256, "family": family, "version": version, "reader": PROMPT_VERSION})
     with session.begin_nested():
         lock_project(session, document.project_id)
@@ -253,11 +257,11 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
     if len(orgs) != 1 or statement.organization_id != orgs[0]:
         reasons.append("attribution_unresolved")
         return outcome
-    if statement.person_id is not None:
-        person = people.get(statement.person_id)
-        if person is None or not any(_contains(label, alias) for alias in (person.display_name, *person.aliases)):
-            reasons.append("person_attribution_unresolved")
-            return outcome
+    matched_people = [key for key, person in people.items()
+                      if any(_contains(label, alias) for alias in (person.display_name, *person.aliases))]
+    if len(matched_people) > 1 or (statement.person_id is not None and matched_people != [statement.person_id]):
+        reasons.append("person_attribution_unresolved")
+        return outcome
     scope_members = []
     for reference in statement.scope:
         subject_key, target = next(((key, value) for (key, field), value in accepted.items()
@@ -292,9 +296,12 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
         timing_source = timings.get(statement.timing_ref)
         if timing_source is None or timing_source[0].id != span.segment.id:
             raise MinutesCaptureRefused("minutes timing must replay from its statement")
+        if timing_source[2]:
+            reasons.append("required_by_is_not_promised_timing")
+            return outcome
         timing = timing_source[1]
         if statement.kind == "timing_change" and re.search(r"\b(?:changed?|moved?|revised?|rescheduled?|shifted?|extended?)\b", span.segment.exact_text, re.I):
-            options = [value for source, value in timings.values() if source.id == span.segment.id]
+            options = [value for source, value, required in timings.values() if source.id == span.segment.id and not required]
             if len(options) > 1 and timing != options[-1]:
                 reasons.append("new_timing_unresolved")
                 return outcome

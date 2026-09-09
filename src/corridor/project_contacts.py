@@ -99,13 +99,14 @@ def _record(values):
 def _account_rows(rows):
     groups = {}
     for row in rows:
-        if row.record:
-            groups.setdefault(row.record.source_contact_id, []).append(row.record)
+        key = _source_contact_id(row)
+        if key:
+            groups.setdefault(key, []).append(_digest(row.record.payload() if row.record else row.raw_values))
     conflicts = {key for key, records in groups.items() if len(set(records)) > 1}
     seen = set()
     result = []
     for row in rows:
-        key = row.record.source_contact_id if row.record else None
+        key = _source_contact_id(row)
         if key in conflicts:
             row = replace(row, record=None, reason="conflicting_duplicate_identifier")
         elif key is not None and key in seen:
@@ -113,6 +114,10 @@ def _account_rows(rows):
         seen.add(key)
         result.append(row)
     return tuple(result)
+
+
+def _source_contact_id(row):
+    return str(row.raw_values.get("source_contact_id") or "").strip() or None
 
 
 def read_contact_csv(raw: bytes) -> ContactRead:
@@ -138,7 +143,7 @@ def read_contact_csv(raw: bytes) -> ContactRead:
             record, reason = None, None
             if len(cells) != len(headings):
                 reason = "malformed_column_count"
-                values = {"cells": cells}
+                values["cells"] = cells
             else:
                 try:
                     record = _record(values)
@@ -264,9 +269,22 @@ def _append_import(session, document, *, delivery_id, customer, family, revision
         raise ContactImportRefused("contact import needs a stable identity")
     registry = _organization_registry(session, document.project_id)
     rows = []
+    refused_ids = set()
     for row in parsed.rows:
         org_id, unresolved = _organization(registry, row.record.organization_ref) if row.record else (None, None)
+        refusal = None
+        source_id = _source_contact_id(row)
+        if row.record is None and source_id and row.reason != "duplicate_row" and source_id not in refused_ids:
+            # Keep an identifiable refusal in occurrence order, so a bad newer
+            # row cannot silently revive the previous recipient. Raw input is
+            # retained separately; these empty fields are not repaired values.
+            refusal = ContactInput(source_id, str(row.raw_values.get("organization_ref") or "").strip(),
+                                   str(row.raw_values.get("responsible_role") or "").strip()).payload()
+            org_id, _ = _organization(registry, refusal["organization_ref"])
+            unresolved = "refused_contact_revision"
+            refused_ids.add(source_id)
         rows.append({"row_number": row.row_number, "record": row.record.payload() if row.record else None,
+            "refused_record": refusal,
             "reason": row.reason, "raw_values": row.raw_values, "source_locators": row.source_locators,
             "organization_id": org_id, "unresolved_reason": unresolved})
     accounting = {"schema_version": CONTACT_SCHEMA, "rows": rows, "unknown_columns": list(parsed.unknown_columns)}
@@ -319,14 +337,25 @@ def resolve_project_contacts(session, *, project_id: int, requests, as_of: datet
         .where(ProjectContact.project_id == project_id, ProjectContact.recorded_at <= as_of)
         .order_by(ProjectContact.recorded_at, ProjectContact.id)).all()
     latest = {}
+    occurrences = {}
     for row, family in histories:
-        latest[(family, row.source_contact_id)] = row
+        key = (family, row.source_contact_id)
+        latest[key] = row
+        occurrences.setdefault(key, []).append(row)
     results = {}
     for organization, role in requests:
         org_id, reason = _organization(registry, organization)
-        matching = [row for row in latest.values() if row.values_json["responsible_role"] == role and (
-            (row.organization_id == org_id and org_id is not None)
-            or row.values_json["organization_ref"].casefold() == organization.casefold())]
+        def matches(row):
+            return row.values_json["responsible_role"] == role and (
+                (row.organization_id == org_id and org_id is not None)
+                or row.values_json["organization_ref"].casefold() == organization.casefold())
+
+        matching = [row for key, row in latest.items() if matches(row) or (
+            row.unresolved_reason == "refused_contact_revision" and any(matches(previous) for previous in occurrences[key]))]
+        if any(row.unresolved_reason == "refused_contact_revision" for row in matching):
+            results[(organization, role)] = ContactResolution("unresolved_contact", "refused_contact_revision",
+                                                             record_ids=tuple(row.id for row in matching))
+            continue
         active = []
         for row in matching:
             value = _record(row.values_json)

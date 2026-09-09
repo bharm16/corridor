@@ -36,6 +36,14 @@ begin
         raise exception 'project contacts require immutable import/correction commands' using errcode='23514';
     end if;
     if tg_table_name = 'project_contacts' then
+        if new.unresolved_reason = 'refused_contact_revision' then
+            if current_user <> 'corridor_source_append' or new.corrects_id is not null
+                or coalesce(new.source_contact_id,'') = ''
+                or new.values_json ->> 'source_contact_id' is distinct from new.source_contact_id then
+                raise exception 'invalid refused contact occurrence' using errcode='23514';
+            end if;
+            return new;
+        end if;
         if coalesce(new.values_json ->> 'source_contact_id','') = ''
             or coalesce(new.values_json ->> 'organization_ref','') = ''
             or coalesce(new.values_json ->> 'responsible_role','') = ''
@@ -61,7 +69,7 @@ IMPORT = """
 create function append_project_contact_import(p_project bigint, p_document bigint, p_delivery bigint,
     p_customer text, p_family text, p_revision text, p_key text, p_digest text, p_mapping jsonb, p_accounting jsonb)
 returns bigint language plpgsql security definer set search_path to 'public' as $$
-declare existing project_contact_imports%rowtype; import_id bigint; item jsonb;
+declare existing project_contact_imports%rowtype; import_id bigint; item jsonb; record jsonb;
 begin
     perform 1 from projects where id=p_project for update;
     if not found or not exists(select 1 from documents where id=p_document and project_id=p_project)
@@ -95,11 +103,12 @@ begin
     values(p_project,p_document,p_delivery,p_customer,p_family,p_revision,p_key,p_digest,p_mapping,p_accounting)
     returning id into import_id;
     for item in select value from jsonb_array_elements(p_accounting -> 'rows') loop
-        if item -> 'record' <> 'null'::jsonb then
+        record := coalesce(nullif(item -> 'record','null'::jsonb),nullif(item -> 'refused_record','null'::jsonb));
+        if record is not null then
             insert into project_contacts(project_id,import_id,source_contact_id,organization_id,
                 values_json,source_locators,unresolved_reason)
-            values(p_project,import_id,item #>> '{record,source_contact_id}',(item ->> 'organization_id')::bigint,
-                item -> 'record',item -> 'source_locators',item ->> 'unresolved_reason');
+            values(p_project,import_id,record ->> 'source_contact_id',(item ->> 'organization_id')::bigint,
+                record,item -> 'source_locators',item ->> 'unresolved_reason');
         end if;
     end loop;
     return import_id;
@@ -150,7 +159,7 @@ def upgrade(op):
         op.execute(f"grant select,insert on {table} to corridor_source_append,corridor_fact_decision_writer")
         op.execute(f"grant usage,select on sequence {table}_id_seq to corridor_source_append,corridor_fact_decision_writer")
         op.execute(f"alter table {table} enable row level security")
-        op.execute(f"create policy p_{table}_project on {table} to corridor_web using(project_id=any(current_project_partition()))")
+        op.execute(f"create policy p_{table}_project_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
         op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_source_append,corridor_fact_decision_writer using(true) with check(true)")
     op.execute("grant select on project_baseline_sources,source_deliveries to corridor_source_append")
     op.execute("grant select,update on projects to corridor_source_append,corridor_fact_decision_writer")

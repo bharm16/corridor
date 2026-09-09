@@ -341,16 +341,12 @@ def extraction_route(
     if getattr(document, "doc_type", None) == "minutes":
         from corridor.minutes_spine import capture_minutes, minutes_extractor_config
         from corridor.llm import OpenAIClient
-        from corridor.models import SourceDelivery
 
         minutes_client = client or OpenAIClient()
         configuration = minutes_extractor_config(minutes_client)
 
         def extract_minutes_source(session, doc):
-            delivery = session.get(SourceDelivery, doc.source_delivery_id) if doc.source_delivery_id else None
-            receipt = capture_minutes(session, doc, client=minutes_client,
-                source_family=delivery.external_identity if delivery else None,
-                source_revision=delivery.external_version if delivery else None)
+            receipt = capture_minutes(session, doc, client=minutes_client)
             return CapturedCandidates([], session.get_one(ExtractionRun, receipt.extraction_run_id))
 
         return ExtractionRoute(effective_prompt_version=configuration.prompt_version,

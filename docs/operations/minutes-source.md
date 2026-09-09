@@ -28,6 +28,9 @@ as “around” remain approximate with no invented date bounds. A timing change
 Completion Report needs one unambiguous accepted predecessor; unresolved identity,
 attribution, scope or timing remains a retained source question. Completion Reported
 is distinct from closing a Constraint or Contract Acceptance.
+An explicit Required By clause cannot supply Promised Timing. Negated, qualified
+or hypothetical completion stays unresolved. Registered people with overlapping
+names or aliases require clarification; the model cannot rank them into certainty.
 
 Selected Applies To references name accepted Project Record subjects and their
 own exact source spans, not new legacy Dependency rows. The original source
@@ -51,6 +54,10 @@ make test-focused ARGS="tests/test_minutes_spine.py"
 ```
 
 Normal project extraction also dispatches adopted-project minutes to this lane.
+Both commands and normal processing use the retained delivery's external identity
+and version by default. Without a delivery, the document registry ID (or rendition
+digest) supplies the family and its digest supplies the revision. Explicit family
+and revision flags describe a declared source lineage, never model output.
 The `minutes` command preserves the frozen legacy command for legacy projects.
 `inspect` exposes the actual catalog for an offline response replay. Repeating an
 unchanged capture returns its receipt without a provider call. A rolled-back or
@@ -61,6 +68,8 @@ The latest source questions appear in the existing review and project-work views
 they create neither accepted facts nor external follow-up obligations. Supporting
 assessments and Resolve Delta remain the existing human decision boundary. Source
 quotes and successful schema validation do not prove real-world completion.
+Apply on a new Commitment carries every captured field in one Review Packet act;
+each field needs its own effective value-support assessment before it is ready.
 
 Fixtures cover all five capabilities, source replay, month/range precision,
 project-side and ambiguous speakers, unknown scope, ambiguous predecessors,

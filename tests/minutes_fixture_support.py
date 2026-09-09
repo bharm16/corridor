@@ -48,8 +48,9 @@ class MinutesClient:
     """Inject only the provider boundary; references come from the real catalog."""
     model = "fixture"
 
-    def __init__(self, kind="commitment", scope=True):
+    def __init__(self, kind="commitment", scope=True, *, timing_purpose="stated", person_id=None):
         self.kind, self.scope = kind, scope
+        self.timing_purpose, self.person_id = timing_purpose, person_id
 
     def complete(self, *, system, user, schema):
         import json
@@ -60,12 +61,12 @@ class MinutesClient:
                 continue
             organizations = [org for org in catalog["organizations"] if org["name"] in source["text"]]
             organization_id = organizations[0]["id"] if organizations else catalog["organizations"][0]["id"]
-            timing_refs = [item["ref"] for item in catalog["timings"] if item["segment_id"] == source["id"]]
+            timing_refs = [item["ref"] for item in catalog["timings"] if item["segment_id"] == source["id"] and item["purpose"] == self.timing_purpose]
             timing = (timing_refs[-1] if self.kind == "timing_change" else timing_refs[0]) if timing_refs else None
             predecessors = catalog["predecessors"]
             statements.append({"kind": self.kind, "wording_segment_id": source["id"],
                 "attribution_segment_id": source["attribution_segment_id"], "organization_id": organization_id,
-                "person_id": None, "timing_ref": timing,
+                "person_id": self.person_id, "timing_ref": timing,
                 "predecessor_ref": predecessors[0]["ref"] if predecessors and self.kind in {"timing_change", "completion_report"} else None,
                 "scope": [{"subject_ref": subject["ref"], "segment_id": source["id"]}
                           for subject in catalog["subjects"] if self.scope and subject["reference"] in source["text"]]})

@@ -159,3 +159,14 @@ def statement_timing_options(text: str) -> tuple[ExactTiming, ...]:
                 {"text": text[qualifier.start():option.end_offset], "precision": "approximate", "start_date": None, "end_date": None})
         qualified.append(option)
     return tuple(qualified)
+
+
+def is_required_timing(text: str, option: ExactTiming) -> bool:
+    """Keep an explicit Required By clause out of a party's Promised Timing."""
+    prefix = re.split(r"[.;\n]", text[:option.start_offset])[-1]
+    roles = list(re.finditer(r"\b(required by|need(?:ed)? by|promised (?:for|by)|moves? to|will (?:finish|complete)|committed to)\b", prefix, re.I))
+    return bool(roles and re.match(r"required|need", roles[-1].group(0), re.I))
+
+
+def promised_timing_options(text: str) -> tuple[ExactTiming, ...]:
+    return tuple(option for option in statement_timing_options(text) if not is_required_timing(text, option))

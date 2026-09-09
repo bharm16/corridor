@@ -181,6 +181,33 @@ def test_contact_envelope_refuses_cross_customer_and_changed_mapping_replay(sess
         import_contact_csv(session, envelope, import_identity="same", source_family="different-directory")
 
 
+def test_a_refused_replacement_blocks_the_old_contact_until_corrected(session):
+    from sqlalchemy.exc import IntegrityError
+    from corridor.project_contacts import ContactInput, import_contact_csv, contact_history, correct_contact, resolve_contact
+
+    header = b"source_contact_id,organization_ref,responsible_role,person_name,channel,address\n"
+    project, envelope = project_and_source(session, header + b"lead,Utility A,lead,Pat,email,pat@example.test\n")
+    import_contact_csv(session, envelope, import_identity="v1", source_family="directory")
+    [original] = contact_history(session, project_id=project.id)
+    cutoff = original.recorded_at + timedelta(microseconds=1)
+    binding = bind_credential(session, PushCredential(channel="webhook", material=project.slug))
+    newer = accept_delivery(session, binding, PushPayload(body=header + b"lead,,,Pat,email,broken address\n", filename="contacts.csv"))
+    imported = import_contact_csv(session, newer.envelope, import_identity="v2", source_family="directory")
+    assert imported.accounting_json["rows"][0]["reason"] == "missing_required_identity"
+    [_, refusal] = contact_history(session, project_id=project.id)
+    assert resolve_contact(session, project_id=project.id, organization_ref="Utility A", responsible_role="lead",
+                           as_of=refusal.recorded_at + timedelta(seconds=1)).reason == "refused_contact_revision"
+    assert resolve_contact(session, project_id=project.id, organization_ref="Utility A", responsible_role="lead", as_of=cutoff).address == "pat@example.test"
+    replacement = ContactInput("lead", "Utility A", "lead", "Pat", "email", "new@example.test")
+    with pytest.raises(IntegrityError, match="stale"), session.begin_nested():
+        correct_contact(session, project_id=project.id, contact_id=original.id, replacement=replacement,
+                        principal=HumanPrincipal("local:owner"), reason="Fix", idempotency_key="stale")
+    fixed = correct_contact(session, project_id=project.id, contact_id=refusal.id, replacement=replacement,
+                            principal=HumanPrincipal("local:owner"), reason="Fix", idempotency_key="current")
+    assert resolve_contact(session, project_id=project.id, organization_ref="Utility A", responsible_role="lead",
+                           as_of=fixed.recorded_at + timedelta(seconds=1)).address == "new@example.test"
+
+
 def test_contact_crash_retry_converges(runtime_database):
     from corridor.project_contacts import import_contact_csv, contact_history
 
@@ -202,23 +229,40 @@ def test_contact_crash_retry_converges(runtime_database):
         assert len(contact_history(reread, project_id=project_id)) == 1
 
 
-def test_contact_correction_uses_the_authenticated_project_member(session):
+def test_contact_correction_uses_the_authenticated_project_member(runtime_database):
+    import os
     from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.engine import make_url
+    from sqlalchemy.pool import NullPool
     from corridor.project_contacts import import_contact_csv, contact_history
     from corridor.web.app import app, get_session, get_human_principal
     from access_support import seed_membership
+    from minutes_fixture_support import adopted_project
 
-    project, envelope = project_and_source(session,
-        b"source_contact_id,organization_ref,responsible_role\nlead,Utility A,lead\n")
-    import_contact_csv(session, envelope, import_identity="http")
-    [contact] = contact_history(session, project_id=project.id)
     actor = HumanPrincipal("local:authenticated-contact-owner")
-    seed_membership(session, project, actor)
-    app.dependency_overrides[get_session] = lambda: session
+    with runtime_database.session_factory.begin() as setup:
+        project = adopted_project(setup)
+        register_push_credential(setup, customer="fixture", project=project, channel="webhook", material=project.slug)
+        binding = bind_credential(setup, PushCredential(channel="webhook", material=project.slug))
+        delivery = accept_delivery(setup, binding, PushPayload(body=b"source_contact_id,organization_ref,responsible_role\nlead,Utility A,lead\n", filename="contacts.csv"))
+        import_contact_csv(setup, delivery.envelope, import_identity="http")
+        [contact] = contact_history(setup, project_id=project.id)
+        seed_membership(setup, project, actor)
+        slug, contact_id = project.slug, contact.id
+    web_url = make_url(settings.database_url).set(database=runtime_database.name, username="corridor_web",
+                                                 password=os.environ.get("CORRIDOR_WEB_DB_PASSWORD") or "corridor_web")
+    web_engine = create_engine(web_url, poolclass=NullPool)
+
+    def web_session():
+        with Session(web_engine) as session:
+            yield session
+
+    app.dependency_overrides[get_session] = web_session
     app.dependency_overrides[get_human_principal] = lambda: actor
     try:
         with TestClient(app) as client:
-            result = client.post(f"/projects/{project.slug}/contacts/{contact.id}/correct", json={
+            result = client.post(f"/projects/{slug}/contacts/{contact_id}/correct", json={
                 "contact": {"source_contact_id": "lead", "organization_ref": "Utility A", "responsible_role": "lead",
                             "person_name": "Pat", "channel": "email", "address": "pat@example.test"},
                 "reason": "Onboarding", "idempotency_key": "http-correction"})
@@ -227,3 +271,4 @@ def test_contact_correction_uses_the_authenticated_project_member(session):
             assert result.json()["record"]["address"] == "pat@example.test"
     finally:
         app.dependency_overrides.clear()
+        web_engine.dispose()

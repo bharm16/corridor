@@ -44,7 +44,8 @@ def session():
 
 
 def accept_statement(session, project, capture):
-    from corridor.delta_resolution import ChildDecisionRequest, RecordEffect, resolve_delta
+    from corridor.packet_review import FocusedAnswer, focused_request, packet_request, read_review_items
+    from corridor.review_packets import APPLY, resolve_review_packet
     from corridor.principals import HumanPrincipal
     from corridor.support_assessments import FactProposition, record_support_assessment
 
@@ -56,12 +57,18 @@ def accept_statement(session, project, capture):
         assessments.append(record_support_assessment(session, project_id=project.id,
             proposition=FactProposition(fact_id), source_segment_ids=tuple(dict.fromkeys(sources)),
             evidence_role="value_support", assessment="supported", authority=principal).id)
-    result = resolve_delta(session, ChildDecisionRequest(project_id=project.id, delta_id=outcome["delta_ids"][0],
-        action="accept", principal=principal, idempotency_key=f"accept-{capture.id}",
-        decided_at=datetime.now(timezone.utc), observed_accepted_revision_id=capture.accepted_revision_id,
-        record_effects=tuple(RecordEffect(identifier) for identifier in outcome["fact_ids"]),
-        support_assessment_ids=tuple(assessments)))
-    assert result.status == "resolved"
+    now = datetime.now(timezone.utc)
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    item = next(item for item in reading.items if outcome["delta_ids"][0] in item.actionable.delta_ids)
+    child = next(child for child in item.children if child.delta_id == outcome["delta_ids"][0])
+    assert child.not_ready_reason is None
+    request = (focused_request(reading, item, principal=principal, decided_at=now,
+        answers=(FocusedAnswer(child.delta_id, APPLY),)) if item.focused else
+        packet_request(reading, item, outcome=APPLY, principal=principal, decided_at=now,
+                       delta_ids=(child.delta_id,)))
+    assert {effect.fact_id for effect in request.children[0].record_effects} == set(outcome["fact_ids"])
+    result = resolve_review_packet(session, request)
+    assert result.status == "saved", result.refusals
     return outcome["subject_key"]
 
 
