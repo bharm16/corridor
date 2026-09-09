@@ -135,7 +135,8 @@ def compatibility_coordination_tail(session: Session, *, dependency_id: int | No
     subject = session.execute(text("""
         select * from coordination_subject_lineage l
         where (legacy_dependency_id=:dependency or legacy_commitment_lineage_id=:lineage)
-        and not exists(select 1 from legacy_history_reversals r where r.batch_id=l.history_batch_id)
+        and exists(select 1 from coordination_history_activations a where a.subject_id=l.subject_id
+            and not exists(select 1 from legacy_history_reversals r where r.batch_id=a.history_batch_id))
     """), {"dependency": dependency_id, "lineage": commitment_lineage_id}).mappings().one_or_none()
     if subject is None:
         return False, None
@@ -176,7 +177,8 @@ def compatibility_statement_tails(session: Session, lineage_ids, fields):
     known = frozenset(session.scalars(text("""
         select legacy_commitment_lineage_id from coordination_subject_lineage l
         where legacy_commitment_lineage_id=any(cast(:ids as bigint[]))
-        and not exists(select 1 from legacy_history_reversals r where r.batch_id=l.history_batch_id)
+        and exists(select 1 from coordination_history_activations a where a.subject_id=l.subject_id
+            and not exists(select 1 from legacy_history_reversals r where r.batch_id=a.history_batch_id))
     """), {"ids": list(ids)}))
     readings = {}
     for lineage_id in known:

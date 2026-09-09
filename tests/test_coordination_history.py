@@ -81,6 +81,9 @@ def test_native_migration_keeps_original_actor_time_and_reads_without_copied_fie
     reverse_history(session, batch, actor="local:reviewer", reason="rollback rehearsal")
     assert read_coordination_record(session, project.id) == ()
     assert current_internal_owner_decision(session, dependency.id).id == latest.id
+    resumed = migrate_coordination_history(session, _batch(session, project, key="coordination-rehearsal-2"))
+    assert resumed[0].subject_id == current[0].subject_id
+    assert resumed[0].value_text == "Third owner"
 
 
 def test_grouped_follow_up_save_and_undo_each_have_one_native_revision(session, project, dependency):

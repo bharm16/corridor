@@ -44,6 +44,14 @@ create table coordination_subject_lineage (
  check(num_nonnulls(legacy_dependency_id,legacy_commitment_lineage_id)=1),
  unique(subject_id)
 );
+create table coordination_history_activations (
+ id bigserial primary key,
+ project_id bigint not null references projects(id),
+ subject_id uuid not null references coordination_record_subjects(id),
+ history_batch_id bigint not null references legacy_history_batches(id),
+ recorded_at timestamptz not null default clock_timestamp(),
+ unique(subject_id,history_batch_id)
+);
 create table coordination_record_decisions (
  id bigserial primary key,
  project_id bigint not null references projects(id),
@@ -102,8 +110,8 @@ create view current_coordination_record as
  select d.* from coordination_record_decisions d
  where not exists(select 1 from coordination_record_decisions successor where successor.predecessor_id=d.id)
  and not exists(select 1 from coordination_record_reversals reversed where reversed.decision_id=d.id)
- and exists(select 1 from coordination_subject_lineage l where l.subject_id=d.subject_id
-  and not exists(select 1 from legacy_history_reversals r where r.batch_id=l.history_batch_id));
+ and exists(select 1 from coordination_history_activations a where a.subject_id=d.subject_id
+  and not exists(select 1 from legacy_history_reversals r where r.batch_id=a.history_batch_id));
 """
 
 
@@ -149,7 +157,13 @@ begin
   insert into coordination_subject_lineage(project_id,subject_id,legacy_dependency_id,legacy_commitment_lineage_id,history_batch_id)
    values(p_project,subject_uuid,original.dependency_id,original.commitment_lineage_id,p_batch);
  end if;
+ if original.predecessor_decision_id is null and original.before_value is not null then
+  raise exception 'original Coordination Decision lacks its before-value lineage' using errcode='23514';
+ end if;
  if original.predecessor_decision_id is not null then
+  if not exists(select 1 from work_decisions where id=original.predecessor_decision_id and after_value is not distinct from original.before_value) then
+   raise exception 'original Coordination Decision before-value disagrees with its predecessor' using errcode='23514';
+  end if;
   select decision_id into prior from coordination_decision_lineage where legacy_work_decision_id=original.predecessor_decision_id;
   if prior is null then raise exception 'native predecessor requires the earlier migration batch' using errcode='23514'; end if;
   if not exists(select 1 from coordination_record_decisions where id=prior and subject_id=subject_uuid and field=original.field)
@@ -186,6 +200,32 @@ begin
    values(p_project,prior_revision,'coordinate_record',expected_actor,null,operation,event_time) returning id into revision;
  end if;
  value:=case when original.field in ('next_action','milestone_impact','deferral') and original.after_value is not null then original.after_value::jsonb else '{}'::jsonb end;
+ if original.decision_type<>'undo_follow_up_plan' and not (
+  (original.field='internal_owner' and original.decision_type='assign_internal_owner')
+  or (original.field='next_action' and original.decision_type in ('set_next_action','complete_next_action','cancel_next_action'))
+  or (original.field='milestone_impact' and original.decision_type='set_milestone_impact')
+  or (original.field='deferral' and original.decision_type in ('defer_work','resume_work'))) then
+  raise exception 'original Coordination Decision type disagrees with its field' using errcode='23514';
+ end if;
+ if original.after_value is not null and original.field='next_action' and (
+   jsonb_typeof(value)<>'object' or not value ?& array['action','due_date']
+   or value-array['action','due_date']<>'{}'::jsonb
+   or jsonb_typeof(value->'action')<>'string'
+   or (value->>'due_date' is not null and value->>'due_date' !~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$')) then
+  raise exception 'original Next Action is not a lossless typed value' using errcode='23514';
+ end if;
+ if original.after_value is not null and original.field='milestone_impact' and (
+   jsonb_typeof(value)<>'object' or not value ?& array['state','milestone_ids']
+   or value-array['state','milestone_ids']<>'{}'::jsonb
+   or value->>'state' not in ('affects','does_not_affect','not_yet_known')
+   or jsonb_typeof(value->'milestone_ids')<>'array') then
+  raise exception 'original Milestone Impact is not a lossless typed value' using errcode='23514';
+ end if;
+ if original.after_value is not null and original.field='deferral' and (
+   value is distinct from jsonb_build_object('reason',original.deferral_reason,'return_date',original.deferral_return_date::text)) then
+  raise exception 'original deferral disagrees with its typed fields' using errcode='23514';
+ end if;
+
  insert into coordination_record_decisions(project_id,subject_id,revision_id,field,decision_type,value_text,
   action_due_date,action_due_date_reason,milestone_ids,deferral_reason,deferral_return_date,no_follow_up_reason,
   cancellation_reason,note,recorded_by,recorded_at,predecessor_id)
@@ -245,6 +285,11 @@ begin
      values(p_project,subject_uuid,case when class_name='dependencies' then (item->>'id')::bigint end,
       case when class_name='commitment_lineages' then (item->>'id')::bigint end,p_batch);
    end if;
+   select subject_id into subject_uuid from coordination_subject_lineage where project_id=p_project
+    and ((class_name='dependencies' and legacy_dependency_id=(item->>'id')::bigint)
+     or (class_name='commitment_lineages' and legacy_commitment_lineage_id=(item->>'id')::bigint));
+   insert into coordination_history_activations(project_id,subject_id,history_batch_id)
+    values(p_project,subject_uuid,p_batch) on conflict(subject_id,history_batch_id) do nothing;
   end loop;
  end loop;
  for item in select r from legacy_history_batches b,
@@ -267,7 +312,8 @@ begin
  if not exists(select 1 from work_decisions w join coordination_subject_lineage l
   on l.legacy_dependency_id=w.dependency_id or l.legacy_commitment_lineage_id=w.commitment_lineage_id
   where w.id=p_legacy and l.project_id=p_project
-  and not exists(select 1 from legacy_history_reversals r where r.batch_id=l.history_batch_id)) then
+  and exists(select 1 from coordination_history_activations a where a.subject_id=l.subject_id
+   and not exists(select 1 from legacy_history_reversals r where r.batch_id=a.history_batch_id))) then
   -- Legacy projects remain on the explicitly unconverted route until the
   -- reviewed historical batch establishes complete native predecessor chains.
   return null;
@@ -292,6 +338,10 @@ begin
    and l.legacy_work_decision_id in (original.internal_owner_decision_id,original.next_action_decision_id,original.milestone_impact_decision_id)
    and not exists(select 1 from coordination_record_reversals r where r.decision_id=l.decision_id) loop
    select id into revision from project_record_revisions where project_id=p_project and idempotency_key='legacy-coordinate:undo-statement:'||original.id::text;
+   if revision is not null and not exists(select 1 from project_record_revisions where id=revision
+      and human_principal=original.recorded_by and command_type='reverse_coordination') then
+    raise exception 'Coordination reversal operation belongs to another authority' using errcode='23514';
+   end if;
    if revision is null then
     select max(id) into prior_revision from project_record_revisions where project_id=p_project;
     insert into project_record_revisions(project_id,predecessor_revision_id,command_type,human_principal,released_policy,idempotency_key,recorded_at)
@@ -308,7 +358,7 @@ begin
 end; $$;
 """
 
-TABLES = ("coordination_record_subjects", "coordination_subject_lineage", "coordination_record_decisions",
+TABLES = ("coordination_record_subjects", "coordination_subject_lineage", "coordination_history_activations", "coordination_record_decisions",
           "coordination_decision_lineage", "coordination_record_reversals", "coordination_reversal_lineage")
 
 
