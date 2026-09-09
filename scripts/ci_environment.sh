@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# Prepare one CI job: PostgreSQL, both uv projects, and the schema of the
-# database the suite's shared-state tests read.
+# Prepare one CI job: PostgreSQL and both uv projects. The test harness owns
+# lazy schema provisioning and shared-source isolation.
 #
 # Why one step rather than five: the gate's wall clock is the *slowest of its
 # nine test jobs*, so every run samples the worst setup draw taken in it, not
@@ -41,13 +41,9 @@ uv sync --project workers/render --frozen
 wait "$postgres_job" || { cat "$logs/postgres.log" >&2; exit 1; }
 cat "$logs/postgres.log"
 
-# Not redundant with the pytest harness, which migrates its own per-run
-# template and clones it per worker. `shared_source_database_url` hands three
-# tests the *configured* database rather than a worker clone —
-# tests/test_briefing.py, tests/test_sh99_admission_acceptance.py and
-# tests/test_sh99_shared_admission_seal.py — and each is written to skip when
-# the shared corpus is absent, which is what CI wants. Against a database
-# with no schema at all they raise UndefinedTable instead, which is what all
-# three measurably do (#595). tests/test_ci_policy.py holds the guard.
-uv run alembic upgrade head
-
+# Shared-corpus tests lazily clone the harness's empty migrated template. The
+# configured CI source stays untouched; an existing corpus is never substituted.
+# Publish the opt-in only after ci_postgres.sh created this disposable database.
+if [[ "${GITHUB_ACTIONS:-}" == "true" ]]; then
+  printf 'CORRIDOR_CI_EMPTY_SHARED_SOURCE=1\n' >> "$GITHUB_ENV"
+fi

@@ -390,3 +390,119 @@ def test_xdist_worker_uses_a_guarded_isolated_database(worker_id):
         rf"corridor_pytest_[1-9][0-9]*_[0-9a-f]{{8}}_{re.escape(worker_id)}",
         database_name,
     )
+
+
+def test_shared_source_and_workers_coordinate_one_migration_and_distinct_clones(tmp_path, monkeypatch):
+    calls = _record_provisioning(monkeypatch)
+    first = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", TEMPLATE, tmp_path)
+    second = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw1", TEMPLATE, tmp_path)
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        source = executor.submit(first.shared_empty_source_url)
+        worker = executor.submit(second.ensure_provisioned)
+        source_url = source.result(timeout=2)
+        worker.result(timeout=2)
+    assert second.shared_empty_source_url() == source_url
+    name = f"corridor_pytest_{RUN_ID}_source"
+    assert make_url(source_url).database == name
+    assert [c for c in calls if c[0] == "migrate"] == [("migrate", TEMPLATE)]
+    assert sorted(c for c in calls if c[0] == "clone") == sorted([
+        ("clone", TEMPLATE, name), ("clone", TEMPLATE, second.database_name),
+    ])
+    assert not first.provisioned
+    assert not first.cleanup_needed
+    assert (tmp_path / "shared-source-ready").exists()
+
+
+def test_template_can_be_prepared_without_worker_population(tmp_path, monkeypatch):
+    calls = _record_provisioning(monkeypatch)
+    state = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", TEMPLATE, tmp_path)
+    assert state.ensure_template() == TEMPLATE
+    state.shared_empty_source_url()
+    assert [c for c in calls if c[0] == "migrate"] == [("migrate", TEMPLATE)]
+    assert [c for c in calls if c[0] == "clone"] == [("clone", TEMPLATE, f"corridor_pytest_{RUN_ID}_source")]
+    assert not state.provisioned
+
+
+def test_shared_source_clone_failure_is_not_retried_or_published(tmp_path, monkeypatch):
+    calls = _record_provisioning(monkeypatch)
+    state = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", TEMPLATE, tmp_path)
+    state.ensure_template()
+    def fail(*_args):
+        raise RuntimeError("clone failed")
+    monkeypatch.setattr(harness, "_clone_database", fail)
+    with pytest.raises(RuntimeError, match="clone failed"):
+        state.shared_empty_source_url()
+    assert not (tmp_path / "shared-source-ready").exists()
+    assert (tmp_path / "shared-source-failed").exists()
+    assert calls[-1] == ("drop", (f"corridor_pytest_{RUN_ID}_source",))
+    sibling = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw1", TEMPLATE, tmp_path)
+    with pytest.raises(RuntimeError, match="shared source provisioning failed"):
+        sibling.shared_empty_source_url()
+
+
+@pytest.mark.parametrize("github,marked", [("false", "1"), ("true", ""), ("false", "")])
+def test_shared_source_without_disposable_ci_opt_in_preserves_original_url(monkeypatch, github, marked):
+    monkeypatch.setenv(harness.SOURCE_DATABASE_URL_ENV, SOURCE_URL)
+    monkeypatch.setenv("GITHUB_ACTIONS", github)
+    monkeypatch.setenv(harness.EMPTY_CI_SOURCE_ENV, marked)
+    monkeypatch.setattr(harness, "_configured_source_has_relations", lambda *_: pytest.fail("unexpected source inspection"))
+    assert harness._shared_source_url(SimpleNamespace()) == SOURCE_URL
+
+
+@pytest.mark.parametrize("relations", [True, False])
+def test_only_relation_free_explicit_ci_source_gets_a_clone(monkeypatch, relations):
+    source = harness.DEFAULT_DATABASE_URL
+    monkeypatch.setenv(harness.SOURCE_DATABASE_URL_ENV, source)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv(harness.EMPTY_CI_SOURCE_ENV, "1")
+    monkeypatch.setattr(harness, "_configured_source_has_relations", lambda url: relations if url == source else pytest.fail("wrong source"))
+    state = SimpleNamespace(admin_url=make_url(source), shared_empty_source_url=lambda: "empty-template-clone")
+    config = SimpleNamespace(_corridor_pytest_database=state)
+    assert harness._shared_source_url(config) == (source if relations else "empty-template-clone")
+    if relations:
+        # Existing populated or partial schemas are never hidden, even without
+        # a usable harness. Their own corpus reads remain the source of truth.
+        assert harness._shared_source_url(SimpleNamespace()) == source
+    else:
+        with pytest.raises(RuntimeError, match="coordinated xdist"):
+            harness._shared_source_url(SimpleNamespace())
+        state.admin_url = make_url(SOURCE_URL)
+        with pytest.raises(RuntimeError, match="controller's configured database"):
+            harness._shared_source_url(config)
+
+
+def test_disposable_marker_cannot_replace_another_configured_source(monkeypatch):
+    monkeypatch.setenv(harness.SOURCE_DATABASE_URL_ENV, SOURCE_URL)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    monkeypatch.setenv(harness.EMPTY_CI_SOURCE_ENV, "1")
+    monkeypatch.setattr(harness, "_configured_source_has_relations", lambda *_: pytest.fail("another configured source was inspected"))
+    assert harness._shared_source_url(SimpleNamespace()) == SOURCE_URL
+
+
+def test_controller_cleanup_includes_shared_source_but_not_configured_database(monkeypatch):
+    names = (f"corridor_pytest_{RUN_ID}_source", TEMPLATE, f"corridor_pytest_{RUN_ID}_gw1")
+    monkeypatch.setattr(harness, "_worker_database_names", lambda _: (*names, "corridor", "corridor_pytest_202_feedface_source"))
+    assert harness._run_database_names(object(), RUN_ID) == names
+    dropped = []
+    monkeypatch.setattr(harness, "_process_is_running", lambda pid: pid == 202)
+    monkeypatch.setattr(harness, "_drop_databases", lambda _, rows: dropped.extend(rows))
+    harness.reap_abandoned_worker_databases(object())
+    assert dropped == list(names)
+
+
+def test_empty_shared_source_has_schema_but_never_inherits_worker_rows(request):
+    state = getattr(request.config, "_corridor_pytest_database", None)
+    if state is None:
+        pytest.skip("worker/source isolation requires the xdist harness")
+    shared = create_engine(state.shared_empty_source_url())
+    try:
+        with engine.connect() as worker, worker.begin():
+            worker.execute(text("insert into projects(slug,name,is_synthetic) values ('shared-source-isolation','Worker only',true)"))
+            with shared.connect() as source:
+                assert source.scalar(text("select to_regclass('public.projects')")) is not None
+                assert source.scalar(text("select count(*) from projects where slug='shared-source-isolation'")) == 0
+                assert source.scalar(text("select current_database()")) != state.database_name
+                assert harness._configured_source_has_relations(state.shared_empty_source_url())
+            worker.rollback()
+    finally:
+        shared.dispose()

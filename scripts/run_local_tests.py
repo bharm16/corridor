@@ -50,6 +50,47 @@ def _atomic_receipt(path: Path, data: dict) -> None:
             temporary.unlink(missing_ok=True)
 
 
+def _process_group_empty(process: subprocess.Popen) -> bool:
+    """Prove an exited leader has no live group members after a denied signal.
+
+    macOS can report EPERM rather than ESRCH for an already vanished group.
+    Leader exit alone is insufficient: a worker may still be running. Inspect
+    only process identities and states, never arguments or environment values.
+    An unavailable or malformed process snapshot does not establish absence.
+    """
+    if process.poll() is None:
+        return False
+    try:
+        snapshot = subprocess.run(
+            ["/bin/ps", "-axo", "pid=,pgid=,stat="],
+            capture_output=True, text=True, timeout=2, check=False,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+    if snapshot.returncode != 0 or not snapshot.stdout.strip():
+        return False
+    for line in snapshot.stdout.splitlines():
+        fields = line.split()
+        if len(fields) != 3:
+            return False
+        pid, group, state = fields
+        if not pid.isdecimal() or not group.isdecimal() or state[0] not in "RSDTtIZXWU":
+            return False
+        if int(group) == process.pid and not state.startswith("Z"):
+            return False
+    return True
+
+
+def _signal_group(process: subprocess.Popen, signum: int) -> None:
+    try:
+        os.killpg(process.pid, signum)
+    except ProcessLookupError:
+        pass
+    except PermissionError:
+        if not _process_group_empty(process):
+            raise
+
+
 def _stop_group(process: subprocess.Popen, signum: int = signal.SIGTERM) -> None:
     """The child is its own group leader; never signal the caller's group."""
     previous = {
@@ -57,24 +98,31 @@ def _stop_group(process: subprocess.Popen, signum: int = signal.SIGTERM) -> None
         for watched in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
     }
     try:
-        try:
-            os.killpg(process.pid, signum)
-        except ProcessLookupError:
-            pass
+        _signal_group(process, signum)
         try:
             process.wait(timeout=1)
         except subprocess.TimeoutExpired:
             pass
         # The leader may exit before a stubborn worker. Kill the owned group
         # even then, rather than mistaking leader exit for complete cleanup.
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
+        _signal_group(process, signal.SIGKILL)
         process.wait()
     finally:
         for watched, handler in previous.items():
             signal.signal(watched, handler)
+
+
+def _stop_and_record(process, receipt, signum=signal.SIGTERM) -> None:
+    try:
+        _stop_group(process, signum)
+    except OSError as error:
+        receipt.update(
+            cleanup_requested_by=receipt["outcome"], cleanup_complete=False,
+            cleanup_errno=error.errno, exit_code=127, outcome="cleanup_failed",
+        )
+        raise
+    else:
+        receipt["cleanup_complete"] = True
 
 
 def run_test_command(
@@ -142,23 +190,23 @@ def run_test_command(
                     _atomic_receipt(receipt_path, receipt)
                     next_heartbeat = time.monotonic() + heartbeat_seconds
     except subprocess.TimeoutExpired:
-        if process is not None:
-            _stop_group(process)
         receipt.update(exit_code=124, outcome="timed_out")
+        if process is not None:
+            _stop_and_record(process, receipt)
         print(f"Local {suite} tests exceeded {timeout_seconds:g}s; stopped their process group.",
               file=sys.stderr)
     except (_Interrupted, KeyboardInterrupt) as error:
         signum = error.signum if isinstance(error, _Interrupted) else signal.SIGINT
+        receipt.update(exit_code=128 + signum, outcome="interrupted")
         # Ignore a repeated terminal interrupt while cleaning up our group.
         for watched in previous_handlers:
             signal.signal(watched, signal.SIG_IGN)
         if process is not None:
-            _stop_group(process, signum)
-        receipt.update(exit_code=128 + signum, outcome="interrupted")
+            _stop_and_record(process, receipt, signum)
     except OSError:
-        if process is not None:
-            _stop_group(process)
         receipt.update(exit_code=127, outcome="runner_error")
+        if process is not None:
+            _stop_and_record(process, receipt)
         raise
     finally:
         for signum, handler in previous_handlers.items():

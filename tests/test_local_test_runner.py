@@ -234,3 +234,101 @@ def test_child_does_not_inherit_an_unrequested_broad_diagnostic_reason(monkeypat
     )
     assert code == 0
     assert os.environ[runner.DIAGNOSTIC_ENV] == "failure-reproduction"
+
+
+def test_timeout_records_124_when_macos_denies_kill_of_an_already_empty_group(tmp_path, monkeypatch):
+    original = os.killpg
+    denied = []
+    def macos_empty_group(group, signum):
+        if signum == signal.SIGKILL:
+            denied.append(group)
+            raise PermissionError(1, "Operation not permitted")
+        return original(group, signum)
+    monkeypatch.setattr(runner.os, "killpg", macos_empty_group)
+    code, receipt = _run(tmp_path, "import time; time.sleep(30)", timeout=.1)
+    assert denied == [receipt["pid"]]
+    assert code == receipt["exit_code"] == 124
+    assert receipt["outcome"] == "timed_out"
+    assert receipt["cleanup_complete"] is True
+    assert receipt["child_exit_code"] == -signal.SIGTERM
+    assert receipt["status"] == "completed"
+
+
+@pytest.mark.parametrize("snapshot,returncode,empty", [
+    ("22 22 S\n", 0, True),
+    ("111 111 Z\n22 22 S\n", 0, True),
+    ("112 111 S\n22 22 S\n", 0, False),
+    ("112 111 R+\n", 0, False),
+    ("", 0, False),
+    ("not a process snapshot", 0, False),
+    ("22 22 S\n", 1, False),
+])
+def test_empty_group_observation_requires_a_reaped_leader_and_no_live_members(monkeypatch, snapshot, returncode, empty):
+    from types import SimpleNamespace
+    process = SimpleNamespace(pid=111, poll=lambda: -signal.SIGTERM)
+    observed = []
+    def ps(command, **kwargs):
+        observed.append((command, kwargs))
+        return SimpleNamespace(stdout=snapshot, returncode=returncode)
+    monkeypatch.setattr(runner.subprocess, "run", ps)
+    assert runner._process_group_empty(process) is empty
+    assert observed[0][0] == ["/bin/ps", "-axo", "pid=,pgid=,stat="]
+    assert observed[0][1]["timeout"] == 2
+    process.poll = lambda: None
+    assert runner._process_group_empty(process) is False
+    assert len(observed) == 1
+
+
+@pytest.mark.parametrize("failure", [FileNotFoundError("ps missing"), subprocess.TimeoutExpired("ps", 2)])
+def test_failed_process_observation_never_proves_cleanup(monkeypatch, failure):
+    from types import SimpleNamespace
+    def failed(*_args, **_kwargs):
+        raise failure
+    monkeypatch.setattr(runner.subprocess, "run", failed)
+    assert runner._process_group_empty(SimpleNamespace(pid=111, poll=lambda: -15)) is False
+
+
+def test_permission_denial_with_owned_live_descendant_is_not_swallowed(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    process = SimpleNamespace(pid=111, poll=lambda: -signal.SIGTERM, returncode=-signal.SIGTERM)
+    def wait(**_kwargs):
+        return process.returncode
+    process.wait = wait
+    def denied(*_args):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(runner.os, "killpg", denied)
+    monkeypatch.setattr(runner.subprocess, "run", lambda *_args, **_kwargs: SimpleNamespace(
+        stdout="112 111 S\n", returncode=0))
+    receipt = {"exit_code": 124, "outcome": "timed_out"}
+    with pytest.raises(PermissionError):
+        runner._stop_and_record(process, receipt)
+    assert receipt["exit_code"] == 127
+    assert receipt["outcome"] == "cleanup_failed"
+    assert receipt["cleanup_requested_by"] == "timed_out"
+    assert receipt["cleanup_complete"] is False
+    assert receipt["cleanup_errno"] == 1
+
+
+def test_cleanup_failure_still_publishes_a_complete_nonnull_receipt(tmp_path, monkeypatch):
+    original = os.killpg
+    def denied(*_args):
+        raise PermissionError(1, "Operation not permitted")
+    monkeypatch.setattr(runner.os, "killpg", denied)
+    path = tmp_path / "test.json"
+    try:
+        with pytest.raises(PermissionError):
+            _run(tmp_path, "import time; time.sleep(30)", timeout=.1)
+        receipt = json.loads(path.read_text())
+        assert receipt["status"] == "completed"
+        assert receipt["exit_code"] == 127
+        assert receipt["outcome"] == "cleanup_failed"
+        assert receipt["cleanup_complete"] is False
+        assert receipt["cleanup_requested_by"] == "timed_out"
+    finally:
+        if path.exists():
+            pid = json.loads(path.read_text())["pid"]
+            try:
+                original(pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            os.waitpid(pid, 0)

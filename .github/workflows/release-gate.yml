@@ -17,8 +17,8 @@ name: release-gate
 # transition is made (ADR-0093).
 #
 # `classify` and `release-gate` install no packages. The current capacity
-# trial adds one ordinary test runner, for ten test runners and at most
-# twelve downloading jobs including check and migration (ADR-0096).
+# trial adds one ordinary test runner, for eleven test runners and at most
+# thirteen downloading jobs including check and migration (ADR-0096).
 
 on:
   pull_request:
@@ -77,6 +77,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-check-wheels-v1
       - run: uv sync --locked
       - run: make check
       # A local standard-library classification keeps source checks independent
@@ -183,6 +185,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # One step, and no `services:` container, because this gate's wall
       # clock is the slowest required job and so samples the worst
       # setup draw taken in the run rather than the average one. The script
@@ -219,6 +223,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # See the pytest job: the same setup, for the same measured reason.
       - run: scripts/ci_environment.sh
       - id: measure
@@ -242,6 +248,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # The same setup the behavior gates run, for the same measured reason
       # (#595).
       - run: scripts/ci_environment.sh
