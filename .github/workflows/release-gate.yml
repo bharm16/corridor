@@ -151,7 +151,7 @@ jobs:
     # Every file lands in exactly one shard. Each private runner has two
     # cores and uses two xdist workers; the ordinary suite uses worksteal.
     # scripts/test_shard.py proves the exact cover (ADR-0096).
-    # Seven ordinary plus three slow adds one runner to the measured six/three
+    # Eight ordinary plus three slow adds one runner to the measured seven/three
     # allocation. The required gate measures this capacity increase against
     # the unchanged budget and retains every test (ADR-0096).
     needs: classify
@@ -164,10 +164,11 @@ jobs:
       pytest_5: ${{ steps.measure.outputs.pytest_5 }}
       pytest_6: ${{ steps.measure.outputs.pytest_6 }}
       pytest_7: ${{ steps.measure.outputs.pytest_7 }}
+      pytest_8: ${{ steps.measure.outputs.pytest_8 }}
     strategy:
       fail-fast: false
       matrix:
-        shard: [1, 2, 3, 4, 5, 6, 7]
+        shard: [1, 2, 3, 4, 5, 6, 7, 8]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     env:
@@ -190,7 +191,7 @@ jobs:
       # the reason each piece is still there (#595).
       - run: scripts/ci_environment.sh
       - id: measure
-        run: make test-shard SHARDS=7 SHARD=${{ matrix.shard }}
+        run: make test-shard SHARDS=8 SHARD=${{ matrix.shard }}
   slow:
     # Keep each module on one worker: loadfile avoids repeating its expensive
     # acceptance fixtures across processes. Full coverage is unchanged.
@@ -322,7 +323,7 @@ jobs:
           CORRIDOR_PYTEST_RECEIPTS: ${{ toJSON(needs.pytest.outputs) }}
           CORRIDOR_SLOW_RECEIPTS: ${{ toJSON(needs.slow.outputs) }}
           CORRIDOR_MIGRATION_RECEIPTS: ${{ toJSON(needs.migration.outputs) }}
-          PYTEST_SHARDS: "7"
+          PYTEST_SHARDS: "8"
           SLOW_SHARDS: "3"
           MIGRATION_REQUIRED: ${{ needs.classify.outputs.migration_required }}
         run: python3 scripts/ci_feedback.py finish

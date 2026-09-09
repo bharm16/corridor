@@ -73,9 +73,9 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
 - **PR CI is one workflow, `.github/workflows/release-gate.yml`, triggered on
   every pull request.** It runs `make check` unconditionally, and the same
   tests `make test` and the non-migration `make test-slow` select, partitioned
-  by `make test-shard` across seven runners and `make test-slow-shard` across
+  by `make test-shard` across eight runners and `make test-slow-shard` across
   three, unless every changed file is documentation. This adds one ordinary
-  runner to the previous six/three allocation; required CI measures the
+  runner to the previous seven/three allocation; required CI measures the
   capacity change against the unchanged budget (ADR-0096). `make check` owns
   `test_architecture.py` and `test_source_scan_support.py`; behavior shards
   omit those two files so each required proof runs once. Every other behavior
@@ -113,7 +113,9 @@ and [ADR-0096](docs/adr/0096-the-required-gate-measures-its-own-cost-and-rejects
   1-2s. The 2026-09-08 seven/three trial passed in
   [run 34291250899](https://github.com/bharm16/corridor/actions/runs/34291250899):
   164.92s gate, 112.41s ordinary command, 113.15s slow command, 31.48s migration.
-  Keep measuring this allocation on subsequent PRs; every feedback threshold
+  The 2026-09-09 eight/three trial follows two all-tests-passing #780 runs
+  whose gates exceeded the budget (185.4s and 202.4s, ordinary commands
+  125.2s and 138.3s). Keep measuring this allocation on subsequent PRs; every feedback threshold
   is unchanged. A historical ceiling is evidence to check, not a permanent
   prohibition on more capacity.
 - **Nothing may download packages inside a test.** `workers/render` is a
