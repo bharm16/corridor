@@ -44,13 +44,13 @@ def main(argv=None):
         with connection.begin():
             with Session(bind=connection) as session:
                 identity = session.execute(text("""
-                    select current_user as login,
-                     pg_has_role(current_user,'corridor_history_operations','member') as operations,
+                    select session_user as login,
+                     pg_has_role(session_user,'corridor_history_operations','member') as operations,
                      r.rolsuper or r.rolcreaterole or r.rolcreatedb
-                       or pg_has_role(current_user,'corridor_fact_decision_writer','member')
-                       or pg_has_role(current_user,c.relowner,'member') as overprivileged
+                       or pg_has_role(session_user,'corridor_fact_decision_writer','member')
+                       or pg_has_role(session_user,c.relowner,'member') as overprivileged
                     from pg_roles r cross join pg_class c
-                    where r.rolname=current_user and c.oid='public.projects'::regclass
+                    where r.rolname=session_user and c.oid='public.projects'::regclass
                 """)).mappings().one()
                 if (not identity["operations"] or identity["overprivileged"]
                     or identity["login"] in {"corridor_web", "corridor_worker", "corridor_source_append"}):

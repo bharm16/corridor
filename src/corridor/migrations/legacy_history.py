@@ -7,19 +7,13 @@ Reversal appends a receipt and leaves the original bytes and source links intact
 
 import json
 
+from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
+
 from corridor.legacy_history_inventory import HISTORY_CLASSES
 
 
 SCHEMA = """
-do $$ begin
- if not exists(select 1 from pg_roles where rolname='corridor_history_operations') then
-  create role corridor_history_operations nologin;
- end if;
- if exists(select 1 from pg_roles where rolname='corridor_history_operations' and (rolsuper or rolcreaterole or rolcreatedb or rolcanlogin)) then
-  raise exception 'history operations capability must be a non-login least-privilege role';
- end if;
-end; $$;
-
 create table legacy_history_batches (
  id bigserial primary key,
  project_id bigint not null references projects(id),
@@ -128,7 +122,33 @@ end; $$;
 """
 
 
+def _ensure_operations_role(op):
+    """Converge on the exact winner of a cluster-global CREATE ROLE race."""
+    connection = op.get_bind()
+    exists = text("select exists(select 1 from pg_roles where rolname='corridor_history_operations')")
+    if not connection.scalar(exists):
+        try:
+            with connection.begin_nested():
+                connection.exec_driver_sql(
+                    "create role corridor_history_operations nologin noinherit "
+                    "nosuperuser nocreatedb nocreaterole nobypassrls noreplication"
+                )
+        except DBAPIError as exc:
+            original = exc.orig
+            code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+            constraint = getattr(getattr(original, "diag", None), "constraint_name", None)
+            raced = code == "42710" or (code == "23505" and constraint == "pg_authid_rolname_index")
+            if not raced or not connection.scalar(exists):
+                raise
+    if connection.scalar(text("""
+        select exists(select 1 from pg_roles where rolname='corridor_history_operations'
+         and (rolsuper or rolcreaterole or rolcreatedb or rolcanlogin or rolbypassrls or rolreplication))
+    """)):
+        raise RuntimeError("history operations capability must be a non-login least-privilege role")
+
+
 def upgrade(op):
+    _ensure_operations_role(op)
     # PostgreSQL may check this function's EXECUTE privilege while planning
     # the guard even when session_user is not the web login. The command
     # owner needs the read-only sealed-scope reader, never the scope opener.
