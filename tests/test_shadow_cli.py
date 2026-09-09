@@ -48,6 +48,16 @@ def test_operator_provision_run_and_exact_export(shadow, tmp_path, monkeypatch, 
     assert json.loads(retained["payload_text"])["identity"] == first["identity"]
     assert main(export) == 0
     assert json.loads(capsys.readouterr().out)["outcome"] == "exported"
+    destination.chmod(0o644)
+    assert main(export) == 2
+    assert "shadow command refused" in capsys.readouterr().err
+    destination.chmod(0o600)
+    original = destination.with_name("original.json")
+    destination.rename(original)
+    destination.symlink_to(original)
+    assert main(export) == 2
+    assert "shadow command refused" in capsys.readouterr().err
+    assert original.read_bytes() == json.dumps(retained, sort_keys=True).encode()
 
 
 def test_capture_rejects_owner_url_before_database_or_source_access(monkeypatch, capsys):

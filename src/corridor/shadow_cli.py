@@ -13,6 +13,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
+import stat
 import sys
 import tempfile
 
@@ -66,6 +67,9 @@ def _write_export(path, output):
         try:
             os.link(temporary, path)
         except FileExistsError:
+            metadata = path.lstat()
+            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+                raise ShadowRefused("export destination must be a private regular file")
             if path.read_bytes() != body:
                 raise ShadowRefused("export destination already contains different bytes")
     finally:
