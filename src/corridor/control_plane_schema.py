@@ -16,6 +16,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     Integer,
+    JSON,
     MetaData,
     String,
     Table,
@@ -24,6 +25,7 @@ from sqlalchemy import (
     text,
 )
 from sqlalchemy.engine import Engine
+from sqlalchemy.exc import DBAPIError
 
 
 CONTROL_PLANE_METADATA = MetaData(schema="control_plane")
@@ -84,6 +86,7 @@ DISPOSITION_PLANS = Table(
     ),
     Column("manifest_sha256", String(64), nullable=False),
     Column("provider_resources_sha256", String(64), nullable=True),
+    Column("provider_resources", JSON, nullable=True),
     Column("status", String(16), nullable=False),
     Column("resolved_retain_until", DateTime(timezone=True), nullable=True),
     Column("created_by", String(128), nullable=False),
@@ -93,8 +96,59 @@ DISPOSITION_PLANS = Table(
     ),
 )
 
+DISPOSITION_REHEARSAL_RECEIPTS = Table(
+    "disposition_rehearsal_receipts", CONTROL_PLANE_METADATA,
+    Column("receipt_id", String(128), primary_key=True),
+    Column("environment_id", ForeignKey("control_plane.customer_environments.environment_id"), nullable=False),
+    Column("operation_id", String(128), nullable=False),
+    Column("phase", String(32), nullable=False),
+    Column("outcome", String(16), nullable=False),
+    Column("evidence", JSON, nullable=False),
+    Column("observed_at", DateTime(timezone=True), nullable=False),
+    CheckConstraint("phase in ('restore', 'state_verification', 'cleanup', 'backup_expiration', 'hold_cancellation', 'execution_boundary')"),
+    CheckConstraint("outcome in ('pending', 'completed', 'refused')"),
+)
+
 OPERATIONS_ROLE = "corridor_control_operations"
 RESOLVER_ROLE = "corridor_control_resolver"
+
+
+def _role_is_bounded(connection, role):
+    return connection.scalar(text(
+        "select not rolcanlogin and not rolsuper and not rolcreatedb "
+        "and not rolcreaterole and not rolbypassrls "
+        "from pg_catalog.pg_roles where rolname = :role"
+    ), {"role": role})
+
+
+def _ensure_control_plane_role(connection, role):
+    """Converge on a concurrently created cluster role using fresh catalog state.
+
+    Registries in separate databases share pg_authid. An IF NOT EXISTS lookup
+    does not serialize their CREATE ROLE statements. Roll back only the failed
+    savepoint, classify the exact provider diagnostic, then verify the winner's
+    role before allowing the current database bootstrap to continue.
+    """
+    if role not in {OPERATIONS_ROLE, RESOLVER_ROLE}:
+        raise ValueError("unknown control-plane role")
+    bounded = _role_is_bounded(connection, role)
+    if bounded is not None:
+        if not bounded:
+            raise ValueError("existing control-plane role has incompatible capabilities")
+        return
+    savepoint = connection.begin_nested()
+    try:
+        connection.execute(text(f"create role {role} nologin nosuperuser nocreatedb nocreaterole nobypassrls"))
+    except DBAPIError as error:
+        savepoint.rollback()
+        original = error.orig
+        code = getattr(original, "sqlstate", None) or getattr(original, "pgcode", None)
+        constraint = getattr(getattr(original, "diag", None), "constraint_name", None)
+        collision = code == "42710" or (code == "23505" and constraint == "pg_authid_rolname_index")
+        if not collision or _role_is_bounded(connection, role) is not True:
+            raise
+    else:
+        savepoint.commit()
 
 
 def initialize_control_plane(engine: Engine) -> None:
@@ -118,6 +172,7 @@ def initialize_control_plane(engine: Engine) -> None:
                     "customer_environments",
                     "destruction_receipts",
                     "disposition_plans",
+                    "disposition_rehearsal_receipts",
                 }
                 if schema == "control_plane"
                 else set()
@@ -133,14 +188,9 @@ def initialize_control_plane(engine: Engine) -> None:
         CONTROL_PLANE_METADATA.create_all(connection)
         # Additive control-plane upgrade; customer Alembic owns no table here.
         connection.execute(text("alter table control_plane.disposition_plans add column if not exists provider_resources_sha256 varchar(64)"))
+        connection.execute(text("alter table control_plane.disposition_plans add column if not exists provider_resources json"))
         for role in (OPERATIONS_ROLE, RESOLVER_ROLE):
-            connection.execute(
-                text(
-                    f"do $$ begin if not exists (select 1 from pg_roles where rolname = '{role}') "
-                    f"then create role {role} nologin nosuperuser nocreatedb nocreaterole nobypassrls; "
-                    "end if; end $$"
-                )
-            )
+            _ensure_control_plane_role(connection, role)
         database = connection.dialect.identifier_preparer.quote(
             connection.scalar(text("select current_database()"))
         )
@@ -183,6 +233,12 @@ def initialize_control_plane(engine: Engine) -> None:
             create or replace function control_plane.prevent_rewrite() returns trigger
             language plpgsql set search_path = pg_catalog as $$
             begin raise exception 'control-plane history is immutable'; end $$;
+            drop trigger if exists disposition_rehearsal_receipts_immutable on control_plane.disposition_rehearsal_receipts;
+            create trigger disposition_rehearsal_receipts_immutable before update or delete on control_plane.disposition_rehearsal_receipts
+                for each row execute function control_plane.prevent_rewrite();
+            drop trigger if exists disposition_rehearsal_receipts_no_truncate on control_plane.disposition_rehearsal_receipts;
+            create trigger disposition_rehearsal_receipts_no_truncate before truncate on control_plane.disposition_rehearsal_receipts
+                for each statement execute function control_plane.prevent_rewrite();
             drop trigger if exists destruction_receipts_immutable on control_plane.destruction_receipts;
             create trigger destruction_receipts_immutable before update or delete on control_plane.destruction_receipts
                 for each row execute function control_plane.prevent_rewrite();

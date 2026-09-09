@@ -572,6 +572,12 @@ class CorridorApplicationStack(Stack):
         CfnOutput(self, "RepositoryUri", value=self.repository.repository_uri)
         CfnOutput(self, "ClusterName", value=cluster.cluster_name)
         CfnOutput(self, "ClusterArn", value=cluster.cluster_arn)
+        # Disposition reads exact stack outputs; generic CDK tags do not bind
+        # an application stack to a registered customer environment (#514).
+        CfnOutput(self, "DispositionCustomerId", value=customer_id)
+        CfnOutput(self, "DispositionEnvironmentId", value=customer_environment_id)
+        CfnOutput(self, "DispositionDeploymentId", value=deployment_id)
+        CfnOutput(self, "DispositionAlbLogsBucket", value=alb_logs.bucket_name)
         CfnOutput(self, "WebServiceName", value=self.web_service.service_name)
         CfnOutput(self, "WorkerServiceName", value=self.worker_service.service_name)
         CfnOutput(

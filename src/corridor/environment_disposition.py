@@ -54,6 +54,13 @@ from corridor.control_plane import (
     EnvironmentRegistration,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.disposition_contracts import (
+    AwsDispositionResources,
+    DispositionRefused,
+    EnvironmentDestructionError,
+    require_no_rds_replicas,
+    automated_backup_rows,
+)
 
 
 # The one server-owned handler key this disposition runs under. It matches
@@ -79,14 +86,6 @@ _PROVIDER_METHOD = {
     "backups": "expire_backups",
 }
 _PLAN_STATUSES = frozenset({"dry_run", "executed", "refused", "partial"})
-
-
-class DispositionRefused(ValueError):
-    """A hold, retention obligation, open reference, or stale plan stopped disposition."""
-
-
-class EnvironmentDestructionError(RuntimeError):
-    """A provider-native destruction step failed; the sequence is resumable."""
 
 
 @dataclass(frozen=True)
@@ -281,41 +280,6 @@ class SyntheticEnvironmentDestroyer:
         return f"synthetic:{registration.environment_id}/backups-expire-{stamp}"
 
 
-@dataclass(frozen=True)
-class AwsDispositionResources:
-    """Exact provider inventory approved beside the disposition plan.
-
-    An RDS instance identifier is not the SQL database name. Retain both the
-    ARN and immutable DbiResourceId so identifier reuse cannot delete a new DB.
-    This profile covers same-region RDS backups, one S3 namespace and dedicated
-    customer-managed keys. Other stores/copies require a wider inventory first.
-    """
-
-    customer_id: str
-    environment_id: str
-    deployment_id: str
-    account_id: str
-    region: str
-    database_host: str
-    database_port: int
-    database_name: str
-    db_instance_identifier: str
-    db_instance_arn: str
-    db_resource_id: str
-    object_namespace_ref: str
-    final_snapshot_identifier: str
-    kms_key_arns: tuple[str, ...]
-
-    def require_registration(self, registration: EnvironmentRegistration) -> None:
-        for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
-            if getattr(self, name) != getattr(registration, name):
-                raise DispositionRefused("AWS resource inventory differs from the registered environment")
-
-    @property
-    def sha256(self) -> str:
-        return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
-
-
 class AwsEnvironmentDestroyer:
     """Verified AWS deletion, with pending work returned as resumable failure.
 
@@ -380,6 +344,7 @@ class AwsEnvironmentDestroyer:
         row = rows[0]
         if (row.get("DBInstanceArn"), row.get("DbiResourceId")) != (resource.db_instance_arn, resource.db_resource_id):
             raise DispositionRefused("RDS identifier now names a different physical instance")
+        require_no_rds_replicas(row)
         if row.get("DBInstanceStatus") == "deleting":
             raise EnvironmentDestructionError("RDS deletion is still pending")
         endpoint = row.get("Endpoint", {})
@@ -456,12 +421,11 @@ class AwsEnvironmentDestroyer:
                 pending = True
                 if snapshot.get("Status") != "deleting":
                     self._mutate(client.delete_db_snapshot, DBSnapshotIdentifier=snapshot["DBSnapshotIdentifier"])
-        for page in client.get_paginator("describe_db_instance_automated_backups").paginate(DbiResourceId=resource.db_resource_id):
-            for backup in page.get("DBInstanceAutomatedBackups", []):
-                if backup.get("DbiResourceId") != resource.db_resource_id:
-                    raise DispositionRefused("RDS automated backup differs from the approved instance")
-                pending = True
-                self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
+        for backup in automated_backup_rows(client, resource.db_resource_id):
+            if backup.get("DbiResourceId") != resource.db_resource_id:
+                raise DispositionRefused("RDS automated backup differs from the approved instance")
+            pending = True
+            self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
         if pending:
             raise EnvironmentDestructionError("RDS backup expiration requested; verify absence on retry")
         return self._evidence("declared-rds-backups-absent")
@@ -539,6 +503,7 @@ def plan_environment_disposition(
     as_of: datetime,
     plan_id: str | None = None,
     provider_resources: AwsDispositionResources | None = None,
+    provider_observer: Any = None,
 ) -> DispositionManifest:
     """Persist the whole-environment dry-run manifest, or refuse a held one."""
     actor = require_human_principal(principal).subject
@@ -552,6 +517,10 @@ def plan_environment_disposition(
     resolved, precedence = resolve_retention(schedules)
     if provider_resources is not None:
         provider_resources.require_registration(registration)
+        if provider_resources.whole_environment is not None:
+            if provider_observer is None or provider_observer.resources != provider_resources:
+                raise DispositionRefused("whole-environment planning requires fresh provider observation")
+            provider_observer.verify_plan(registration)
     resource_digest = provider_resources.sha256 if provider_resources is not None else None
     digest = manifest_digest(
         environment_id=environment_id,
@@ -583,6 +552,7 @@ def plan_environment_disposition(
             created_by=actor,
             created_at=created_at,
             provider_resources_sha256=resource_digest,
+            provider_resources=json.loads(json.dumps(asdict(provider_resources))) if provider_resources else None,
         )
     )
     return manifest
@@ -624,10 +594,17 @@ def execute_environment_disposition(
         raise DispositionRefused(
             "the environment or plan changed after the dry run; re-plan before executing"
         )
+    if (registration.hold and isinstance(destroyer, AwsEnvironmentDestroyer)
+            and destroyer.resources is not None and destroyer.resources.whole_environment is not None):
+        destroyer.cancel_pending_deletions_for_hold(control_plane, plan, observed_at=now)
     _guard_before_step(control_plane, plan, referential, now)
     if isinstance(destroyer, AwsEnvironmentDestroyer):
         if destroyer.resources is None or plan.provider_resources_sha256 != destroyer.resources.sha256:
             raise DispositionRefused("AWS resource inventory differs from the persisted dry-run plan")
+        if destroyer.resources.whole_environment is not None:
+            if plan.provider_resources != json.loads(json.dumps(asdict(destroyer.resources))):
+                raise DispositionRefused("provider inventory bytes differ from the persisted plan")
+            destroyer.prepare_execution(control_plane, plan, referential, operation_id, observed_at=now)
         def before_aws_delete():
             current = control_plane.inspect(plan.environment_id)
             _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)
@@ -642,14 +619,14 @@ def execute_environment_disposition(
     receipts = list(control_plane.destruction_receipts(plan.environment_id))
     if isinstance(destroyer, AwsEnvironmentDestroyer):
         evidence_kinds = {"postgresql": "rds-absent", "object_namespace": "s3-namespace-empty",
-                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent"}
+                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent", "environment": "whole-environment-absent"}
         for receipt in receipts:
             if receipt.operation_id != operation_id:
                 continue
             expected = (f"aws:{plan.environment_id}/{evidence_kinds.get(receipt.component)}/{plan.provider_resources_sha256}/{plan.manifest_sha256}"
                         if receipt.outcome == "completed" else
                         f"failure:{operation_id}/{receipt.component}/{plan.manifest_sha256}")
-            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed"):
+            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed" and destroyer.resources.whole_environment is None):
                 raise DispositionRefused("AWS resume receipts do not bind this plan and provider inventory")
     completed = {
         receipt.component
@@ -809,6 +786,12 @@ def _destroy(
 ) -> str:
     if component == "environment":
         if isinstance(destroyer, AwsEnvironmentDestroyer):
+            if destroyer.resources is not None and destroyer.resources.whole_environment is not None:
+                from botocore.exceptions import BotoCoreError, ClientError
+                try:
+                    return destroyer.delete_environment(registration)
+                except (BotoCoreError, ClientError) as exc:
+                    raise EnvironmentDestructionError("AWS final verification failed; no completion is established") from exc
             raise EnvironmentDestructionError("declared AWS components are gone; complete stack, logs, secrets and remote-copy disposal still require verified inventory coverage")
         # The terminal marker: the whole environment is gone once the four
         # provider components are. Its evidence is the control-plane operation.

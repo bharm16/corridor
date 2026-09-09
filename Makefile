@@ -60,6 +60,11 @@ test-focused:
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 .PHONY: control-plane
+.PHONY: environment-disposition
+# Explicit operator inventory/export/plan/execute/rehearsal; no provider action by default.
+environment-disposition:
+	uv run python -m corridor.environment_disposition_cli $(ARGS)
+
 .PHONY: m365-replay
 # Replay recorded Graph pages into an existing synthetic project; never connects a tenant.
 # make m365-replay ARGS="recording.json --project-id 1 --customer fixture --run-identity replay-1"
