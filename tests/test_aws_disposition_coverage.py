@@ -51,6 +51,12 @@ class ScriptedClient:
         return SimpleNamespace(paginate=lambda **parameters: [getattr(self, operation)(**parameters)])
 
 
+def fixture_restore_parser(command, **options):
+    assert command[:5] == ["pg_restore", "--file", "/dev/null", "--no-owner", "--no-privileges"]
+    assert options["check"] is True
+    assert Path(command[-1]).read_bytes().startswith(b"PGDMP")
+
+
 def resource(**changes):
     value = AwsDispositionResources("customer", "environment", "deployment", ACCOUNT, "us-east-1",
         "db.example", 5432, "corridor", "customer-db", f"arn:aws:rds:us-east-1:{ACCOUNT}:db:customer-db",
@@ -104,16 +110,16 @@ def test_export_runs_bound_pg_dump_and_checks_every_retained_version(tmp_path):
     output = export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3},
         output_path=tmp_path / "export.tar", pgpass_file=pgpass, database_username="export_reader",
         principal=HumanPrincipal("local:operator"), before_export=lambda: calls.append("freeze"),
-        unavailability_disclosure=b"The retained record discloses transferred source custody.", run=runner)
+        unavailability_disclosure=b"The retained record discloses transferred source custody.", run=runner, restore_run=fixture_restore_parser)
     assert calls == ["freeze", "freeze"]
     assert len(output["manifest"]["members"]) == 3
     assert not s3.script
     with open(output["path"], "rb") as stream:
-        manifest = verify_export_archive(stream, expected_sha256=output["sha256"], environment_id="environment", inventory_sha256=digest(inventory()))
+        manifest = verify_export_archive(stream, expected_sha256=output["sha256"], environment_id="environment", inventory_sha256=digest(inventory()), restore_run=fixture_restore_parser)
     assert manifest["object_versions"] == [{"key": "old", "version_id": "deleted", "delete_marker": True}, {"key": "source", "version_id": "version-one", "delete_marker": False}]
     assert b"fixture credentials" not in Path(output["path"]).read_bytes()
     with open(output["path"], "rb") as stream, pytest.raises(DispositionRefused, match="digest"):
-        verify_export_archive(stream, expected_sha256="0" * 64, environment_id="environment", inventory_sha256=digest(inventory()))
+        verify_export_archive(stream, expected_sha256="0" * 64, environment_id="environment", inventory_sha256=digest(inventory()), restore_run=fixture_restore_parser)
 
 
 def test_export_refuses_versions_arriving_during_database_dump(tmp_path):
@@ -127,7 +133,7 @@ def test_export_refuses_versions_arriving_during_database_dump(tmp_path):
     output = tmp_path / "export.tar"
     with pytest.raises(DispositionRefused, match="changed during export"):
         export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3}, output_path=output,
-            pgpass_file=pgpass, database_username="export_reader", principal=HumanPrincipal("local:operator"), before_export=lambda: None, run=runner)
+            pgpass_file=pgpass, database_username="export_reader", principal=HumanPrincipal("local:operator"), before_export=lambda: None, run=runner, restore_run=fixture_restore_parser)
     assert not output.exists()
 
 
@@ -233,6 +239,7 @@ def test_whole_environment_receipt_requires_final_observation_of_every_populatio
     db_filter = {"Filters": [{"Name": "dbi-resource-id", "Values": [r.db_resource_id]}]}
     snapshots = {"SnapshotType": "manual", **db_filter}
     rds = ScriptedClient([
+        ("describe_db_instances", db_filter, {}),
         ("describe_db_snapshots", snapshots, {}),
         ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, {}),
         ("describe_db_subnet_groups", {"DBSubnetGroupName": "subnets"}, ScriptedClient.NotFound()),
@@ -287,10 +294,11 @@ def test_restore_probe_uses_corridor_object_store_digest_contract(tmp_path):
     from contextlib import nullcontext
     from hashlib import sha256
     from corridor.environment_rehearsal import sql_restore_probe
-    from corridor.object_storage import LocalFilesystemStore
+    from corridor.object_storage import LocalFilesystemStore, content_key
     storage = LocalFilesystemStore(tmp_path / "objects")
     checksum = sha256(b"retained source").hexdigest()
-    storage.put("source", b"retained source", sha256=checksum)
+    key = content_key(checksum, ".txt")
+    storage.put(key, b"retained source", sha256=checksum)
     statements = []
     class Connection:
         info = SimpleNamespace(host="restore.example", port=5432, dbname="corridor")
@@ -300,9 +308,9 @@ def test_restore_probe_uses_corridor_object_store_digest_contract(tmp_path):
             statements.append(sql)
             return SimpleNamespace(fetchall=lambda: [("earlier",)])
     observed = sql_restore_probe(Connection(), target={"Endpoint": {"Address": "restore.example", "Port": 5432}, "DBName": "corridor"},
-        queries={"earlier_state": "select fixture from synthetic_rehearsal"}, object_store=storage, object_digests={"source": checksum})
+        queries={"earlier_state": "select fixture from synthetic_rehearsal"}, object_store=storage, object_digests={key: checksum})
     assert statements[0] == "SET TRANSACTION READ ONLY"
-    assert observed == {"query_digests": {"earlier_state": result_digest([("earlier",)])}, "object_digests": {"source": checksum}}
+    assert observed == {"query_digests": {"earlier_state": result_digest([("earlier",)])}, "object_digests": {key: checksum}}
 
 
 def test_export_replaces_destination_atomically_with_private_permissions(tmp_path):
@@ -330,7 +338,7 @@ def test_export_replaces_destination_atomically_with_private_permissions(tmp_pat
     try:
         result = export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3},
             output_path=output, pgpass_file=pgpass, database_username="export_reader",
-            principal=HumanPrincipal("local:operator"), before_export=before_export, run=runner)
+            principal=HumanPrincipal("local:operator"), before_export=before_export, run=runner, restore_run=fixture_restore_parser)
     finally:
         os.umask(previous_umask)
     assert result["path"] == str(output)
@@ -369,9 +377,158 @@ def test_export_failure_preserves_existing_destination_and_removes_partial(tmp_p
     with pytest.raises(OSError, match="injected failure"):
         export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3},
             output_path=output, pgpass_file=pgpass, database_username="export_reader",
-            principal=HumanPrincipal("local:operator"), before_export=lambda: None, run=runner)
+            principal=HumanPrincipal("local:operator"), before_export=lambda: None, run=runner, restore_run=fixture_restore_parser)
     assert output.read_bytes() == b"previous verified export"
     assert output.stat().st_ino == previous_stat.st_ino
     assert output.stat().st_mode == previous_stat.st_mode
     assert list(tmp_path.glob(".export.tar.*.partial")) == []
     assert not s3.script
+
+
+def test_execution_boundary_rechecks_exports_and_only_allows_disappearance_on_resume(monkeypatch):
+    from corridor.environment_disposition import ReferentialRetention
+    import corridor.aws_environment_disposition as provider
+    inv = inventory()
+    inv["custody"] = {"sha256": "f" * 64}
+    manifest = {"object_versions": [{"key": "source", "version_id": "one", "delete_marker": False}],
+                "database_validation": {"method": "pg-restore-full-stream-v1", "database_sha256": "e" * 64}}
+    monkeypatch.setattr(provider, "verify_custody", lambda *args: manifest)
+    params = {"Bucket": "artifact-bucket", "ExpectedBucketOwner": ACCOUNT}
+    expected = {"Versions": [{"Key": "source", "VersionId": "one"}]}
+    changed = {"Versions": [{"Key": "source", "VersionId": "one"}, {"Key": "late", "VersionId": "two"}]}
+    s3 = ScriptedClient([("list_object_versions", params, changed),
+        ("list_object_versions", params, expected), ("list_object_versions", params, changed),
+        ("list_object_versions", params, {})])
+    destroyer = AwsStackEnvironmentDestroyer(resources=resource(whole_environment=inv), clients={"s3": s3})
+    destroyer._verify_stack_membership = lambda: None
+    replica_observation = {"db_resource_id": "db-CUSTOMER", "read_replica_instances": [], "read_replica_clusters": [], "read_replica_source": None}
+    destroyer._verify_copies = lambda: replica_observation
+    destroyer._require_quiescent = lambda: None
+    destroyer._owned_buckets = lambda: {"artifact-bucket"}
+    plan = SimpleNamespace(environment_id="environment", manifest_sha256="a" * 64)
+    store = ReceiptStore()
+    def prepare():
+        destroyer.prepare_execution(store, plan, ReferentialRetention(), "dispose-one", observed_at=NOW)
+    with pytest.raises(DispositionRefused, match="source versions changed"):
+        prepare()
+    assert not store.rows and not hasattr(destroyer, "_plan")
+    prepare()
+    assert len(store.rows) == 1 and store.rows[0]["phase"] == "execution_boundary"
+    assert store.rows[0]["evidence"]["rds_replica_relationships"] == replica_observation
+    with pytest.raises(DispositionRefused, match="source versions changed"):
+        prepare()
+    prepare()  # already exported versions may have been removed by a partial pass
+    assert len(store.rows) == 1
+    assert not s3.script
+    plan.manifest_sha256 = "b" * 64
+    with pytest.raises(DispositionRefused, match="another plan"):
+        prepare()
+
+
+@pytest.mark.parametrize("field", ["ReadReplicaDBInstanceIdentifiers", "ReadReplicaDBClusterIdentifiers"])
+def test_live_rds_replicas_refuse_source_deletion_even_without_backup_copies(field):
+    from corridor.control_plane import EnvironmentRegistration
+    from corridor.environment_disposition import AwsEnvironmentDestroyer
+    r = resource()
+    query = {"Filters": [{"Name": "dbi-resource-id", "Values": [r.db_resource_id]}]}
+    rds = ScriptedClient([("describe_db_instances", query, {"DBInstances": [{
+        "DBInstanceArn": r.db_instance_arn, "DbiResourceId": r.db_resource_id,
+        "DBInstanceStatus": "available", field: ["live-replica"]}]})])
+    clients = {"rds": rds, "sts": ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})]),
+               "s3": ScriptedClient(), "kms": ScriptedClient()}
+    registration = EnvironmentRegistration("customer", "environment", "deployment", "db.example", 5432,
+        "corridor", "env:WEB", "env:WORKER", "s3:artifact-bucket", "configuration:none", enabled=False)
+    destroyer = AwsEnvironmentDestroyer(resources=r, approved_resource_sha256=r.sha256,
+        live_activation="live-aws-535", clients=clients, before_delete=lambda: pytest.fail("must not mutate"))
+    with pytest.raises(DispositionRefused, match="live RDS replicas"):
+        destroyer.delete_database(registration)
+    assert not rds.script
+
+
+def test_rehearsal_cleanup_follows_the_persisted_physical_database_after_rename():
+    spec = rehearsal_spec()
+    target_arn = f"arn:aws:rds:us-east-1:{ACCOUNT}:db:renamed-rehearsal"
+    rds = ScriptedClient([
+        ("describe_db_instances", {"Filters": [{"Name": "dbi-resource-id", "Values": ["db-RESTORED"]}]},
+            {"DBInstances": [{"DBInstanceIdentifier": "renamed-rehearsal", "DBInstanceArn": target_arn,
+                              "DbiResourceId": "db-RESTORED", "DBInstanceStatus": "available"}]}),
+        ("list_tags_for_resource", {"ResourceName": target_arn}, {"TagList": [{"Key": "corridor:rehearsal", "Value": spec.sha256}]}),
+        ("delete_db_instance", {"DBInstanceIdentifier": "renamed-rehearsal", "SkipFinalSnapshot": True, "DeleteAutomatedBackups": True}, {}),
+    ])
+    store = ReceiptStore()
+    store.record_disposition_rehearsal(environment_id="environment", operation_id=spec.operation_id,
+        phase="state_verification", outcome="completed", evidence={"spec_sha256": spec.sha256, "target_resource_id": "db-RESTORED"})
+    destroyer = AwsStackEnvironmentDestroyer(resources=resource(), live_activation="live-aws-535",
+        clients={"rds": rds, "sts": ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})])})
+    runner = AwsRestoreRehearsal(destroyer=destroyer, control_plane=store, specification=spec,
+        clock=SimpleNamespace(now=lambda: NOW), before_mutation=lambda: None)
+    receipt = runner.cleanup()
+    assert receipt["outcome"] == "pending"
+    assert receipt["evidence"]["target_identifier"] == "renamed-rehearsal"
+    assert not any(row["phase"] == "cleanup" and row["outcome"] == "completed" for row in store.rows)
+    assert not rds.script
+
+
+def _archive_containing_dump(database_bytes):
+    from hashlib import sha256
+    import tarfile
+    checksum = sha256(database_bytes).hexdigest()
+    manifest = {"schema": "corridor-environment-export-v1", "environment_id": "environment",
+        "inventory_sha256": digest(inventory()), "members": [{"name": "database.dump", "kind": "postgresql", "sha256": checksum, "size": len(database_bytes)}],
+        "object_versions": [], "database_validation": {"method": "pg-restore-full-stream-v1", "database_sha256": checksum, "database_size": len(database_bytes)}}
+    output = BytesIO()
+    with tarfile.open(fileobj=output, mode="w") as archive:
+        for name, body in (("database.dump", database_bytes), ("manifest.json", json.dumps(manifest).encode())):
+            entry = tarfile.TarInfo(name)
+            entry.size = len(body)
+            archive.addfile(entry, BytesIO(body))
+    data = output.getvalue()
+    return data, sha256(data).hexdigest()
+
+
+def test_custody_rejects_self_consistent_five_byte_pg_dump_archive():
+    data, checksum = _archive_containing_dump(b"PGDMP")
+    with pytest.raises(DispositionRefused, match="full archive validation failed"):
+        verify_export_archive(BytesIO(data), expected_sha256=checksum, environment_id="environment", inventory_sha256=digest(inventory()))
+
+
+def test_custody_consumes_real_dump_data_blocks_beyond_the_table_of_contents(runtime_database, tmp_path):
+    import os
+    import subprocess
+    from sqlalchemy import text
+    engine = runtime_database.session_factory.kw["bind"]
+    with engine.begin() as connection:
+        connection.execute(text("create table public.disposition_dump_probe (payload text not null)"))
+        connection.execute(text("insert into public.disposition_dump_probe values (:payload)"), {"payload": os.urandom(16384).hex()})
+    url = engine.url
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
+    environment["PGPASSWORD"] = url.password or ""
+    output = tmp_path / "valid.dump"
+    from corridor.rehearsal_environment import _compose_service_is_running
+    # Use the same provider-native PostgreSQL clients as the existing rehearsal
+    # harness. macOS's unrelated Homebrew14 client cannot dump the Docker16 DB.
+    common = subprocess.run(["git", "rev-parse", "--git-common-dir"], check=True, capture_output=True, text=True).stdout.strip()
+    compose_root = Path(common).resolve().parent
+    use_compose = url.host in {"localhost", "127.0.0.1"} and url.port == 5433 and _compose_service_is_running(compose_root)
+    dump_command = (["docker", "compose", "exec", "-T", "postgres", "pg_dump"] if use_compose else ["pg_dump", "--host", url.host, "--port", str(url.port)])
+    with output.open("wb") as destination:
+        subprocess.run([*dump_command, "--format=custom", "--no-password", "--username", url.username,
+            "--dbname", url.database, "--table=public.disposition_dump_probe"], env=environment,
+            cwd=compose_root, check=True, stdout=destination, stderr=subprocess.PIPE)
+    def restore_runner(command, **options):
+        if not use_compose:
+            return subprocess.run(command, **options)
+        with Path(command[-1]).open("rb") as source:
+            return subprocess.run(["docker", "compose", "exec", "-T", "postgres", "pg_restore", *command[1:-1]],
+                stdin=source, cwd=compose_root, check=options.get("check", True), capture_output=True)
+    data, checksum = _archive_containing_dump(output.read_bytes())
+    verified = verify_export_archive(BytesIO(data), expected_sha256=checksum, environment_id="environment", inventory_sha256=digest(inventory()), restore_run=restore_runner)
+    assert verified["database_validation"]["method"] == "pg-restore-full-stream-v1"
+    truncated = output.read_bytes()[:-32]
+    output.write_bytes(truncated)
+    # The TOC remains readable while the data block is incomplete. A --list
+    # check would incorrectly accept these customer export bytes.
+    restore_runner(["pg_restore", "--list", str(output)], check=True, capture_output=True)
+    data, checksum = _archive_containing_dump(truncated)
+    with pytest.raises(DispositionRefused, match="full archive validation failed"):
+        verify_export_archive(BytesIO(data), expected_sha256=checksum, environment_id="environment", inventory_sha256=digest(inventory()), restore_run=restore_runner)
