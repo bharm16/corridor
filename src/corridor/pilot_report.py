@@ -243,7 +243,7 @@ def _aggregate(rows, work, baselines, calendar, history_rows):
              and work[row["declaration"]["period_id"]]["attestation"].get("all_provider_costs_complete") is True
              and _evidenced(work[row["declaration"]["period_id"]]["attestation"]) else None for row in rows]
     current = [work[row["declaration"]["period_id"]]["same_work_minutes"] for row in rows]
-    baseline = [baselines[project_key(row["declaration"])]["weekly_minutes"] for row in rows]
+    baseline = [baselines[row["declaration"]["period_id"]]["weekly_minutes"] for row in rows]
     net = rate(sum(x for x in current if number(x)), sum(x for x in baseline if number(x)), "same-work minutes",
                complete=bool(rows) and full_weeks and all(number(x) for x in current + baseline))
     net.update(baseline_minutes=sum(x for x in baseline if number(x)),
@@ -284,7 +284,7 @@ def _aggregate(rows, work, baselines, calendar, history_rows):
             "material_fields": {field: acceptance([c for c in child if c in resolved and c["target_field"] == field])
                                 for field in sorted({c["target_field"] for c in child if c["material_field"]})},
             "observations": [o for r in rows for o in r["observations"] if o["payload"].get("source_class", "unattributed") == source],
-            "baseline_work": [entry for key in {project_key(r["declaration"]) for r in rows}
+            "baseline_work": [entry for key in {r["declaration"]["period_id"] for r in rows}
                               for entry in baselines[key].get("work", []) if entry.get("source_class", "unattributed") == source],
             "time_by_category": {category: {
                 "recorded_minutes": sum(o["payload"]["minutes"] for r in rows for o in r["observations"]
@@ -325,7 +325,7 @@ def derive_report(measurement, declaration, evidence):
         if declared > instant(d["start"]):
             raise ValueError("pilot contract must predate measured periods")
         key = project_key(d)
-        baselines[key] = _baseline(next((b for b in logs if b["project_key"] == key), None), d)
+        baselines[d["period_id"]] = {"project_key": key, **_baseline(next((b for b in logs if b["project_key"] == key), None), d)}
         work[d["period_id"]] = _work(row, attestations.get(d["period_id"], {}))
     cohorts = []
     for cohort in declaration["cohorts"]:

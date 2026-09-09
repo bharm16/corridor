@@ -12,7 +12,7 @@ from datetime import timedelta
 import json
 import random
 
-from corridor.pilot_report import digest, instant, number, project_key, rate
+from corridor.pilot_report import digest, instant, number, project_key, rate, _evidenced
 
 
 CRITERIA = (
@@ -146,7 +146,7 @@ def _false_writes(report, partner):
         failures.update(sample["partners"].get(partner, {}).get("failed_policy_classes", []))
     rows = [r for r in report["periods"] if r["declaration"]["partner_id"] == partner]
     complete = bool(rows) and all(report["work"][r["declaration"]["period_id"]]["attestation"].get("false_write_review_complete") is True
-                                  and report["work"][r["declaration"]["period_id"]]["attestation"].get("evidence_reference") for r in rows)
+                                  and _evidenced(report["work"][r["declaration"]["period_id"]]["attestation"]) for r in rows)
     return _finding("material_false_writes", sorted(failures), "zero confirmed automatic material false writes; affected policy class stays failed",
                     not failures, measured=bool(failures) or complete, numerator=len(failures), denominator=None, unit="failed policy classes")
 
@@ -162,7 +162,8 @@ def _diagnostics(report, rows):
         valid = (bool(observations) and len(set(identities)) == len(identities) and all(
             e.get("identity") and e.get("evidence_reference") and e.get("actor") and type(e.get("useful")) is bool
             and e.get("triaged_at") == e.get("judged_at") for e in observations))
-        complete = all(report["work"][r["declaration"]["period_id"]]["attestation"].get("complete_diagnostics", {}).get(kind) is True for r in rows)
+        complete = bool(rows) and all(_evidenced(report["work"][r["declaration"]["period_id"]]["attestation"])
+            and report["work"][r["declaration"]["period_id"]]["attestation"].get("complete_diagnostics", {}).get(kind) is True for r in rows)
         if kind == "child_outcome_identifiability":
             native_acts = {(r["declaration"]["period_id"], str(o["payload"]["receipt_id"])) for r in rows for o in r["observations"]
                 if o["family"] == "packet_save" and o["payload"].get("receipt")
@@ -220,7 +221,7 @@ def _partner_findings(report, cohort, partner, values):
         {name for name, enabled in pins.items() if enabled} == set(r["declaration"]["binding"]["enabled_feature_flags"]) for r in rows)
     entries.append(_finding("cohort_binding", [r["declaration"] for r in rows], "all configuration pinned before observation, including disabled flags",
                             bound and isinstance(pins, dict), measured=bound and isinstance(pins, dict)))
-    baseline = {project_key(r["declaration"]): report["baselines"][project_key(r["declaration"])] for r in rows}
+    baseline = {r["declaration"]["period_id"]: report["baselines"][r["declaration"]["period_id"]] for r in rows}
     entries.append(_finding("baseline_representativeness", baseline, ">=2 weeks; full reporting cycle, ordinary/no-change work, substantive revision or predeclared historical match",
                             all(b["adequate"] for b in baseline.values()), measured=all(b["adequate"] for b in baseline.values())))
     entries.append(_baseline_accuracy(report, rows))

@@ -85,7 +85,7 @@ def test_two_week_baseline_without_revision_is_insufficient_and_reproducible():
     first = derive_report(measurement, contract, evidence)
     assert first == derive_report(measurement, contract, evidence)
     assert pooled(first)["net_coordinator_time"]["value"] is None
-    assert first["baselines"][project_key(p.as_dict())]["adequate"] is False
+    assert first["baselines"][p.period_id]["adequate"] is False
 
 
 def test_material_configuration_change_cannot_be_pooled_and_partial_week_is_not_full_week():
@@ -214,3 +214,35 @@ def test_source_latency_joins_an_arrival_in_the_preceding_retained_week():
     latency = pooled(result)["source_latency"]
     assert latency["calendar_seconds"]["median"] == 2*86400
     assert latency["business_days"]["median"] == 1
+
+
+def test_later_artifact_obligation_cannot_overwrite_an_earlier_baseline_assessment():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    later = replace(p, period_id="later", start=START+timedelta(days=7), end=START+timedelta(days=14),
+                    previously_performed_artifacts=("updated_ucm", "weekly_report"))
+    contract["cohorts"].append({"id": "later", "period_ids": ["later"], "full_feature_flags": {}})
+    evidence["baselines"][0]["work"].append({"category": "report_preparation", "artifact_type": "weekly_report",
+        "minutes": 100, "actor": "coordinator", "evidence_reference": "baseline:extra"})
+    evidence["period_attestations"]["later"] = deepcopy(evidence["period_attestations"][p.period_id])
+    result = derive_report(derive_measurement([p, later], []), contract, evidence)
+    assert result["baselines"][p.period_id]["weekly_minutes"] is None
+    assert result["baselines"]["later"]["weekly_minutes"] == 150
+    assert result["cohorts"][0]["partners"]["fixture-partner"]["pooled"]["net_coordinator_time"]["value"] is None
+    assert result["cohorts"][1]["partners"]["fixture-partner"]["pooled"]["net_coordinator_time"]["baseline_minutes"] == 150
+
+
+def test_unattributed_completeness_cannot_establish_false_write_or_diagnostic_success():
+    p, contract, evidence = inputs()
+    attestation = evidence["period_attestations"][p.period_id]
+    attestation.pop("actor")
+    attestation["false_write_review_complete"] = True
+    attestation["complete_diagnostics"] = {"alert_usefulness": True}
+    evidence["diagnostics"] = [{"kind": "alert_usefulness", "period_id": p.period_id, "identity": "alert:1",
+        "actor": "coordinator", "evidence_reference": "alert:judgment:1", "useful": True,
+        "triaged_at": START.isoformat(), "judged_at": START.isoformat()}]
+    checkpoint = build_checkpoint(derive_report(derive_measurement([p], []), contract, evidence))
+    partner = checkpoint["cohorts"][0]["partners"]["fixture-partner"]
+    false_writes = next(f for f in partner["findings"] if f["criterion"] == "material_false_writes")
+    assert false_writes["result"] == "insufficient_evidence"
+    assert partner["diagnostics"]["alert_usefulness"]["value"] is None

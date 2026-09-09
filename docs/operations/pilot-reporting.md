@@ -95,7 +95,9 @@ retention controls as the #532 export.
 `ordinary_work`, `no_change_work`, `substantive_revision`, and `work`. Work entries
 name `category` (`record_maintenance` or `report_preparation`), `minutes`, `actor`
 and `evidence_reference`; report work also names the pre-existing `artifact_type`.
-Use `source_class` when the work can be attributed. `extension` retains an
+Use `source_class` when the work can be attributed. The output assesses this log
+separately for each period's pre-existing artifact obligation; a later cohort
+cannot overwrite the earlier cohort's baseline or credit it with new work. `extension` retains an
 extended baseline's explanation. A `matched_historical_event` can satisfy the
 substantive-event requirement only with an actor, evidence reference,
 `same_coordinator: true`, `comparable_revision: true`, `justification`, and an
