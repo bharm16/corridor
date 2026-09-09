@@ -30,6 +30,7 @@ from corridor.reader_coverage import CONTRACTS, SemanticRecord, SurfaceReading
 # semantic origins, observed-class flags or an already assembled reader output.
 _TABLES = (
     "project_record_revisions", "facts", "fact_decisions", "fact_sources", "source_segments",
+    "fact_applies_to", "fact_closure_results", "fact_closure_sources", "fact_statement_timings",
     "proposed_deltas", "delta_dispositions", "delta_record_decisions", "delta_deferrals", "delta_supersessions", "fact_dispositions",
     "delta_follow_up_plans", "delta_follow_up_plan_evidence", "support_assessments", "support_assessment_sources", "coordination_record_decisions",
     "coordination_record_reversals", "recorded_verbal_origins", "release_candidates",
@@ -154,12 +155,42 @@ def _inventory(session, project_id, maximum):
         result[table] = tuple(session.scalars(text(
             f"select to_jsonb(r) from public.{table} r where project_id=:project order by id"
         ), {"project": project_id}))
-    from corridor.record_projection import read_native_record_values, record_value_payload
     current = max((r["id"] for r in result["project_record_revisions"]), default=None)
-    result["native_current_values"] = tuple({"decision_id": value.decision_id, "fact_id": value.fact_id,
-        "subject": value.subject_key, "field": value.fact_type, "value": record_value_payload(value)}
-        for value in read_native_record_values(session, project_id, current)) if current is not None else ()
+    facts = {row["id"]: row for row in result["facts"]}
+    result["native_current_values"] = tuple({"decision_id": decision["id"], "fact_id": decision["fact_id"],
+        "subject": decision["subject_key"], "field": decision["fact_type"],
+        "value": _fact_payload(result, facts[decision["fact_id"]])}
+        for decision in _accepted_decisions_at(result, current)) if current is not None else ()
     return result
+
+
+def _accepted_decisions_at(inventory, revision):
+    """Derive the complete accepted decision set from raw custody rows."""
+    decisions = {row["id"]: row for row in inventory["fact_decisions"]}
+    active = tuple(row for row in decisions.values() if row["revision_id"] <= revision
+        and (row["superseded_by"] is None
+             or decisions[row["superseded_by"]]["revision_id"] > revision))
+    suppressed = {row["subject_key"] for row in active
+                  if row["fact_type"] == "statement_wording" and row["disposition"] == "do_not_add"}
+    return tuple(sorted((row for row in active if row["disposition"] == "include"
+                         and row["subject_key"] not in suppressed), key=lambda row: row["id"]))
+
+
+def _fact_payload(inventory, fact):
+    """Read typed values from retained Fact rows, independently of the reader."""
+    if fact["fact_type"] == "statement_timing":
+        return {"timings": [{"role": row["timing_role"], "text": row["text"],
+            "precision": row["precision"], "start_date": row["start_date"], "end_date": row["end_date"]}
+            for row in sorted(inventory["fact_statement_timings"], key=lambda row: row["timing_role"])
+            if row["fact_id"] == fact["id"]]}
+    if fact["fact_type"] == "applies_to":
+        subjects = [row["record_subject_key"] for row in sorted(inventory["fact_applies_to"], key=lambda row: row["ordinal"])
+                    if row["fact_id"] == fact["id"] and row["record_subject_key"] is not None]
+        return {"mode": "selected" if subjects else "unknown", "subject_keys": subjects}
+    if fact["fact_type"] == "closure_result":
+        return {"closure_kind": next((row["closure_kind"] for row in inventory["fact_closure_results"]
+                                       if row["fact_id"] == fact["id"]), None)}
+    return fact["date_value"] or fact["text_value"]
 
 
 def _ids(inventory, table):
@@ -245,13 +276,26 @@ def _record_values(surface, session, project_id, revision, kind, inventory):
     values = read_native_record_values(session, project_id, revision)
     # The reader is independent of Candidate/Dependency compatibility joins.
     surface.outputs[kind] = _plain(values)
-    surface.population(kind, f"read_native_record_values(project={project_id},revision={revision})", [v.decision_id for v in values])
-    decisions = {r["id"]: r for r in inventory["fact_decisions"]}
+    decisions = {row["id"]: row for row in _accepted_decisions_at(inventory, revision)}
+    facts = {row["id"]: row for row in inventory["facts"]}
+    surface.population(kind, f"raw fact_decisions at project={project_id},revision={revision}", sorted(decisions))
+    actual_ids = [value.decision_id for value in values]
+    if len(actual_ids) != len(set(actual_ids)) or set(actual_ids) != set(decisions):
+        surface.blockers.append(f"{kind}: public accepted decision population differs from raw authority")
     for value in values:
         authority = decisions.get(value.decision_id)
         if authority is None or (authority["fact_id"], authority["revision_id"]) != (value.fact_id, value.revision_id):
             surface.blockers.append(f"{kind}: value {value.decision_id} does not bind an actual FactDecision")
             continue
+        fact = facts[authority["fact_id"]]
+        if (value.project_id != project_id or value.dependency_id is not None
+            or value.subject_key != authority["subject_key"] or value.fact_type != authority["fact_type"]
+            or value.subject_kind != fact["subject_kind"] or value.fact_subject_key != fact["subject_key"]
+            or _plain(record_value_payload(value)) != _fact_payload(inventory, fact)
+            or any(_plain(getattr(value, field)) != fact[field] for field in (
+                "text_value", "date_value", "date_range_start", "date_range_end",
+                "external_org_value_id", "document_value_id"))):
+            surface.blockers.append(f"{kind}: public value or source identity differs for FactDecision {value.decision_id}")
         sources = tuple(row["source_segment_id"] for row in sorted(inventory["fact_sources"], key=lambda r: (r["role"], r["ordinal"]))
                         if row["fact_id"] == value.fact_id)
         surface.add(kind, f"fact_decisions:{value.decision_id}", {"identity": {"subject": value.subject_key, "field": value.fact_type},
