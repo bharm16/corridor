@@ -94,6 +94,8 @@ def verify_runtime(session, *, project_id, customer, environment):
     row = session.execute(text("select customer, environment, database_name from shadow_projects where project_id=:id"), {"id": project_id}).first()
     if row is None or tuple(row) != (customer, environment, role[2]):
         raise ShadowRefused("runtime is not bound to the provisioned shadow project")
+    if session.scalar(text("select count(*) from customer_environment_binding")):
+        raise ShadowRefused("shadow database acquired customer routing")
     if session.scalar(text("select count(*) from projects where id <> :id"), {"id": project_id}):
         raise ShadowRefused("shadow database now contains another project")
 
@@ -133,6 +135,7 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         raise ShadowRefused("aware time, future deletion and source configuration are required")
     verify_runtime(session, project_id=project.id, customer=customer, environment=environment)
     if (not isinstance(authorization, CustomerAuthorization)
+        or not authorization.signed_by or not authorization.signed_on or not authorization.retention_disclosed
         or "shadow" not in authorization.stages or authorization.customer != customer
         or project.slug not in authorization.projects or staged.sha256 not in authorization.source_sha256s):
         raise ShadowRefused("signed authorization does not cover these bytes for shadow processing")
@@ -165,7 +168,20 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         item = {column.name: getattr(row, column.name) for column in ProposedDelta.__table__.columns}
         item["created_at"] = row.created_at.isoformat()
         item["lifecycle"] = asdict(derive_live_delta_state(session, row.id))
+        if item["lifecycle"]["deferred_until"] is not None:
+            item["lifecycle"]["deferred_until"] = item["lifecycle"]["deferred_until"].isoformat()
         deltas.append(item)
+    provenance = session.scalars(text("""
+        select jsonb_build_object('fact_id',fs.fact_id,'role',fs.role,
+            'ordinal',fs.ordinal,'segment',to_jsonb(s))
+        from fact_sources fs join source_segments s on s.id=fs.source_segment_id
+        where fs.document_id=:document and fs.project_id=:project
+        order by fs.fact_id,fs.role,fs.ordinal
+    """), {"document": capture.document_id, "project": project.id}).all()
+    groups = session.scalars(text("""
+        select to_jsonb(g) from delta_groups g where g.project_id=:project
+        and g.document_id=:document order by g.id
+    """), {"document": capture.document_id, "project": project.id}).all()
     payload = {"version": VERSION, "identity": identity, "project_id": project.id,
         "customer": customer, "environment": environment, "source_configuration": source_configuration,
         "operator": principal.subject, "authorization": authorization.record_id,
@@ -177,7 +193,8 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         "compatibility_environment": compatibility["environment"],
         "document_id": capture.document_id, "fact_ids": list(capture.fact_ids),
         "accepted_baseline_revision": capture.accepted_baseline_revision,
-        "mapping": asdict(capture.field_mapping), "deltas": deltas}
+        "mapping": asdict(capture.field_mapping), "groups": groups,
+        "source_provenance": provenance, "deltas": deltas}
     # JSON normalization also rejects non-serializable native contract changes.
     payload = json.loads(canonical_bytes(payload))
     session.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:id,:project,cast(:payload as jsonb),:digest)"),
