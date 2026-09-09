@@ -12,9 +12,6 @@ outside the Action Items block.
 
 from __future__ import annotations
 
-from calendar import monthrange
-from dataclasses import dataclass
-from datetime import date
 import json
 from pathlib import Path
 import re
@@ -26,6 +23,7 @@ from corridor import extract_minutes_v4 as v4
 from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
 from corridor.prose_spans import NumberedActionSpan, numbered_action_spans
+from corridor.statement_timing_parser import exact_statement_timings as _exact_timings
 from corridor.verify import literal_quote_on_page
 
 
@@ -42,47 +40,8 @@ _DATE_CHANGE_SIGNAL = re.compile(
     r"instead\s+of|rather\s+than|from)\b",
     re.IGNORECASE,
 )
-_NUMERIC_DAY = re.compile(
-    r"\b(0?[1-9]|1[0-2])/(0?[1-9]|[12]\d|3[01])/(\d{4})\b"
-)
-_ISO_DAY = re.compile(r"\b(\d{4})-(0[1-9]|1[0-2])-(0[1-9]|[12]\d|3[01])\b")
-_NUMERIC_MONTH = re.compile(r"\b(0?[1-9]|1[0-2])/(\d{4})\b")
-_MONTHS = {
-    name.casefold(): number
-    for number, name in enumerate(
-        (
-            "",
-            "January",
-            "February",
-            "March",
-            "April",
-            "May",
-            "June",
-            "July",
-            "August",
-            "September",
-            "October",
-            "November",
-            "December",
-        )
-    )
-    if name
-}
-_NAMED_DATE = re.compile(
-    r"\b(" + "|".join(_MONTHS) + r")\s+"
-    r"(?:(0?[1-9]|[12]\d|3[01])(?:st|nd|rd|th)?(?:,\s*|\s+))?"
-    r"(\d{4})\b",
-    re.IGNORECASE,
-)
 
 
-@dataclass(frozen=True)
-class ExactTiming:
-    """One calendar timing recognized directly in exact Evidence."""
-
-    start_offset: int
-    end_offset: int
-    value: dict[str, str | None]
 
 
 def extract_document(
@@ -265,73 +224,10 @@ def _document_party_is_action_actor(document_party: str, quote: str) -> bool:
     )
 
 
-def _exact_timings(quote: str) -> tuple[ExactTiming, ...]:
-    """Read non-overlapping day/month timings directly from exact Evidence."""
-
-    found: list[ExactTiming] = []
-
-    def add(match: re.Match[str], value: dict[str, str | None]) -> None:
-        if any(
-            match.start() < existing.end_offset
-            and existing.start_offset < match.end()
-            for existing in found
-        ):
-            return
-        found.append(ExactTiming(match.start(), match.end(), value))
-
-    for match in _NUMERIC_DAY.finditer(quote):
-        year, month, day = int(match[3]), int(match[1]), int(match[2])
-        try:
-            exact = date(year, month, day)
-        except ValueError:
-            continue
-        add(match, _day_timing(match.group(0), exact))
-
-    for match in _ISO_DAY.finditer(quote):
-        year, month, day = int(match[1]), int(match[2]), int(match[3])
-        try:
-            exact = date(year, month, day)
-        except ValueError:
-            continue
-        add(match, _day_timing(match.group(0), exact))
-
-    for match in _NUMERIC_MONTH.finditer(quote):
-        year, month = int(match[2]), int(match[1])
-        add(match, _month_timing(match.group(0), year, month))
-
-    for match in _NAMED_DATE.finditer(quote):
-        year = int(match[3])
-        month = _MONTHS[match.group(1).casefold()]
-        if match.group(2):
-            try:
-                exact = date(year, month, int(match.group(2)))
-            except ValueError:
-                continue
-            value = _day_timing(match.group(0), exact)
-        else:
-            value = _month_timing(match.group(0), year, month)
-        add(match, value)
-
-    return tuple(sorted(found, key=lambda timing: timing.start_offset))
 
 
-def _day_timing(text: str, value: date) -> dict[str, str | None]:
-    rendered = value.isoformat()
-    return {
-        "text": text,
-        "precision": "day",
-        "start_date": rendered,
-        "end_date": rendered,
-    }
 
 
-def _month_timing(text: str, year: int, month: int) -> dict[str, str | None]:
-    return {
-        "text": text,
-        "precision": "month",
-        "start_date": date(year, month, 1).isoformat(),
-        "end_date": date(year, month, monthrange(year, month)[1]).isoformat(),
-    }
 
 
 def _deduplicate(candidates: list[Candidate]) -> list[Candidate]:

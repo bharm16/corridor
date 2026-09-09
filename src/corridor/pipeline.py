@@ -338,6 +338,24 @@ def extraction_route(
     candidate rows it happened to produce, so the version recorded for that
     attempt has to be the version of the reader that actually ran.
     """
+    if getattr(document, "doc_type", None) == "minutes":
+        from corridor.minutes_spine import capture_minutes, minutes_extractor_config
+        from corridor.llm import OpenAIClient
+        from corridor.models import SourceDelivery
+
+        minutes_client = client or OpenAIClient()
+        configuration = minutes_extractor_config(minutes_client)
+
+        def extract_minutes_source(session, doc):
+            delivery = session.get(SourceDelivery, doc.source_delivery_id) if doc.source_delivery_id else None
+            receipt = capture_minutes(session, doc, client=minutes_client,
+                source_family=delivery.external_identity if delivery else None,
+                source_revision=delivery.external_version if delivery else None)
+            return CapturedCandidates([], session.get_one(ExtractionRun, receipt.extraction_run_id))
+
+        return ExtractionRoute(effective_prompt_version=configuration.prompt_version,
+            schema_version=configuration.schema_version, extract=extract_minutes_source,
+            model=configuration.model, extractor_config=configuration, usage_client=minutes_client)
     if getattr(document, "doc_type", None) == "email":
         if getattr(document, "source_delivery_id", None) is not None:
             from corridor.email_spine import (
@@ -508,7 +526,7 @@ def production_extraction_routes():
 
         def select_route(document: Document) -> ExtractionRoute:
             nonlocal prose_client, matrix_runtime
-            if document.doc_type == "email" and prose_client is None:
+            if document.doc_type in {"email", "minutes"} and prose_client is None:
                 prose_client = OpenAIClient()
                 resources.callback(prose_client.close)
             if (document.doc_type == "matrix" and matrix_runtime is None
@@ -522,7 +540,7 @@ def production_extraction_routes():
                 else:
                     resources.callback(matrix_runtime.close)
             return extraction_route(document,
-                client=prose_client if document.doc_type == "email" else None,
+                client=prose_client if document.doc_type in {"email", "minutes"} else None,
                 native_runtime=matrix_runtime)
 
         yield select_route

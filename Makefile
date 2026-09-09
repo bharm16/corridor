@@ -61,6 +61,15 @@ test-focused:
 
 .PHONY: control-plane
 .PHONY: email-source
+.PHONY: contacts
+# Retained contact imports/resolution; corrections use an authenticated web session.
+#   make contacts ARGS="import-csv <delivery-id> --identity <import-id> --source-family <directory>"
+#   make contacts ARGS="import-ucm <project-id> --identity <import-id>"
+#   make contacts ARGS="read <project-id>"
+#   make contacts ARGS="correct <slug> <contact-id> --record contact.json --reason 'Onboarding correction' --identity <key>"
+contacts:
+	uv run python -m corridor.project_contacts_cli $(ARGS)
+
 # Inspect retained project-bound MIME or replay a strict response without a model call.
 #   make email-source ARGS="inspect <delivery-id>"
 #   make email-source ARGS="capture <delivery-id> --response response.json"
@@ -459,7 +468,14 @@ page-inventory-routing-replay:
 # appends a fresh attempt without changing the declared Current Production Run:
 #   make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
 minutes:
-	uv run python -m corridor.extract_minutes_v5 $(ARGS)
+	uv run python -m corridor.minutes_source_cli project $(ARGS)
+
+.PHONY: minutes-source
+# Inspect exact minutes references or replay a fixture/provider response.
+#   make minutes-source ARGS="inspect <document-id>"
+#   make minutes-source ARGS="capture <document-id> --response response.json --source-family <meeting>"
+minutes-source:
+	uv run python -m corridor.minutes_source_cli $(ARGS)
 
 # Build the weekly Coordination Report without re-running document processing:
 #   make report ARGS="nhhip-3c2"

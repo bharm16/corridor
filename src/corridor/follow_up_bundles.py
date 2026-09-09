@@ -95,7 +95,7 @@ technical name it is.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date, datetime
 from hashlib import sha256
 import json
@@ -136,9 +136,9 @@ from corridor.review_packet_reading import (
 # unit because they are replayed as one: a reading rebuilt under a different
 # ordering rule is a different reading even when the same asks come out of it.
 FOLLOW_UP_RULE = "follow_up_bundles_from_accepted_authority"
-FOLLOW_UP_RULE_VERSION = "v1"
+FOLLOW_UP_RULE_VERSION = "v2"
 FOLLOW_UP_RULE_SET = f"{FOLLOW_UP_RULE}_{FOLLOW_UP_RULE_VERSION}"
-SUPPORTED_RULE_VERSIONS = frozenset({FOLLOW_UP_RULE_VERSION})
+SUPPORTED_RULE_VERSIONS = frozenset({"v1", FOLLOW_UP_RULE_VERSION})
 
 # How far ahead of the cutoff an accepted commitment date is worth an ask.
 # Declared here, versioned with the rule set, and never read from a clock.
@@ -332,16 +332,35 @@ class Recipient:
     contact_state: str
     contact_name: str | None = None
     channel: str | None = None
+    address: str | None = None
+    contact_record_ids: tuple[int, ...] = ()
+    unresolved_reason: str | None = None
+    rule_version: str = "v1"
 
     @property
     def key(self) -> str:
         """The identity two items must share to be the same interaction."""
 
+        if self.rule_version == "v2":
+            return json.dumps((self.organization, self.responsible_role,
+                               self.channel, self.address, self.contact_name), separators=(",", ":"))
         if self.contact_state == CONTACT_RESOLVED:
             return f"contact:{self.channel or 'unknown'}:{self.contact_name}"
         return f"role:{self.organization}"
 
     def sentence(self) -> str:
+        if self.rule_version == "v2":
+            if self.contact_state == CONTACT_RESOLVED:
+                return f"{self.contact_name} at {self.organization} by {self.channel}: {self.address}"
+            reason = {
+                "unknown_organization": "the organization is unresolved",
+                "ambiguous_organization": "the organization is ambiguous",
+                "competing_contacts": "more than one active contact is recorded",
+                "incomplete_contact": "the person, channel, or address is missing",
+                "not_effective": "no contact is effective at this cutoff",
+                "refused_contact_revision": "the latest contact source could not be read",
+            }.get(self.unresolved_reason, "no contact is recorded for this role")
+            return f"{self.responsible_role} at {self.organization} — {reason}"
         if self.contact_state == CONTACT_RESOLVED:
             channel = f" by {self.channel}" if self.channel else ""
             return f"{self.contact_name} at {self.organization}{channel}"
@@ -575,7 +594,7 @@ def read_follow_up_bundles(
     reading = read_open_deltas(session, project_id=project_id, as_of=as_of)
     accepted_revision_id = reading.accepted_revision_id
     if accepted_revision_id is None:
-        return _empty(project_id, as_of, None, len(requests))
+        return _empty(project_id, as_of, None, len(requests), rule_version=rule_version)
 
     projection = _index_projection(
         read_project_record_as_of_revision(
@@ -617,6 +636,13 @@ def read_follow_up_bundles(
         )
     )
 
+    if rule_version == "v2":
+        from corridor.project_contacts import resolve_project_contacts
+
+        resolved = resolve_project_contacts(session, project_id=project_id, as_of=as_of,
+            requests={(item.recipient.organization, item.recipient.responsible_role) for item in items})
+        items = [_contact_item(item, resolved[(item.recipient.organization, item.recipient.responsible_role)])
+                 for item in items]
     bundles = _bundle(items, project_name=project_name, today=today)
     for bundle in bundles:
         _validate_bundle(bundle, projection)
@@ -627,7 +653,7 @@ def read_follow_up_bundles(
         accepted_revision_id=accepted_revision_id,
         rule=FOLLOW_UP_RULE,
         rule_version=rule_version,
-        rule_set=FOLLOW_UP_RULE_SET,
+        rule_set=f"{FOLLOW_UP_RULE}_{rule_version}",
         horizon_days=APPROACHING_COMMITMENT_HORIZON_DAYS,
         due_window_rule=DUE_WINDOW_RULE,
         no_movement_rule=NO_MOVEMENT_RULE,
@@ -643,6 +669,7 @@ def _empty(
     as_of: datetime,
     accepted_revision_id: int | None,
     requests: int,
+    *, rule_version: str = FOLLOW_UP_RULE_VERSION,
 ) -> FollowUpReading:
     return _with_identity(
         FollowUpReading(
@@ -650,8 +677,8 @@ def _empty(
             cutoff=as_of,
             accepted_revision_id=accepted_revision_id,
             rule=FOLLOW_UP_RULE,
-            rule_version=FOLLOW_UP_RULE_VERSION,
-            rule_set=FOLLOW_UP_RULE_SET,
+            rule_version=rule_version,
+            rule_set=f"{FOLLOW_UP_RULE}_{rule_version}",
             horizon_days=APPROACHING_COMMITMENT_HORIZON_DAYS,
             due_window_rule=DUE_WINDOW_RULE,
             no_movement_rule=NO_MOVEMENT_RULE,
@@ -1104,6 +1131,15 @@ def _validate_outgoing_request(request: RetainedOutgoingRequest) -> None:
 # --- composition ------------------------------------------------------------
 
 
+def _contact_item(item, resolution):
+    recipient = replace(item.recipient, contact_state=resolution.state,
+        contact_name=resolution.person_name, channel=resolution.channel, address=resolution.address,
+        contact_record_ids=resolution.record_ids, unresolved_reason=resolution.reason, rule_version="v2")
+    references = tuple(SourceReference("project_contact", str(identity), "retained contact import or correction")
+                       for identity in resolution.record_ids)
+    return replace(item, recipient=recipient, references=(*item.references, *references))
+
+
 def _recipient(
     organization: str,
     contact: CurrentRecordValue | None,
@@ -1328,7 +1364,7 @@ def bundle_reading_payload(reading: FollowUpReading) -> dict[str, Any]:
     """
 
     body: dict[str, Any] = {
-        "payload_schema_version": "follow-up-bundles-v1",
+        "payload_schema_version": f"follow-up-bundles-{reading.rule_version}",
         "rule": reading.rule,
         "rule_version": reading.rule_version,
         "rule_set": reading.rule_set,
@@ -1378,6 +1414,10 @@ def _bundle_payload(bundle: FollowUpBundle) -> dict[str, Any]:
             "contact_name": bundle.recipient.contact_name,
             "channel": bundle.recipient.channel,
             "sentence": bundle.recipient.sentence(),
+            **({"address": bundle.recipient.address,
+                "contact_record_ids": list(bundle.recipient.contact_record_ids),
+                "unresolved_reason": bundle.recipient.unresolved_reason}
+               if bundle.recipient.rule_version == "v2" else {}),
         },
         "accepted_position": [
             {

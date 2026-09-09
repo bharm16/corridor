@@ -865,8 +865,8 @@ def _validate_edit_basis(
             return _edit_basis_refusal(
                 session, delta, "a composed edit resolves to a captured Source Fact"
             )
-        replayed = composition([_fact_value(fact) for fact in inputs])
-        if replayed != _fact_value(result):
+        replayed = composition([_fact_value(session, fact) for fact in inputs])
+        if replayed != _fact_value(session, result):
             return _edit_basis_refusal(
                 session,
                 delta,
@@ -896,8 +896,8 @@ def _validate_edit_basis(
             return _edit_basis_refusal(
                 session, delta, "a normalized edit reads only this project's Source Facts"
             )
-        original = _fact_value(source)
-        normalized = _fact_value(result)
+        original = _fact_value(session, source)
+        normalized = _fact_value(session, result)
         # Lossless means the two differ only in what this normalization
         # canonicalizes, and that the canonical form is already canonical.
         if (
@@ -955,16 +955,10 @@ def _project_fact(
     return fact
 
 
-def _fact_value(fact: Fact) -> Any:
-    if fact.text_value is not None:
-        return fact.text_value
-    if fact.date_value is not None:
-        return fact.date_value.isoformat()
-    if fact.external_org_value_id is not None:
-        return {"external_org_id": int(fact.external_org_value_id)}
-    if fact.document_value_id is not None:
-        return {"document_id": int(fact.document_value_id)}
-    return None
+def _fact_value(session: Session, fact: Fact) -> Any:
+    from corridor.source_fact_values import source_fact_value
+
+    return source_fact_value(session, fact)
 
 
 def _edit_basis_refusal(

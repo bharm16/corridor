@@ -63,6 +63,23 @@ class CurrentRecordValue:
     closure_successor_dependency_id: int | None = None
     closure_governing_source_segment_ids: tuple[int, ...] = ()
     statement_timings: tuple[CurrentStatementTiming, ...] = ()
+    applies_to_subject_keys: tuple[str, ...] = ()
+
+
+def record_value_payload(value: CurrentRecordValue):
+    """Canonical values used to compare typed source statements with the record."""
+    if value.fact_type == "statement_timing":
+        return {"timings": [{"role": item.timing_role, "text": item.text, "precision": item.precision,
+            "start_date": item.start_date.isoformat() if item.start_date else None,
+            "end_date": item.end_date.isoformat() if item.end_date else None} for item in value.statement_timings]}
+    if value.fact_type == "applies_to":
+        return {"mode": "selected" if value.applies_to_subject_keys else "unknown",
+                "subject_keys": list(value.applies_to_subject_keys)}
+    if value.fact_type == "closure_result":
+        return {"closure_kind": value.closure_kind}
+    if value.date_value:
+        return value.date_value.isoformat()
+    return value.text_value
 
 
 def read_current_project_record(
@@ -131,12 +148,16 @@ def _attach_structured_values(
     if not fact_ids:
         return values
     applies_to: dict[int, list[int]] = {}
-    for fact_id, dependency_id in session.execute(
-        select(FactAppliesTo.fact_id, FactAppliesTo.dependency_id)
+    subject_scopes: dict[int, list[str]] = {}
+    for fact_id, dependency_id, subject_key in session.execute(
+        select(FactAppliesTo.fact_id, FactAppliesTo.dependency_id, FactAppliesTo.record_subject_key)
         .where(FactAppliesTo.fact_id.in_(fact_ids))
         .order_by(FactAppliesTo.fact_id, FactAppliesTo.ordinal)
     ):
-        applies_to.setdefault(fact_id, []).append(dependency_id)
+        if dependency_id is not None:
+            applies_to.setdefault(fact_id, []).append(dependency_id)
+        if subject_key is not None:
+            subject_scopes.setdefault(fact_id, []).append(subject_key)
     closures = {
         row.fact_id: row
         for row in session.scalars(
@@ -169,6 +190,7 @@ def _attach_structured_values(
         replace(
             value,
             applies_to_dependency_ids=tuple(applies_to.get(value.fact_id, ())),
+            applies_to_subject_keys=tuple(subject_scopes.get(value.fact_id, ())),
             closure_kind=(
                 closures[value.fact_id].closure_kind
                 if value.fact_id in closures

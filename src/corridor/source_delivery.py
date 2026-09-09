@@ -59,6 +59,7 @@ from corridor.models import (
     ConnectorCheckpointAdvance,
     ConnectorCheckpointAdvanceDelivery,
     SourceDelivery,
+    Project,
 )
 from corridor.analytics import emit_event, source_arrival_event
 from corridor.measurement_collection import binding_for_source
@@ -346,6 +347,28 @@ def stored_delivery(
             SourceDelivery.disposition == DISPOSITION_STORED,
         )
     ).first()
+
+
+def envelope_for_delivery(session: Session, delivery_id: int) -> SourceEnvelope:
+    """Read the one retained ingress envelope for any source-specific consumer."""
+    row = session.get_one(SourceDelivery, delivery_id)
+    project = session.get_one(Project, row.project_id)
+    return SourceEnvelope(
+        customer=row.customer, project=project.slug, channel=row.channel,
+        external_identity=row.external_identity, external_version=row.external_version,
+        original_timestamps=dict(row.original_timestamps_json or {}),
+        content_digest=row.content_sha256, bytes_reference=row.bytes_reference,
+        metadata=dict(row.metadata_json or {}), delivery_identity=row.delivery_identity,
+        idempotency_key=row.idempotency_key,
+    )
+
+
+def require_stored_envelope(session: Session, envelope: SourceEnvelope) -> SourceDelivery:
+    """A consumer cannot change a retained delivery's customer, project or bytes."""
+    row = stored_delivery(session, idempotency_key=envelope.idempotency_key)
+    if row is None or envelope_for_delivery(session, row.id) != envelope:
+        raise SourceDeliveryRefused("source requires its exact stored customer/project envelope")
+    return row
 
 
 def record_checkpoint_advance(

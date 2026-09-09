@@ -281,7 +281,9 @@ earlier.
 13. #455 email source: fixture-backed MIME segments, thread outcomes, and
     Proposed Deltas are implemented through the normal bound-email route;
     [capture and replay contract](docs/operations/email-source.md).
-    #456's five minutes capabilities are fixed and ready for an agent.
+    #456's five minutes capabilities are implemented with typed source facts,
+    accepted-subject scope, explicit source questions and fixture proof;
+    [minutes contract](docs/operations/minutes-source.md).
     Reusable source software does not wait for partner selection; #450 schedule
     source remains parallel work. Actual source/account configuration, signed
     authorization, deployments, customer runs and pilot findings are later proof.
@@ -364,8 +366,9 @@ cohort surface.
   median.
 - **Additional connectors** beyond the partner's own: #497 Microsoft 365
   SharePoint, OneDrive, and shared project mailbox.
-- **Ready for an agent:** #562 project contact resolution has a fixed
-  `project-contacts-v1` CSV/adopted-UCM input contract and fixture acceptance.
+- **Implemented with fixtures:** #562 project contact resolution imports
+  `project-contacts-v1` CSV/adopted-UCM sources, retains corrections and resolves
+  recipients for the actual follow-up bundles; [contact contract](docs/operations/project-contacts.md).
   It remains optional for the pilot; role-only follow-up bundles remain valid.
 - **Partner-triggered, `needs-triage` until named:** #563 delivery of a sealed release to the partner's document
   system, and read-only spatial context (station, small map, project limits)

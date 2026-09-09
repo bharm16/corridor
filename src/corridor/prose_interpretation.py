@@ -122,6 +122,12 @@ SubjectProvider = Callable[
 ]
 
 
+def read_typed_prose(client, *, system: str, user: str, output_type, factual_checks=()):
+    """One shared reference-only provider/validation boundary for prose lanes."""
+    raw = client.complete(system=system, user=user, schema=strict_output_schema(output_type))
+    return validate_typed_output(output_type, raw, factual_checks=factual_checks)
+
+
 def interpret_prose_document(
     session: Session,
     document: Document,
@@ -177,19 +183,12 @@ def interpret_prose_document(
         separators=(",", ":"),
     )
     usage_before = usage_snapshot(client)
-    raw = client.complete(system=system, user=user, schema=schema)
-    token_usage = token_usage_delta(
-        usage_before,
-        usage_snapshot(client),
-        document_ids=[document.id],
-    )
     segment_by_id = {segment.id: segment for segment in segments}
     subject_by_identity = {
         (subject.subject_type, subject.subject_id): subject for subject in subjects
     }
-    output = validate_typed_output(
-        ProseInterpretationOutput,
-        raw,
+    output = read_typed_prose(
+        client, system=system, user=user, output_type=ProseInterpretationOutput,
         factual_checks=(
             lambda value: _validate_references(
                 value,
@@ -198,6 +197,7 @@ def interpret_prose_document(
             ),
         ),
     )
+    token_usage = token_usage_delta(usage_before, usage_snapshot(client), document_ids=[document.id])
     completeness = _measure_completeness(
         document_id=document.id,
         segments=segments,

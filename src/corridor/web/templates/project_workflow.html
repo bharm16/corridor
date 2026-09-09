@@ -140,6 +140,14 @@
     {{ ui.fact_list(section.counts) }}
 
     {%- if section.name == "review" %}
+      {%- if workflow.review.source_questions %}
+      <h3>Statements to review</h3>
+      {%- for question in workflow.review.source_questions %}
+      <p>{{ question.filename }}: {{ question.reasons|join("; ") }}</p>
+      <blockquote>{{ question.text }}</blockquote>
+      {%- endfor %}
+      <p><a href="/review/{{ project.slug }}">Review these statements</a></p>
+      {%- endif %}
       {%- if workflow.undecided %}
       {#- The consequence column reads `packet_review`'s own derivation, the
           same object the review screen prints, so the two surfaces cannot

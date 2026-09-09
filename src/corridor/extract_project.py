@@ -413,6 +413,12 @@ def extractable_document(document: Document) -> bool:
     # An "email" Document is a routed inbound message body (#372, ADR-0058):
     # written evidence that flows through the ordinary prose statement path,
     # so the standing pass is its durable handoff too.
+    if document.doc_type == "minutes":
+        from sqlalchemy.orm import object_session
+        from corridor.operating_mode import is_adopted_baseline
+
+        attached = object_session(document)
+        return attached is not None and is_adopted_baseline(attached, document.project_id)
     return document.doc_type in ("matrix", "email") or (
         document.doc_type == "plan"
         and Path(document.filename).suffix.lower() in SPREADSHEET_SUFFIXES

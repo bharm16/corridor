@@ -11593,6 +11593,12 @@ def upgrade() -> None:
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
+    from corridor.migrations import project_contacts
+
+    project_contacts.upgrade(op)
+    from corridor.migrations import minutes_spine
+
+    minutes_spine.upgrade(op)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -11605,6 +11611,12 @@ def downgrade() -> None:
 
     from corridor.migrations import email_spine
 
+    from corridor.migrations import project_contacts
+
+    from corridor.migrations import minutes_spine
+
+    minutes_spine.downgrade(op)
+    project_contacts.downgrade(op)
     email_spine.downgrade(op)
     if op.get_bind().scalar(sa.text("select exists (select 1 from public.customer_environment_binding)")):
         raise RuntimeError("a bound customer environment cannot downgrade its routing attestation")

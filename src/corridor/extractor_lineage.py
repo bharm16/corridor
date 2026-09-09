@@ -53,6 +53,7 @@ _POSTPROCESSOR_SOURCES = {
     ),
     "minutes": (
         "src/corridor/extract_minutes_v5.py",
+        "src/corridor/statement_timing_parser.py",
         "src/corridor/extract_minutes_v4.py",
         "src/corridor/extract_batch.py",
         "src/corridor/verify.py",

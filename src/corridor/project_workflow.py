@@ -525,13 +525,16 @@ def _review_section(
     no section here carries a control of any kind.
     """
 
-    waiting = len(undecided)
+    source_questions = len(review.source_questions)
+    waiting = len(undecided) + source_questions
     changes = sum(item.child_count for item in undecided)
     return WorkflowSection(
         name=REVIEW,
         heading=HEADINGS[REVIEW],
         outstanding=waiting,
-        summary=(
+        summary=(f"{source_questions} statement{'s' if source_questions != 1 else ''} need source clarification; "
+                 f"{len(undecided)} question{'s' if len(undecided) != 1 else ''} cover {changes} proposed changes."
+                 if source_questions else (
             (
                 "No source has proposed a change to this project record."
                 if not review.items
@@ -547,9 +550,10 @@ def _review_section(
                 f"{'' if changes == 1 else 's'}. Each proposed change is "
                 "offered on exactly one of them."
             )
-        ),
+        )),
         counts=(
-            ("Questions to decide", waiting),
+            ("Questions to decide", len(undecided)),
+            *((("Statements needing clarification", source_questions),) if source_questions else ()),
             ("Proposed changes they cover", changes),
             ("Proposed changes waiting on a Follow-up Plan", len(planned)),
             ("Deferred until a later date", len(review.reading.deferred)),
