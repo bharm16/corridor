@@ -47,7 +47,7 @@ language plpgsql security definer set search_path=public,pg_temp set timezone='U
 declare original operative_support; link evidence_links; fact facts; subject_uuid uuid;
  scope_row support_scope_lineage; digest text; source_key text; result bigint;
  actor text; policy_identity text; policy_run bigint; policy_approval bigint; failure text;
- receipt automatic_carry_forward_receipts; active fact_decisions; revision bigint; prior_revision bigint;
+ active fact_decisions; revision bigint; prior_revision bigint;
  target_decision bigint; replacement bigint; previous_receipt bigint; locator_matches bigint; prior_native support_history_receipts;
 begin
  if session_user='corridor_web' and not coalesce(p_project=any(current_project_partition()),false) then
@@ -123,29 +123,12 @@ begin
    actor:=original.designated_by;
   end if;
  elsif original.designated_by='corridor:automatic-carry-forward' then
-  select r.* into receipt from automatic_carry_forward_receipts r
-   join audit_log a on a.id=r.audit_log_id
-   where r.project_id=p_project and r.dependency_id=original.dependency_id
-    and r.new_evidence_link_id=original.evidence_link_id
-    and a.actor=original.designated_by and a.action='automatic_carry_forward'
-    and a.entity_type='dependency' and a.entity_id=original.dependency_id and a.ts=original.designated_at
-    and exists(select 1 from jsonb_array_elements(r.after_json->'moved_scopes') moved
-      where moved->>'role'=original.role and moved->>'field_name' is not distinct from original.field_name
-      and (moved->>'to_evidence_link_id')::bigint=original.evidence_link_id);
-  if found then
-   if receipt.policy_approval_id is not null then
-    select id into policy_approval from policy_approvals where id=receipt.policy_approval_id
-     and project_id=p_project and family=receipt.family and policy_version=receipt.policy_version and policy_sha256=receipt.policy_sha256;
-   else
-    select case when count(*)=1 then min(r.id) end into policy_run from policy_runs r join automatic_carry_forward_outcomes o on o.run_id=r.id
-     where o.receipt_audit_log_id=receipt.audit_log_id and o.outcome='carried' and o.project_id=p_project
-      and r.project_id=p_project and r.family=receipt.family and r.policy_version=receipt.policy_version
-      and r.policy_sha256=receipt.policy_sha256 and r.policy_approval_id is null;
-   end if;
-   if policy_run is not null or policy_approval is not null then
-    policy_identity:='automatic-carry-forward:'||receipt.policy_sha256;
-   end if;
-  end if;
+  -- Runtime may append these legacy receipts, approvals and run outcomes.
+  -- Agreement among their labels cannot authenticate a released policy or
+  -- authorize a backdated Project Record Revision. Preserve the original
+  -- protected designation as compatibility history until a protected native
+  -- decision or a new attributable adoption supplies accepted authority.
+  failure:=coalesce(failure,'unproven_original_policy_identity');
  end if;
  if actor is null and policy_identity is null then failure:=coalesce(failure,'unproven_original_authority'); end if;
  if failure is null then

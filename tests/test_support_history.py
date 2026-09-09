@@ -161,3 +161,20 @@ def test_receipted_transfer_contract_does_not_allow_generic_automatic_inclusion(
     with pytest.raises(FactDecisionRefused, match="not eligible for automatic inclusion"):
         include_structured_cell_fact_by_policy(session, fact, idempotency_key="generic-support-policy-refused")
     assert session.scalar(text("select count(*) from fact_decisions where project_id=:project"), {"project": project.id}) == before
+
+
+def test_direct_sql_cannot_backdate_policy_authority_from_legacy_machine_label(session, support_case):
+    project, _dependency, _document, segment, _link, scope, _batch = support_case
+    # The schema-owner fixture establishes retained protected legacy state.
+    # Runtime cannot perform this write; its metadata may only claim which
+    # policy ran, and cannot authenticate a new native policy decision.
+    session.execute(text("update operative_support set designated_by='corridor:automatic-carry-forward' where id=:id"), {"id": scope.id})
+    batch = capture_history(session, inventory_history(session, project.id), run_key="machine-policy-identity-gap",
+        executor=session.scalar(text("select session_user")), code_revision="b" * 40)
+    before = session.scalar(text("select count(*) from project_record_revisions where project_id=:p"), {"p": project.id})
+    receipts = migrate_support_history(session, batch)
+    assert [(row["outcome"], row["reason"]) for row in receipts] == [
+        ("retained_compatibility", "unproven_original_policy_identity")]
+    assert receipts[0]["fact_decision_id"] is None
+    assert session.scalar(text("select count(*) from project_record_revisions where project_id=:p"), {"p": project.id}) == before
+    assert session.scalar(text("select exact_text from source_segments where id=:id"), {"id": segment.id}) == segment.exact_text

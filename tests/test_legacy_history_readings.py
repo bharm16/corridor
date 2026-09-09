@@ -74,7 +74,7 @@ def test_native_revision_projection_preserves_authority_across_a_correction():
     assert record_decisions_as_of(batch, revision_id=2)[0]["fact"]["text_value"] == "20+00"
 
 
-def test_support_history_preserves_policy_authority_and_refuses_missing_approval():
+def test_support_history_preserves_policy_claims_without_promoting_runtime_metadata():
     from corridor.legacy_history import support_designations_at_capture
 
     values = dict(
@@ -90,9 +90,9 @@ def test_support_history_preserves_policy_authority_and_refuses_missing_approval
                            "policy_sha256": "a" * 64, "approved_by": "local:approver"}],
     )
     reading = support_designations_at_capture(_batch(**values))[0]
-    assert reading["authority"]["kind"] == "released_policy"
+    assert reading["authority"]["kind"] == "unknown"
     assert reading["authority"]["original_actor"] == "corridor:automatic-carry-forward"
-    assert reading["authority"]["approval"]["approved_by"] == "local:approver"
+    assert reading["authority"]["reason"] == "unproven_original_policy_identity"
     missing = support_designations_at_capture(_batch(**{**values, "policy_approvals": []}))[0]
     assert missing["authority"]["kind"] == "unknown"
     assert missing["evidence"]["quote"] == "Original supporting words."
@@ -107,6 +107,5 @@ def test_support_history_preserves_policy_authority_and_refuses_missing_approval
                          "policy_sha256": "a" * 64, "policy_approval_id": None}],
     }
     managed_reading = support_designations_at_capture(_batch(**managed))[0]
-    assert managed_reading["authority"]["kind"] == "released_policy"
-    assert managed_reading["authority"]["approval"] is None
-    assert managed_reading["authority"]["run"]["id"] == 12
+    assert managed_reading["authority"]["kind"] == "unknown"
+    assert managed_reading["authority"]["reason"] == "unproven_original_policy_identity"

@@ -277,3 +277,11 @@ inclusion. Only the support-history command's original transfer receipt,
 matching scope/audit identity, and exact approval or managed-policy run/outcome
 can take the policy branch. Locator checks still establish no readiness or
 semantic-support conclusion.
+
+Legacy carry-forward receipt, approval and run metadata remain historical claims.
+Those tables allow runtime appends; matching their labels or digests cannot
+authenticate the original released policy. Such support acts retain their
+protected designation and exact source history with
+`unproven_original_policy_identity`; migration does not mint a backdated native
+policy revision. A protected native decision or a new attributable adoption
+must provide accepted authority before this class can pass native cutover.
