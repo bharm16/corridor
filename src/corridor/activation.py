@@ -66,6 +66,7 @@ class ActivationConfiguration:
     boundary_mode: str
     boundary_role: str
     boundary_route_digest: str
+    deployment_id: str
     model_provider_posture: str = "deterministic-no-model"
     processes_pdf: bool = False
     pulls_source: bool = False
@@ -102,6 +103,10 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
     role = session.execute(text("select current_user, session_user")).one()
     if tuple(role) != ("corridor_web", "corridor_web"):
         raise ActivationRefused("boundary smoke requires actual corridor_web login")
+    binding = session.execute(text("select customer_id, environment_id, deployment_id from customer_environment_binding")).all()
+    expected_binding = (configuration.customer, configuration.environment, configuration.deployment_id)
+    if len(binding) != 1 or tuple(binding[0]) != expected_binding:
+        raise ActivationRefused("actual database customer/environment/deployment binding differs")
     if configuration.boundary_mode not in {"true", "1", "yes", "on"}:
         raise ActivationRefused("live pilot boundary must be explicitly enabled")
     if configuration.boundary_route_digest != route_manifest_digest():
@@ -138,6 +143,7 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
     return {"gate": "web_boundary", "outcome": "passed", "configuration": configuration.identity,
         "observed_at": now.isoformat(), "contract": BOUNDARY_VERSION,
         "actual_database_role": role[0], "actual_login": role[1],
+        "database_binding": {"customer": binding[0][0], "environment": binding[0][1], "deployment_id": binding[0][2]},
         "route_manifest_digest": route_manifest_digest(), "boundary_state": "enforced", "observations": observations}
 
 
@@ -182,6 +188,8 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
             raise ActivationRefused(f"invalid prerequisite observation time: {gate}")
         if gate == "web_boundary" and (payload.get("actual_login") != "corridor_web"
             or payload.get("actual_database_role") != "corridor_web"
+            or payload.get("database_binding") != {"customer": configuration.customer,
+                "environment": configuration.environment, "deployment_id": configuration.deployment_id}
             or payload.get("contract") != BOUNDARY_VERSION
             or payload.get("route_manifest_digest") != configuration.boundary_route_digest
             or payload.get("boundary_state") != "enforced"

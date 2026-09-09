@@ -59,6 +59,47 @@ def provision_shadow_project(session, *, project_id, customer, environment, oper
     for table in ("project_roster_entries", "release_preparation_requests", "release_candidates", "release_packages"):
         if session.scalar(text(f"select count(*) from {table} where project_id=:id"), {"id": project_id}):
             raise ShadowRefused("project already reaches a customer surface")
+    # Inherited authority owners cannot be repaired with a database-local
+    # revoke: SET ROLE would regain the owner's implicit privileges. Refuse
+    # that deployment instead of changing cluster-wide membership.
+    if session.scalar(text("""
+        select exists(select 1 from pg_roles r where
+          (r.rolsuper or r.rolcreaterole or r.rolcreatedb or r.rolbypassrls
+           or r.rolname = 'corridor_fact_decision_writer'
+           or r.oid in (select relowner from pg_class where oid in
+             ('public.release_candidates'::regclass, 'public.release_packages'::regclass,
+              'public.release_preparation_requests'::regclass)))
+          and pg_has_role('corridor_worker', r.oid, 'MEMBER'))
+    """)):
+        raise ShadowRefused("worker inherits an authority owner; provision a separate non-authoritative login")
+    # PostgreSQL function ACLs are database-local. Remove every decision-owner
+    # command grant reachable directly, through PUBLIC or via SET ROLE, without
+    # changing the cluster's role memberships or any other database's grants.
+    session.execute(text("""
+        do $$ declare command record; grantee record;
+        begin
+          for command in
+            select p.oid::regprocedure as signature from pg_proc p
+            join pg_namespace n on n.oid=p.pronamespace
+            join pg_roles r on r.oid=p.proowner
+            where n.nspname='public' and r.rolname='corridor_fact_decision_writer'
+          loop
+            execute format('revoke execute on function %s from public', command.signature);
+            for grantee in select rolname from pg_roles
+              where pg_has_role('corridor_worker', oid, 'MEMBER')
+            loop
+              execute format('revoke execute on function %s from %I', command.signature, grantee.rolname);
+            end loop;
+          end loop;
+          for grantee in select rolname from pg_roles
+            where pg_has_role('corridor_worker', oid, 'MEMBER')
+          loop
+            execute format('revoke insert, update, delete on public.release_candidates, public.release_packages, public.release_preparation_requests from %I', grantee.rolname);
+          end loop;
+          revoke insert, update, delete on public.release_candidates, public.release_packages,
+            public.release_preparation_requests from public;
+        end $$;
+    """))
     values = {"id": project_id, "customer": customer, "environment": environment, "operator": operator}
     existing = session.execute(text("select customer, environment, bootstrap_operator from shadow_projects where project_id=:id"), values).first()
     if existing:
@@ -66,9 +107,6 @@ def provision_shadow_project(session, *, project_id, customer, environment, oper
             raise ShadowRefused("shadow provisioning identity is immutable")
         return
     session.execute(text("insert into shadow_projects(project_id, customer, environment, database_name, bootstrap_operator) values (:id,:customer,:environment,current_database(),:operator)"), values)
-    # The native worker needs release inserts for ordinary preparation. This
-    # dedicated database removes those rights, including any PUBLIC grant.
-    session.execute(text("revoke insert, update, delete on release_candidates, release_packages, release_preparation_requests from corridor_worker, public"))
 
 
 def verify_runtime(session, *, project_id, customer, environment):
@@ -78,7 +116,8 @@ def verify_runtime(session, *, project_id, customer, environment):
         raise ShadowRefused("shadow capture requires the actual corridor_worker login")
     unsafe = session.scalar(text("""
         select exists(select 1 from pg_roles r where
-          (r.rolsuper or r.rolcreaterole or r.rolbypassrls or r.rolcreatedb)
+          (r.rolsuper or r.rolcreaterole or r.rolbypassrls or r.rolcreatedb
+           or r.rolname='corridor_fact_decision_writer')
           and pg_has_role(current_user, r.oid, 'MEMBER'))
         or exists(select 1 from pg_proc p join pg_roles r on r.oid=p.proowner
           join pg_namespace n on n.oid=p.pronamespace

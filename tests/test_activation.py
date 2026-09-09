@@ -18,7 +18,7 @@ NOW = datetime(2026, 9, 9, tzinfo=timezone.utc)
 def configuration():
     return ActivationConfiguration("fixture-env", "fixture-customer", 1, "ucm-v1", "manual-upload",
         511, 606, "us-east-2", "code-1", "db-1", "image-1", "governance-1", "security-1",
-        "a" * 64, "true", "corridor_web", route_manifest_digest())
+        "a" * 64, "true", "corridor_web", route_manifest_digest(), "fixture-deployment")
 
 
 def evidence(tmp_path, configuration, **overrides):
@@ -29,6 +29,8 @@ def evidence(tmp_path, configuration, **overrides):
         if gate == "web_boundary":
             payload |= {"contract": "live-pilot-web-boundary-v1", "actual_login": "corridor_web",
                 "actual_database_role": "corridor_web", "route_manifest_digest": route_manifest_digest(),
+                "database_binding": {"customer": configuration.customer, "environment": configuration.environment,
+                    "deployment_id": configuration.deployment_id},
                 "boundary_state": "enforced",
                 "observations": [{"method": method, "template": route, "status": 200}
                     for method, route in PILOT_ROUTES] + [{"method": "GET", "template": "/disabled", "status": 404}]}
@@ -102,7 +104,7 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
     """The HTTP adapter is synthetic; PostgreSQL runs as the real web login."""
     import os
     from types import SimpleNamespace
-    from sqlalchemy import create_engine
+    from sqlalchemy import create_engine, text
     from sqlalchemy.engine import make_url
     from sqlalchemy.orm import Session
     from corridor.activation import collect_boundary_smoke
@@ -120,6 +122,9 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
     with runtime_database.session_factory() as owner:
         with pytest.raises(ActivationRefused, match="actual corridor_web"):
             collect_boundary_smoke(owner, configuration=configuration, request=request, cases=cases, now=NOW)
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text("insert into customer_environment_binding(singleton,customer_id,environment_id,deployment_id) values (true,:customer,:environment,:deployment)"),
+            {"customer": configuration.customer, "environment": configuration.environment, "deployment": configuration.deployment_id})
     url = make_url(settings.database_url).set(database=runtime_database.name,
         username="corridor_web", password=os.environ.get("CORRIDOR_WEB_DB_PASSWORD", "corridor_web"))
     web_engine = create_engine(url)
@@ -128,6 +133,9 @@ def test_boundary_collector_requires_actual_login_and_deployed_enforcement(
             observed = collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
             assert observed["actual_login"] == "corridor_web"
             assert len(observed["observations"]) == len(PILOT_ROUTES) + 1
+            with pytest.raises(ActivationRefused, match="actual database"):
+                collect_boundary_smoke(web, configuration=replace(configuration, deployment_id="other"),
+                    request=request, cases=cases, now=NOW)
             boundary_state = "not_declared"
             with pytest.raises(ActivationRefused, match="does not report an enforced"):
                 collect_boundary_smoke(web, configuration=configuration, request=request, cases=cases, now=NOW)
