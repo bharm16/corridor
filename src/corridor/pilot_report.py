@@ -138,6 +138,51 @@ def _work(row, attestation):
             "derivation": "sum disjoint logged intervals; all coordinator categories included; new artifact work separate"}
 
 
+def _cohort_packets(rows):
+    frozen = {}
+    for row in sorted(rows, key=lambda r: instant(r["declaration"]["start"])):
+        observations = {o["event_id"]: o for o in row["observations"]}
+        for packet in row["packets"]:
+            shown = observations.get(packet["event_id"], {}).get("payload", {})
+            context = {key: shown.get(key) for key in (
+                "accepted_revision_id", "observed_accepted_revision_id", "issue_profile_identity",
+                "issue_profile_version", "issue_profile_sha256", "coverage_declaration_id")}
+            key = digest({"project": project_key(row["declaration"]), "item_key": packet["item_key"],
+                          "children": sorted(packet["child_ids"]), "context": context,
+                          "interrupting": packet["interrupting"]})
+            selected = frozen.setdefault(key, {**packet, "frozen_identity": key, "project_key": project_key(row["declaration"]), "exposures": [],
+                                                "judgments": [], "reconstruction_readings": []})
+            selected["exposures"].append({"period_id": row["declaration"]["period_id"],
+                "event_id": packet["event_id"], "surfaced_at": packet["surfaced_at"], "outcomes": packet["outcomes"]})
+            if type(packet.get("necessary")) is bool:
+                selected["judgments"].append(packet["necessary"])
+            selected["reconstruction_readings"].append(packet["manual_reconstruction"]["minutes"])
+    # A judgment can occur after the initial week without another surfacing.
+    # Join it only when the selected history contains exactly one matching
+    # frozen question, or the observation explicitly names its frozen identity.
+    for row in rows:
+        invalid = set(row["sampling"]["invalid_observations"])
+        for observation in row["observations"]:
+            p = observation["payload"]
+            if (observation["event_id"] in invalid or p.get("sample_kind") != "packet_usefulness"
+                    or not _evidenced(p) or type(p.get("necessary")) is not bool):
+                continue
+            matches = [packet for key, packet in frozen.items()
+                if packet["project_key"] == project_key(row["declaration"]) and packet["item_key"] == p.get("item_key")
+                and (not p.get("frozen_packet_identity") or p["frozen_packet_identity"] == key)
+                and instant(observation["occurred_at"]) >= instant(packet["surfaced_at"])]
+            if len(matches) == 1:
+                matches[0]["judgments"].append(p["necessary"])
+    for packet in frozen.values():
+        judgments = set(packet["judgments"])
+        packet["necessary"] = next(iter(judgments)) if len(judgments) == 1 else None
+        packet["conflicting_judgments"] = len(judgments) > 1
+        readings = packet["reconstruction_readings"]
+        packet["manual_reconstruction"] = {"minutes": sum(readings) if all(number(n) for n in readings) else None,
+                                              "derivation": "sum recorded reconstruction across the frozen packet's exposures; missing remains unavailable"}
+    return list(frozen.values())
+
+
 def _packet_rates(packets, complete):
     interrupting = [p for p in packets if p["interrupting"]]
     def one(selected):
@@ -231,7 +276,7 @@ def _packages(rows):
 
 
 def _aggregate(rows, work, baselines, calendar, history_rows):
-    packets = [p for row in rows for p in row["packets"]]
+    packets = _cohort_packets(rows)
     # Repeated presentations may duplicate a child; a delta is one diagnostic
     # within its project/period, never one count per containing packet.
     children = list({(project_key(row["declaration"]), row["declaration"]["period_id"], c["delta_id"]): c
@@ -264,7 +309,7 @@ def _aggregate(rows, work, baselines, calendar, history_rows):
         "review_burden": distribution([work[r["declaration"]["period_id"]]["review_minutes"] for r in rows], weeks, "project-week minutes", complete=full_weeks),
         "operations_time": distribution([work[r["declaration"]["period_id"]]["operations_minutes"] for r in rows], weeks, "project-week minutes", complete=full_weeks),
         "provider_cost": distribution(costs, weeks, "USD/project-week", complete=full_weeks), "coverage": source_coverage,
-        "packet_precision": _packet_rates(packets, complete), "latency": _latencies(children),
+        "packet_precision": _packet_rates(packets, complete), "frozen_packets": packets, "latency": _latencies(children),
         "routine_accept_without_edit": acceptance([c for c in resolved if not c["material_field"]]),
         "material_accept_without_edit": {field: acceptance([c for c in resolved if c["target_field"] == field])
             for field in sorted({f for r in rows for f in r["declaration"]["material_fields"]})},
@@ -294,6 +339,62 @@ def _aggregate(rows, work, baselines, calendar, history_rows):
                 for category in COORDINATOR_CATEGORIES + OPERATIONS_CATEGORIES},
             "cost": [b for r in rows for b in r["provider_cost"]["breakdown"] if b["source_class"] == source]}
     return result
+
+
+def _validate_onboarding(cohort, by_id, live_ids):
+    onboarding = cohort.get("onboarding_period_ids", [])
+    if (len(set(onboarding)) != len(onboarding) or not set(onboarding) <= set(cohort["period_ids"])
+            or set(onboarding) & set(live_ids)):
+        raise ValueError("onboarding periods must belong to this cohort and be disjoint from live periods")
+    projects = defaultdict(list)
+    live_projects = defaultdict(list)
+    for identity in live_ids:
+        live_projects[project_key(by_id[identity]["declaration"])].append(by_id[identity]["declaration"])
+    for identity in onboarding:
+        d = by_id[identity]["declaration"]
+        if project_key(d) not in live_projects:
+            raise ValueError("onboarding project must also belong to the selected live cohort")
+        if any(live["partner_id"] != d["partner_id"] for live in live_projects[project_key(d)]):
+            raise ValueError("onboarding partner must match the selected live project")
+        projects[project_key(d)].append(d)
+    for key, periods in projects.items():
+        ordered = sorted(periods, key=lambda d: instant(d["start"]))
+        first_live = min(instant(d["start"]) for d in live_projects[key])
+        if (any(instant(d["end"])-instant(d["start"]) != timedelta(days=7) for d in ordered)
+                or any(instant(a["end"]) != instant(b["start"]) for a, b in zip(ordered, ordered[1:]))
+                or instant(ordered[-1]["end"]) != first_live):
+            raise ValueError("onboarding must be contiguous full weeks immediately preceding live observation")
+
+
+def _validate_configuration(cohort, rows):
+    by_project = defaultdict(list)
+    for row in rows:
+        by_project[project_key(row["declaration"])].append(row["declaration"])
+    for key, declarations in by_project.items():
+        configs = set()
+        ordered = sorted(declarations, key=lambda d: instant(d["start"]))
+        for d in ordered:
+            configuration = {k: d[k] for k in ("issue_profile_identity", "issue_profile_version", "issue_profile_sha256",
+                "required_artifacts", "previously_performed_artifacts", "quiet_max", "ordinary_max")}
+            configuration["binding"] = {k: v for k, v in d["binding"].items() if k not in {"code_revision", "product_revision"}}
+            configs.add(digest(configuration))
+        if len(configs) > 1:
+            raise ValueError("material configuration changes require separate cohorts")
+        for before, after in zip(ordered, ordered[1:]):
+            prior, current = before["binding"], after["binding"]
+            if all(prior[k] == current[k] for k in ("code_revision", "product_revision")):
+                continue
+            changes = [change for change in cohort.get("nonstructural_changes", [])
+                if change.get("project_key") == key and change.get("prior_code_revision") == prior["code_revision"]
+                and change.get("code_revision") == current["code_revision"]
+                and change.get("prior_product_revision") == prior["product_revision"]
+                and change.get("product_revision") == current["product_revision"]]
+            if not any(_evidenced(change) and change.get("classification") in {
+                    "security_fix", "crash_fix", "data_loss_fix", "accessibility_fix", "behavior_restoring_fix"}
+                    and change.get("affected_criteria") and change.get("reason")
+                    and instant(before["end"]) <= instant(change["occurred_at"]) <= instant(after["start"])
+                    for change in changes):
+                raise ValueError("code revision changes require an attributed nonstructural change log or separate cohorts")
 
 
 def derive_report(measurement, declaration, evidence):
@@ -333,20 +434,17 @@ def derive_report(measurement, declaration, evidence):
         if len(set(live_ids)) != len(live_ids) or not set(live_ids) <= set(cohort["period_ids"]):
             raise ValueError("live measurement periods must be unique members of their cohort")
         rows = [by_id[p] for p in live_ids]
-        # A named cohort cannot hide a configuration change for the same project.
-        configs = defaultdict(set)
-        for row in rows:
-            d = row["declaration"]
-            configs[project_key(d)].add(digest({k: d[k] for k in (
-                "binding", "issue_profile_identity", "issue_profile_version", "issue_profile_sha256",
-                "required_artifacts", "previously_performed_artifacts", "quiet_max", "ordinary_max")}))
-        if any(len(values) > 1 for values in configs.values()):
-            raise ValueError("material configuration changes require separate cohorts")
+        _validate_onboarding(cohort, by_id, live_ids)
+        _validate_configuration(cohort, rows)
         partners = {}
         for partner in sorted({r["declaration"]["partner_id"] for r in rows} | set(declaration.get("shape", {}).get("partners", {}))):
             owned = [r for r in rows if r["declaration"]["partner_id"] == partner]
             partners[partner] = {"pooled": _aggregate(owned, work, baselines, declaration.get("business_calendar"), measurement["periods"]),
-                "volume_strata": {s: _aggregate([r for r in owned if r["volume_stratum"] == s], work, baselines, declaration.get("business_calendar"), measurement["periods"]) for s in VOLUME_STRATA}}
+                "volume_strata": {s: _aggregate([r for r in owned if r["volume_stratum"] == s], work, baselines, declaration.get("business_calendar"), measurement["periods"]) for s in VOLUME_STRATA},
+                "revision_slices": [{"code_revision": code, "product_revision": product,
+                    "measures": _aggregate([r for r in owned if (r["declaration"]["binding"]["code_revision"], r["declaration"]["binding"]["product_revision"]) == (code, product)],
+                        work, baselines, declaration.get("business_calendar"), measurement["periods"])}
+                    for code, product in sorted({(r["declaration"]["binding"]["code_revision"], r["declaration"]["binding"]["product_revision"]) for r in owned})]}
         cohorts.append({"declaration": cohort, "partners": partners})
     samples = {}
     native_populations = {}

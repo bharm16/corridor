@@ -77,9 +77,20 @@ The shape gate checks two signed partners, two projects per partner, two measure
 onboarding weeks, eight consecutive complete live weeks per project and forty
 captured source arrivals per partner. Every declared partner receives every
 finding even if its data is wholly absent. A material configuration change
-requires a separate cohort: differing bindings, templates, mappings, issue
-profiles, artifact obligations or volume rules cannot be pooled. Preserve the
-change's reason and commit in the cohort declaration. A shorter segment remains
+requires a separate cohort: differing packetizer rules, source/connector settings,
+templates, mappings, issue profiles, artifact obligations or volume rules cannot
+be pooled. Preserve the
+change's reason and commit in the cohort declaration. A code/product revision
+change can stay in the cohort only with an attributed `nonstructural_changes`
+entry naming `project_key`, prior and new `code_revision` and `product_revision`
+(the former keys are prefixed `prior_`), `occurred_at`, `classification`, `reason`,
+`affected_criteria`, `actor` and `evidence_reference`. Allowed classifications are
+`security_fix`, `crash_fix`, `data_loss_fix`, `accessibility_fix` and
+`behavior_restoring_fix`. The change instant must fall between the old and new
+periods. Both revision slices remain visible beside the pooled cohort.
+Onboarding IDs must belong to that cohort and project, be disjoint from live IDs,
+and form complete contiguous weeks immediately before live observation. Live
+weeks and unrelated cohort history cannot supply onboarding duration. A shorter segment remains
 insufficient; it cannot borrow weeks from the other side of the boundary.
 
 ## Evidence file
@@ -162,7 +173,13 @@ a human outcome and required responses are evidenced; it never edits the contrac
 The report preserves every #532 period and observation, including receipt IDs,
 provider/model/prompt/policy dimensions, declared configuration, package membership,
 repair time, missing or mixed-revision artifacts and stale-candidate failures.
-Every rate prints its numerator, denominator and unit. Time distributions print
+Every rate prints its numerator, denominator and unit. Cohort packet counts
+deduplicate repeated project-week exposures of the same frozen item key, child
+membership and issue context; changed membership/context remains a separate
+question. Period exposure rows remain intact. A later valid judgment joins only
+the same unambiguous frozen question (or an explicit `frozen_packet_identity`).
+Conflicting judgments withhold a rate rather than retrospectively relabeling it.
+A close before the judgment retains an unjudged packet in the denominator. Time distributions print
 median and nearest-rank p90. Source-to-delta latency includes native deltas that
 were never surfaced as packets. An arrival is joined across retained weeks by exact customer/database/project
 origin and source identity. An arrival absent from the entire retained history

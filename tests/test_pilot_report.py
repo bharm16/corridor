@@ -246,3 +246,106 @@ def test_unattributed_completeness_cannot_establish_false_write_or_diagnostic_su
     false_writes = next(f for f in partner["findings"] if f["criterion"] == "material_false_writes")
     assert false_writes["result"] == "insufficient_evidence"
     assert partner["diagnostics"]["alert_usefulness"]["value"] is None
+
+
+def test_resurfaced_frozen_packet_is_counted_once_but_changed_membership_is_distinct():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    second = replace(p, period_id="second", start=START+timedelta(days=7), end=START+timedelta(days=14))
+    contract["cohorts"][0]["period_ids"].append("second")
+    events = [surface("same", [1]), surface("same", [1], hour=7*24+1),
+        event(EventFamily.MEASUREMENT_SAMPLE, sample_kind="packet_usefulness", item_key="same", necessary=True,
+              actor="coordinator", evidence_reference="triage:second", hour=7*24+2)]
+    result = derive_report(derive_measurement([p, second], events), contract, evidence)
+    assert [len(r["packets"]) for r in result["periods"]] == [1, 1]
+    assert pooled(result)["packet_precision"]["all_surfaced"]["denominator"] == 1
+    assert pooled(result)["packet_precision"]["all_surfaced"]["numerator"] == 1
+    assert len(pooled(result)["frozen_packets"][0]["exposures"]) == 2
+    changed = [events[0], surface("same", [1, 2], hour=7*24+1)]
+    result = derive_report(derive_measurement([p, second], changed), contract, evidence)
+    assert pooled(result)["packet_precision"]["all_surfaced"]["denominator"] == 2
+
+
+def test_conflicting_judgments_cannot_relabel_a_frozen_packet_at_later_close():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    second = replace(p, period_id="second", start=START+timedelta(days=7), end=START+timedelta(days=14))
+    contract["cohorts"][0]["period_ids"].append("second")
+    events = [surface("same", [1]), surface("same", [1], hour=7*24+1),
+        event(EventFamily.MEASUREMENT_SAMPLE, sample_kind="packet_usefulness", item_key="same", necessary=True,
+              actor="coordinator", evidence_reference="triage:first", hour=2),
+        event(EventFamily.MEASUREMENT_SAMPLE, sample_kind="packet_usefulness", item_key="same", necessary=False,
+              actor="coordinator", evidence_reference="triage:second", hour=7*24+2)]
+    result = derive_report(derive_measurement([p, second], events), contract, evidence)
+    # Distinct observation references still cannot relabel the same frozen
+    # packet question at the later selected close.
+    metric = pooled(result)["packet_precision"]["all_surfaced"]
+    assert metric["denominator"] == 1
+    assert metric["value"] is None
+
+
+def test_documented_nonstructural_revision_keeps_cohort_and_revision_slices():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    later = replace(p, period_id="later", start=START+timedelta(days=7), end=START+timedelta(days=14),
+                    binding=replace(p.binding, code_revision="git:fixed", product_revision="fixed"))
+    contract["cohorts"][0]["period_ids"].append("later")
+    measurement = derive_measurement([p, later], [])
+    with pytest.raises(ValueError, match="nonstructural change log"):
+        derive_report(measurement, contract, evidence)
+    contract["cohorts"][0]["nonstructural_changes"] = [{"project_key": project_key(p.as_dict()),
+        "prior_code_revision": p.binding.code_revision, "code_revision": "git:fixed",
+        "prior_product_revision": p.binding.product_revision, "product_revision": "fixed",
+        "classification": "crash_fix", "occurred_at": later.start.isoformat(), "actor": "engineer",
+        "evidence_reference": "change:receipt", "reason": "restore existing behavior", "affected_criteria": ["review_burden"]}]
+    result = derive_report(measurement, contract, evidence)
+    partner = result["cohorts"][0]["partners"]["fixture-partner"]
+    assert len(partner["revision_slices"]) == 2
+    assert partner["pooled"]["project_week_denominator"] == 2
+    changed = replace(later, binding=replace(later.binding, packetizer_rules_version="changed-workflow"))
+    with pytest.raises(ValueError, match="separate cohorts"):
+        derive_report(derive_measurement([p, changed], []), contract, evidence)
+
+
+@pytest.mark.parametrize("case", ["live_reuse", "other_cohort", "after_live", "gap"])
+def test_onboarding_cannot_reuse_live_or_unrelated_or_noncontiguous_weeks(case):
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    before = replace(p, period_id="before", start=START-timedelta(days=7), end=START,
+                     declared_at=START-timedelta(days=14))
+    first = replace(p, period_id="first", start=START-timedelta(days=14), end=START-timedelta(days=7),
+                    declared_at=START-timedelta(days=14))
+    contract["declared_at"] = first.start.isoformat()
+    c = contract["cohorts"][0]
+    c.update(period_ids=["first", "before", p.period_id], live_period_ids=[p.period_id],
+             onboarding_period_ids=["first", "before"])
+    periods = [first, before, p]
+    if case == "live_reuse":
+        c["onboarding_period_ids"] = [p.period_id]
+    elif case == "other_cohort":
+        c["period_ids"].remove("first")
+        contract["cohorts"].append({"id": "other", "period_ids": ["first"]})
+    elif case == "after_live":
+        before = replace(before, start=START+timedelta(days=7), end=START+timedelta(days=14))
+        periods = [first, p, before]
+    else:
+        first = replace(first, start=START-timedelta(days=21), end=START-timedelta(days=14), declared_at=START-timedelta(days=21))
+        contract["declared_at"] = first.start.isoformat()
+        periods = [first, before, p]
+    with pytest.raises(ValueError, match="onboarding"):
+        derive_report(derive_measurement(periods, []), contract, evidence)
+
+
+def test_selected_close_joins_a_later_judgment_without_requiring_another_exposure():
+    from dataclasses import replace
+    p, contract, evidence = inputs()
+    later = replace(p, period_id="later", start=START+timedelta(days=7), end=START+timedelta(days=14))
+    contract["cohorts"][0]["period_ids"].append("later")
+    events = [surface("same", [1]), event(EventFamily.MEASUREMENT_SAMPLE, sample_kind="packet_usefulness", item_key="same",
+        necessary=True, actor="coordinator", evidence_reference="late-triage", hour=7*24+1)]
+    result = derive_report(derive_measurement([p, later], events), contract, evidence)
+    assert pooled(result)["packet_precision"]["all_surfaced"]["value"] == 1
+    short_contract = deepcopy(contract)
+    short_contract["cohorts"][0]["period_ids"] = [p.period_id]
+    short = derive_report(derive_measurement([p], events), short_contract, evidence)
+    assert pooled(short)["packet_precision"]["all_surfaced"]["value"] is None
