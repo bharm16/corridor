@@ -60,7 +60,7 @@ class RestoreRehearsal:
             raise DispositionRefused("rehearsal must verify retained object bytes")
 
 
-def sql_restore_probe(connection, *, target, queries, object_store, object_keys):
+def sql_restore_probe(connection, *, target, queries, object_store, object_digests):
     """Read exact test observations from the observed restored DB and object store.
 
     The operator supplies explicit queries for a known synthetic fixture. No
@@ -74,7 +74,8 @@ def sql_restore_probe(connection, *, target, queries, object_store, object_keys)
     with connection.transaction():
         connection.execute("SET TRANSACTION READ ONLY")
         query_results = {name: result_digest(connection.execute(sql).fetchall()) for name, sql in queries.items()}
-    objects = {key: sha256(object_store.read_bytes(key)).hexdigest() for key in object_keys}
+    objects = {key: sha256(object_store.get(key, sha256=expected)).hexdigest()
+               for key, expected in object_digests.items()}
     return {"query_digests": query_results, "object_digests": objects}
 
 
