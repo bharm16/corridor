@@ -70,6 +70,9 @@ create function capture_legacy_history(p_project_id bigint, p_run_key text,
 language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare content jsonb; content_digest text; result bigint; previous legacy_history_batches;
 begin
+ if p_executor is distinct from session_user then
+  raise exception 'migration executor must equal authenticated database login' using errcode='23514';
+ end if;
  if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
   raise exception 'history outside project partition' using errcode='23514';
  end if;
@@ -101,6 +104,9 @@ create function reverse_legacy_history(p_project_id bigint,p_batch_id bigint,p_a
  returns bigint language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare result bigint; previous legacy_history_reversals;
 begin
+ if p_actor is distinct from session_user then
+  raise exception 'migration reversal actor must equal authenticated database login' using errcode='23514';
+ end if;
  if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
   raise exception 'history outside project partition' using errcode='23514';
  end if;
@@ -268,3 +274,25 @@ begin
  return migrated;
 end; $$;
 """
+
+
+def downgrade(op):
+    """Reverse only an unused installation; retained history is never dropped."""
+    connection = op.get_bind()
+    for table in ("legacy_history_batches", "legacy_history_reversals", "legacy_history_evidence_migrations"):
+        if connection.scalar(text(f"select exists(select 1 from {table})")):
+            raise RuntimeError("legacy history custody and migration receipts cannot be discarded by downgrade")
+    for function in (
+        "backfill_legacy_evidence_sources(bigint,bigint)",
+        "reverse_legacy_history(bigint,bigint,text,text)",
+        "capture_legacy_history(bigint,text,text,text,text)",
+        "legacy_history_content(bigint)",
+    ):
+        op.execute(f"drop function {function}")
+    for table in ("legacy_history_evidence_migrations", "legacy_history_reversals", "legacy_history_batches"):
+        op.execute(f"drop table {table}")
+    op.execute("drop function guard_legacy_history()")
+    op.execute("revoke update(id) on evidence_links from corridor_fact_decision_writer")
+    op.execute("revoke execute on function current_project_partition() from corridor_fact_decision_writer")
+    # The cluster-global NOLOGIN capability may serve another customer DB.
+    # Its per-database privileges disappear with these objects; never drop it.

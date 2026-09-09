@@ -54,21 +54,21 @@ def test_history_replay_preserves_original_actor_and_time_and_reverses_without_l
     inventory = inventory_history(session, project.id)
     assert inventory.counts["dependencies"] == 1
     assert inventory.counts["work_decisions"] == 2
-    batch = capture_history(session, inventory, run_key="rehearsal-1", executor="migration:operator", code_revision="a" * 40)
-    assert capture_history(session, inventory, run_key="rehearsal-1", executor="migration:operator", code_revision="a" * 40).id == batch.id
+    batch = capture_history(session, inventory, run_key="rehearsal-1", executor=session.scalar(text("select session_user")), code_revision="a" * 40)
+    assert capture_history(session, inventory, run_key="rehearsal-1", executor=session.scalar(text("select session_user")), code_revision="a" * 40).id == batch.id
     old = coordination_decisions_as_of(batch, at=datetime(2026, 1, 15, tzinfo=timezone.utc))
     new = coordination_decisions_as_of(batch, at=datetime(2026, 2, 15, tzinfo=timezone.utc))
     assert [(item["recorded_by"], item["after_value"]) for item in old] == [("local:original-author", "Original owner")]
     assert [(item["recorded_by"], item["after_value"]) for item in new] == [("local:correcting-author", "Corrected owner")]
-    assert batch.executor == "migration:operator"
+    assert batch.executor == session.scalar(text("select session_user"))
     assert history_rows(batch, "dependencies")[0]["title"] == "Original title"
     with pytest.raises(HistoryRefused, match="belong"):
         read_history(session, other.id, batch.id)
-    withdrawn = reverse_history(session, batch, actor="local:reviewer", reason="rollback rehearsal")
+    withdrawn = reverse_history(session, batch, actor=session.scalar(text("select session_user")), reason="rollback rehearsal")
     assert withdrawn.reversed
     assert history_rows(withdrawn, "work_decisions") == history_rows(batch, "work_decisions")
     with pytest.raises(DBAPIError, match="reactivated"), session.begin_nested():
-        capture_history(session, inventory, run_key="rehearsal-1", executor="migration:operator", code_revision="a" * 40)
+        capture_history(session, inventory, run_key="rehearsal-1", executor=session.scalar(text("select session_user")), code_revision="a" * 40)
 
 
 def test_capture_refuses_drift_and_database_rewrites(session, historical_project):
@@ -77,9 +77,9 @@ def test_capture_refuses_drift_and_database_rewrites(session, historical_project
     dependency.title = "Changed after inventory"
     session.flush()
     with pytest.raises(DBAPIError, match="changed since inventory"), session.begin_nested():
-        capture_history(session, inventory, run_key="drift", executor="migration:operator", code_revision="a" * 40)
+        capture_history(session, inventory, run_key="drift", executor=session.scalar(text("select session_user")), code_revision="a" * 40)
     inventory = inventory_history(session, project.id)
-    batch = capture_history(session, inventory, run_key="fresh", executor="migration:operator", code_revision="a" * 40)
+    batch = capture_history(session, inventory, run_key="fresh", executor=session.scalar(text("select session_user")), code_revision="a" * 40)
     for statement in ("update legacy_history_batches set executor='forged' where id=:id", "delete from legacy_history_batches where id=:id"):
         with pytest.raises(DBAPIError, match="immutable"), session.begin_nested():
             session.execute(text(statement), {"id": batch.id})
@@ -109,7 +109,7 @@ def test_evidence_backfill_uses_only_one_exact_locator_and_reverses_reader_routi
     session.add_all([segment, exact, partial])
     session.flush()
     inventory = inventory_history(session, project.id)
-    batch = capture_history(session, inventory, run_key="source-migration", executor="migration:operator", code_revision="b" * 40)
+    batch = capture_history(session, inventory, run_key="source-migration", executor=session.scalar(text("select session_user")), code_revision="b" * 40)
     results = backfill_evidence_sources(session, batch)
     assert [(row["legacy_evidence_link_id"], row["outcome"]) for row in results] == [
         (exact.id, "segment_reference"), (partial.id, "retained_quote")]
@@ -118,6 +118,6 @@ def test_evidence_backfill_uses_only_one_exact_locator_and_reverses_reader_routi
     assert evidence_quotation(session, partial).owner == "legacy_quote"
     session.refresh(exact)
     assert exact.quote == words
-    reverse_history(session, batch, actor="local:reviewer", reason="rollback source migration")
+    reverse_history(session, batch, actor=session.scalar(text("select session_user")), reason="rollback source migration")
     assert evidence_quotation(session, exact).owner == "legacy_quote"
     assert evidence_quotation(session, exact).passages == (words,)

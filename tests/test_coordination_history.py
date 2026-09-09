@@ -47,7 +47,7 @@ def dependency(session, project):
 
 def _batch(session, project, key="coordination-1"):
     return capture_history(session, inventory_history(session, project.id), run_key=key,
-                           executor="migration:operator", code_revision="a" * 40)
+                           executor=session.scalar(text("select session_user")), code_revision="a" * 40)
 
 
 def test_native_migration_keeps_original_actor_time_and_reads_without_copied_fields(session, project, dependency):
@@ -78,7 +78,7 @@ def test_native_migration_keeps_original_actor_time_and_reads_without_copied_fie
     assert current_internal_owner_decision(session, dependency.id).id == latest.id
     with pytest.raises(DBAPIError, match="immutable"), session.begin_nested():
         session.execute(text("update coordination_record_decisions set recorded_by='migration:operator' where project_id=:project"), {"project": project.id})
-    reverse_history(session, batch, actor="local:reviewer", reason="rollback rehearsal")
+    reverse_history(session, batch, actor=session.scalar(text("select session_user")), reason="rollback rehearsal")
     assert read_coordination_record(session, project.id) == ()
     assert current_internal_owner_decision(session, dependency.id).id == latest.id
     resumed = migrate_coordination_history(session, _batch(session, project, key="coordination-rehearsal-2"))

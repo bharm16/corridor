@@ -5,6 +5,8 @@ current/as-of view joins native subjects, decisions and revisions; a historical
 import derives every actor, time and value from the sealed original rows.
 """
 
+from sqlalchemy import text
+
 SCHEMA = """
 create function valid_coordination_history_actor(actor text) returns boolean
  language sql immutable as $$
@@ -412,3 +414,25 @@ def upgrade(op):
     op.execute("grant execute on function attributable_coordination_subject(bigint,bigint) to corridor_fact_decision_writer")
     op.execute("alter view current_coordination_record set (security_invoker=true)")
     op.execute("grant select on current_coordination_record to corridor_web,corridor_worker,corridor_fact_decision_writer,corridor_history_operations")
+
+
+def downgrade(op):
+    """Refuse loss of any native decision, subject identity or migration route."""
+    connection = op.get_bind()
+    for table in TABLES:
+        if connection.scalar(text(f"select exists(select 1 from {table})")):
+            raise RuntimeError("native coordination history and identities cannot be discarded by downgrade")
+    op.execute("drop view current_coordination_record")
+    for function in (
+        "migrate_coordination_history(bigint,bigint)",
+        "mirror_coordination_decision(bigint,bigint,text)",
+        "sync_coordination_reversals(bigint)",
+        "import_coordination_decision(bigint,bigint,bigint,text)",
+    ):
+        op.execute(f"drop function {function}")
+    for table in ("coordination_reversal_lineage", "coordination_record_reversals", "coordination_decision_lineage",
+                  "coordination_record_decisions", "coordination_history_activations", "coordination_subject_lineage", "coordination_record_subjects"):
+        op.execute(f"drop table {table}")
+    op.execute("drop function guard_coordination_record()")
+    op.execute("drop function attributable_coordination_subject(bigint,bigint)")
+    op.execute("drop function valid_coordination_history_actor(text)")
