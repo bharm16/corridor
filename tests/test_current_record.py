@@ -229,7 +229,10 @@ def test_four_reader_surfaces_match_view_fed_frozen_reading(
         output_dir=tmp_path,
         briefing_client_factory=CoveringClient,
     )
-    assert result.passed is True
+    assert result.rendered_outputs_identical is True
+    assert result.passed is False
+    assert len(result.coverage) == 7
+    assert all(not item.passed for item in result.coverage)
     assert result.explanations == (
         "XLSX package timestamps are excluded; every workbook cell is compared.",
         "PDF container metadata is excluded; normalized rendered page text is compared.",
