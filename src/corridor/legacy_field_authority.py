@@ -94,6 +94,7 @@ def read_legacy_field_authority(
             and fs.document_id=s.source_document_id and fs.role='value_source'
           join facts identifier on identifier.id=fs.fact_id and identifier.project_id=s.project_id
             and identifier.document_id=s.source_document_id and identifier.fact_type='utility_id'
+            and identifier.text_value=s.raw_reference
           join accepted di on di.fact_id=identifier.id
           where s.project_id=:p and s.subject_type='constraint' and s.reference_kind='source_identifier'
             and (cast(:r as bigint) is null or s.revision_id<=:r)
