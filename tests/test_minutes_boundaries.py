@@ -117,6 +117,6 @@ def test_injected_authority_and_foreign_references_cannot_write_facts(session):
     sources = session.scalars(select(FactSource.source_segment_id).where(FactSource.fact_id == wording.id)).all()
     record_support_assessment(session, project_id=project.id, proposition=FactProposition(wording.id),
         source_segment_ids=tuple(dict.fromkeys(sources)), evidence_role="value_support", assessment="supported",
-        authority=HumanPrincipal("local:reviewer"))
+        authority=HumanPrincipal("local:minutes-owner"))
     partial = read_review_items(session, project_id=project.id, as_of=capture.recorded_at + timedelta(seconds=1))
     assert all(child.not_ready_reason == NOT_READY_NO_SUPPORT for item in partial.items for child in item.children)
