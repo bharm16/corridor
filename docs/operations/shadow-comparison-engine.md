@@ -11,6 +11,8 @@ digests, stable subject identities, native delta IDs, source references and
 receipt times. Whole-subject deltas may supply several field predictions under
 one native ID; duplicate delta/field identities and no-change predictions
 refuse. Input containers are defensively frozen. This is a comparison engine,
+not a source-normalization step: an absent field differs from an explicit null;
+removal predictions use `present: false` and a null value. It is
 not an independent verifier of the adapter's source identity or chronology.
 The receipted #564 runtime and registered-source export integration still have
 to supply those guarantees before a real customer run can satisfy #499.
@@ -40,7 +42,8 @@ semantic accuracy. Each exact match reports elapsed days before arrival.
 eligible arrivals up to 20, otherwise 20 without replacement, from a sorted
 population and declared seed. Recorded Verbal Statements remain excluded from
 the initial population and are listed explicitly. `assess_material_sample`
-requires one independent named reviewer per inspected arrival, exact case
+requires one independent named reviewer per inspected arrival and the explicit
+collection of actual resolvers (empty for an entirely missed arrival), exact case
 identities, and causes for confirmed misses. Insufficient inspected arrivals
 or material cases withhold the miss rate. A confirmed material automatic false
 write fails its policy class even when sample evidence is insufficient.
