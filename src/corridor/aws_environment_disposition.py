@@ -44,6 +44,21 @@ def _pages(client, operation, field, **parameters):
             for row in page.get(field, [])]
 
 
+def rds_replica_relationships(row):
+    """Keep the provider's physical-source replication relationships explicit."""
+    return {"db_resource_id": row["DbiResourceId"],
+            "read_replica_instances": sorted(row.get("ReadReplicaDBInstanceIdentifiers", [])),
+            "read_replica_clusters": sorted(row.get("ReadReplicaDBClusterIdentifiers", [])),
+            "read_replica_source": row.get("ReadReplicaSourceDBInstanceIdentifier")}
+
+
+def require_no_rds_replicas(row):
+    observed = rds_replica_relationships(row)
+    if observed["read_replica_instances"] or observed["read_replica_clusters"] or observed["read_replica_source"]:
+        raise DispositionRefused("live RDS replicas require expanded custody and disposition inventory")
+    return observed
+
+
 def observe_stack_inventory(clients, resources, *, application_stack_id, data_stack_id):
     """Read the selected deployment's physical resources; never accept a list of names.
 
@@ -89,8 +104,14 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
     buckets = {r["Name"]: r["CreationDate"].isoformat() for r in _pages(clients["s3"], "list_buckets", "Buckets") if r["Name"] in bucket_names}
     if set(buckets) != bucket_names:
         raise DispositionRefused("declared buckets are not all positively observed in the customer account")
+    source_rows = _pages(clients["rds"], "describe_db_instances", "DBInstances",
+                         Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
+    if len(source_rows) != 1 or source_rows[0].get("DBInstanceArn") != resources.db_instance_arn:
+        raise DispositionRefused("replica inventory must observe the approved physical source database")
+    replica_relationships = require_no_rds_replicas(source_rows[0])
     return {"schema": "aws-corridor-environment-v1", "application_stack_id": application_stack_id,
             "data_stack_id": data_stack_id, "resources": result, "bucket_creation_dates": buckets,
+            "rds_replica_relationships": replica_relationships,
             "implicit_log_groups": [f"/aws/ecs/containerinsights/{clusters[0].split('/')[-1]}/performance"]}
 
 
@@ -155,32 +176,58 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         manifest = verify_custody(self._clients, resources, inv)
         if manifest.get("db_resource_id") != resources.db_resource_id:
             raise DispositionRefused("export dump does not bind the approved physical database")
-        bucket = resources.object_namespace_ref.removeprefix("s3:").rstrip("/")
-        versions = []
-        for page in self._clients["s3"].get_paginator("list_object_versions").paginate(
-                Bucket=bucket, ExpectedBucketOwner=resources.account_id):
-            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": False}
-                            for r in page.get("Versions", []))
-            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": True}
-                            for r in page.get("DeleteMarkers", []))
-        if sorted(versions, key=lambda r: (r["key"], r["version_id"], r["delete_marker"])) != manifest["object_versions"]:
-            raise DispositionRefused("source versions changed after export custody was established")
+        self._verify_export_census(manifest, allow_disposed_subset=False)
         declared_keys = set(self._ids("AWS::KMS::Key"))
         expected_keys = {arn.rsplit("/", 1)[-1] for arn in resources.kms_key_arns}
         if declared_keys != expected_keys:
             raise DispositionRefused("KMS destruction inventory differs from the stack's dedicated keys")
 
-    def prepare_execution(self, control_plane, plan, referential):
-        # Called only after the orchestrator has compared persisted inventory
-        # bytes and the manifest. Retain that durable anchor for every mutation.
-        self._plan = plan
-        self._control_plane = control_plane
-        self._referential = referential
+    def _verify_export_census(self, manifest, *, allow_disposed_subset):
+        bucket = self.resources.object_namespace_ref.removeprefix("s3:").rstrip("/")
+        if bucket not in self._owned_buckets():
+            if allow_disposed_subset:
+                return {"bucket_absent": True}
+            raise DispositionRefused("source bucket disappeared before the execution boundary")
+        versions = []
+        for page in self._clients["s3"].get_paginator("list_object_versions").paginate(
+                Bucket=bucket, ExpectedBucketOwner=self.resources.account_id):
+            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": False}
+                            for r in page.get("Versions", []))
+            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": True}
+                            for r in page.get("DeleteMarkers", []))
+        versions.sort(key=lambda row: (row["key"], row["version_id"], row["delete_marker"]))
+        expected = manifest["object_versions"]
+        actual_set = {(r["key"], r["version_id"], r["delete_marker"]) for r in versions}
+        expected_set = {(r["key"], r["version_id"], r["delete_marker"]) for r in expected}
+        if (not allow_disposed_subset and versions != expected) or not actual_set <= expected_set:
+            raise DispositionRefused("source versions changed after export custody was established")
+        return {"source_versions_sha256": digest(versions), "version_count": len(versions)}
+
+    def prepare_execution(self, control_plane, plan, referential, operation_id, *, observed_at):
+        from uuid import uuid4
+        # A persisted boundary distinguishes the first pass (exact export
+        # equality) from a resumed partial disposal (only disappearance allowed).
+        previous = control_plane.disposition_rehearsal_receipts(plan.environment_id, operation_id)
+        boundaries = [row for row in previous if row["phase"] == "execution_boundary"]
+        expected = {"inventory_sha256": self.resources.sha256, "manifest_sha256": plan.manifest_sha256,
+                    "custody_sha256": self._inventory()["custody"]["sha256"]}
+        if any(any(row["evidence"].get(key) != value for key, value in expected.items()) for row in boundaries):
+            raise DispositionRefused("execution boundary belongs to another plan, inventory or export")
         manifest = verify_custody(self._clients, self.resources, self._inventory())
         if referential.open_dereference_promises and not manifest.get("unavailability_disclosure"):
             raise DispositionRefused("retained references require exported unavailability disclosure")
         self._verify_stack_membership()
-        self._verify_copies()
+        replicas = self._verify_copies()
+        census = self._verify_export_census(manifest, allow_disposed_subset=bool(boundaries))
+        if not boundaries:
+            self._require_quiescent()
+            control_plane.record_disposition_rehearsal(receipt_id=f"execution-{uuid4().hex}",
+                environment_id=plan.environment_id, operation_id=operation_id, phase="execution_boundary",
+                outcome="completed", evidence={**expected, **census, "rds_replica_relationships": replicas,
+                    "database_validation": manifest["database_validation"]}, observed_at=observed_at)
+        self._plan = plan
+        self._control_plane = control_plane
+        self._referential = referential
 
     def _mutate(self, method, **parameters):
         if not hasattr(self, "_plan"):
@@ -224,6 +271,13 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         from the source region's empty list.
         """
         resources = self.resources
+        source_rows = _pages(self._clients["rds"], "describe_db_instances", "DBInstances",
+                             Filters=[{"Name": "dbi-resource-id", "Values": [resources.db_resource_id]}])
+        relationships = {"db_resource_id": resources.db_resource_id, "source_absent": True}
+        if source_rows:
+            if len(source_rows) != 1 or source_rows[0].get("DBInstanceArn") != resources.db_instance_arn:
+                raise DispositionRefused("replica inventory source identity differs")
+            relationships = require_no_rds_replicas(source_rows[0])
         regions = {r["RegionName"] for r in self._clients["ec2"].describe_regions(AllRegions=False)["Regions"]}
         regional = self._clients.get("regional", {})
         if set(regional) != regions:
@@ -269,6 +323,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
                 continue
             if result.get("ReplicationStatus"):
                 raise DispositionRefused("replicated secrets require expanded inventory")
+        return relationships
 
     def _owned_buckets(self):
         rows = _pages(self._clients["s3"], "list_buckets", "Buckets")
@@ -306,6 +361,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         for row in rows:
             if row.get("DbiResourceId") != self.resources.db_resource_id or row.get("DBInstanceArn") != self.resources.db_instance_arn:
                 raise DispositionRefused("database physical identity changed")
+            require_no_rds_replicas(row)
             if row.get("DeletionProtection"):
                 self._mutate(rds.modify_db_instance, DBInstanceIdentifier=self.resources.db_instance_identifier, DeletionProtection=False, ApplyImmediately=True)
                 raise EnvironmentDestructionError("database protection change pending; observe before deletion")

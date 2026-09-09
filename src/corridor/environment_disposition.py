@@ -381,6 +381,8 @@ class AwsEnvironmentDestroyer:
         row = rows[0]
         if (row.get("DBInstanceArn"), row.get("DbiResourceId")) != (resource.db_instance_arn, resource.db_resource_id):
             raise DispositionRefused("RDS identifier now names a different physical instance")
+        from corridor.aws_environment_disposition import require_no_rds_replicas
+        require_no_rds_replicas(row)
         if row.get("DBInstanceStatus") == "deleting":
             raise EnvironmentDestructionError("RDS deletion is still pending")
         endpoint = row.get("Endpoint", {})
@@ -641,7 +643,7 @@ def execute_environment_disposition(
         if destroyer.resources.whole_environment is not None:
             if plan.provider_resources != json.loads(json.dumps(asdict(destroyer.resources))):
                 raise DispositionRefused("provider inventory bytes differ from the persisted plan")
-            destroyer.prepare_execution(control_plane, plan, referential)
+            destroyer.prepare_execution(control_plane, plan, referential, operation_id, observed_at=now)
         def before_aws_delete():
             current = control_plane.inspect(plan.environment_id)
             _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)

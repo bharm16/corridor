@@ -38,7 +38,8 @@ def _copy_digest(source, destination=None):
 
 def export_environment_archive(*, resources, inventory, clients, output_path,
                                pgpass_file, database_username, principal, before_export,
-                               unavailability_disclosure: bytes = b"", run=subprocess.run):
+                               unavailability_disclosure: bytes = b"", run=subprocess.run,
+                               restore_run=subprocess.run):
     """Create a complete archive after the caller has frozen application writes.
 
     ``before_export`` is the operator's fresh binding/hold/quiescence check; the
@@ -87,6 +88,7 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
         with database.open("rb") as body:
             if body.read(5) != b"PGDMP":
                 raise DispositionRefused("pg_dump did not create a PostgreSQL custom-format archive")
+        database_validation = validate_postgres_dump(database, run=restore_run)
         members = []
         output = Path(output_path)
         # mkstemp creates the full customer archive privately, independent of
@@ -121,6 +123,7 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
                     manifest = {"schema": "corridor-environment-export-v1", "environment_id": resources.environment_id,
                         "inventory_sha256": digest(inventory), "db_resource_id": resources.db_resource_id,
                         "exported_by": actor, "members": members, "object_versions": before,
+                        "database_validation": database_validation,
                         "unavailability_disclosure": "unavailability-disclosure" if unavailability_disclosure else None}
                     path = directory / "manifest.json"
                     path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
@@ -133,7 +136,7 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
                 checksum, _ = _copy_digest(staged_stream)
                 staged_stream.seek(0)
                 verify_export_archive(staged_stream, expected_sha256=checksum,
-                    environment_id=resources.environment_id, inventory_sha256=digest(inventory))
+                    environment_id=resources.environment_id, inventory_sha256=digest(inventory), restore_run=restore_run)
                 os.fchmod(staged_stream.fileno(), 0o600)
                 os.fsync(staged_stream.fileno())
             os.replace(staged_output, output)
@@ -143,7 +146,27 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
 
 
 
-def verify_export_archive(stream, *, expected_sha256, environment_id, inventory_sha256):
+def validate_postgres_dump(path, *, run=subprocess.run):
+    """Parse the entire custom archive without connecting to or executing SQL.
+
+    A PGDMP prefix and pg_restore --list validate neither data blocks nor their
+    compression streams. Materializing all restore output to /dev/null forces
+    pg_restore to consume the complete archive while executing no contained SQL.
+    """
+    import os
+    environment = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
+    command = ["pg_restore", "--file", os.devnull, "--no-owner", "--no-privileges", str(path)]
+    try:
+        run(command, env=environment, check=True, capture_output=True)
+    except (subprocess.CalledProcessError, OSError) as exc:
+        raise DispositionRefused("PostgreSQL full archive validation failed") from exc
+    with Path(path).open("rb") as stream:
+        checksum, size = _copy_digest(stream)
+    return {"method": "pg-restore-full-stream-v1", "database_sha256": checksum, "database_size": size}
+
+
+def verify_export_archive(stream, *, expected_sha256, environment_id, inventory_sha256,
+                          restore_run=subprocess.run):
     """Verify untrusted archive bytes without extracting member paths."""
     # A seekable spool avoids loading a customer's database into Python memory.
     with tempfile.TemporaryFile() as spool:
@@ -182,8 +205,12 @@ def verify_export_archive(stream, *, expected_sha256, environment_id, inventory_
             for row in members:
                 with archive.extractfile(row["name"]) as body:
                     if row["kind"] == "postgresql":
-                        if body.read(5) != b"PGDMP":
-                            raise DispositionRefused("archive database is not a PostgreSQL dump")
+                        with tempfile.NamedTemporaryFile(prefix="corridor-restore-check-", suffix=".dump") as dump:
+                            shutil.copyfileobj(body, dump, _CHUNK)
+                            dump.flush()
+                            validation = validate_postgres_dump(dump.name, run=restore_run)
+                        if manifest.get("database_validation") != validation:
+                            raise DispositionRefused("export database validation evidence differs from parsed archive")
                         body.seek(0)
                     checksum, length = _copy_digest(body)
                 if (checksum, length) != (row["sha256"], row["size"]):

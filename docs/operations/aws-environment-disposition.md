@@ -143,3 +143,33 @@ and [S3 versioned GetObject](https://docs.aws.amazon.com/AmazonS3/latest/API/API
 S3 access logs have [best-effort, delayed delivery](https://docs.aws.amazon.com/AmazonS3/latest/userguide/ServerLogs.html);
 therefore finalization deletes the owning buckets and checks their absence rather
 than claiming that an earlier empty listing permanently ended log delivery.
+
+## Execution boundary and archive validation
+
+Immediately before the first destructive provider operation, execution reads the
+external archive again and compares its artifact-version census with the current
+source bucket. It records an immutable `execution_boundary` observation binding
+the plan, inventory, export digest, database-validation evidence and observed RDS
+replica relationships. A resumed execution accepts only disappearance of exported
+versions; an uploaded or replaced version that was never exported causes refusal.
+The nonreplicated profile also checks live RDS instance and cluster replica links,
+not merely backups associated with the source's physical ID.
+
+Both export creation and custody verification run `pg_restore --file /dev/null`
+over the complete PostgreSQL custom archive. This emits SQL to a discarded file;
+it never connects to a database or executes the archive's SQL. Header recognition
+and `pg_restore --list` alone are insufficient because the data blocks can be
+truncated while the table of contents remains readable. The manifest retains the
+full-parser method, database-byte digest and size, and custody verification must
+reproduce that evidence. Operators need compatible `pg_dump` and `pg_restore`
+clients on their execution host; missing or incompatible binaries refuse the
+operation. The library does not install packages or fetch tools at runtime.
+
+The completed local export is published with mode `0600`: a private temporary
+file in the destination directory is verified and synced before atomic
+replacement. A failed dump, read, archive check or sync leaves an existing
+verified destination intact and removes the partial file.
+
+Rehearsal cleanup locates the restored database by its persisted `DbiResourceId`.
+Renaming the temporary instance does not make it disappear: cleanup checks its
+rehearsal tags and requests deletion using the currently observed identifier.

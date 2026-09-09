@@ -299,7 +299,7 @@ class ControlPlane:
         import json
         for value in (receipt_id, environment_id, operation_id):
             identifier(value)
-        if phase not in {"restore", "state_verification", "cleanup", "backup_expiration", "hold_cancellation"}:
+        if phase not in {"restore", "state_verification", "cleanup", "backup_expiration", "hold_cancellation", "execution_boundary"}:
             raise ValueError("unknown rehearsal phase")
         if outcome not in {"pending", "completed", "refused"}:
             raise ValueError("unknown rehearsal outcome")

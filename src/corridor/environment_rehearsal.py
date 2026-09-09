@@ -185,14 +185,23 @@ class AwsRestoreRehearsal:
         if not verified:
             raise DispositionRefused("cleanup requires persisted state verification")
         resource_id = verified[-1]["evidence"]["target_resource_id"]
-        target = self._target(client)
-        if target is not None:
+        targets = _pages(client, "describe_db_instances", "DBInstances",
+                         Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])
+        if len(targets) > 1:
+            raise DispositionRefused("temporary physical database is not unique")
+        if targets:
+            target = targets[0]
             if target["DbiResourceId"] != resource_id or resource_id == self.spec.source_resource_id:
                 raise DispositionRefused("cleanup target differs from the verified temporary instance")
+            tags = {row["Key"]: row["Value"] for row in client.list_tags_for_resource(
+                ResourceName=target["DBInstanceArn"])["TagList"]}
+            if tags.get("corridor:rehearsal") != self.spec.sha256:
+                raise DispositionRefused("cleanup physical target lost its rehearsal binding")
             if target["DBInstanceStatus"] != "deleting":
-                self._mutate(client.delete_db_instance, DBInstanceIdentifier=self.spec.target_identifier,
+                self._mutate(client.delete_db_instance, DBInstanceIdentifier=target["DBInstanceIdentifier"],
                              SkipFinalSnapshot=True, DeleteAutomatedBackups=True)
-            return self._record("cleanup", "pending", target_resource_id=resource_id)
+            return self._record("cleanup", "pending", target_resource_id=resource_id,
+                                target_identifier=target["DBInstanceIdentifier"])
         self._record("cleanup", "completed", target_resource_id=resource_id)
         snapshots = _pages(client, "describe_db_snapshots", "DBSnapshots", SnapshotType="manual",
                            Filters=[{"Name": "dbi-resource-id", "Values": [resource_id]}])

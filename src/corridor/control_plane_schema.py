@@ -104,7 +104,7 @@ DISPOSITION_REHEARSAL_RECEIPTS = Table(
     Column("outcome", String(16), nullable=False),
     Column("evidence", JSON, nullable=False),
     Column("observed_at", DateTime(timezone=True), nullable=False),
-    CheckConstraint("phase in ('restore', 'state_verification', 'cleanup', 'backup_expiration', 'hold_cancellation')"),
+    CheckConstraint("phase in ('restore', 'state_verification', 'cleanup', 'backup_expiration', 'hold_cancellation', 'execution_boundary')"),
     CheckConstraint("outcome in ('pending', 'completed', 'refused')"),
 )
 
