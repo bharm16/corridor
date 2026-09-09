@@ -90,6 +90,14 @@ HANDLER_CONNECTOR_POLLING = "connector_polling"
 HANDLER_DELTA_GENERATION = "delta_generation"
 HANDLER_REPORT_PREPARATION = "report_preparation"
 HANDLER_RETENTION_SWEEP = "retention_sweep"
+# Whole-customer-environment export-and-destroy disposition (#514, ADR-0080/0083).
+# Unlike every handler above, this runs against the control plane, not a
+# per-project customer-DB schedule: a Due Work schedule cannot live inside the
+# database being destroyed. Its effectful contract (an effectful-shaped
+# orchestrator and this idempotency key) therefore lives in
+# ``environment_disposition`` rather than in HANDLER_REGISTRY, which enqueues
+# per-project customer-database occurrences.
+HANDLER_ENVIRONMENT_DISPOSITION = "environment_disposition"
 # The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
 # notification schedule must declare a positive request budget within this.
 _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
