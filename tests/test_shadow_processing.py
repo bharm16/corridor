@@ -209,3 +209,75 @@ def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shad
             with pytest.raises(DBAPIError, match="read committed"), stale.begin_nested():
                 stale.execute(text("insert into shadow_runs(identity,project_id,payload,output_sha256) values (:identity,:project,cast(:payload as jsonb),'forged')"),
                     {"identity": stale_payload["identity"], "project": project_id, "payload": json.dumps(stale_payload)})
+
+
+@pytest.mark.parametrize("grant_kind", ["decision_command", "release_update"])
+def test_shadow_runtime_rechecks_authority_reachable_through_set_role(shadow, grant_kind):
+    """NOINHERIT does not prevent SET ROLE, nor the target's inherited ACLs."""
+    from uuid import uuid4
+    database, engines, project_id, *_ = shadow
+    suffix = uuid4().hex
+    intermediary = f"shadow_bridge_{suffix}"
+    authority = f"shadow_grant_{suffix}"
+    signature = None
+    created = False
+    try:
+        with database.session_factory.begin() as owner:
+            owner.execute(text(f'create role "{intermediary}" nologin noinherit'))
+            owner.execute(text(f'create role "{authority}" nologin noinherit'))
+            # The login may assume the ordinary intermediary, whose effective
+            # privileges include a second role it cannot itself SET ROLE into.
+            owner.execute(text(f'grant "{authority}" to "{intermediary}" with inherit true'))
+            owner.execute(text(f'grant "{authority}" to "{intermediary}" with set false'))
+            owner.execute(text(f'grant "{intermediary}" to corridor_worker with inherit false'))
+            owner.execute(text(f'grant "{intermediary}" to corridor_worker with set true'))
+            command = owner.execute(text("""
+                select p.oid, p.oid::regprocedure::text as signature from pg_proc p
+                join pg_namespace n on n.oid=p.pronamespace
+                where n.nspname='public' and p.proname='authorize_release_package'
+            """)).one()
+            command_oid, signature = command
+        created = True
+        with Session(engines["corridor_worker"]) as worker:
+            verify_runtime(worker, project_id=project_id, customer=CUSTOMER, environment="synthetic-shadow")
+        # Simulate privilege drift after provisioning, without changing any
+        # existing role's global attributes or touching another database's ACLs.
+        with database.session_factory.begin() as owner:
+            statement = (f'grant execute on function {signature} to "{authority}"'
+                         if grant_kind == "decision_command" else
+                         f'grant update on public.release_candidates to "{authority}"')
+            owner.execute(text(statement))
+        with Session(engines["corridor_worker"]) as worker:
+            privilege = ("select has_function_privilege(current_user,:oid,'EXECUTE')"
+                         if grant_kind == "decision_command" else
+                         "select has_table_privilege(current_user,'public.release_candidates','UPDATE')")
+            assert worker.scalar(text(privilege), {"oid": command_oid}) is False
+            assert worker.scalar(text("select pg_has_role(current_user,:role,'SET')"), {"role": intermediary}) is True
+            assert worker.scalar(text("select pg_has_role(current_user,:role,'SET')"), {"role": authority}) is False
+            worker.execute(text(f'set role "{intermediary}"'))
+            assert worker.scalar(text(privilege), {"oid": command_oid}) is True
+            worker.execute(text("reset role"))
+            with pytest.raises(ShadowRefused, match="accepted-record or release authority"):
+                verify_runtime(worker, project_id=project_id, customer=CUSTOMER, environment="synthetic-shadow")
+        with database.session_factory.begin() as owner:
+            owner.execute(text(f'grant "{intermediary}" to corridor_worker with set false'))
+        with Session(engines["corridor_worker"]) as worker:
+            # Mere membership with neither SET nor INHERIT does not confer
+            # these capabilities and must not become a false authority finding.
+            assert worker.scalar(text("select pg_has_role(current_user,:role,'MEMBER')"), {"role": authority}) is True
+            verify_runtime(worker, project_id=project_id, customer=CUSTOMER, environment="synthetic-shadow")
+        with database.session_factory.begin() as owner:
+            owner.execute(text(f'grant "{intermediary}" to corridor_worker with inherit true'))
+        with Session(engines["corridor_worker"]) as worker:
+            with pytest.raises(ShadowRefused, match="accepted-record or release authority"):
+                verify_runtime(worker, project_id=project_id, customer=CUSTOMER, environment="synthetic-shadow")
+    finally:
+        if created:
+            with database.session_factory.begin() as owner:
+                owner.execute(text(f'revoke "{intermediary}" from corridor_worker'))
+                owner.execute(text(f'revoke "{authority}" from "{intermediary}"'))
+                if signature is not None:
+                    owner.execute(text(f'revoke execute on function {signature} from "{authority}"'))
+                owner.execute(text(f'revoke update on public.release_candidates from "{authority}"'))
+                owner.execute(text(f'drop role if exists "{intermediary}"'))
+                owner.execute(text(f'drop role if exists "{authority}"'))
