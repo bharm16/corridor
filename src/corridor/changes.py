@@ -91,6 +91,7 @@ class Change:
 class Diff:
     previous_run_id: int | None
     previous_ts: datetime | None
+    comparison_boundary_unknown: bool = False
     ruleset_changed: bool = False
     previous_ruleset: str | None = None
     # A threshold configuration change within one ruleset moves alert counts
@@ -277,8 +278,8 @@ def diff_since_last(
     committed_dates: Mapping[int, date | None] | None = None,
     document_only: bool = False,
 ) -> Diff:
-    retirement_boundary = session.scalar(
-        select(LegacyLedgerArchive.retired_at).where(
+    retirement = session.scalar(
+        select(LegacyLedgerArchive).where(
             LegacyLedgerArchive.project_id == project_id
         )
     )
@@ -286,11 +287,15 @@ def diff_since_last(
         ReportRun.project_id == project_id,
         ReportRun.document_only.is_(document_only),
     )
-    if retirement_boundary is not None:
-        # An eligibility filter, not the ordering: the archive receipt records
-        # only a time, so which runs survive the retirement is still asked of
-        # the clock. Which of the survivors is the predecessor is not.
-        previous_query = previous_query.where(ReportRun.ts > retirement_boundary)
+    unknown_boundary = retirement is not None and retirement.retirement_report_run_watermark_id is None
+    if retirement is not None:
+        if unknown_boundary:
+            # Only a report inserted with the retained archive relationship
+            # proves it follows this historical retirement. Old timestamps
+            # prove nothing. The first new report starts the comparison series.
+            previous_query = previous_query.where(ReportRun.retirement_archive_id == retirement.id)
+        else:
+            previous_query = previous_query.where(ReportRun.id > retirement.retirement_report_run_watermark_id)
     # The predecessor is the previous *row*, not the newest wall-clock reading.
     # `ts` stays — it is the reading's own recorded time — but it was never a
     # safe ordering: two runs written out of clock order, from a clock
@@ -314,7 +319,8 @@ def diff_since_last(
         # A first report has nothing to compare against, and saying "0
         # changes" would read as "nothing moved" rather than "we have not
         # looked before".
-        return Diff(previous_run_id=None, previous_ts=None)
+        return Diff(previous_run_id=None, previous_ts=None,
+                    comparison_boundary_unknown=unknown_boundary)
 
     baseline = baseline_for_run(session, previous)
     before = baseline.dependencies

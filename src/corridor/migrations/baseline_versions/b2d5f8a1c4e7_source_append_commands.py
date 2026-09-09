@@ -11602,6 +11602,9 @@ def upgrade() -> None:
     from corridor.migrations import impact_derivations
 
     impact_derivations.upgrade(op)
+    from corridor.migrations import retirement_watermark
+
+    retirement_watermark.upgrade(op)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -11620,6 +11623,9 @@ def downgrade() -> None:
 
     from corridor.migrations import impact_derivations
 
+    from corridor.migrations import retirement_watermark
+
+    retirement_watermark.downgrade(op)
     impact_derivations.downgrade(op)
     minutes_spine.downgrade(op)
     project_contacts.downgrade(op)

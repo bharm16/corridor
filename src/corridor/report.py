@@ -705,6 +705,8 @@ def _changes_since_last(
 
     if diff.is_first_report:
         section.note = (
+            "The prior comparison boundary could not be established. This report starts a new comparison series."
+            if diff.comparison_boundary_unknown else
             "First report for this project — there is nothing to compare against."
         )
         section.empty_message = section.note
