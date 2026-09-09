@@ -89,48 +89,58 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
                 raise DispositionRefused("pg_dump did not create a PostgreSQL custom-format archive")
         members = []
         output = Path(output_path)
+        # mkstemp creates the full customer archive privately, independent of
+        # ambient umask. Stage beside the destination so the final replace is
+        # atomic and leaves any previously verified export intact on failure.
+        descriptor, staged_name = tempfile.mkstemp(prefix=f".{output.name}.", suffix=".partial", dir=output.parent)
+        staged_output = Path(staged_name)
         try:
-            with tarfile.open(output, "w") as archive:
-                def append_file(path, name, **source):
-                    with path.open("rb") as body:
-                        checksum, length = _copy_digest(body)
-                    archive.add(path, arcname=name, recursive=False)
-                    members.append({"name": name, "sha256": checksum, "size": length, **source})
-                append_file(database, "database.dump", kind="postgresql")
-                for index, item in enumerate(before):
-                    if item["delete_marker"]:
-                        continue
-                    path = directory / "object"
-                    response = s3.get_object(**parameters, Key=item["key"], VersionId=item["version_id"])
-                    if response.get("VersionId") != item["version_id"]:
-                        response["Body"].close()
-                        raise DispositionRefused("source object version changed during export")
-                    with response["Body"] as body, path.open("wb") as destination:
-                        shutil.copyfileobj(body, destination, _CHUNK)
-                    append_file(path, f"objects/{index}", kind="source", **item)
-                if unavailability_disclosure:
-                    disclosure = directory / "disclosure"
-                    disclosure.write_bytes(unavailability_disclosure)
-                    append_file(disclosure, "unavailability-disclosure", kind="disclosure")
-                manifest = {"schema": "corridor-environment-export-v1", "environment_id": resources.environment_id,
-                    "inventory_sha256": digest(inventory), "db_resource_id": resources.db_resource_id,
-                    "exported_by": actor, "members": members, "object_versions": before,
-                    "unavailability_disclosure": "unavailability-disclosure" if unavailability_disclosure else None}
-                path = directory / "manifest.json"
-                path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
-                archive.add(path, arcname="manifest.json", recursive=False)
-            before_export()
-            if before != versions():
-                raise DispositionRefused("object versions changed during export; repeat after writes are frozen")
-            with output.open("rb") as stream:
-                checksum, _ = _copy_digest(stream)
-            with output.open("rb") as stream:
-                verify_export_archive(stream, expected_sha256=checksum,
+            with os.fdopen(descriptor, "w+b") as staged_stream:
+                with tarfile.open(fileobj=staged_stream, mode="w") as archive:
+                    def append_file(path, name, **source):
+                        with path.open("rb") as body:
+                            checksum, length = _copy_digest(body)
+                        archive.add(path, arcname=name, recursive=False)
+                        members.append({"name": name, "sha256": checksum, "size": length, **source})
+                    append_file(database, "database.dump", kind="postgresql")
+                    for index, item in enumerate(before):
+                        if item["delete_marker"]:
+                            continue
+                        path = directory / "object"
+                        response = s3.get_object(**parameters, Key=item["key"], VersionId=item["version_id"])
+                        if response.get("VersionId") != item["version_id"]:
+                            response["Body"].close()
+                            raise DispositionRefused("source object version changed during export")
+                        with response["Body"] as body, path.open("wb") as destination:
+                            shutil.copyfileobj(body, destination, _CHUNK)
+                        append_file(path, f"objects/{index}", kind="source", **item)
+                    if unavailability_disclosure:
+                        disclosure = directory / "disclosure"
+                        disclosure.write_bytes(unavailability_disclosure)
+                        append_file(disclosure, "unavailability-disclosure", kind="disclosure")
+                    manifest = {"schema": "corridor-environment-export-v1", "environment_id": resources.environment_id,
+                        "inventory_sha256": digest(inventory), "db_resource_id": resources.db_resource_id,
+                        "exported_by": actor, "members": members, "object_versions": before,
+                        "unavailability_disclosure": "unavailability-disclosure" if unavailability_disclosure else None}
+                    path = directory / "manifest.json"
+                    path.write_text(json.dumps(manifest, sort_keys=True, separators=(",", ":")))
+                    archive.add(path, arcname="manifest.json", recursive=False)
+                before_export()
+                if before != versions():
+                    raise DispositionRefused("object versions changed during export; repeat after writes are frozen")
+                staged_stream.flush()
+                staged_stream.seek(0)
+                checksum, _ = _copy_digest(staged_stream)
+                staged_stream.seek(0)
+                verify_export_archive(staged_stream, expected_sha256=checksum,
                     environment_id=resources.environment_id, inventory_sha256=digest(inventory))
+                os.fchmod(staged_stream.fileno(), 0o600)
+                os.fsync(staged_stream.fileno())
+            os.replace(staged_output, output)
             return {"path": str(output.resolve()), "sha256": checksum, "manifest": manifest}
-        except BaseException:
-            output.unlink(missing_ok=True)
-            raise
+        finally:
+            staged_output.unlink(missing_ok=True)
+
 
 
 def verify_export_archive(stream, *, expected_sha256, environment_id, inventory_sha256):

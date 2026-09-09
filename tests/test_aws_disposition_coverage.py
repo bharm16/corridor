@@ -303,3 +303,75 @@ def test_restore_probe_uses_corridor_object_store_digest_contract(tmp_path):
         queries={"earlier_state": "select fixture from synthetic_rehearsal"}, object_store=storage, object_digests={"source": checksum})
     assert statements[0] == "SET TRANSACTION READ ONLY"
     assert observed == {"query_digests": {"earlier_state": result_digest([("earlier",)])}, "object_digests": {"source": checksum}}
+
+
+def test_export_replaces_destination_atomically_with_private_permissions(tmp_path):
+    import os
+    import stat
+    output = tmp_path / "export.tar"
+    output.write_bytes(b"previous verified export")
+    output.chmod(0o644)
+    pgpass = tmp_path / "pgpass"
+    pgpass.touch()
+    params = {"Bucket": "artifact-bucket", "ExpectedBucketOwner": ACCOUNT}
+    s3 = ScriptedClient([("get_bucket_versioning", params, {"Status": "Enabled"}),
+        ("list_object_versions", params, {}), ("list_object_versions", params, {})])
+    observations = []
+    def before_export():
+        assert output.read_bytes() == b"previous verified export"
+        staged = list(tmp_path.glob(".export.tar.*.partial"))
+        if staged:
+            assert len(staged) == 1
+            assert stat.S_IMODE(staged[0].stat().st_mode) == 0o600
+            observations.append("private staged archive")
+    def runner(command, **options):
+        Path(command[command.index("--file")+1]).write_bytes(b"PGDMPfixture")
+    previous_umask = os.umask(0)
+    try:
+        result = export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3},
+            output_path=output, pgpass_file=pgpass, database_username="export_reader",
+            principal=HumanPrincipal("local:operator"), before_export=before_export, run=runner)
+    finally:
+        os.umask(previous_umask)
+    assert result["path"] == str(output)
+    assert observations == ["private staged archive"]
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    assert output.read_bytes() != b"previous verified export"
+    assert list(tmp_path.glob(".export.tar.*.partial")) == []
+
+
+@pytest.mark.parametrize("failure_phase", ["source_read", "archive_verification", "fsync"])
+def test_export_failure_preserves_existing_destination_and_removes_partial(tmp_path, monkeypatch, failure_phase):
+    import os
+    import corridor.environment_export as export_module
+    output = tmp_path / "export.tar"
+    output.write_bytes(b"previous verified export")
+    output.chmod(0o600)
+    previous_stat = output.stat()
+    pgpass = tmp_path / "pgpass"
+    pgpass.touch()
+    params = {"Bucket": "artifact-bucket", "ExpectedBucketOwner": ACCOUNT}
+    rows = {"Versions": [{"Key": "source", "VersionId": "one"}]} if failure_phase == "source_read" else {}
+    script = [("get_bucket_versioning", params, {"Status": "Enabled"}), ("list_object_versions", params, rows)]
+    if failure_phase == "source_read":
+        script.append(("get_object", {**params, "Key": "source", "VersionId": "one"}, OSError("injected failure")))
+    else:
+        script.append(("list_object_versions", params, rows))
+    s3 = ScriptedClient(script)
+    def fail(*args, **kwargs):
+        raise OSError("injected failure")
+    if failure_phase == "archive_verification":
+        monkeypatch.setattr(export_module, "verify_export_archive", fail)
+    elif failure_phase == "fsync":
+        monkeypatch.setattr(os, "fsync", fail)
+    def runner(command, **options):
+        Path(command[command.index("--file")+1]).write_bytes(b"PGDMPfixture")
+    with pytest.raises(OSError, match="injected failure"):
+        export_environment_archive(resources=resource(), inventory=inventory(), clients={"s3": s3},
+            output_path=output, pgpass_file=pgpass, database_username="export_reader",
+            principal=HumanPrincipal("local:operator"), before_export=lambda: None, run=runner)
+    assert output.read_bytes() == b"previous verified export"
+    assert output.stat().st_ino == previous_stat.st_ino
+    assert output.stat().st_mode == previous_stat.st_mode
+    assert list(tmp_path.glob(".export.tar.*.partial")) == []
+    assert not s3.script
