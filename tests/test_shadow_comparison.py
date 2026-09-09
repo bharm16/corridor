@@ -91,3 +91,30 @@ def test_null_and_missing_fields_are_distinct_reference_changes():
     report = compare_revisions(frozen, successor, reference_dataset_id="working")
     assert [r["classification"] for r in report["findings"]] == ["matched", "matched"]
     assert [(r["baseline_present"], r["reference_present"]) for r in report["findings"]] == [(True, False), (False, True)]
+
+
+def test_cli_persists_freeze_then_loads_its_exact_digest_for_comparison(isolated_content_store, tmp_path, monkeypatch, capsys):
+    import json
+    from corridor.shadow_comparison import ComparisonPolicy, FrozenRevision, Prediction, freeze_predictions
+    from corridor.shadow_comparison_cli import main
+    from corridor.object_storage import content_store, content_key
+    time = datetime(2026, 9, 1, tzinfo=timezone.utc)
+    baseline = FrozenRevision("baseline", 1, "a" * 64, time, {"UC1": {"need_date": "October"}})
+    frozen = freeze_predictions(baseline, ComparisonPolicy("v1", ("need_date",), ("need_date",), "seed", 30),
+        [Prediction(1, "UC1", "need_date", "November", time, "minutes", "segment:1")], frozen_at=time)
+    input_path = tmp_path / "predictions.json"
+    input_path.write_text(json.dumps(frozen.payload()))
+    monkeypatch.setattr("sys.argv", ["shadow-comparison", "freeze", str(input_path)])
+    main()
+    receipt = json.loads(capsys.readouterr().out)
+    assert receipt["sha256"] == frozen.content_sha256
+    successor = tmp_path / "successor.json"
+    successor.write_text(json.dumps(FrozenRevision("next", 1, "b" * 64, time + timedelta(days=1),
+        {"UC1": {"need_date": "November"}}).payload()))
+    monkeypatch.setattr("sys.argv", ["shadow-comparison", "compare", "--freeze-sha256", receipt["sha256"],
+        "--successor", str(successor), "--reference-dataset", "working-matrix"])
+    main()
+    result = json.loads(capsys.readouterr().out)
+    report = json.loads(content_store().get(content_key(result["sha256"], ".json"), sha256=result["sha256"]))
+    assert report["prediction_freeze_sha256"] == receipt["sha256"]
+    assert report["findings"][0]["classification"] == "matched"
