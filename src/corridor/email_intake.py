@@ -164,7 +164,7 @@ def receive_message(
 
     headers = _retained_headers(message)
     body = _body_text(message)
-    attachments = _attachment_parts(message)
+    attachments = _attachment_parts(raw_bytes)
     attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
     thread = _thread_for_headers(session, headers, project_id=None)
     if thread is None:
@@ -245,6 +245,7 @@ def receive_pushed_message(
     credential: PushCredential,
     raw_bytes: bytes,
     transport_delivery_id: str | None = None,
+    attachment_doc_types: dict[str, str] | None = None,
 ) -> ReceivedMessage:
     """Receive one mail delivery inside the boundary its credential establishes.
 
@@ -282,6 +283,7 @@ def receive_pushed_message(
         )
     ).first()
     if already is not None:
+        _check_attachment_type_replay(already, attachment_doc_types)
         return ReceivedMessage(
             message_id=already.id,
             thread_id=already.thread_id,
@@ -291,7 +293,8 @@ def receive_pushed_message(
             created=False,
         )
     return _register_bound_message(
-        session, binding=binding, receipt=receipt, raw_bytes=raw_bytes
+        session, binding=binding, receipt=receipt, raw_bytes=raw_bytes,
+        attachment_doc_types=attachment_doc_types,
     )
 
 
@@ -301,6 +304,7 @@ def _register_bound_message(
     binding: PushBinding,
     receipt,
     raw_bytes: bytes,
+    attachment_doc_types: dict[str, str] | None = None,
 ) -> ReceivedMessage:
     """Parse and register one delivery, entirely inside an established binding."""
 
@@ -316,6 +320,7 @@ def _register_bound_message(
         )
     ).first()
     if same_bytes is not None:
+        _check_attachment_type_replay(same_bytes, attachment_doc_types)
         return ReceivedMessage(
             message_id=same_bytes.id,
             thread_id=same_bytes.thread_id,
@@ -343,8 +348,14 @@ def _register_bound_message(
 
     headers = _retained_headers(message)
     body = _body_text(message)
-    attachments = _attachment_parts(message)
+    attachments = _attachment_parts(raw_bytes)
     attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
+    from corridor.models import DOC_TYPES
+
+    if attachment_doc_types and (
+            not set(attachment_doc_types) <= set(attachment_hashes)
+            or any(kind not in DOC_TYPES or kind == "email" for kind in attachment_doc_types.values())):
+        raise InboundMailRefused("attachment types must name delivered digests and supported source kinds")
     thread = _thread_for_headers(session, headers, project_id=binding.project_id)
     if thread is None:
         thread = InboundThread(project_id=binding.project_id)
@@ -394,7 +405,7 @@ def _register_bound_message(
     if thread.bound_by_message_id is None and dependency_id is not None:
         thread.bound_by_message_id = inbound.id
         session.flush()
-    _register_routed_content(session, inbound, message)
+    _register_routed_content(session, inbound, message, attachment_doc_types=attachment_doc_types)
     return ReceivedMessage(
         message_id=inbound.id,
         thread_id=thread.id,
@@ -550,7 +561,9 @@ def resolve_route_triage(
     session.flush()
 
 
-def _register_routed_content(session: Session, inbound: InboundMessage, message) -> None:
+def _register_routed_content(
+    session: Session, inbound: InboundMessage, message, *, attachment_doc_types=None,
+) -> None:
     """Register a routed message's body and attachments as project sources.
 
     Everything here is the ordinary shared intake: #349's bounded limits and
@@ -571,7 +584,7 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
     which is the same honest unknown a corpus document carries.
     """
 
-    if inbound.body_text.strip() and inbound.document_id is None:
+    if (inbound.body_text.strip() or inbound.push_delivery_id is not None) and inbound.document_id is None:
         body_document = ingest_document(
             session,
             project_id=inbound.project_id,
@@ -584,17 +597,28 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
         inbound.document_id = body_document.id
     receipts = list(inbound.attachments_json or [])
     already = {receipt.get("sha256") for receipt in receipts}
-    for filename, payload in _attachment_parts(message):
+    from corridor.storage import staged_file
+
+    raw_path = staged_file(inbound.raw_sha256)
+    if raw_path is None:
+        raise InboundMailRefused("registered raw MIME is missing from storage")
+    for filename, payload in _attachment_parts(raw_path.read_bytes()):
         digest = sha256(payload).hexdigest()
         if digest in already:
             continue
+        declared_type = (attachment_doc_types or {}).get(digest, "other")
         try:
-            staged = validate_and_stage(payload, filename or f"{digest[:12]}.bin")
+            staged = validate_and_stage(payload, filename or f"{digest[:12]}.bin", allow_email=True)
+            existing_document = session.scalar(select(Document).where(
+                Document.project_id == inbound.project_id, Document.sha256 == digest))
+            if (digest in (attachment_doc_types or {}) and existing_document is not None
+                    and existing_document.doc_type != declared_type):
+                raise InboundMailRefused("attachment source type is already registered differently")
             registered = ingest_document(
                 session,
                 project_id=inbound.project_id,
                 path=staged.stored_path,
-                doc_type="other",
+                doc_type=declared_type,
                 images_dir=settings.corpus_images,
                 filename=staged.filename,
             )
@@ -603,6 +627,8 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
                     "filename": staged.filename,
                     "sha256": staged.sha256,
                     "document_id": registered.id,
+                    "source_type": registered.doc_type,
+                    "source_type_status": "unresolved" if registered.doc_type == "other" else "declared",
                 }
             )
         except IntakeRefused as refusal:
@@ -613,6 +639,8 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
                     "filename": filename,
                     "sha256": digest,
                     "refused": refusal.reason,
+                    "source_type": declared_type,
+                    "source_type_status": "refused",
                 }
             )
         already.add(digest)
@@ -620,12 +648,20 @@ def _register_routed_content(session: Session, inbound: InboundMessage, message)
     session.flush()
 
 
-def _attachment_parts(message) -> tuple[tuple[str, bytes], ...]:
-    return tuple(
-        (str(part.get_filename() or ""), part.get_payload(decode=True))
-        for part in message.iter_attachments()
-        if part.get_payload(decode=True) is not None
-    )
+def _check_attachment_type_replay(inbound, declared):
+    if not declared:
+        return
+    registered = {item["sha256"]: item.get("source_type", "other")
+                  for item in inbound.attachments_json or []}
+    if any(digest not in registered or registered[digest] != kind
+           for digest, kind in declared.items()):
+        raise InboundMailRefused("duplicate mail carries different attachment type declarations")
+
+
+def _attachment_parts(raw_bytes) -> tuple[tuple[str, bytes], ...]:
+    from corridor.email_segments import mime_attachment_parts
+
+    return mime_attachment_parts(raw_bytes)
 
 
 def _message_filename(inbound: InboundMessage) -> str:
@@ -858,12 +894,17 @@ def _first_address(value: str | None) -> str | None:
 
 
 def _body_text(message) -> str:
-    if message.is_multipart():
-        for part in message.walk():
-            if part.get_content_type() == "text/plain" and not part.get_filename():
-                return str(part.get_content() or "")
-        return ""
-    return str(message.get_content() or "") if message.get_content_type() == "text/plain" else ""
+    parts = [message]
+    while parts:
+        part = parts.pop()
+        if (part.get_filename() or part.get_content_disposition() == "attachment"
+                or part.get_content_maintype() == "message"):
+            continue
+        if part.get_content_type() == "text/plain":
+            return str(part.get_content() or "")
+        if part.is_multipart():
+            parts.extend(reversed(list(part.iter_parts())))
+    return ""
 
 
 def _parsed_date(value: str | None) -> datetime | None:

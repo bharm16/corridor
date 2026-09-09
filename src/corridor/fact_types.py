@@ -87,6 +87,19 @@ STRUCTURED_CELL_FACT_TYPES = (
 FACT_TYPE_CONTRACTS = {
     **{
         name: FactTypeContract(
+            value_class="text", subject_kind="email_message",
+            transformation="exact_email_part_v1",
+            accepted_segment_kinds=frozenset({"email_span"}),
+            automatic_segment_kinds=frozenset(),
+            required_roles=frozenset({"value_source"}),
+            validation_rule="non_empty_replay_exact",
+            current_value_rule="human_decision_effectiveness",
+            inclusion_rule="human_record_decision",
+        )
+        for name in ("email_header", "email_attachment")
+    },
+    **{
+        name: FactTypeContract(
             value_class="external_org_wording" if name == "external_org" else "text",
             subject_kind="source_row",
             transformation="trim_cell_text_v1",
@@ -157,7 +170,7 @@ FACT_TYPE_CONTRACTS = {
         subject_kind="statement_candidate",
         transformation="exact_prose_span_v1",
         accepted_segment_kinds=frozenset(
-            {*PROSE_SEGMENT_KINDS, "recorded_verbal_statement"}
+            {*PROSE_SEGMENT_KINDS, "recorded_verbal_statement", "email_span"}
         ),
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset({"value_source", "attribution_source"}),

@@ -60,6 +60,13 @@ test-focused:
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 .PHONY: control-plane
+.PHONY: email-source
+# Inspect retained project-bound MIME or replay a strict response without a model call.
+#   make email-source ARGS="inspect <delivery-id>"
+#   make email-source ARGS="capture <delivery-id> --response response.json"
+email-source:
+	uv run python -m corridor.email_source_cli $(ARGS)
+
 # Separate PostgreSQL operations registry and external receipts (#656).
 # Requires explicit role-specific URLs; never uses a default customer URL.
 #   make control-plane ARGS="initialize"

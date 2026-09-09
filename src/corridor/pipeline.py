@@ -339,6 +339,34 @@ def extraction_route(
     attempt has to be the version of the reader that actually ran.
     """
     if getattr(document, "doc_type", None) == "email":
+        if getattr(document, "source_delivery_id", None) is not None:
+            from corridor.email_spine import (
+                PROMPT_VERSION as EMAIL_PROMPT_VERSION,
+                SCHEMA_VERSION as EMAIL_SCHEMA_VERSION,
+                capture_email_thread, email_extractor_config, envelope_for_delivery,
+            )
+            from corridor.llm import OpenAIClient
+
+            email_client = client or OpenAIClient()
+
+            def extract_bound_email(session, doc):
+                reading = capture_email_thread(session,
+                    envelope_for_delivery(session, doc.source_delivery_id), client=email_client)
+                # The thread's closing turn owns the statement; each input
+                # Document has its own captured run and attachment provenance.
+                from corridor.models import InboundMessage
+
+                message = session.scalar(select(InboundMessage).where(
+                    InboundMessage.document_id == doc.id,
+                    InboundMessage.project_id == doc.project_id))
+                context = next(item for item in reading.turn_context_json if item["message_id"] == message.id)
+                return CapturedCandidates([], session.get_one(ExtractionRun, context["extraction_run_id"]))
+
+            return ExtractionRoute(
+                effective_prompt_version=EMAIL_PROMPT_VERSION, schema_version=EMAIL_SCHEMA_VERSION,
+                extract=extract_bound_email, model=getattr(email_client, "model", None),
+                extractor_config=email_extractor_config(email_client), usage_client=email_client,
+            )
         # A routed inbound message body reads through the ordinary prose
         # statement extractor (ADR-0058): proposals with quotes verified
         # against the stored message, never a second reading pipeline.

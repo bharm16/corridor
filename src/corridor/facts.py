@@ -1410,6 +1410,21 @@ def _replay_fact(
         raise FactValidationError("Fact source kind does not match its contract")
     exact = (replay_cell(segment) if replay_cell is not None
              else dereference_source_segment(document, segment, path))
+    if segment.kind == "email_span":
+        from corridor.materializer import materialize_email_metadata, materialize_prose_wording
+
+        if fact.fact_type == "statement_wording":
+            attribution_sources = [source for source in sources if source.role == "attribution_source"]
+            if len(attribution_sources) != 1:
+                raise FactValidationError("email Fact requires one attribution source")
+            attribution = session.get(SourceSegment, attribution_sources[0].source_segment_id)
+            if attribution is None:
+                raise FactValidationError("email attribution source is missing")
+            attribution_text = dereference_source_segment(document, attribution, path)
+            materialize_prose_wording(segment, attribution, attribution=attribution_text)
+        else:
+            if materialize_email_metadata(segment).fact_type != fact.fact_type:
+                raise FactValidationError("email metadata Fact has the wrong part type")
     if fact.fact_type == "applies_to":
         expected_ids = _resolve_applies_to_dependencies(
             session, fact.project_id, exact

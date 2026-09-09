@@ -190,7 +190,8 @@ def read_domain_receipts(
                      wake_condition=row.wake_condition)
             for row in rows(m.DeltaSupersession, m.DeltaSupersession.superseded_at):
                 emit(EventFamily.DELTA_SUPERSESSION, row, row.superseded_at,
-                     prior_delta_id=row.prior_delta_id, superseding_delta_id=row.superseding_delta_id)
+                     prior_delta_id=row.prior_delta_id, superseding_delta_id=row.superseding_delta_id,
+                     source_reading_id=row.source_reading_id)
             packet_children = rows(m.DeltaReviewPacketChild)
             for row in rows(m.DeltaReviewPacketReceipt, m.DeltaReviewPacketReceipt.decided_at):
                 members = [c for c in packet_children if c.receipt_id == row.id]
@@ -319,7 +320,8 @@ def _same_receipt_event(event, payload, row, at) -> bool:
                 and status in outcomes)
     if family == EventFamily.DELTA_SUPERSESSION:
         return (p.get("prior_delta_id") == row.prior_delta_id
-                and p.get("superseding_delta_id") == row.superseding_delta_id)
+                and p.get("superseding_delta_id") == row.superseding_delta_id
+                and p.get("source_reading_id") == row.source_reading_id)
     if family == EventFamily.PROPOSED_DELTA_CREATION:
         return status in {None, "created"} and (p.get("delta_id") == row.id or row.id in p.get("delta_ids", []))
     if family == EventFamily.FOLLOW_UP_PLAN_CREATION:

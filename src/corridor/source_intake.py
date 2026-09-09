@@ -91,7 +91,9 @@ MAX_UPLOAD_BYTES = 64 * 1024 * 1024
 
 # Exactly the formats the ingest pipeline can read (``corridor.ingest``): a PDF, or
 # a workbook that is the structured original (ADR-0005). Everything else is refused
-# at the door rather than registered as a document nobody can parse.
+# at the door rather than registered as a document nobody can parse. Bound
+# mail intake can opt into the separately bounded MIME reader for .eml parts;
+# this does not expand the upload surface's default format contract.
 ACCEPTED_SUFFIXES = frozenset({".pdf"}) | SPREADSHEET_SUFFIXES
 
 # The declared semantic kind of the source, chosen by the person handing it over —
@@ -213,6 +215,7 @@ def validate_and_stage(
     customer_id: str | None = None,
     project_id: int | str | None = None,
     channel: str = "upload",
+    allow_email: bool = False,
 ) -> StagedSource:
     """Enforce the bounded limits and stage exact bytes; refuse before model work.
 
@@ -229,7 +232,7 @@ def validate_and_stage(
         raise ValueError("source intake byte limit must be positive")
     safe = _safe_filename(filename)
     suffix = PurePosixPath(safe).suffix.lower()
-    if suffix not in ACCEPTED_SUFFIXES:
+    if suffix not in ACCEPTED_SUFFIXES and not (allow_email and suffix == ".eml"):
         raise IntakeRefused(
             "unsupported_type",
             f"{safe!r} is not an accepted source file. Upload a PDF or an Excel "
@@ -255,6 +258,17 @@ def validate_and_stage(
         inspect_sandboxed_structure(body, safe)
     except HostileContentRefused as exc:
         raise IntakeRefused(exc.rule, exc.reason) from exc
+
+    if suffix == ".eml":
+        from corridor.email_segments import read_mime_segments
+
+        try:
+            has_sender = any(span.header_name == "from" and span.part_path == ()
+                             for span in read_mime_segments(body))
+        except (ValueError, UnicodeError, LookupError) as exc:
+            raise IntakeRefused("content_mismatch", "attachment is not readable MIME") from exc
+        if not has_sender:
+            raise IntakeRefused("content_mismatch", "attached email has no From header")
 
     sha256 = hashlib.sha256(body).hexdigest()
     binding = default_binding()
@@ -614,6 +628,10 @@ def _safe_filename(filename: str) -> str:
 
 
 def _content_matches_suffix(suffix: str, body: bytes) -> bool:
+    if suffix == ".eml":
+        # MIME has no magic prefix. Its bounded structural reader runs after
+        # the byte/malware gate above, like every other rich source parser.
+        return True
     if suffix == ".pdf":
         return body[: len(_PDF_MAGIC)] == _PDF_MAGIC
     if suffix in SPREADSHEET_SUFFIXES:

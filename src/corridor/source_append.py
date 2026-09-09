@@ -34,6 +34,7 @@ from corridor.materializer import MaterializedValue
 from corridor.models import (
     ExtractedProposal,
     Fact,
+    InboundThreadReading,
     RecordedVerbalOrigin,
     SourceFactAppendReceipt,
     SourceSegment,
@@ -303,6 +304,21 @@ def append_source_fact_receipt(
         )
     )
     return session.get_one(SourceFactAppendReceipt, int(receipt_id))
+
+
+def append_email_thread_reading(
+    session: Session, *, project_id: int, thread_id: int, closing_message_id: int,
+    input_sha256: str, source_fact_id: int | None, proposed_delta_id: int | None,
+    question_segment_id: int | None, context: list[dict], prompt_version: str,
+    model: str | None,
+) -> InboundThreadReading:
+    """Retain a thread outcome and supersede its prior unaccepted deltas atomically."""
+    reading_id = session.scalar(select(func.append_email_thread_reading(
+        project_id, thread_id, closing_message_id, input_sha256,
+        source_fact_id, proposed_delta_id, question_segment_id, _jsonb(context),
+        prompt_version, model,
+    )))
+    return session.get_one(InboundThreadReading, int(reading_id))
 
 
 def append_support_assessment(

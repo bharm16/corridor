@@ -503,11 +503,11 @@ def resolved_delta_ids_by_project(
 
 def superseding_delta_ids_by_project(
     session: Session, project_ids: Sequence[int]
-) -> dict[int, dict[int, int]]:
-    """Each replaced delta and the newer occurrence that replaced it (#518)."""
+) -> dict[int, dict[int, int | None]]:
+    """Each replaced delta; None means its successor is a source reading (#455)."""
 
     ids, any_ids = _by_project(project_ids)
-    found: dict[int, dict[int, int]] = {project_id: {} for project_id in ids}
+    found: dict[int, dict[int, int | None]] = {project_id: {} for project_id in ids}
     if not any_ids:
         return found
     for project_id, prior, superseding in session.execute(
@@ -517,7 +517,7 @@ def superseding_delta_ids_by_project(
             DeltaSupersession.superseding_delta_id,
         ).where(DeltaSupersession.project_id.in_(ids))
     ).all():
-        found[int(project_id)][int(prior)] = int(superseding)
+        found[int(project_id)][int(prior)] = int(superseding) if superseding is not None else None
     return found
 
 
@@ -665,7 +665,7 @@ def standing_sets(
     deltas: Sequence[ProposedDelta],
     *,
     resolved: set[int],
-    superseded_by: Mapping[int, int],
+    superseded_by: Mapping[int, int | None],
     schedules: Mapping[int, DeltaDeferral],
     standing: Mapping[tuple[str, str], int],
     as_of: datetime,
@@ -1324,7 +1324,7 @@ def _resolved_ids(session: Session, project_id: int) -> set[int]:
     return resolved_delta_ids_by_project(session, (project_id,)).get(project_id, set())
 
 
-def _superseded_by(session: Session, project_id: int) -> dict[int, int]:
+def _superseded_by(session: Session, project_id: int) -> dict[int, int | None]:
     return superseding_delta_ids_by_project(session, (project_id,)).get(project_id, {})
 
 
