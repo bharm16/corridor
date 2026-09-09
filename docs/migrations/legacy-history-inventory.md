@@ -124,8 +124,8 @@ reader was proved. `compatibility` means active routing cannot retire yet.
 | `support_assessment_sources` | native_lineage | Keep original lineage for the lifetime of the referencing record and released artifacts. |
 | `audit_log` | compatibility | Remove active compatibility routing only after every consuming surface proves native field and record coverage, selected as-of readings, and rollback-window closure; retain original history under the customer retention and backup policy. |
 
-| `policy_approvals` | compatibility | Retain the exact authorizing human, policy version and digest with every policy-authored historical act. |
-| `policy_runs` | compatibility | Retain original run identity and counts with the policy outcomes they authorize. |
+| `policy_approvals` | compatibility | Retain the claimed actor, policy version and digest; runtime-writable metadata cannot authenticate original acceptance authority. |
+| `policy_runs` | compatibility | Retain original run identity and counts with the recorded outcomes; a matching run does not independently authorize them. |
 | `recorded_verbal_origin_backfill_receipts` | native_lineage | Retain original executor/origin/statement mapping for the life of its referencing history. |
 | `recorded_verbal_origin_fact_digests` | native_lineage | Retain old and replacement Fact digests; never lose the original source identity. |
 
@@ -241,12 +241,12 @@ Additional validation: `tests/test_coordination_history.py`, existing
 `tests/test_work_decisions.py`, `tests/test_follow_up_plans.py`,
 `tests/test_statement_coordination.py`, and `tests/test_work_list.py`.
 
-The support-history reader now distinguishes a namespaced human designation from
-an exact automatic-carry-forward receipt and its matching PolicyApproval family,
-version and digest. Known system actors are never classified as humans merely
-because their labels contain a colon. Missing or ambiguous policy lineage stays
-explicitly unknown. This provenance reconstruction does not convert support into
-Ready or authorize a new support designation.
+The support-history reader keeps original designation, carry-forward receipt,
+and policy metadata separate. Known system actors are never classified as humans
+merely because their labels contain a colon. Matching runtime-writable metadata
+cannot authenticate a historical human or policy act. Missing protected authority
+stays explicit; provenance reconstruction does not convert support into Ready or
+authorize a new support designation.
 
 
 The CLI uses only `CORRIDOR_HISTORY_OPERATIONS_DATABASE_URL`, an explicitly
@@ -273,9 +273,8 @@ COMMITTED does not split it across several source snapshots.
 The supporting-document Fact contract now names the exact receipted transfer
 exception from ADR-0083 as well as Human Record Decisions. Its automatic segment
 kind set remains empty: finding a cell, passage or document never authorizes
-inclusion. Only the support-history command's original transfer receipt,
-matching scope/audit identity, and exact approval or managed-policy run/outcome
-can take the policy branch. Locator checks still establish no readiness or
+inclusion. Historical receipt, scope, audit, approval and run agreement is not
+sufficient proof for that exception. Locator checks establish no readiness or
 semantic-support conclusion.
 
 Legacy carry-forward receipt, approval and run metadata remain historical claims.
