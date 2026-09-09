@@ -69,7 +69,7 @@ SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
     # #456/#562 typed minutes scopes/timing and immutable project contact sources.
-    "e8a4a6cc7130ea786e60c570924ea0fdab3c2702e002dcfeea71a19e3597ec81"
+    "d5e0887b2150e599a901ad845fb15db5aad8ffc53ae62e37d693f105075111cd"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -218,6 +218,12 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
 
         before_public = _public_relation_grants(database.session_factory)
         with database.session_factory() as session, session.begin():
+            historical_project = session.scalar(text("insert into projects(slug,name,is_synthetic) values('retirement-transition','Historical retirement',true) returning id"))
+            historical_report = session.scalar(text("insert into report_runs(project_id,ts,ruleset_version,snapshot_json) values(:p,'2099-01-01T00:00:00Z','v0.3','{}') returning id"), {"p": historical_project})
+            historical_archive = session.scalar(text("""insert into legacy_ledger_archives(project_id,format_version,content_json,content_sha256,
+                dependency_count,assertion_count,evidence_link_count,audit_log_count,ref_code_high_watermark,retired_by,retired_at)
+                values(:p,'legacy-ledger-v1','{}',:digest,0,0,0,0,0,'system:historical','2000-01-01T00:00:00Z') returning id"""),
+                {"p": historical_project, "digest": "0" * 64})
             project_id = session.scalar(text(
                 "insert into projects (slug, name, is_synthetic) "
                 "values ('native-reading-transition', 'Native reading transition', true) returning id"
@@ -263,6 +269,8 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+            assert session.scalar(text("select retirement_report_run_watermark_id from legacy_ledger_archives where id=:id"), {"id": historical_archive}) is None
+            assert session.scalar(text("select retirement_archive_id from report_runs where id=:id"), {"id": historical_report}) is None
             assert session.scalar(text("select count(*) from proposed_delta_impact_derivations")) == 0
             for role in ("corridor_web", "corridor_worker"):
                 assert session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'SELECT')"), {"role": role})

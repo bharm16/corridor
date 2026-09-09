@@ -44,6 +44,7 @@ from corridor.models import (
     OperativeSupport,
     Project,
     ReconfirmationReceipt,
+    ReportRun,
 )
 from corridor.project_lock import lock_project
 
@@ -362,6 +363,10 @@ def retire_legacy_ledger(
     """
 
     with session.begin_nested():
+        # Serialize against every Report Run insertion, including writers
+        # outside this module. Take this before the project lock so the
+        # retirement observes all completed report writes before its boundary.
+        session.execute(text("lock table report_runs in share row exclusive mode"))
         lock_project(session, project_id)
         # ``expire_all`` discards unflushed attribute changes. Flush every
         # caller-owned pending mutation before taking the fresh post-lock
@@ -431,6 +436,9 @@ def retire_legacy_ledger(
             audit_log_count=plan.counts["audit_log"],
             ref_code_high_watermark=plan.ref_code_high_watermark,
             retired_by=RETIREMENT_ACTOR,
+            retirement_report_run_watermark_id=int(session.scalar(
+                select(func.max(ReportRun.id)).where(ReportRun.project_id == project_id)
+            ) or 0),
         )
         session.add(archive)
         session.flush([archive])

@@ -6418,6 +6418,7 @@ class ReportRun(Base):
     # project with no accepted revision at all has no identity to name; a
     # trigger refuses a new row that omits one when the project has any.
     revision_id: Mapped[int | None] = mapped_column(BigInteger)
+    retirement_archive_id: Mapped[int | None] = mapped_column(ForeignKey("legacy_ledger_archives.id"))
     ts: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -7596,6 +7597,7 @@ class LegacyLedgerArchive(Base):
     audit_log_count: Mapped[int] = mapped_column(Integer)
     ref_code_high_watermark: Mapped[int] = mapped_column(Integer)
     retired_by: Mapped[str] = mapped_column(Text)
+    retirement_report_run_watermark_id: Mapped[int | None] = mapped_column(BigInteger)
     retired_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

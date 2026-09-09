@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime, timezone
 import hashlib
 import json
 
@@ -742,6 +742,7 @@ def test_retirement_starts_a_new_report_history_boundary(session, legacy_ledger)
     project, _, _, dependency = legacy_ledger
     previous = ReportRun(
         project_id=project.id,
+        ts=datetime(2099, 1, 1, tzinfo=timezone.utc),
         ruleset_version="v0.3",
         snapshot_json={
             "ruleset_version": "v0.3",
@@ -751,7 +752,7 @@ def test_retirement_starts_a_new_report_history_boundary(session, legacy_ledger)
     session.add(previous)
     session.flush()
     plan = plan_retirement(session, project.id)
-    retire_legacy_ledger(
+    archive = retire_legacy_ledger(
         session,
         project.id,
         expected_sha256=plan.content_sha256,
@@ -760,11 +761,49 @@ def test_retirement_starts_a_new_report_history_boundary(session, legacy_ledger)
     diff = diff_since_last(
         session,
         project.id,
-        evaluation=evaluate_project(session, project.id),
+        evaluation=evaluate_project(session, project.id, today=date(2026, 9, 9)),
     )
 
     assert diff.is_first_report
     assert diff.changes == []
+    assert archive.retirement_report_run_watermark_id == previous.id
+    following = ReportRun(project_id=project.id, ts=datetime(2000, 1, 1, tzinfo=timezone.utc),
+        ruleset_version="v0.3", snapshot_json={"dependencies": {}})
+    session.add(following)
+    session.flush()
+    diff = diff_since_last(session, project.id,
+        evaluation=evaluate_project(session, project.id, today=date(2026, 9, 9)))
+    assert diff.previous_run_id == following.id
+
+
+def test_unknown_historical_retirement_resumes_only_from_a_new_bound_report(session):
+    project = Project(slug="unknown-retirement-boundary", name="Historical", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    old = ReportRun(project_id=project.id, ts=datetime(2099, 1, 1, tzinfo=timezone.utc),
+        ruleset_version="v0.3", snapshot_json={"dependencies": {}})
+    session.add(old)
+    session.flush()
+    # An imported historical receipt has no provable report boundary. Its
+    # human act timestamp is deliberately misleading and cannot fill the gap.
+    archive = LegacyLedgerArchive(project_id=project.id, format_version="legacy-ledger-v1",
+        content_json={}, content_sha256="0" * 64, dependency_count=0, assertion_count=0,
+        evidence_link_count=0, audit_log_count=0, ref_code_high_watermark=0,
+        retired_by="system:historical", retired_at=datetime(2000, 1, 1, tzinfo=timezone.utc))
+    session.add(archive)
+    session.flush()
+    evaluation = evaluate_project(session, project.id, today=date(2026, 9, 9))
+    first = diff_since_last(session, project.id, evaluation=evaluation)
+    assert first.is_first_report and first.comparison_boundary_unknown
+    following = ReportRun(project_id=project.id, ts=datetime(1999, 1, 1, tzinfo=timezone.utc),
+        ruleset_version="v0.3", snapshot_json={"dependencies": {}})
+    session.add(following)
+    session.flush()
+    resumed = diff_since_last(session, project.id, evaluation=evaluation)
+    assert resumed.previous_run_id == following.id
+    assert not resumed.comparison_boundary_unknown
+    with pytest.raises(DBAPIError, match="identity is immutable"), session.begin_nested():
+        session.execute(update(ReportRun).where(ReportRun.id == old.id).values(retirement_archive_id=archive.id))
 
 
 def test_export_is_the_exact_canonical_content_covered_by_the_digest(
@@ -1083,7 +1122,7 @@ def test_database_rejects_archive_mutation(session, legacy_ledger, mutation):
             LegacyLedgerArchive.id == archive.id
         )
     else:
-        statement = text("truncate table legacy_ledger_archives")
+        statement = text("truncate table legacy_ledger_archives cascade")
 
     with pytest.raises(DBAPIError, match="Legacy Ledger archives are immutable"):
         with session.begin_nested():
