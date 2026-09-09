@@ -163,6 +163,10 @@ def upgrade(op):
     """ + " union all ".join(clauses) + ") inventory; return result; end; $$;")
     op.execute(CAPTURE)
     op.execute(EVIDENCE_BACKFILL)
+    # FOR UPDATE needs UPDATE on at least one column. Grant only identity-
+    # column locking capability to the non-login command owner; quote bytes
+    # remain outside its UPDATE privileges and runtime logins gain nothing.
+    op.execute("grant update(id) on evidence_links to corridor_fact_decision_writer")
     op.execute("grant insert on evidence_link_sources to corridor_fact_decision_writer")
     op.execute("grant usage,select on sequence evidence_link_sources_id_seq to corridor_fact_decision_writer")
     for entry in HISTORY_CLASSES:

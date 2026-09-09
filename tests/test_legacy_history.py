@@ -116,6 +116,7 @@ def test_evidence_backfill_uses_only_one_exact_locator_and_reverses_reader_routi
     assert backfill_evidence_sources(session, batch) == results
     assert evidence_quotation(session, exact).source_segment_ids == (segment.id,)
     assert evidence_quotation(session, partial).owner == "legacy_quote"
+    session.refresh(exact)
     assert exact.quote == words
     reverse_history(session, batch, actor="local:reviewer", reason="rollback source migration")
     assert evidence_quotation(session, exact).owner == "legacy_quote"
