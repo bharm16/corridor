@@ -27,7 +27,7 @@ application environment. Do not recreate the account or repurpose that bucket.
 | **Delete unused `bryce` user** | **exists, console access** | you, console |
 | **Account password policy** | **not set** | you, console |
 | **Cost Explorer enabled** | **not enabled** | you, console (root must first activate IAM billing access) |
-| **Budget + alerts** | **no budgets returned** | you, console |
+| **Budget + alerts** | `Corridor-Nonproduction-Monthly`: USD 150/month, **HEALTHY**, created and read back 2026-09-08 | #601 records owner-selected email verification |
 | **ACM certificate for the ALB** | **none** | you |
 | **Public hostname** (`corridor:publicHostname`) | **none** | you, Route 53 or your DNS |
 | **SES sender identity** (`corridor:signInSender`) | **none** | you, SES console |
@@ -280,8 +280,9 @@ Public IPv4 is AWS's published `$0.005` per address-hour, not from that pull.
 These are historical planning figures. A serving release now requires the
 worker as well as web, so it uses the **Both running** column; the web-only
 column is no longer a supported release configuration. The separate
-control-plane store is not included in this older estimate. Refresh the total
-and approve the budget under #601 before deployment.
+control-plane store is not included in this older estimate. The approved
+monthly budget and refreshed estimate for the complete configured topology
+are recorded below.
 
 | Item | Unit | Idle (web 1, batch 0) | Both running |
 |---|---|---:|---:|
@@ -300,10 +301,17 @@ Scaling web to 0 as well leaves the ALB, its two addresses, RDS, secrets and
 storage: **≈ $42/month**. RDS and the ALB are the floor; they do not go away
 when the services stop.
 
-The earlier $100 monthly example excluded the control plane and is not an
-approved budget for this topology. #601 must record the selected amount and
-actual/forecast alerts after updating the estimate. Budgets alert; they do
-not cap spend.
+On 2026-09-08, the owner approved USD 150/month and
+`Corridor-Nonproduction-Monthly` was created and read back **HEALTHY**. Its
+actual-spend alerts at 80% and 100%, and forecast-spend alert at 100%, were
+verified against the owner-selected email; #601 retains that verification.
+The earlier $100 example remains a historical estimate excluding the control
+plane. The [2026-09-08 topology estimate in #601](https://github.com/bharm16/corridor/issues/601#issuecomment-5593591225)
+prices the continuously running web, worker and both databases at
+**$126.04/month including configured monitoring**, or **$136.42/month with
+the stated low-usage allowances**, using 730 hours/month. These are prospective
+costs; taxes and unrelated account use are excluded. The account-wide budget
+also covers unrelated use. Budgets alert; they do not cap spend.
 
 ## What is deliberately not here
 

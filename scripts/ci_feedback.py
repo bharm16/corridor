@@ -142,7 +142,7 @@ def prepare(repository: str, run_id: str) -> None:
 def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now: str) -> float:
     """Reusing successful jobs must preserve their measured cost and identity.
 
-    GitHub can rerun only failed jobs. Their siblings' successful receipts
+    GitHub can rerun selected jobs. Their siblings' successful receipts
     remain valid on the same tested SHA, but a summary-only retry must not
     turn a slow suite into a ten-second measurement. Reconstruct its required
     critical path from GitHub's job timings as a floor on the current attempt.
@@ -155,8 +155,21 @@ def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now
     for receipt in receipts:
         name = f"{receipt['suite']} ({receipt['shard']})" if receipt["suite"] in ("pytest", "slow") else receipt["suite"]
         job = latest.get(name)
-        if job is None or job["conclusion"] != "success" or job["run_attempt"] != receipt["run_attempt"]:
+        if job is None or job["conclusion"] != "success":
             raise EvidenceError(f"receipt does not match the successful GitHub job: {name}")
+        if job["run_attempt"] != receipt["run_attempt"]:
+            # A partial retry gives reused jobs new IDs and attempt numbers,
+            # but carries their original outputs and execution interval. The
+            # original successful job must corroborate that exact interval;
+            # a new execution cannot borrow its predecessor's receipt.
+            original = [candidate for candidate in jobs if (
+                candidate["name"] == name
+                and candidate["run_attempt"] == receipt["run_attempt"]
+            )]
+            if (receipt["run_attempt"] > job["run_attempt"] or len(original) != 1
+                    or original[0]["conclusion"] != "success"
+                    or any(original[0][field] != job[field] for field in ("started_at", "completed_at"))):
+                raise EvidenceError(f"receipt does not match the successful GitHub job: {name}")
         if receipt["elapsed_seconds"] > _elapsed(job["started_at"], job["completed_at"]) + 1:
             raise EvidenceError(f"receipt duration exceeds its GitHub job: {name}")
         required.append(name)

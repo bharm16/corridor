@@ -126,14 +126,12 @@ authorization (settled, and #531 has now *implemented* the pilot half), #557
 model-provider processing posture (the approved posture is recorded), and
 #560 the release artifact contract (recorded as ADR-0091, and #640 models it).
 
-**The release chain, in order:** #640 issue profile → #641 the shared
-issue-content seam and ADR-0085's consequence levels (both landed; #529 consumes
-`effective_issue_content` unchanged) → #529 candidate (landed; the
-`release_packages` identity relation it created is empty and #533 populates it)
-→ #533 authorization (landed) → #636 portfolio readiness → finish
-#536 → finish #537 → #532 measurement. That sequence completes the paid
-vertical slice; the one-unreleased-edge window means its migration-bearing
-steps run one at a time.
+**The release chain is built:** #640 issue profile → #641 shared issue content
+and consequence levels → #529 candidate → #533 authorization → #636 portfolio
+readiness → #536 project workflow → #537 portfolio reading are delivered.
+#532 completes the measurement software and reproducible fixture reports in
+this change. Actual deployment/activation and #424/#498 customer findings
+remain separate requirements; no fixture establishes a pilot outcome.
 
 ## Phase 0 — correct the constitution
 
@@ -175,11 +173,10 @@ Complete.
    telemetry are **done**, and #558 landed the analytics event contract so
    every later primitive emits its events as it ships. #490 staged
    untrusted-intake hardening is **done**; it gates #561, the first lane that
-   receives partner bytes, and never gated #489. #489 synthetic environment
-   foundation is open and now waits on **#601**, the human ticket that
-   provisions the dedicated nonproduction AWS account, the billing budget and
-   alarms, the recorded region, and the GitHub OIDC deployment identity —
-   agents cannot create those.
+   receives partner bytes, and never gated #489. PR #770 carries #489's
+   deployment wiring; #489 remains open for actual deployment and restore.
+   The account, budget, region and GitHub deployment identity recorded under
+   #601 remain required deployment inputs.
 4. #496 PullConnector and normalized SourceEnvelope and #511 project-bound
    push intake are **done** for the channels the partner needs. #599 is
    **done**: one `source_deliveries` family persists both transports under
@@ -192,7 +189,10 @@ Complete.
    design was superseded by ADR-0089 and replaced in #599.
 6. Live-activation gates, all owned by #535: #522 customer authorization and
    data handling, #514 customer-environment disposition,
-   and #531 pilot identity, authorization, and deprovisioning. #766 verified
+   and the delivered #531 pilot identity, authorization, and deprovisioning.
+   #656's separate control plane, customer routing and external receipt
+   custody are implemented and closed through PR #769; this does not complete
+   #489 deployment or authorize customer activation. #766 verified
    the PDF engine replacement for #461/#741: the complete engine-absence suite
    and built-image audit pass, with the required notices present
    ([receipt](docs/operations/native-matrix-retirement-766.md)). #535 verifies
@@ -272,11 +272,12 @@ earlier.
     project is configured to issue (ADR-0091). Delivery to the partner's
     document system is #563, separate from authorization and
     partner-triggered.
-11. #536 linear project workflow; #537 derived weekly portfolio reading,
-    required before the measured multi-project cohort, not before #535.
-12. #532 (#491B) product and pilot measurement, consuming the events each
-    primitive already emits through #558 — instrumentation is in place
-    *before* the first measured week because it landed with each primitive.
+11. #536 linear project workflow and #537 derived weekly portfolio reading —
+    **done**, including their presentation/selection events.
+12. #532 (#491B) product and pilot measurement — **software complete in this
+    change**, with collection, immutable-receipt derivation and reproducible
+    fixture reports. #535 still binds and verifies the actual measured
+    deployment; real #424/#498 findings remain open.
 13. #450 schedule source, #455 email source, #456 minutes source, **only for
     the source classes the partner actually produces**. Other source classes
     are parallel work.
@@ -284,9 +285,10 @@ earlier.
 **Exit:** the slice runs end to end on one partner project with the partner's
 own workbook and one connected source, and the adopted project runs in
 baseline/delta operating mode with no legacy automatic accepted-value update.
-The spine lifecycle itself — #509, #518, #519, #520, #526 — is already built;
-what remains is the coordinator-facing surface, the release package, and the
-first real source path.
+The spine lifecycle, coordinator workflow, configured release package and
+measurement software are built. The remaining exit proof is their authorized
+deployment and use with the partner's real workbook/source path, not another
+implementation of those completed surfaces.
 
 Recorded Verbal Statements sat outside the gated pilot source population
 "until their spine-native source origin (#512) ships". **#512 has shipped**, so

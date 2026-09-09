@@ -24,21 +24,25 @@ and #675 does not invent a second authority over where they come from. A
 resolver supplies them. Copying them onto the request would copy state another
 row already owns, which is the defect #598's ratchet refuses.
 
-**No clock.** The attempt's start and finish are declared by the caller.
+**No owned clock.** The caller declares the start and either supplies a fixed
+finish for a replay or a clock callback sampled after rendering. Reading the
+finish before entering the worker used to omit every render minute (#532).
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from typing import Any, Callable, Mapping, Sequence
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.analytics import AnalyticsBinding
+from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily, default_binding, emit_event
+from corridor.measurement_collection import binding_for_session
 from corridor.issue_coverage import CoverageRefused, load_declaration
 from corridor.issue_rendering import TemplateBinding
-from corridor.models import ReleasePreparationAttempt, ReleasePreparationRequest
+from corridor.models import IssueProfile, ReleasePreparationAttempt, ReleasePreparationRequest
 from corridor.object_storage import ObjectStore
 from corridor.principals import HumanPrincipal
 from corridor.release_candidate import (
@@ -91,7 +95,7 @@ def run_preparation_request(
     request_id: int,
     inputs: PreparationInputs | InputResolver,
     started_at: datetime,
-    finished_at: datetime,
+    finished_at: datetime | Callable[[], datetime],
     store: ObjectStore | None = None,
     surface: str = "release_preparation_worker",
 ) -> ReleasePreparationAttempt:
@@ -109,7 +113,7 @@ def run_preparation_request(
     to say whose issue this is.
     """
 
-    if started_at.tzinfo is None or finished_at.tzinfo is None:
+    if started_at.tzinfo is None or (not callable(finished_at) and finished_at.tzinfo is None):
         raise PreparationRequestRefused(
             "an attempt records declared, time-zone-aware instants; nothing "
             "here reads a clock"
@@ -131,8 +135,20 @@ def run_preparation_request(
         except CoverageRefused as exc:
             raise PreparationRequestRefused(str(exc)) from exc
         resolved = inputs(request) if callable(inputs) else inputs
+        resolved = replace(resolved, binding=binding_for_session(reading, resolved.binding))
+        profile = {"issue_profile_identity": request.issue_profile_identity,
+                   "issue_profile_version": request.issue_profile_version,
+                   "issue_profile_sha256": reading.scalar(select(IssueProfile.content_sha256).where(
+                       IssueProfile.id == request.issue_profile_id, IssueProfile.project_id == project_id))}
         reading.rollback()
 
+    emit_event(AnalyticsEvent(
+        family=EventFamily.PREPARATION_ATTEMPT, binding=resolved.binding or default_binding(),
+        occurred_at=started_at, payload={"project_id": project_id, "request_id": request_id,
+                                        "coverage_declaration_id": declaration_id,
+                                        "principal_subject": requester.subject, "outcome": "started",
+                                        "started_at": started_at.isoformat(), **profile},
+    ))
     outcome = prepare_release_candidate(
         sessions,
         project_id=project_id,
@@ -151,6 +167,9 @@ def run_preparation_request(
         surface=surface,
         store=store,
     )
+    completed_at = finished_at() if callable(finished_at) else finished_at
+    if completed_at.tzinfo is None or completed_at < started_at:
+        raise PreparationRequestRefused("the completion clock must return an aware instant after the start")
     with sessions() as recording:
         attempt = record_attempt(
             recording,
@@ -158,10 +177,19 @@ def run_preparation_request(
             project_id=project_id,
             outcome=outcome,
             started_at=started_at,
-            finished_at=finished_at,
+            finished_at=completed_at,
         )
         recording.commit()
         recording.refresh(attempt)
+        emit_event(AnalyticsEvent(
+            family=EventFamily.PREPARATION_ATTEMPT, binding=resolved.binding or default_binding(),
+            occurred_at=completed_at, payload={"project_id": project_id, "request_id": request_id,
+                                             "attempt_id": int(attempt.id), "outcome": attempt.outcome,
+                                             "candidate_id": attempt.candidate_id, "refusal_code": attempt.refusal_code,
+                                             "started_at": started_at.isoformat(),
+                                             "coverage_declaration_id": declaration_id,
+                                             "principal_subject": requester.subject, **profile},
+        ))
         return attempt
 
 

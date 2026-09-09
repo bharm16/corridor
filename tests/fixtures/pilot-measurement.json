@@ -1,0 +1,3347 @@
+{
+  "schema_version": "pilot-measurement-input-v1",
+  "synthetic": true,
+  "periods": [
+    {
+      "period_id": "ordinary-week",
+      "project_id": 1,
+      "partner_id": "synthetic-partner",
+      "start": "2026-09-07T00:00:00+00:00",
+      "end": "2026-09-14T00:00:00+00:00",
+      "declared_at": "2026-09-07T00:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "issue_profile_identity": "fixture-issue",
+      "issue_profile_version": 1,
+      "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "required_artifacts": [
+        "updated_ucm",
+        "weekly_report"
+      ],
+      "previously_performed_artifacts": [
+        "updated_ucm"
+      ],
+      "quiet_max": 0,
+      "ordinary_max": 10,
+      "source_population_complete": true,
+      "interaction_capture_complete": true,
+      "retention_policy": "synthetic-fixture-no-customer-data",
+      "access_policy": "repository-reviewers",
+      "capture_window_seconds": 86400,
+      "material_fields": [
+        "external_org",
+        "utility_id",
+        "conflict_description",
+        "committed_date",
+        "need_date",
+        "closure_result",
+        "applies_to",
+        "agreement_status",
+        "permit_status",
+        "cost_responsibility",
+        "utility_owner",
+        "conflict_identity",
+        "promised_for",
+        "required_by",
+        "closure"
+      ],
+      "customer_id": "synthetic-customer",
+      "environment": "fixture",
+      "database_identity": "synthetic:customer-database"
+    },
+    {
+      "period_id": "quiet-week",
+      "project_id": 1,
+      "partner_id": "synthetic-partner",
+      "start": "2026-09-14T00:00:00+00:00",
+      "end": "2026-09-21T00:00:00+00:00",
+      "declared_at": "2026-09-07T00:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "issue_profile_identity": "fixture-issue",
+      "issue_profile_version": 1,
+      "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "required_artifacts": [
+        "updated_ucm",
+        "weekly_report"
+      ],
+      "previously_performed_artifacts": [
+        "updated_ucm"
+      ],
+      "quiet_max": 0,
+      "ordinary_max": 10,
+      "source_population_complete": true,
+      "interaction_capture_complete": true,
+      "retention_policy": "synthetic-fixture-no-customer-data",
+      "access_policy": "repository-reviewers",
+      "capture_window_seconds": 86400,
+      "material_fields": [
+        "external_org",
+        "utility_id",
+        "conflict_description",
+        "committed_date",
+        "need_date",
+        "closure_result",
+        "applies_to",
+        "agreement_status",
+        "permit_status",
+        "cost_responsibility",
+        "utility_owner",
+        "conflict_identity",
+        "promised_for",
+        "required_by",
+        "closure"
+      ],
+      "customer_id": "synthetic-customer",
+      "environment": "fixture",
+      "database_identity": "synthetic:customer-database"
+    },
+    {
+      "period_id": "burst-week",
+      "project_id": 1,
+      "partner_id": "synthetic-partner",
+      "start": "2026-09-21T00:00:00+00:00",
+      "end": "2026-09-28T00:00:00+00:00",
+      "declared_at": "2026-09-07T00:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "issue_profile_identity": "fixture-issue",
+      "issue_profile_version": 1,
+      "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "required_artifacts": [
+        "updated_ucm",
+        "weekly_report"
+      ],
+      "previously_performed_artifacts": [
+        "updated_ucm"
+      ],
+      "quiet_max": 0,
+      "ordinary_max": 10,
+      "source_population_complete": true,
+      "interaction_capture_complete": true,
+      "retention_policy": "synthetic-fixture-no-customer-data",
+      "access_policy": "repository-reviewers",
+      "capture_window_seconds": 86400,
+      "material_fields": [
+        "external_org",
+        "utility_id",
+        "conflict_description",
+        "committed_date",
+        "need_date",
+        "closure_result",
+        "applies_to",
+        "agreement_status",
+        "permit_status",
+        "cost_responsibility",
+        "utility_owner",
+        "conflict_identity",
+        "promised_for",
+        "required_by",
+        "closure"
+      ],
+      "customer_id": "synthetic-customer",
+      "environment": "fixture",
+      "database_identity": "synthetic:customer-database"
+    }
+  ],
+  "events": [
+    {
+      "event_id": "fixture-001",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T00:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "delivery:1",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-002",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T01:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "delivery:1",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-003",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 1,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "committed_date"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-004",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 2,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "committed_date"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-005",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 3,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "committed_date"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-006",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 4,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "committed_date"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-007",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 5,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-008",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 6,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-009",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 7,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-010",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 8,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-011",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 9,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-012",
+      "family": "proposed_delta_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 10,
+        "source_identity": "delivery:1",
+        "source_class": "ucm",
+        "target_field": "station_from"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ProposedDelta row creation timestamp"
+    },
+    {
+      "event_id": "fixture-013",
+      "family": "packet_surfacing",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T03:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "item_key": "one-packet-ten-children",
+        "child_count": 10,
+        "child_consequences": [
+          {
+            "delta_id": 1
+          },
+          {
+            "delta_id": 2
+          },
+          {
+            "delta_id": 3
+          },
+          {
+            "delta_id": 4
+          },
+          {
+            "delta_id": 5
+          },
+          {
+            "delta_id": 6
+          },
+          {
+            "delta_id": 7
+          },
+          {
+            "delta_id": 8
+          },
+          {
+            "delta_id": 9
+          },
+          {
+            "delta_id": 10
+          }
+        ],
+        "consequence_level": "must_handle_before_issue"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Work List evaluation log and presentation cache"
+    },
+    {
+      "event_id": "fixture-014",
+      "family": "packet_opening",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T04:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "item_key": "one-packet-ten-children"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Explicit interaction event; no static database receipt"
+    },
+    {
+      "event_id": "fixture-015",
+      "family": "child_decision",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 1,
+        "action": "apply",
+        "outcome": "saved",
+        "receipt_id": 1,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaDisposition record with attributable timestamp"
+    },
+    {
+      "event_id": "fixture-016",
+      "family": "child_decision",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 2,
+        "action": "edit_and_apply",
+        "outcome": "saved",
+        "receipt_id": 2,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaDisposition record with attributable timestamp"
+    },
+    {
+      "event_id": "fixture-017",
+      "family": "child_decision",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 3,
+        "action": "keep_current",
+        "outcome": "saved",
+        "receipt_id": 3,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaDisposition record with attributable timestamp"
+    },
+    {
+      "event_id": "fixture-018",
+      "family": "child_decision",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 4,
+        "action": "needs_coordination",
+        "outcome": "saved",
+        "receipt_id": 4,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaDisposition record with attributable timestamp"
+    },
+    {
+      "event_id": "fixture-019",
+      "family": "child_decision",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 5,
+        "action": "defer",
+        "outcome": "saved",
+        "receipt_id": 5,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaDisposition record with attributable timestamp"
+    },
+    {
+      "event_id": "fixture-020",
+      "family": "delta_supersession",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T06:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "prior_delta_id": 6,
+        "superseding_delta_id": 100
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "DeltaSupersession naming the prior and superseding delta"
+    },
+    {
+      "event_id": "fixture-021",
+      "family": "packet_save",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "receipt_id": 1,
+        "outcome": "saved",
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Atomic review transaction receipt"
+    },
+    {
+      "event_id": "fixture-022",
+      "family": "follow_up_plan_creation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "delta_id": 4,
+        "follow_up_plan_id": 1,
+        "revision_id": 42
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "FollowUpPlan table row"
+    },
+    {
+      "event_id": "fixture-023",
+      "family": "coverage_reading",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T06:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "reading_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Explicit presentation of the derived coverage reading"
+    },
+    {
+      "event_id": "fixture-024",
+      "family": "coverage_confirmation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T06:06:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "coverage_declaration_id": 7,
+        "reading_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "annotation_count": 1
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "IssueCoverageDeclaration with actor and confirmed_at"
+    },
+    {
+      "event_id": "fixture-025",
+      "family": "preparation_request",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T07:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request_id": 1,
+        "coverage_declaration_id": 7,
+        "annotation_count": 1,
+        "unchanged_declaration_reused": false
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleasePreparationRequest with declaration and requested_at"
+    },
+    {
+      "event_id": "fixture-026",
+      "family": "preparation_attempt",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T08:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request_id": 1,
+        "attempt_id": 1,
+        "started_at": "2026-09-07T07:30:00+00:00",
+        "outcome": "failed"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleasePreparationAttempt with started_at and finished_at"
+    },
+    {
+      "event_id": "fixture-027",
+      "family": "preparation_request",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T09:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request_id": 2,
+        "coverage_declaration_id": 7,
+        "annotation_count": 1,
+        "unchanged_declaration_reused": true
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleasePreparationRequest with declaration and requested_at"
+    },
+    {
+      "event_id": "fixture-028",
+      "family": "preparation_attempt",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T11:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "request_id": 2,
+        "attempt_id": 2,
+        "started_at": "2026-09-07T10:00:00+00:00",
+        "outcome": "prepared",
+        "candidate_id": 3
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleasePreparationAttempt with started_at and finished_at"
+    },
+    {
+      "event_id": "fixture-029",
+      "family": "release_candidate_preparation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T11:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "candidate_id": 3,
+        "candidate_identity": "fixture-candidate-3",
+        "accepted_revision_id": 42,
+        "coverage_declaration_id": 7,
+        "readiness": "ready",
+        "configured_artifact_types": [
+          "updated_ucm",
+          "weekly_report"
+        ],
+        "artifacts": [
+          {
+            "artifact_type": "updated_ucm",
+            "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+          },
+          {
+            "artifact_type": "weekly_report",
+            "content_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+          }
+        ]
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleaseCandidate receipt"
+    },
+    {
+      "event_id": "fixture-030",
+      "family": "release_authorization",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T12:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "candidate_id": 3,
+        "candidate_identity": "fixture-candidate-3",
+        "accepted_revision_id": 42,
+        "package_identity": "fixture-package-1",
+        "status": "authorized"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "ReleaseAuthorization receipt with principal and timestamp"
+    },
+    {
+      "event_id": "fixture-031",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "coordinator_review",
+        "minutes": 12,
+        "actor": "fixture:coordinator",
+        "evidence_reference": "fixture-time:coordinator_review"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-032",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "operations_setup",
+        "minutes": 4,
+        "actor": "fixture:operator",
+        "evidence_reference": "fixture-time:operations_setup"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-033",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "operations_triage",
+        "minutes": 5,
+        "actor": "fixture:operator",
+        "evidence_reference": "fixture-time:operations_triage"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-034",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "connector_maintenance",
+        "minutes": 1,
+        "actor": "fixture:operator",
+        "evidence_reference": "fixture-time:connector_maintenance"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-035",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "operations_support",
+        "minutes": 3,
+        "actor": "fixture:operator",
+        "evidence_reference": "fixture-time:operations_support"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-036",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "failure_recovery",
+        "minutes": 2,
+        "actor": "fixture:operator",
+        "evidence_reference": "fixture-time:failure_recovery"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-037",
+      "family": "work_observation",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T13:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "category": "manual_reconstruction",
+        "minutes": null,
+        "unavailable_reason": "time was not recorded",
+        "item_key": "one-packet-ten-children",
+        "actor": "fixture:coordinator",
+        "evidence_reference": "fixture-time:reconstruction"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable measured-time entry; never inferred from idle time"
+    },
+    {
+      "event_id": "fixture-038",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T14:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "release_readiness",
+        "candidate_id": 3,
+        "client_ready": true,
+        "manual_repair_required": false,
+        "actor": "fixture:coordinator",
+        "evidence_reference": "fixture-readiness:3"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-039",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T04:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "packet_usefulness",
+        "item_key": "one-packet-ten-children",
+        "necessary": true,
+        "actor": "fixture:coordinator",
+        "evidence_reference": "fixture-triage:1"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-040",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T04:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "child_usefulness",
+        "delta_id": 7,
+        "necessary": true,
+        "source_class": "ucm",
+        "actor": "fixture:coordinator",
+        "evidence_reference": "fixture-child:7"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-041",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T15:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "material_change",
+        "material": true,
+        "confirmed_miss": true,
+        "source_class": "ucm",
+        "actor": "fixture:independent-reviewer",
+        "resolved_by": "fixture:coordinator",
+        "evidence_reference": "fixture-source-sample:missing-change"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-042",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T15:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "baseline_field",
+        "material": true,
+        "populated": true,
+        "correct": true,
+        "source_class": "ucm",
+        "actor": "fixture:independent-reviewer",
+        "evidence_reference": "fixture-baseline:1:committed_date"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-043",
+      "family": "measurement_sample",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T15:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "sample_kind": "false_write",
+        "material": true,
+        "automatic": true,
+        "classification": "confirmed_policy_error",
+        "reversal_receipt": "fixture-reversal:1",
+        "source_class": "ucm",
+        "actor": "fixture:independent-reviewer",
+        "evidence_reference": "fixture-policy-review:1"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Attributable sampling observation and retained evidence reference"
+    },
+    {
+      "event_id": "fixture-044",
+      "family": "provider_usage",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T16:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "usage_id": "fixture-usage-0",
+        "mode": "actual_call",
+        "actual_cost_usd": "0.25",
+        "purpose": "production",
+        "source_class": "ucm",
+        "provider": "fixture-provider",
+        "model": "fixture-model",
+        "prompt_version": "fixture-prompt-v1",
+        "policy_version": "fixture-policy-v1",
+        "evidence_reference": "fixture-bill:0"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Actual provider call/billing receipt, retry or retained cache-use record"
+    },
+    {
+      "event_id": "fixture-045",
+      "family": "provider_usage",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T16:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "usage_id": "fixture-usage-1",
+        "mode": "retry",
+        "actual_cost_usd": "0.05",
+        "purpose": "production",
+        "source_class": "ucm",
+        "provider": "fixture-provider",
+        "model": "fixture-model",
+        "prompt_version": "fixture-prompt-v1",
+        "policy_version": "fixture-policy-v1",
+        "evidence_reference": "fixture-bill:1"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Actual provider call/billing receipt, retry or retained cache-use record"
+    },
+    {
+      "event_id": "fixture-046",
+      "family": "provider_usage",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T16:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "usage_id": "fixture-usage-2",
+        "mode": "cache_reuse",
+        "actual_cost_usd": "0.00",
+        "purpose": "production",
+        "source_class": "ucm",
+        "provider": "fixture-provider",
+        "model": "fixture-model",
+        "prompt_version": "fixture-prompt-v1",
+        "policy_version": "fixture-policy-v1",
+        "evidence_reference": "fixture-bill:2"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Actual provider call/billing receipt, retry or retained cache-use record"
+    },
+    {
+      "event_id": "fixture-047",
+      "family": "provider_usage",
+      "version": "1.0",
+      "occurred_at": "2026-09-07T16:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "usage_id": "fixture-usage-3",
+        "mode": "historical_experiment",
+        "actual_cost_usd": "99.00",
+        "purpose": "experiment",
+        "source_class": "ucm",
+        "provider": "fixture-provider",
+        "model": "fixture-model",
+        "prompt_version": "fixture-prompt-v1",
+        "policy_version": "fixture-policy-v1",
+        "evidence_reference": "fixture-bill:3"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Actual provider call/billing receipt, retry or retained cache-use record"
+    },
+    {
+      "event_id": "fixture-048",
+      "family": "portfolio_reading",
+      "version": "1.0",
+      "occurred_at": "2026-09-14T01:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "principal_subject": "fixture:coordinator",
+        "projects": [
+          {
+            "project_id": 1,
+            "state": "no_action",
+            "measurement_context": {
+              "issue_profile_identity": "fixture-issue",
+              "issue_profile_version": 1,
+              "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+              "template_identity": "fixture-template:1",
+              "mapping_identity": "fixture-mapping:1"
+            }
+          }
+        ]
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Weekly portfolio presentation receipt"
+    },
+    {
+      "event_id": "fixture-049",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T01:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:0",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-050",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T01:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:0",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-051",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T02:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:1",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-052",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T02:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:1",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-053",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T03:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:2",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-054",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T03:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:2",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-055",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T04:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:3",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-056",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T04:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:3",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-057",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T05:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:4",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-058",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T05:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:4",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-059",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T06:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:5",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-060",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T06:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:5",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-061",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T07:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:6",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-062",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T07:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:6",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-063",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T08:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:7",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-064",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T08:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:7",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-065",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T09:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:8",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-066",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T09:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:8",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-067",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T10:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:9",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-068",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T10:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:9",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-069",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T11:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:10",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-070",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T11:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:10",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    },
+    {
+      "event_id": "fixture-071",
+      "family": "source_arrival",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T12:00:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:11",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "SourceEnvelope ingress log or transport receipt"
+    },
+    {
+      "event_id": "fixture-072",
+      "family": "source_capture",
+      "version": "1.0",
+      "occurred_at": "2026-09-21T12:30:00+00:00",
+      "binding": {
+        "code_revision": "git:synthetic-532-fixture",
+        "product_revision": "synthetic-pilot-v1",
+        "packetizer_rules_version": "delta-partition-v2",
+        "source_configuration": {
+          "classes": [
+            "ucm"
+          ],
+          "cadence": "daily"
+        },
+        "connector_configuration": {
+          "identity": "fixture-folder",
+          "version": "1"
+        },
+        "template_identity": "fixture-template:1",
+        "mapping_identity": "fixture-mapping:1",
+        "enabled_feature_flags": [],
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "customer_id": "synthetic-customer",
+        "environment": "fixture",
+        "database_identity": "synthetic:customer-database"
+      },
+      "payload": {
+        "project_id": 1,
+        "principal_subject": "fixture:coordinator",
+        "issue_profile_identity": "fixture-issue",
+        "issue_profile_version": 1,
+        "issue_profile_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "source_identity": "burst:11",
+        "source_class": "ucm"
+      },
+      "metric_labels": {},
+      "derivable_receipt_alternative": "Document row creation timestamp and stored object digest"
+    }
+  ]
+}

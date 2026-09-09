@@ -95,7 +95,8 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
-from corridor.analytics import AnalyticsBinding, default_binding
+from corridor.analytics import AnalyticsBinding
+from corridor.measurement_collection import binding_for_source
 from corridor.baseline_adoption import (
     FormatIdentity,
     PreviewRow,
@@ -477,16 +478,9 @@ def capture_later_revision(
         deltas=proposals,
         is_complete_enumerative_source=is_complete_enumerative_source,
         row_accounting_sealed=row_accounting_sealed,
-        analytics_binding=analytics_binding
-        or default_binding(
-            source_configuration={
-                "channel": envelope.channel,
-                "source_kind": "ucm_workbook",
-                "complete_enumerative_source": is_complete_enumerative_source,
-                "row_accounting_sealed": row_accounting_sealed,
-            },
-            template_identity=envelope.external_identity,
-            mapping_identity=manifest.revision,
+        analytics_binding=analytics_binding or replace(
+            binding_for_source(session, delivery),
+            mapping_identity=f"{manifest.identity}:{manifest.version}",
         ),
     )
     audit.record(

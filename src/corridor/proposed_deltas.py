@@ -49,7 +49,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import bindparam, func, select, text
 from sqlalchemy.orm import Session
 
 from corridor.analytics import (
@@ -64,7 +64,10 @@ from corridor.models import (
     DeltaGroup,
     DeltaSupersession,
     ProposedDelta,
+    Document,
+    SourceDelivery,
 )
+from corridor.measurement_collection import binding_for_source
 from corridor.source_append import append_proposed_deltas
 
 
@@ -199,6 +202,8 @@ def create_proposed_delta_group(
             }
         )
 
+    before_id = int(session.scalar(select(func.max(ProposedDelta.id)).where(
+        ProposedDelta.project_id == project_id)) or 0)
     appended_ids = append_proposed_deltas(
         session,
         project_id=project_id,
@@ -215,24 +220,62 @@ def create_proposed_delta_group(
         .order_by(ProposedDelta.id)
     ).all()
 
-    # Emit versioned analytics event if binding provided.  The event used to be
-    # constructed here and dropped on the floor, which measured nothing (#606).
-    if analytics_binding is not None:
+    created_ids = _new_delta_ids(session, project_id, appended_ids, before_id)
+    document = session.get(Document, document_id) if document_id is not None else None
+    delivery = session.get(SourceDelivery, document.source_delivery_id) if document and document.source_delivery_id else None
+    binding = binding_for_source(session, delivery, analytics_binding)
+    for row in rows:
+        created = row.id in created_ids
         emit_event(
             AnalyticsEvent(
                 family=EventFamily.PROPOSED_DELTA_CREATION,
-                binding=analytics_binding,
+                binding=binding,
+                occurred_at=row.created_at if created else datetime.now(timezone.utc),
                 payload={
                     "project_id": project_id,
                     "source_family": source_family,
                     "source_revision": source_revision,
-                    "delta_count": len(rows),
-                    "delta_ids": [r.id for r in rows],
+                    "document_id": document_id,
+                    "delta_id": row.id, "delta_count": 1, "delta_ids": [row.id],
+                    "outcome": "created" if created else "replayed",
+                    "complete_enumerative_source": is_complete_enumerative_source,
+                    "row_accounting_sealed": row_accounting_sealed,
                 },
             )
         )
 
     return tuple(rows)
+
+
+def _new_delta_ids(session: Session, project_id: int, ids: Sequence[int], before_id: int) -> frozenset[int]:
+    """A returned ID may be a concurrent/idempotent replay, not our insert.
+
+    Only our own uncommitted tuples are visible to this session. Require that
+    native inserting transaction to remain in progress AND an ID beyond the
+    pre-call watermark. The latter excludes an earlier call in this same
+    transaction; the former excludes a concurrent writer that won the insert.
+    Qualify recent tuple xids in the nearest epoch to our top-level xid,
+    including subtransactions across xid wrap, while the savepoint is active.
+    """
+    if not ids:
+        return frozenset()
+    query = text("""
+        with boundary as (
+            select pg_current_xact_id()::text::numeric as current_xid
+        ), recent as (
+            select d.id, b.current_xid,
+                   b.current_xid - mod(b.current_xid, 4294967296) + d.xmin::text::numeric as qualified_xid
+            from proposed_deltas d cross join boundary b
+            where d.project_id = :project_id and d.id in :ids and d.id > :before_id
+        )
+        select id from recent
+        where pg_xact_status((qualified_xid + case
+            when qualified_xid - current_xid > 2147483648 then -4294967296
+            when current_xid - qualified_xid > 2147483648 then 4294967296
+            else 0 end
+          )::text::xid8) = 'in progress'
+    """).bindparams(bindparam("ids", expanding=True))
+    return frozenset(session.scalars(query, {"project_id": project_id, "ids": tuple(ids), "before_id": before_id}))
 
 
 def derive_live_delta_state(session: Session, delta_id: int) -> LiveDeltaState:
@@ -339,7 +382,7 @@ def record_delta_deferral(
     through the command.
     """
 
-    deferral_id = session.scalar(
+    deferral_id = session.execute(
         select(
             func.defer_proposed_delta(
                 project_id,
@@ -351,6 +394,6 @@ def record_delta_deferral(
                 reason,
             )
         )
-    )
+    ).scalar_one()
     session.expire_all()
     return session.get_one(DeltaDeferral, int(deferral_id))

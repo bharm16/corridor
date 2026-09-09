@@ -43,6 +43,7 @@ advance and stored nowhere.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from sqlalchemy import select
@@ -59,6 +60,8 @@ from corridor.models import (
     ConnectorCheckpointAdvanceDelivery,
     SourceDelivery,
 )
+from corridor.analytics import emit_event, source_arrival_event
+from corridor.measurement_collection import binding_for_source
 
 # ADR-0089's five dispositions.  ``stored`` and ``duplicate`` are the two
 # outcomes in which Corridor holds the exact bytes; the other three are the
@@ -222,11 +225,13 @@ def record_delivery(
         pg_insert(SourceDelivery)
         .values(**values)
         .on_conflict_do_nothing(constraint="uq_source_deliveries_observation")
-        .returning(SourceDelivery.id)
-    ).scalar_one_or_none()
+        .returning(SourceDelivery.id, SourceDelivery.received_at)
+    ).one_or_none()
     if inserted is not None:
+        _emit_delivery_arrival(session, binding, observation, inserted.id, inserted.received_at,
+                               disposition=disposition, outcome="recorded")
         return RecordedDelivery(
-            delivery_id=int(inserted),
+            delivery_id=int(inserted.id),
             disposition=disposition,
             delivery_identity=identity,
             idempotency_key=idempotency_key,
@@ -242,6 +247,8 @@ def record_delivery(
             SourceDelivery.disposition == disposition,
         )
     ).one()
+    _emit_delivery_arrival(session, binding, observation, existing.id, datetime.now(timezone.utc),
+                           disposition=disposition, outcome="replayed")
     return RecordedDelivery(
         delivery_id=int(existing.id),
         disposition=disposition,
@@ -251,6 +258,18 @@ def record_delivery(
         bytes_reference=existing.bytes_reference,
         created=False,
     )
+
+
+def _emit_delivery_arrival(session, binding, observation, delivery_id, at, *, disposition, outcome):
+    """A newly recorded arrival names its native ID/time; retry time is separate."""
+    size = observation.metadata.get("byte_count")
+    filename = observation.metadata.get("filename")
+    emit_event(source_arrival_event(
+        binding_for_source(session, binding), customer_id=binding.customer, project_id=binding.project_id,
+        channel=binding.channel, filename=filename if isinstance(filename, str) else "",
+        content_sha256=observation.content_digest, byte_count=size if type(size) is int and size >= 0 else None,
+        source_delivery_id=int(delivery_id), occurred_at=at, outcome=outcome, disposition=disposition,
+    ))
 
 
 def take_delivery(

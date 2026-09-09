@@ -1733,6 +1733,7 @@ def test_the_presentation_payload_is_exactly_the_row(session, client, tmp_path, 
             "follow_up_due": row.follow_up_due,
             "readiness_problems": row.readiness_problems,
             "preparing": row.preparing,
+            "measurement_context": row.measurement_context,
         }
         for row in reading.standings
     ]

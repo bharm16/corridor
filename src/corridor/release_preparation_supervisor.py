@@ -738,7 +738,7 @@ def execute_release_preparation(
         request_id=request_id,
         inputs=inputs,
         started_at=started_at,
-        finished_at=_aware_utc(clock.now()),
+        finished_at=lambda: _aware_utc(clock.now()),
         store=resolved_store,
         surface=HANDLER_KEY,
     )

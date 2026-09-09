@@ -718,15 +718,26 @@ def test_the_worker_prepares_through_the_three_phases(
         project_id = int(project.id)
         setup.commit()
 
+    completion_observations = []
+
+    def completion_clock():
+        from corridor.release_candidate import current_release_candidate
+
+        with factory() as reading:
+            completion_observations.append(current_release_candidate(reading, project_id) is not None)
+        return FINISHED_AT
+
     attempt = run_preparation_request(
         factory,
         request_id=request_id,
         inputs=inputs(adopted),
         started_at=STARTED_AT,
-        finished_at=FINISHED_AT,
+        finished_at=completion_clock,
     )
 
     assert attempt.outcome == "prepared"
+    assert completion_observations == [True]
+    assert attempt.finished_at == FINISHED_AT
     assert attempt.candidate_id is not None
     with factory() as check:
         candidate = check.get_one(ReleaseCandidate, attempt.candidate_id)
