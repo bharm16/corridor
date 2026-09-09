@@ -54,7 +54,7 @@ def inventory_history(session: Session, project_id: int) -> HistoryInventory:
 
 def capture_history(session: Session, inventory: HistoryInventory, *, run_key: str,
                     executor: str, code_revision: str) -> HistoryBatch:
-    """Seal reviewed rows; caller owns a repeatable-read transaction and commit."""
+    """Seal reviewed rows from one MVCC statement; caller owns the transaction and commit."""
     batch_id = session.scalar(text("select capture_legacy_history(:project,:key,:executor,:code,:digest)"),
         {"project": inventory.project_id, "key": run_key, "executor": executor,
          "code": code_revision, "digest": inventory.content_sha256})

@@ -1,6 +1,6 @@
 """Immutable compatibility-history custody, folded into the existing edge.
 
-The command copies database rows itself under one repeatable-read snapshot.
+The command copies database rows itself in one statement-level MVCC snapshot.
 Callers supply a reviewed digest, never historical authors or accepted values.
 Reversal appends a receipt and leaves the original bytes and source links intact.
 """
@@ -78,9 +78,6 @@ declare content jsonb; content_digest text; result bigint; previous legacy_histo
 begin
  if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
   raise exception 'history outside project partition' using errcode='23514';
- end if;
- if current_setting('transaction_isolation') not in ('repeatable read','serializable') then
-  raise exception 'history capture requires repeatable read or serializable isolation' using errcode='23514';
  end if;
  perform id from projects where id=p_project_id for update;
  if not found then raise exception 'project does not exist' using errcode='23514'; end if;

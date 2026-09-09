@@ -40,7 +40,7 @@ def main(argv=None):
     if not operations_url:
         parser.error("set CORRIDOR_HISTORY_OPERATIONS_DATABASE_URL to an explicitly provisioned operations login; schema-owner and application credentials are refused")
     engine = create_engine(operations_url)
-    with engine.connect().execution_options(isolation_level="REPEATABLE READ") as connection:
+    with engine.connect().execution_options(isolation_level="READ COMMITTED") as connection:
         with connection.begin():
             with Session(bind=connection) as session:
                 identity = session.execute(text("""

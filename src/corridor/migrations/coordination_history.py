@@ -261,6 +261,9 @@ create function migrate_coordination_history(p_project bigint,p_batch bigint) re
  language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare item jsonb; count bigint:=0; subject_uuid uuid; class_name text; reviewed jsonb; current_content jsonb; previously_imported boolean;
 begin
+ if current_setting('transaction_isolation')<>'read committed' then
+  raise exception 'coordination migration requires read committed post-lock visibility' using errcode='23514';
+ end if;
  if session_user='corridor_web' and not coalesce(p_project=any(current_project_partition()),false) then
   raise exception 'coordination migration outside project partition' using errcode='23514';
  end if;

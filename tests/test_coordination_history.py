@@ -19,7 +19,7 @@ from corridor.work_decisions import (
 
 @pytest.fixture
 def session():
-    connection = engine.connect().execution_options(isolation_level="REPEATABLE READ")
+    connection = engine.connect().execution_options(isolation_level="READ COMMITTED")
     transaction = connection.begin()
     scoped = Session(bind=connection)
     yield scoped

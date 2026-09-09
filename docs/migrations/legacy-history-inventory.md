@@ -40,8 +40,8 @@ added. The coordinator publishes the inventory/batch split before delivery.
 ## Exact history custody
 
 `legacy_history_batches` stores a database-generated canonical history manifest,
-not caller-authored values. Capture requires repeatable-read/serializable
-isolation and the digest reviewed during inventory. The command itself rereads
+not caller-authored values. Capture requires the digest reviewed during inventory. The complete class
+manifest is one UNION/aggregate statement and therefore one MVCC snapshot. The command itself rereads
 every declared ownership slice and rejects drift. Project/run-key retries return
 the same batch; a different digest, executor or code revision is refused. The
 receipt's executor never replaces a row's actor, decision type, source identity
@@ -258,3 +258,12 @@ refused. The operator's `--executor` must match the authenticated database login
 a free-text actor does not authenticate a migration. Login provisioning is an
 operations prerequisite; the migration creates the capability role, never a login
 or password. Web callers still require their sealed project partition.
+
+
+Native coordination migration requires READ COMMITTED and takes the shared
+project-row lock before inspecting source decisions. A REPEATABLE READ snapshot
+can predate the lock acquisition and miss a Save that committed while migration
+waited; that isolation level is explicitly refused for this command. With READ
+COMMITTED, its post-lock reads see that Save and either match the reviewed batch
+or refuse drift. The custody manifest itself is one SQL statement, so READ
+COMMITTED does not split it across several source snapshots.
