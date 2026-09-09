@@ -77,6 +77,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-check-wheels-v1
       - run: uv sync --locked
       - run: make check
       # A local standard-library classification keeps source checks independent
@@ -183,6 +185,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # One step, and no `services:` container, because this gate's wall
       # clock is the slowest required job and so samples the worst
       # setup draw taken in the run rather than the average one. The script
@@ -219,6 +223,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # See the pytest job: the same setup, for the same measured reason.
       - run: scripts/ci_environment.sh
       - id: measure
@@ -242,6 +248,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # The same setup the behavior gates run, for the same measured reason
       # (#595).
       - run: scripts/ci_environment.sh

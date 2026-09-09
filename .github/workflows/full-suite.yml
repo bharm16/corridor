@@ -35,6 +35,8 @@ jobs:
       - uses: astral-sh/setup-uv@v6
         with:
           enable-cache: true
+          prune-cache: false
+          cache-suffix: root-render-wheels-v1
       # The same setup the gate jobs run, for the same measured reason:
       # PostgreSQL comes from the runner image instead of a pulled service
       # container, and the OCR engine installs concurrently with the uv

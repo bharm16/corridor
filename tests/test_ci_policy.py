@@ -21,7 +21,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE = "release-gate.yml"
-# Ten test runners plus check and migration. Keep the capacity trial explicit;
+# Eleven test runners plus check and migration. Keep the capacity trial explicit;
 # the required timing receipts assess it against the unchanged ADR-0096 budget.
 DOWNLOADING_JOB_COUNT = 13
 
@@ -743,3 +743,32 @@ def test_the_summary_fails_closed(reason, results, expected_error):
         f"{reason}: {completed.stdout}{completed.stderr}"
     )
     assert "release gate failed closed" in completed.stdout
+
+
+def test_uv_caches_retain_wheels_and_separate_the_complete_dependency_populations():
+    """A metadata-only cache forced all runners to redownload wheels (#781).
+
+    GitHub caches are immutable: the root-only check must not win the cache
+    that promises both root and render dependencies. Every behavior/full job
+    prepares the same locked population and can safely share its wheel cache.
+    setup-uv includes the pruning mode and dependency hashes in the cache key.
+    """
+    gate = _workflow(GATE)
+    suffixes = {}
+    for name in ("check", "pytest", "slow", "migration"):
+        steps = [s for s in gate["jobs"][name]["steps"] if s.get("uses", "").startswith("astral-sh/setup-uv@")]
+        assert len(steps) == 1
+        inputs = steps[0]["with"]
+        assert inputs["enable-cache"] == "true"
+        assert inputs["prune-cache"] == "false"
+        suffixes[name] = inputs["cache-suffix"]
+        # Omission keeps setup-uv's full dependency-glob default. Disabling it
+        # would leave a cache identity unrelated to the locks it must follow.
+        assert inputs.get("cache-dependency-glob", "default")
+    assert suffixes["check"] == "root-check-wheels-v1"
+    assert {suffixes[name] for name in ("pytest", "slow", "migration")} == {"root-render-wheels-v1"}
+    for job in _workflow("full-suite.yml")["jobs"].values():
+        for step in job["steps"]:
+            if step.get("uses", "").startswith("astral-sh/setup-uv@"):
+                assert step["with"]["prune-cache"] == "false"
+                assert step["with"]["cache-suffix"] == "root-render-wheels-v1"
