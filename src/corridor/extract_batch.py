@@ -322,7 +322,9 @@ def run_extraction(
             documents = session.scalars(
                 select(Document)
                 .where(Document.project_id == project.id, Document.doc_type == doc_type)
-                .order_by(Document.doc_date)
+                # Equal or absent dates still need a reproducible batch and
+                # usage-receipt member order; heap order changes after updates.
+                .order_by(Document.doc_date, Document.id)
             ).all()
 
         # Resume: a killed run leaves whole documents done, so skip those and
