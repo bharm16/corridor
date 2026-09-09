@@ -6,7 +6,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.coordination_history import migrate_coordination_history, read_coordination_record
+from corridor.coordination_history import migrate_coordination_history, read_coordination_record, read_coordination_record_as_of_revision
 from corridor.db import Session, engine
 from corridor.legacy_history import capture_history, inventory_history, reverse_history
 from corridor.models import Dependency, Project, ProjectRosterEntry, WorkDecision
@@ -104,6 +104,14 @@ def test_grouped_follow_up_save_and_undo_each_have_one_native_revision(session, 
     undone = read_coordination_record(session, project.id)
     assert len({row.revision_id for row in undone}) == 1
     assert all(row.value_text is None for row in undone)
+    retained = read_coordination_record_as_of_revision(session, project.id, current[0].revision_id)
+    assert {row.field for row in retained} == {"internal_owner", "next_action"}
+    assert all(row.value_text is not None for row in retained)
+    other = Project(slug="other-native-coordination", name="Other", is_synthetic=True)
+    session.add(other)
+    session.flush()
+    with pytest.raises(ValueError, match="does not belong"):
+        read_coordination_record_as_of_revision(session, other.id, current[0].revision_id)
 
 
 @pytest.mark.parametrize("actor", ("reviewer", "corridor:automatic-carry-forward"))

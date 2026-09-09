@@ -99,6 +99,29 @@ def read_coordination_record(session: Session, project_id: int, *, at: datetime 
     return tuple(_decision(row) for row in rows)
 
 
+
+def read_coordination_record_as_of_revision(session: Session, project_id: int,
+                                             revision_id: int) -> tuple[CoordinationRecordDecision, ...]:
+    """Project the same accepted revision boundary used by source Fact readers.
+
+    Original decision time remains provenance. Revision identity controls this
+    reading, so a grouped Save appears atomically and a future import cannot
+    become part of an already-published earlier revision.
+    """
+    if not session.scalar(text("select exists(select 1 from project_record_revisions where id=:revision and project_id=:project)"),
+                          {"project": project_id, "revision": revision_id}):
+        raise ValueError("Coordination revision does not belong to this project")
+    rows = session.execute(text("""
+        select d.* from coordination_record_decisions d
+        where d.project_id=:project and d.revision_id<=:revision
+          and not exists(select 1 from coordination_record_decisions s
+                         where s.predecessor_id=d.id and s.revision_id<=:revision)
+          and not exists(select 1 from coordination_record_reversals r
+                         where r.decision_id=d.id and r.revision_id<=:revision)
+        order by d.subject_id,d.field
+    """), {"project": project_id, "revision": revision_id}).mappings()
+    return tuple(_decision(row) for row in rows)
+
 def _decision(row):
     values = dict(row)
     values["subject_id"] = str(values["subject_id"])
