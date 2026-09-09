@@ -133,12 +133,15 @@ class DispositionPlan:
     resolved_retain_until: datetime | None
     created_by: str
     created_at: datetime
+    provider_resources_sha256: str | None = None
 
     def __post_init__(self):
         for value in (self.plan_id, self.environment_id, self.created_by):
             identifier(value)
         if not re.fullmatch(r"[0-9a-f]{64}", self.manifest_sha256):
             raise ValueError("manifest digest must be a lowercase hex SHA-256")
+        if self.provider_resources_sha256 is not None and not re.fullmatch(r"[0-9a-f]{64}", self.provider_resources_sha256):
+            raise ValueError("provider resource inventory requires a SHA-256")
         if self.status not in {"dry_run", "executed", "refused", "partial"}:
             raise ValueError("unknown disposition plan status")
         if self.resolved_retain_until is not None and (

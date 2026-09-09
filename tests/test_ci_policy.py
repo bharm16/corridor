@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GATE = "release-gate.yml"
 # Ten test runners plus check and migration. Keep the capacity trial explicit;
 # the required timing receipts assess it against the unchanged ADR-0096 budget.
-DOWNLOADING_JOB_COUNT = 12
+DOWNLOADING_JOB_COUNT = 13
 
 
 def _workflow(name: str) -> dict:
@@ -272,8 +272,8 @@ def test_the_added_jobs_download_no_packages():
     """Package concurrency is explicit, so it may not grow unnoticed.
 
     `classify` and `release-gate` are new, but they run alone at either end
-    of the gate and install nothing. The 2026-09-08 capacity trial adds one
-    ordinary runner to the prior eleven downloading jobs (ADR-0096).
+    of the gate and install nothing. The 2026-09-09 capacity trial adds one
+    ordinary runner to the prior twelve downloading jobs (ADR-0096).
     """
 
     jobs = _workflow(GATE)["jobs"]
@@ -497,7 +497,7 @@ def test_check_owns_its_source_checks_once_in_the_required_gate():
 def test_every_test_job_consumes_the_same_timing_output_and_ends_with_its_test_command():
     """Metadata transport must not fail a completed test job or alter its partition."""
     commands = {
-        "pytest": "make test-shard SHARDS=7 SHARD=${{ matrix.shard }}",
+        "pytest": "make test-shard SHARDS=8 SHARD=${{ matrix.shard }}",
         "slow": "make test-slow-shard SHARDS=3 SHARD=${{ matrix.shard }}",
         "migration": "make test-migrations",
     }
