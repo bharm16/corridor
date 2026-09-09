@@ -578,7 +578,8 @@ def _workbooks(surface, session, reading, inventory):
 
 
 def _retained_report_context(surface, session, project_id, context, inventory):
-    from corridor.record_projection import read_native_record_values
+    from corridor.accepted_field_reading import native_reader_input_manifest, read_accepted_field_population
+    from corridor.record_projection import read_native_record_values, record_value_payload
     manifest = context.get("native_reader_input_manifest")
     if not isinstance(manifest, dict) or manifest.get("project_id") != project_id:
         surface.blockers.append("release: retained report has no project-bound native input manifest")
@@ -589,18 +590,52 @@ def _retained_report_context(surface, session, project_id, context, inventory):
         return None
     if not context.get("report_cells"):
         surface.blockers.append("release: retained report cells/citations are unavailable")
+    # Reconstruct the native input at the retained revision, never at today's
+    # head. The retained object remains the published output, even on mismatch.
+    # Complete serialization covers actor/time, typed value, exact sources and
+    # parent record identity; matching decision IDs alone proves none of those.
+    expected = _attempt(surface, "release: retained native revision", lambda: native_reader_input_manifest(
+        read_accepted_field_population(session, project_id, revision_id=boundary),
+        document_only=bool(context.get("document_only", False))))
+    if expected is not None and _encoded(expected) != _encoded(manifest):
+        surface.blockers.append("release: retained native input metadata differs from its exact as-of authority")
+    expected_fields = {(kind, record["subject_key"], name): field
+        for kind in ("records", "statements") for record in (expected or {}).get(kind, ())
+        for name, field in record["fields"].items()}
     decisions = {r["id"]: r for r in inventory["fact_decisions"]}
+    projected = {v.decision_id: v for v in read_native_record_values(session, project_id, boundary)}
+    segments = {r["id"]: r for r in inventory["source_segments"]}
+    edges = {(r["fact_id"], r["source_segment_id"]) for r in inventory["fact_sources"] if r["role"] == "value_source"}
     represented = set()
-    for record in (*manifest.get("records", ()), *manifest.get("statements", ())):
-        for name, field in record["fields"].items():
-            identity = field["decision_id"]
-            represented.add(identity)
-            held = decisions.get(identity)
-            if (field.get("decision_kind") != "fact_decision" or held is None
-                or (held["fact_id"], held["revision_id"], held["fact_type"]) != (field["fact_id"], field["revision_id"], name)):
-                surface.blockers.append(f"release: retained field {name} has no matching typed native decision")
-    projected = {v.decision_id for v in read_native_record_values(session, project_id, boundary)}
-    if projected != represented:
+    for kind in ("records", "statements"):
+        for record in manifest.get(kind, ()):
+            for name, field in record["fields"].items():
+                identity = field["decision_id"]
+                if identity in represented:
+                    surface.blockers.append(f"release: retained decision {identity} is duplicated across displayed fields")
+                represented.add(identity)
+                held = decisions.get(identity)
+                value = projected.get(identity)
+                if (field.get("decision_kind") != "fact_decision" or held is None
+                    or (held["fact_id"], held["revision_id"], held["fact_type"]) != (field["fact_id"], field["revision_id"], name)):
+                    surface.blockers.append(f"release: retained field {name} has no matching typed native decision")
+                if (value is None or value.fact_type != name
+                    or field.get("fact_subject_key") != (value.fact_subject_key or value.subject_key)
+                    or _plain(field.get("value")) != _plain(record_value_payload(value))
+                    or _encoded(field) != _encoded(expected_fields.get((kind, record["subject_key"], name)))):
+                    surface.blockers.append(f"release: retained field {record['subject_key']}/{name} differs from its exact as-of value, metadata or parent identity")
+                sources = field.get("sources", ())
+                actual_edges = [(field["fact_id"], source["source_segment_id"]) for source in sources]
+                if len(actual_edges) != len(set(actual_edges)) or set(actual_edges) != {edge for edge in edges if edge[0] == field["fact_id"]}:
+                    surface.blockers.append(f"release: retained field {name} source references differ from its native source edges")
+                for source in sources:
+                    segment = segments.get(source["source_segment_id"])
+                    if (segment is None or segment["document_id"] != source.get("document_id")
+                        or segment["exact_text"] != source.get("quote")
+                        or source.get("fact_id") != field["fact_id"]
+                        or source.get("decision_id") != identity or source.get("revision_id") != field["revision_id"]):
+                        surface.blockers.append(f"release: retained field {name} source reference differs from native source authority")
+    if set(projected) != represented:
         surface.blockers.append("release: retained field population differs from its native revision; audience-filtered or other unrepresented classes need explicit accounting")
     if manifest.get("coverage_blockers"):
         surface.blockers.extend(f"release: {b}" for b in manifest["coverage_blockers"])
@@ -664,6 +699,9 @@ def _releases(surface, session, project_id, revision, instant, inventory):
                     actual = retrieve_released_external_report(session, project_id, row["id"])
                     review = {"digest_verified_by": "retrieve_released_external_report", "pdf_sha256": actual.pdf_sha256}
                     approval = {"actor": actual.released_by, "at": _plain(actual.released_at)}
+                    if (actual.released_by != row["released_by"]
+                        or actual.released_at != datetime.fromisoformat(row["released_at"])):
+                        surface.blockers.append(f"release: external report {row['id']} approval actor/time differs from native release authority")
                 context = actual.record_context_json
                 manifest = _retained_report_context(surface, session, project_id, context, inventory)
                 surface.outputs[f"{table}:{row['id']}"] = {"context": context, "validation": review}
