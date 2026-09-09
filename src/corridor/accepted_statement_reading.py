@@ -215,15 +215,19 @@ def _source(session, segment, role, project_id, paths, temporary):
 def read_native_statements(session, project_id: int, revision_id: int, *, values=None) -> tuple[AcceptedStatement, ...]:
     """Read accepted statement classes, keeping source timing distinct from published dates.
 
-    ``values`` may reuse the same complete read_native_record_values snapshot
-    used by the caller's constraint reader. No sources, candidates, document
-    classes, model outputs or later lifecycle state can create accepted members.
+    ``values`` may bind the complete snapshot used by the caller's constraint
+    reader. It is corroborated against a fresh native read at the fixed revision;
+    caller-supplied payloads never establish values or population. No sources,
+    candidates, model outputs or later lifecycle state create accepted members.
     """
     boundary = session.get(ProjectRecordRevision, revision_id)
     if boundary is None or boundary.project_id != project_id:
         raise AcceptedStatementReadingRefused("accepted revision does not belong to the requested project")
     with session.no_autoflush:
-        values = tuple(read_native_record_values(session, project_id, revision_id) if values is None else values)
+        native_values = tuple(read_native_record_values(session, project_id, revision_id))
+        if values is not None and tuple(values) != native_values:
+            raise AcceptedStatementReadingRefused("supplied values differ from the complete native snapshot at this revision")
+        values = native_values
         facts = {fact.id: fact for fact in session.scalars(select(Fact).where(
             Fact.project_id == project_id, Fact.id.in_([value.fact_id for value in values])))}
         if any(value.project_id != project_id or value.revision_id > revision_id or value.fact_id not in facts for value in values):

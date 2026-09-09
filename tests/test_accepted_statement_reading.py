@@ -201,3 +201,29 @@ def test_selected_legacy_scope_ids_remain_separate_from_native_subject_keys(sess
     assert reading.applies_to_dependency_ids == (constraint.id,)
     assert reading.applies_to_subject_keys == ()
     assert reading.fields["statement_wording"].fact_subject_key == wording.subject_key
+
+
+@pytest.mark.parametrize("alteration", ["wording", "timing", "scope", "omission"])
+def test_shared_snapshot_cannot_forge_payloads_or_omit_accepted_statements(session, verbal_facts, alteration):
+    from dataclasses import replace
+    from corridor.record_projection import read_native_record_values
+    project, _, wording, timing, scope = verbal_facts
+    decide(session, wording, "local:wording-owner", "snapshot-words")
+    decide(session, timing, "local:timing-owner", "snapshot-timing")
+    boundary = decide(session, scope, "local:scope-owner", "snapshot-scope").revision.id
+    actual = read_native_record_values(session, project.id, boundary)
+    assert read_native_statements(session, project.id, boundary, values=actual) == read_native_statements(session, project.id, boundary)
+    if alteration == "omission":
+        supplied = ()
+    else:
+        target_type = {"wording": "statement_wording", "timing": "statement_timing", "scope": "applies_to"}[alteration]
+        original = next(value for value in actual if value.fact_type == target_type)
+        if alteration == "wording":
+            changed = replace(original, text_value="Invented accepted wording")
+        elif alteration == "timing":
+            changed = replace(original, statement_timings=(replace(original.statement_timings[0], text="an invented date"),))
+        else:
+            changed = replace(original, applies_to_subject_keys=("invented-constraint",))
+        supplied = tuple(changed if value.decision_id == original.decision_id else value for value in actual)
+    with pytest.raises(AcceptedStatementReadingRefused, match="complete native snapshot"):
+        read_native_statements(session, project.id, boundary, values=supplied)
