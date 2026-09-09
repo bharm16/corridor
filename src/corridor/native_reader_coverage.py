@@ -423,12 +423,93 @@ def _work_list(surface, session, project_id, revision, instant, inventory):
 
 
 def _check_citations(surface, report, inventory):
-    """Inspect each emitted provenance object against its own native table."""
+    """Bind displayed provenance to exact native acts and declared render inputs."""
+    from corridor.accepted_field_reading import native_field_visible, visible_native_statements
+    from corridor.exceptions import RULESET_VERSION
+    from corridor.report import EMPTY_LEDGER
+    from corridor.presentation import field_label, label
+
     segments = {row["id"]: row for row in inventory["source_segments"]}
     decisions = {row["id"]: row for row in inventory["fact_decisions"]}
     edges = {(row["fact_id"], row["source_segment_id"]) for row in inventory["fact_sources"]}
-    revisions = _ids(inventory, "project_record_revisions")
-    plans = _ids(inventory, "delta_follow_up_plans")
+    revisions = {row["id"]: row for row in inventory["project_record_revisions"]}
+    plans = {row["id"]: row for row in inventory["delta_follow_up_plans"]}
+    evaluation = report.evaluation
+    population = evaluation.native_population if evaluation is not None else None
+    derived_inputs, record_inputs, plan_inputs = {}, {}, {}
+    verified_refs = {f"revision:{identity}" for identity in revisions}
+    verified_refs.update(f"native_decision:{identity}" for identity in decisions)
+
+    def derived(cell, record_ids, *, scope="", refs=()):
+        derived_inputs[id(cell)] = (tuple(record_ids), scope, tuple(refs))
+
+    def accepted(cell, record, field):
+        if field is None:
+            derived(cell, (record.id,), refs=(f"revision:{population.revision_id}",))
+        elif not field.sources:
+            derived(cell, (record.id,), refs=(f"revision:{field.revision_id}", field.origin))
+
+    # The input manifest is bound by the containing rendered row/section, not
+    # reconstructed from the citation's own claimed record IDs or free text.
+    if population is not None:
+        records = {record.ref_code: record for record in population.open_records}
+        ids = tuple(population.record_ids)
+        supported = tuple(record.id for record in population.open_records if record.checked_source_passages)
+        for index, cell in enumerate(report.summary):
+            if index < 4:
+                derived(cell, (supported or ids) if index == 2 else ids, scope=EMPTY_LEDGER)
+        statements = {statement.subject_key: statement for statement in visible_native_statements(population, document_only=report.document_only)}
+        for section in report.sections:
+            if section.title == "Appendix — constraint log":
+                for row in section.rows:
+                    record = records.get(row[0].value) if row else None
+                    if record is None or len(row) != 9:
+                        continue
+                    derived(row[0], (record.id,), refs=(f"revision:{record.identity_revision_id}",))
+                    derived(row[3], (record.id,), refs=tuple(record.fields[name].origin for name in ("utility_type", "external_org") if name in record.fields))
+                    derived(row[7], (record.id,), refs=(f"revision:{population.revision_id}",))
+                    for index, name in ((1, "utility_id"), (2, "external_org"), (4, "station_from"), (5, "station_to"), (6, "resolution_strategy"), (8, "need_date")):
+                        accepted(row[index], record, record.fields.get(name))
+            elif section.title == "Accepted Project Record values":
+                for row in section.rows:
+                    record = records.get(row[0].value) if row else None
+                    if record is None or len(row) != 3:
+                        continue
+                    derived(row[0], (record.id,))
+                    derived(row[1], (record.id,))
+                    matching = [field for name, field in record.fields.items() if field_label(name) == row[1].value]
+                    if len(matching) == 1:
+                        accepted(row[2], record, matching[0])
+            elif section.title == "Accepted statements":
+                for row in section.rows:
+                    statement = statements.get(row[0].value) if row else None
+                    if statement is None or len(row) != 5:
+                        continue
+                    for index in (0, 1, 4):
+                        record_inputs[id(row[index])] = statement.fields["statement_wording"].decision_id
+                    for index, name in ((2, "statement_timing"), (3, "applies_to")):
+                        field = statement.fields.get(name)
+                        if field is not None and native_field_visible(field, document_only=report.document_only):
+                            record_inputs[id(row[index])] = field.decision_id
+                        else:
+                            derived(row[index], (statement.subject_key,), refs=(f"revision:{population.revision_id}",))
+            elif section.title == label("follow_up_plan"):
+                for row in section.rows:
+                    matching = [plan for plan in population.follow_up_plans if row and str(plan.delta_id) == row[0].value]
+                    if len(matching) == 1:
+                        for cell in row:
+                            plan_inputs[id(cell)] = (matching[0].plan_id,)
+            elif section.title == label("constraint_alerts"):
+                facets = evaluation.facets()
+                if len(section.rows) == len(facets):
+                    for row, facet in zip(section.rows, facets):
+                        if len(row) != 4:
+                            continue
+                        affected = tuple(item.dependency_id for item in facet.exceptions)
+                        for cell in row[:2]:
+                            derived(cell, affected)
+                        for cell in row[2:]:
+                            derived(cell, (facet.exceptions[0].dependency_id,) if facet.has_quantities else affected)
     for cell in report.cells:
         citation = cell.provenance
         kind = type(citation).__name__
@@ -442,15 +523,31 @@ def _check_citations(surface, report, inventory):
                 surface.blockers.append(f"citations: {cell.label!r} lacks its actual source segment/FactDecision/revision")
         elif kind == "RecordDecision":
             decision = decisions.get(citation.decision_id)
+            authority = revisions.get(citation.revision_id, {})
+            source_refs = tuple(f"source_segment:{row['source_segment_id']}" for row in sorted(
+                inventory["fact_sources"], key=lambda row: (row["role"], row["ordinal"])) if row["fact_id"] == citation.fact_id)
             if (getattr(citation, "decision_kind", "fact_decision") != "fact_decision" or decision is None
-                or (decision["fact_id"], decision["revision_id"]) != (citation.fact_id, citation.revision_id)):
-                surface.blockers.append(f"citations: {cell.label!r} names an unsupported typed RecordDecision")
+                or (decision["fact_id"], decision["revision_id"]) != (citation.fact_id, citation.revision_id)
+                or record_inputs.get(id(cell)) != citation.decision_id
+                or citation.actor != (authority.get("human_principal") or authority.get("released_policy"))
+                or citation.decided_at != datetime.fromisoformat(decision["decided_at"]).date()
+                or tuple(citation.source_refs) != source_refs):
+                surface.blockers.append(f"citations: {cell.label!r} RecordDecision attribution or source references differ from its exact native act")
         elif kind == "Derivation":
-            if not citation.resolves or report.evaluation is None or report.evaluation.native_population is None:
-                surface.blockers.append(f"citations: {cell.label!r} lacks native derivation inputs")
+            declared = derived_inputs.get(id(cell))
+            actual = (tuple(citation.record_ids), citation.scope, tuple(citation.input_refs))
+            if (evaluation is None or population is None or evaluation.ruleset_version != RULESET_VERSION
+                or citation.ruleset_version != evaluation.ruleset_version or declared is None or actual != declared
+                or population.revision_id not in revisions or evaluation.project_id != population.project_id
+                or any(reference not in verified_refs for reference in citation.input_refs)
+                or not citation.resolves):
+                surface.blockers.append(f"citations: {cell.label!r} derivation lacks its exact verified input identities, evaluation rule/version or scope")
         elif kind == "WorkDecision" and citation.decision_kind == "delta_follow_up_plan":
-            if not set(citation.decision_ids) <= plans:
-                surface.blockers.append(f"citations: {cell.label!r} names an absent Follow-up Plan")
+            named = tuple(citation.decision_ids)
+            if (not named or len(set(named)) != len(named) or named != plan_inputs.get(id(cell))
+                or any(identity not in plans or citation.recorded_by != plans[identity]["recorded_by_principal"]
+                    or citation.recorded_at != datetime.fromisoformat(plans[identity]["recorded_at"]).date() for identity in named)):
+                surface.blockers.append(f"citations: {cell.label!r} Follow-up Plan identities or attribution differ from their exact native acts")
         else:
             surface.blockers.append(f"citations: {cell.label!r} uses unsupported {kind}; no legacy ID is relabelled native")
 
