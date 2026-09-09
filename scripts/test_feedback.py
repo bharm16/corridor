@@ -1,9 +1,10 @@
-"""Validate required-CI timing receipts and enforce the feedback budget.
+"""Validate required-CI timing receipts and assess the feedback targets.
 
-The previous duration files needed extra local suite runs and recorded no
-enforceable runtime limit. These receipts come from the required CI runs
-themselves. Missing evidence fails closed; old slow runs cannot prevent a
-current under-budget repair from passing. No database or third-party package
+The previous duration files needed extra local suite runs. These receipts
+come from required CI itself; missing evidence fails closed. Target assessment
+retains the same numbers and strict diagnostic CLI verdict. ADR-0097 makes
+elapsed-time breaches advisory in the merge gate, whose correctness verdict
+still requires complete successful proof. No database or third-party package
 is needed by the summary job.
 """
 

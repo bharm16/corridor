@@ -540,7 +540,7 @@ def test_the_classifier_shares_one_validated_timing_output():
     assert _workflow(GATE)["permissions"] == {"actions": "read", "contents": "read"}
 
 
-def test_budget_enforcement_extends_the_fail_closed_summary():
+def test_current_evidence_validation_extends_the_fail_closed_summary():
     steps = _job("release-gate")["steps"]
     assert steps[0] == _summary_step()
     assert len(steps) == 3
@@ -559,6 +559,7 @@ def test_budget_enforcement_extends_the_fail_closed_summary():
         "MIGRATION_REQUIRED": "${{ needs.classify.outputs.migration_required }}",
     }
     assert finish["run"] == "python3 scripts/ci_feedback.py finish"
+    assert finish["name"] == "Verify test evidence and report timing targets"
     assert "continue-on-error" not in finish
 
 

@@ -7,6 +7,7 @@ amends:
 amended_by:
   - ADR-0088
   - ADR-0096
+  - ADR-0097
 ---
 
 # The migration window and the feedback budget are enforced numbers, not prose

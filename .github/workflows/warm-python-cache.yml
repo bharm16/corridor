@@ -1,0 +1,54 @@
+name: warm-python-cache
+
+# PR merge-ref caches cannot seed sibling PRs. Populate the default branch's
+# dependency caches when their inputs change, without repeating any test gate.
+on:
+  push:
+    branches: [main]
+    paths:
+      - '**/pyproject.toml'
+      - '**/uv.lock'
+      - '**/*.py.lock'
+      - '**/*requirements*.txt'
+      - '**/*requirements*.in'
+      - '**/*constraints*.txt'
+      - '**/*constraints*.in'
+      - '**/.python-version'
+      - 'uv.toml'
+      - '.github/workflows/release-gate.yml'
+      - '.github/workflows/full-suite.yml'
+      - '.github/workflows/warm-python-cache.yml'
+      - 'scripts/ci_environment.sh'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: warm-python-cache-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  warm:
+    # Manual dispatch on another ref must not produce a misleading PR-only cache.
+    if: ${{ github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - cache_suffix: root-check-wheels-v1
+            render: false
+          - cache_suffix: root-render-wheels-v1
+            render: true
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+          prune-cache: false
+          cache-suffix: ${{ matrix.cache_suffix }}
+      - run: uv sync --locked
+      - if: ${{ matrix.render }}
+        run: uv sync --project workers/render --frozen
