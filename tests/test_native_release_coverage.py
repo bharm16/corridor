@@ -128,3 +128,43 @@ def test_release_readback_actor_and_time_must_match_inventory_authority(session,
         stored = original(session, project.id, receipt.id)
         assert stored.released_by == PRINCIPAL.subject
         assert stored.pdf_bytes == PDF
+
+
+def test_statement_bearing_retained_release_preserves_typed_sources_and_applies_to(session, tmp_path, monkeypatch):
+    from hashlib import sha256
+
+    from corridor.facts import append_recorded_applies_to_fact, append_recorded_statement_timing_fact, append_recorded_statement_wording_fact
+    from corridor.report_release import render_external_report_pdf
+    from corridor.source_append import append_recorded_verbal_origin
+    from corridor.source_segments import append_source_segment, recorded_verbal_statement_segment
+    from corridor.statement_values import StatementTiming
+
+    project, _adoption = _adopt_native_workbook(session, tmp_path, monkeypatch)
+    words = "The utility expects work to finish around October."
+    origin = append_recorded_verbal_origin(session, project_id=project.id, recorded_by="local:original-recorder",
+        recorded_at=datetime.now(timezone.utc), conversation_date=TODAY, exact_text=words,
+        content_sha256=sha256(words.encode()).hexdigest())
+    segment = append_source_segment(session, recorded_verbal_statement_segment(project_id=project.id,
+        recorded_verbal_origin_id=origin.id, exact_text=words))
+    subject = "statement:retained-native-release"
+    wording = append_recorded_statement_wording_fact(session, segment=segment, subject_key=subject,
+        description=words, recorded_by=origin.recorded_by)
+    timing = append_recorded_statement_timing_fact(session, segment=segment, subject_key=subject,
+        timings=(("new", StatementTiming.approximate("around October")),), recorded_by=origin.recorded_by)
+    scope = append_recorded_applies_to_fact(session, segment=segment, subject_key=subject,
+        dependency_ids=(), recorded_by=origin.recorded_by)
+    for index, fact in enumerate((wording, timing, scope)):
+        decision = record_human_fact_decision(session, fact, principal=PRINCIPAL,
+            command_type="coordinate_statement", idempotency_key=f"retained-statement-{index}")
+    rendered = render_external_report_pdf(session, project.id, today=TODAY)
+    artifact = prepare_external_report(session, project_id=project.id, rendered=rendered)
+    receipt = release_external_report(session, project_id=project.id, artifact_id=artifact.id, principal=PRINCIPAL)
+    published = deepcopy(artifact.record_context_json)
+    fields = published["native_reader_input_manifest"]["statements"][0]["fields"]
+    assert fields["applies_to"]["value"] == {"mode": "unknown", "subject_keys": [], "legacy_dependency_ids": []}
+    assert {source["role"] for source in fields["statement_wording"]["sources"]} == {"value_source", "attribution_source"}
+    observed = _collect_release(session, project, decision.revision.id)
+    assert observed.blockers == ()
+    assert "release" in observed.reading.observed_record_kinds
+    assert observed.reader_outputs[f"external_report_releases:{receipt.id}"]["context"] == published
+    assert artifact.pdf_bytes == receipt.pdf_bytes == rendered.pdf_bytes

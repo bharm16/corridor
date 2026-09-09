@@ -717,7 +717,7 @@ def _retained_report_context(surface, session, project_id, context, inventory):
     decisions = {r["id"]: r for r in inventory["fact_decisions"]}
     projected = {v.decision_id: v for v in read_native_record_values(session, project_id, boundary)}
     segments = {r["id"]: r for r in inventory["source_segments"]}
-    edges = {(r["fact_id"], r["source_segment_id"]) for r in inventory["fact_sources"] if r["role"] == "value_source"}
+    edges = {(r["fact_id"], r["source_segment_id"], r["role"]) for r in inventory["fact_sources"]}
     represented = set()
     for kind in ("records", "statements"):
         for record in manifest.get(kind, ()):
@@ -731,21 +731,36 @@ def _retained_report_context(surface, session, project_id, context, inventory):
                 if (field.get("decision_kind") != "fact_decision" or held is None
                     or (held["fact_id"], held["revision_id"], held["fact_type"]) != (field["fact_id"], field["revision_id"], name)):
                     surface.blockers.append(f"release: retained field {name} has no matching typed native decision")
+                payload = record_value_payload(value) if value is not None else None
+                if kind == "statements" and name == "applies_to" and value is not None:
+                    payload = {"mode": "selected" if value.applies_to_subject_keys or value.applies_to_dependency_ids else "unknown",
+                        "subject_keys": value.applies_to_subject_keys, "legacy_dependency_ids": value.applies_to_dependency_ids}
                 if (value is None or value.fact_type != name
                     or field.get("fact_subject_key") != (value.fact_subject_key or value.subject_key)
-                    or _plain(field.get("value")) != _plain(record_value_payload(value))
+                    or _plain(field.get("value")) != _plain(payload)
                     or _encoded(field) != _encoded(expected_fields.get((kind, record["subject_key"], name)))):
                     surface.blockers.append(f"release: retained field {record['subject_key']}/{name} differs from its exact as-of value, metadata or parent identity")
                 sources = field.get("sources", ())
-                actual_edges = [(field["fact_id"], source["source_segment_id"]) for source in sources]
-                if len(actual_edges) != len(set(actual_edges)) or set(actual_edges) != {edge for edge in edges if edge[0] == field["fact_id"]}:
+                # Statement sources carry exact_text and a typed role, with
+                # decision authority on their parent field. Constraint sources
+                # carry quote plus their own fact/decision/revision reference.
+                actual_edges = [(field["fact_id"], source["source_segment_id"],
+                    source.get("role") if kind == "statements" else "value_source") for source in sources]
+                expected_edges = {edge for edge in edges if edge[0] == field["fact_id"]
+                    and (kind == "statements" or edge[2] == "value_source")}
+                if len(actual_edges) != len(set(actual_edges)) or set(actual_edges) != expected_edges:
                     surface.blockers.append(f"release: retained field {name} source references differ from its native source edges")
                 for source in sources:
                     segment = segments.get(source["source_segment_id"])
+                    if kind == "statements":
+                        wrong_reference = segment is not None and (
+                            source.get("kind") != segment["kind"] or source.get("content_sha256") != segment["content_sha256"])
+                    else:
+                        wrong_reference = (source.get("fact_id") != field["fact_id"] or source.get("decision_id") != identity
+                            or source.get("revision_id") != field["revision_id"])
                     if (segment is None or segment["document_id"] != source.get("document_id")
-                        or segment["exact_text"] != source.get("quote")
-                        or source.get("fact_id") != field["fact_id"]
-                        or source.get("decision_id") != identity or source.get("revision_id") != field["revision_id"]):
+                        or segment["exact_text"] != source.get("exact_text" if kind == "statements" else "quote")
+                        or wrong_reference):
                         surface.blockers.append(f"release: retained field {name} source reference differs from native source authority")
     if set(projected) != represented:
         surface.blockers.append("release: retained field population differs from its native revision; audience-filtered or other unrepresented classes need explicit accounting")
