@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 from corridor.compatibility_intake import run_compatibility_intake
 from corridor.field_mapping_manifest import DEMO_EXTERNAL_REFERENCES, MappingDeclaration
 from corridor.models import Project
+from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential
+from corridor.source_intake import validate_and_stage
 from corridor.shadow_comparison import ComparisonPolicy
 from corridor.shadow_measurement import NativeShadowComparisonRefused, compare_shadow_runs
 from corridor.shadow_processing import run_shadow_ucm
@@ -32,7 +34,9 @@ def delivery(database, project_id, tmp_path, rows, label):
     with database.session_factory.begin() as owner:
         project = owner.get(Project, project_id)
         slug = project.slug
-        staged, envelope = deliver(owner, project, body, external_identity=label)
+        binding = bind_credential(owner, PushCredential("webhook", f"secret-{project.slug}"))
+        received = accept_delivery(owner, binding, PushPayload(body=body, filename=f"{label}.xlsx", transport_delivery_id=label))
+        staged, envelope = validate_and_stage(body, f"{label}.xlsx"), received.envelope
     approved = authorization(body, slug)
     compatibility = run_compatibility_intake(body, f"{label}.xlsx", authorization=approved,
         customer=CUSTOMER, project=slug, operator=PRINCIPAL.subject, environment="synthetic-compatibility",
