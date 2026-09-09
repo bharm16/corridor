@@ -8,11 +8,11 @@ No command here switches accepted writers or deletes history.
 from dataclasses import replace
 import argparse
 import json
+import os
 from pathlib import Path
 
-from sqlalchemy import text
-
-from corridor.db import Session, engine
+from sqlalchemy import create_engine, text
+from sqlalchemy.orm import Session
 from corridor.legacy_history import (
     backfill_evidence_sources, capture_history, inventory_history, read_history, reverse_history,
 )
@@ -36,9 +36,27 @@ def main(argv=None):
         parser.error("this action requires --batch")
     if args.action == "reverse" and not all((args.executor, args.reason)):
         parser.error("reverse requires --executor and --reason")
+    operations_url = os.environ.get("CORRIDOR_HISTORY_OPERATIONS_DATABASE_URL")
+    if not operations_url:
+        parser.error("set CORRIDOR_HISTORY_OPERATIONS_DATABASE_URL to an explicitly provisioned operations login; schema-owner and application credentials are refused")
+    engine = create_engine(operations_url)
     with engine.connect().execution_options(isolation_level="REPEATABLE READ") as connection:
         with connection.begin():
             with Session(bind=connection) as session:
+                identity = session.execute(text("""
+                    select current_user as login,
+                     pg_has_role(current_user,'corridor_history_operations','member') as operations,
+                     r.rolsuper or r.rolcreaterole or r.rolcreatedb
+                       or pg_has_role(current_user,'corridor_fact_decision_writer','member')
+                       or pg_has_role(current_user,c.relowner,'member') as overprivileged
+                    from pg_roles r cross join pg_class c
+                    where r.rolname=current_user and c.oid='public.projects'::regclass
+                """)).mappings().one()
+                if (not identity["operations"] or identity["overprivileged"]
+                    or identity["login"] in {"corridor_web", "corridor_worker", "corridor_source_append"}):
+                    parser.error("history CLI requires a dedicated operations login without schema-owner/application authority")
+                if args.executor is not None and args.executor != identity["login"]:
+                    parser.error("--executor must equal the authenticated operations database login")
                 if args.action in {"inventory", "capture"}:
                     inventory = inventory_history(session, args.project)
                     result = {"project_id": args.project, "content_sha256": inventory.content_sha256,

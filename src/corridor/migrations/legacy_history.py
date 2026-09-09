@@ -11,6 +11,15 @@ from corridor.legacy_history_inventory import HISTORY_CLASSES
 
 
 SCHEMA = """
+do $$ begin
+ if not exists(select 1 from pg_roles where rolname='corridor_history_operations') then
+  create role corridor_history_operations nologin;
+ end if;
+ if exists(select 1 from pg_roles where rolname='corridor_history_operations' and (rolsuper or rolcreaterole or rolcreatedb or rolcanlogin)) then
+  raise exception 'history operations capability must be a non-login least-privilege role';
+ end if;
+end; $$;
+
 create table legacy_history_batches (
  id bigserial primary key,
  project_id bigint not null references projects(id),
@@ -39,7 +48,7 @@ create table legacy_history_evidence_migrations (
  legacy_evidence_link_id bigint not null,
  evidence_link_source_id bigint references evidence_link_sources(id),
  source_segment_id bigint references source_segments(id),
- original_quote_sha256 text not null,
+ original_quote_sha256 text not null check(original_quote_sha256 ~ '^[0-9a-f]{64}$'),
  outcome text not null check(outcome in ('segment_reference','already_native','retained_quote')),
  reason text not null,
  created_at timestamptz not null default transaction_timestamp(),
@@ -156,12 +165,12 @@ def upgrade(op):
         op.execute(f"grant select on {entry.table} to corridor_fact_decision_writer")
     for table in ("legacy_history_batches", "legacy_history_reversals", "legacy_history_evidence_migrations"):
         op.execute(f"revoke all on {table} from public,corridor_web,corridor_worker")
-        op.execute(f"grant select on {table} to corridor_web,corridor_worker")
+        op.execute(f"grant select on {table} to corridor_web,corridor_worker,corridor_history_operations")
         op.execute(f"grant select,insert on {table} to corridor_fact_decision_writer")
         op.execute(f"grant usage,select on sequence {table}_id_seq to corridor_fact_decision_writer")
         op.execute(f"alter table {table} enable row level security")
         op.execute(f"create policy p_{table}_project_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
-        op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer using(true) with check(true)")
+        op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer,corridor_history_operations using(true) with check(true)")
     for name, signature in (
         ("legacy_history_content", "(bigint)"),
         ("capture_legacy_history", "(bigint,text,text,text,text)"),
@@ -172,6 +181,7 @@ def upgrade(op):
         op.execute(f"revoke all on function {name}{signature} from public")
         # Migration execution is deliberately absent from runtime logins. The
         # schema/migration owner retains EXECUTE through its role membership.
+        op.execute(f"grant execute on function {name}{signature} to corridor_history_operations")
         if name == "legacy_history_content":
             op.execute(f"grant execute on function {name}{signature} to corridor_web,corridor_worker")
     op.execute("revoke all on function guard_legacy_history() from public")

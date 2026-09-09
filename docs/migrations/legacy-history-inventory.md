@@ -246,3 +246,15 @@ version and digest. Known system actors are never classified as humans merely
 because their labels contain a colon. Missing or ambiguous policy lineage stays
 explicitly unknown. This provenance reconstruction does not convert support into
 Ready or authorize a new support designation.
+
+
+The CLI uses only `CORRIDOR_HISTORY_OPERATIONS_DATABASE_URL`, an explicitly
+provisioned login that inherits the non-login `corridor_history_operations`
+capability. That capability can read retained migration results and execute the
+reviewed capture/backfill/reversal commands; it has no raw accepted-table writes,
+no schema ownership, and no membership in the record-decision writer role.
+Schema-owner, superuser, role/database administrator and application logins are
+refused. The operator's `--executor` must match the authenticated database login;
+a free-text actor does not authenticate a migration. Login provisioning is an
+operations prerequisite; the migration creates the capability role, never a login
+or password. Web callers still require their sealed project partition.

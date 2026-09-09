@@ -385,13 +385,13 @@ def upgrade(op):
     for table in TABLES:
         op.execute(f"create trigger guard_{table} before insert or update or delete on {table} for each row execute function guard_coordination_record()")
         op.execute(f"revoke all on {table} from public,corridor_web,corridor_worker")
-        op.execute(f"grant select on {table} to corridor_web,corridor_worker")
+        op.execute(f"grant select on {table} to corridor_web,corridor_worker,corridor_history_operations")
         op.execute(f"grant select,insert on {table} to corridor_fact_decision_writer")
         if table != "coordination_record_subjects":
             op.execute(f"grant usage,select on sequence {table}_id_seq to corridor_fact_decision_writer")
         op.execute(f"alter table {table} enable row level security")
         op.execute(f"create policy p_{table}_project_partition on {table} to corridor_web using(project_id=any(current_project_partition()))")
-        op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer using(true) with check(true)")
+        op.execute(f"create policy p_{table}_internal on {table} to corridor_worker,corridor_fact_decision_writer,corridor_history_operations using(true) with check(true)")
     for name, signature, runtime in (
         ("import_coordination_decision", "(bigint,bigint,bigint,text)", False),
         ("migrate_coordination_history", "(bigint,bigint)", False),
@@ -402,8 +402,10 @@ def upgrade(op):
         op.execute(f"revoke all on function {name}{signature} from public")
         if runtime:
             op.execute(f"grant execute on function {name}{signature} to corridor_web")
+        elif name == "migrate_coordination_history":
+            op.execute(f"grant execute on function {name}{signature} to corridor_history_operations")
     op.execute("revoke all on function guard_coordination_record() from public")
     op.execute("revoke all on function attributable_coordination_subject(bigint,bigint) from public")
     op.execute("grant execute on function attributable_coordination_subject(bigint,bigint) to corridor_fact_decision_writer")
     op.execute("alter view current_coordination_record set (security_invoker=true)")
-    op.execute("grant select on current_coordination_record to corridor_web,corridor_worker,corridor_fact_decision_writer")
+    op.execute("grant select on current_coordination_record to corridor_web,corridor_worker,corridor_fact_decision_writer,corridor_history_operations")
