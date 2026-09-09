@@ -187,3 +187,130 @@ def test_changed_authority_invalidates_all_observed_classes(session, adopted, mo
     result = collect(session, *adopted)
     assert all(not s.reading.observed_record_kinds for s in result.surfaces)
     assert all(any('changed during collection' in b for b in s.blockers) for s in result.surfaces)
+
+
+@pytest.mark.parametrize('omission', ['record', 'field'])
+def test_product_freeze_must_exhaust_the_independent_native_population(session, adopted, monkeypatch, omission):
+    import corridor.project_reading as project_reading
+    original = project_reading.freeze_project_reading
+    def incomplete(*args, **kwargs):
+        reading = original(*args, **kwargs)
+        population = reading.native_population
+        if omission == 'record':
+            records = population.records[1:]
+        else:
+            first = population.records[0]
+            values = dict(first.fields)
+            values.pop(next(iter(values)))
+            records = (replace(first, fields=values), *population.records[1:])
+        changed = replace(population, records=tuple(records))
+        identities = {r.id: r for r in records}
+        rows = tuple(replace(row, dependency=identities[row.dependency.id]) for row in reading.rows if row.dependency.id in identities)
+        # Keep the product's own metadata internally consistent, reproducing
+        # the original hole: its population cannot serve as its own census.
+        return replace(reading, native_population=changed, rows=rows,
+            evaluation=replace(reading.evaluation, native_population=changed))
+    monkeypatch.setattr(project_reading, 'freeze_project_reading', incomplete)
+    result = collect(session, *adopted)
+    for name in ('constraint_log', 'coordination_report', 'workbook_export'):
+        observed = surfaces(result)[name]
+        assert not observed.reading.observed_record_kinds
+        assert any('product freeze omits' in b for b in observed.blockers)
+
+
+@pytest.mark.parametrize('omission', ['accepted_row', 'accepted_section'])
+def test_report_requires_the_actual_complete_accepted_field_rows(session, adopted, monkeypatch, omission):
+    import corridor.report as report
+    original = report.build_report
+    def incomplete(*args, **kwargs):
+        output = original(*args, **kwargs)
+        section = next(s for s in output.sections if s.columns == ['Ref', 'Field', 'Accepted value'])
+        if omission == 'accepted_row':
+            section.rows.pop()
+        else:
+            output.sections.remove(section)
+        # covered_records and all remaining citations remain valid.
+        return output
+    monkeypatch.setattr(report, 'build_report', incomplete)
+    result = collect(session, *adopted)
+    observed = surfaces(result)['coordination_report']
+    assert not observed.reading.observed_record_kinds
+    assert any('actual accepted-field rows' in b for b in observed.blockers)
+
+
+@pytest.mark.parametrize('damage', ['source_rows', 'main_rows', 'source_value', 'main_value'])
+def test_workbook_requires_actual_population_and_full_native_source_rows(session, adopted, monkeypatch, damage):
+    import corridor.export as export
+    from openpyxl import load_workbook
+    original = export.to_xlsx
+    def incomplete(*args, **kwargs):
+        path = original(*args, **kwargs)
+        workbook = load_workbook(path)
+        source = workbook['Accepted value sources']
+        if damage == 'source_rows':
+            source.delete_rows(2, source.max_row)
+        elif damage == 'main_rows':
+            workbook.active.delete_rows(2, workbook.active.max_row)
+        elif damage == 'source_value':
+            source['D2'] = 'changed accepted value'
+        else:
+            workbook.active['F2'] = 'changed station'
+        workbook.save(path)
+        workbook.close()
+        return path
+    monkeypatch.setattr(export, 'to_xlsx', incomplete)
+    result = collect(session, *adopted)
+    observed = surfaces(result)['workbook_export']
+    assert not observed.reading.observed_record_kinds
+    assert any('actual accepted-value source rows' in b or 'actual main-sheet population' in b or 'main-sheet field column' in b for b in observed.blockers)
+
+
+def test_a_late_surface_failure_cannot_publish_observed_classes(session, adopted, monkeypatch):
+    import corridor.legacy_history as history
+    def failed(*args, **kwargs):
+        raise ValueError('late compatibility census is unavailable')
+    monkeypatch.setattr(history, 'inventory_history', failed)
+    result = collect(session, *adopted)
+    observed = surfaces(result)['source_and_decision_history']
+    assert any('late compatibility census is unavailable' in b for b in observed.blockers)
+    assert observed.reading.records  # Preserve evidence, never the coverage claim.
+    assert not observed.reading.observed_record_kinds
+    assert not next(r for r in compare_all_surfaces(result.readings, result.readings)
+                    if r.surface == 'source_and_decision_history').passed
+
+
+@pytest.mark.parametrize('changed', ['actor', 'time', 'evidence_role', 'source_text', 'source_document', 'source_locator', 'source_filename'])
+def test_support_history_corroborates_every_attributable_public_field(session, adopted, monkeypatch, changed):
+    import corridor.record_history as history
+    from datetime import timedelta
+    original = history.read_record_history
+    def incorrect(*args, **kwargs):
+        output = original(*args, **kwargs)
+        decisions = []
+        for row in output.source_decisions:
+            if row.fact is None or not row.fact.assessments:
+                decisions.append(row)
+                continue
+            assessment = row.fact.assessments[0]
+            if changed == 'actor':
+                assessment = replace(assessment, authority='local:wrong-reviewer')
+            elif changed == 'time':
+                assessment = replace(assessment, assessed_at=assessment.assessed_at + timedelta(days=1))
+            elif changed == 'evidence_role':
+                assessment = replace(assessment, evidence_role='wrong-evidence-role')
+            else:
+                source = assessment.segments[0]
+                change = {'source_text': {'exact_text': 'changed supporting wording'},
+                    'source_document': {'document_id': (source.document_id or 0)+1},
+                    'source_locator': {'locator': 'sheet other, cell A1'},
+                    'source_filename': {'filename': 'another.xlsx'}}[changed]
+                assessment = replace(assessment, segments=(replace(source, **change), *assessment.segments[1:]))
+            fact = replace(row.fact, assessments=(assessment, *row.fact.assessments[1:]))
+            decisions.append(replace(row, fact=fact))
+        return replace(output, source_decisions=tuple(decisions))
+    monkeypatch.setattr(history, 'read_record_history', incorrect)
+    result = collect(session, *adopted)
+    observed = surfaces(result)['source_and_decision_history']
+    assert not observed.reading.observed_record_kinds
+    expected = 'actor, time, role or judgment' if changed in {'actor', 'time', 'evidence_role'} else 'source text/document/locator'
+    assert any(expected in b for b in observed.blockers)

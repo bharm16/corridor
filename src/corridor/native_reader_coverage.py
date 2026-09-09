@@ -130,8 +130,12 @@ class _Surface:
                 self.blockers.append(f"{kind}: public reading did not establish complete native coverage")
         if self.contract.unchanged_output and self.output_identity is None:
             self.blockers.append("intentionally unchanged output has no actual rendered/sealed identity")
+        # No caller of .readings may bypass an early/late collector refusal.
+        # Partial evidence remains available, but a blocked surface never
+        # publishes a complete observed-class declaration.
+        observed = frozenset() if self.blockers else frozenset(self.observed)
         return CollectedSurface(SurfaceReading(self.contract.name, tuple(self.records),
-            frozenset(self.observed), self.output_identity), self.populations, self.outputs,
+            observed, self.output_identity), self.populations, self.outputs,
             tuple(dict.fromkeys(self.blockers)))
 
 
@@ -205,6 +209,84 @@ def _revision_origins(surface, revision_id):
     return {field: f"revision:{revision_id}" for field in surface.contract.fields}
 
 
+def _authoritative_population(session, project_id, revision, inventory):
+    """Read the native authority independently of any product's frozen output."""
+    from corridor.accepted_field_reading import read_accepted_field_population
+    population = read_accepted_field_population(session, project_id)
+    if population.revision_id != revision:
+        raise NativeReadingRefused("native authority advanced before product collection")
+    actual = {field.decision_id for record in (*population.records, *population.statements)
+              for field in record.fields.values()}
+    exclusions = {row.decision_id for row in population.excluded_accepted_decisions}
+    expected = {row["decision_id"] for row in inventory["native_current_values"]}
+    if actual & exclusions or actual | exclusions != expected:
+        raise NativeReadingRefused("authoritative subject/field population does not exhaust the accepted-decision census")
+    return population
+
+
+def _verify_population(surface, reading, authority):
+    from corridor.accepted_field_reading import native_reader_input_manifest
+    expected = native_reader_input_manifest(authority)
+    actual = native_reader_input_manifest(reading.native_population)
+    surface.outputs["independent_authority_inputs"] = expected
+    if _plain(actual) != _plain(expected):
+        surface.blockers.append("native population: product freeze omits or changes independently observed subjects/fields")
+
+
+def _rows_match(actual, expected):
+    from collections import Counter
+    return Counter(_encoded(row) for row in actual) == Counter(_encoded(row) for row in expected)
+
+
+def _report_field_rows(surface, report, authority):
+    from corridor.accepted_field_reading import accepted_field_text
+    from corridor.presentation import field_label
+    expected = [[record.ref_code, field_label(name), accepted_field_text(held)]
+                for record in authority.open_records for name, held in sorted(record.fields.items())]
+    sections = [section for section in report.sections if section.columns == ["Ref", "Field", "Accepted value"]]
+    actual = [[cell.value for cell in row] for section in sections for row in section.rows]
+    if len(sections) != 1 or not _rows_match(actual, expected):
+        surface.blockers.append("report: actual accepted-field rows omit, duplicate or change native authority")
+    surface.outputs["accepted_field_row_census"] = {"expected": expected, "actual": actual}
+
+
+def _workbook_field_rows(surface, cells, authority):
+    from corridor.accepted_field_reading import accepted_field_text
+    from corridor.presentation import field_label, label
+    expected_sources = [[record.subject_key, record.source_row_key, field_label(name), accepted_field_text(held),
+        held.fact_id, held.decision_id, held.revision_id, passage.source_segment_id if passage else None,
+        passage.filename if passage else None, passage.locator if passage else None, passage.quote if passage else None]
+        for record in authority.open_records for name, held in sorted(record.fields.items())
+        for passage in held.sources or (None,)]
+    actual_sources = [row for row in cells.get("Accepted value sources", [])[1:] if any(value is not None for value in row)]
+    if not _rows_match(actual_sources, expected_sources):
+        surface.blockers.append("workbook: actual accepted-value source rows omit, duplicate or change native fields/passages")
+    main = [row for row in cells.get(label("constraint_log"), [])[1:] if any(value is not None for value in row)]
+    expected_records = {record.ref_code: record for record in authority.open_records}
+    actual_ids = [row[0] for row in main]
+    if not _rows_match(actual_ids, list(expected_records)):
+        surface.blockers.append("workbook: actual main-sheet population differs from independently observed native subjects")
+    # Check the main sheet's accepted-value columns as well as the complete
+    # source sheet. A valid sidecar cannot excuse a wrong customer-visible cell.
+    for row in main:
+        record = expected_records.get(row[0])
+        if record is None:
+            continue
+        for index, expected in ((1, record.source_ref), (2, record.org_name),
+            (5, record.station_from), (6, record.station_to),
+            (7, record.value("resolution_strategy")), (10, record.need_date)):
+            actual = row[index] if index < len(row) else None
+            if isinstance(expected, date) and not isinstance(expected, datetime) and isinstance(actual, str):
+                try:
+                    actual = datetime.fromisoformat(actual).date().isoformat()
+                except ValueError:
+                    pass
+            if _plain(actual) != _plain(expected):
+                surface.blockers.append(f"workbook: main-sheet field column {index+1} differs for {record.subject_key}")
+    surface.outputs["workbook_row_census"] = {"expected_source_rows": expected_sources,
+        "actual_source_rows": actual_sources, "expected_record_ids": list(expected_records), "actual_record_ids": actual_ids}
+
+
 def _native_fields(surface, population, inventory):
     """Verify real native field identities instead of relabelling legacy IDs."""
     decisions = {row["id"]: row for row in inventory["fact_decisions"]}
@@ -232,11 +314,13 @@ def _native_fields(surface, population, inventory):
     return accepted
 
 
-def _constraint_log(surface, reading, inventory):
+def _constraint_log(surface, reading, inventory, authority):
+    _verify_population(surface, reading, authority)
     population = reading.native_population
     before = len(surface.blockers)
     fields_read = _native_fields(surface, population, inventory)
-    expected = {record.subject_key for record in population.open_records}
+    expected = {record.subject_key for record in authority.open_records}
+    expected_records = {record.subject_key: record for record in authority.open_records}
     actual = [row.dependency.id for row in reading.rows]
     surface.population("constraint", "accepted native population at revision", sorted(expected))
     surface.outputs["ledger_rows"] = [{"identity": row.dependency.id, "fields": _plain(row.dependency.fields)} for row in reading.rows]
@@ -244,6 +328,9 @@ def _constraint_log(surface, reading, inventory):
         surface.blockers.append("constraint: public log population differs from the native frozen population")
     for row in reading.rows:
         record = row.dependency
+        expected_record = expected_records.get(record.id)
+        if expected_record is None or _plain(record.fields) != _plain(expected_record.fields):
+            surface.blockers.append(f"constraint: actual row {record.id} omits or changes independently observed fields")
         values = {"identity": record.subject_key,
             "accepted_values": [value for value in fields_read if value["subject"] == record.subject_key],
             "source_support": _plain(record.source_passages),
@@ -555,17 +642,19 @@ def _check_citations(surface, report, inventory):
             surface.blockers.append(f"citations: {cell.label!r} uses unsupported {kind}; no legacy ID is relabelled native")
 
 
-def _report(surface, session, reading, inventory, fixture_client):
+def _report(surface, session, reading, inventory, fixture_client, authority):
     from corridor.briefing import assemble_native_citables, brief_project
     from corridor.report import build_report
+    _verify_population(surface, reading, authority)
     population = reading.native_population
     before = len(surface.blockers)
     report = build_report(session, reading.project.id, today=reading.evaluation.today, frozen_reading=reading)
     _check_citations(surface, report, inventory)
+    _report_field_rows(surface, report, authority)
     report_data = {"covered_records": _plain(report.covered_records), "summary": _plain(report.summary), "sections": _plain(report.sections)}
     surface.outputs["report"] = report_data
     surface.population("report", "actual covered_records against frozen native population", list(population.record_ids))
-    if {r[0] for r in report.covered_records} != set(population.record_ids):
+    if not _rows_match([r[0] for r in report.covered_records], list(authority.record_ids)):
         surface.blockers.append("report: rendered population differs from the shared native reading")
     values = {"population": _plain(report.covered_records), "accepted_values": report_data,
         "coordination": _plain(population.follow_up_plans), "checks": _plain(reading.evaluation.found),
@@ -606,15 +695,16 @@ def _workbook_cells(content):
         book.close()
 
 
-def _workbooks(surface, session, reading, inventory):
+def _workbooks(surface, session, reading, inventory, authority):
     from corridor.baseline_adoption import effective_baseline_formats
     from corridor.export import to_xlsx
     from corridor.models import BaselineFormatObject
     from corridor.object_storage import content_store
     from corridor.workbook_render import render_project_record_workbook, workbook_reader_input_manifest
     from corridor.accepted_field_reading import native_reader_input_manifest
+    _verify_population(surface, reading, authority)
     population = reading.native_population
-    input_manifest = native_reader_input_manifest(population)
+    input_manifest = native_reader_input_manifest(authority)
     surface.outputs["native_inputs"] = input_manifest
     output_ids = {}
     before = len(surface.blockers)
@@ -624,6 +714,7 @@ def _workbooks(surface, session, reading, inventory):
             frozen_reading=reading, internal_working_copy=True)
         cells = _workbook_cells(path.read_bytes())
     surface.outputs["internal_workbook"] = cells
+    _workbook_field_rows(surface, cells, authority)
     surface.population("workbook", "actual internal workbook over frozen native records", list(population.record_ids))
     values = {"population": list(population.record_ids), "accepted_values": cells,
         "coordination": _plain(population.follow_up_plans), "statements": _plain(getattr(population, "statements", ())),
@@ -916,6 +1007,24 @@ def _source_occurrences(surface, session, project_id, inventory):
     surface.finish_kind("source", before)
 
 
+def _support_source_matches(source, native, filenames):
+    """Corroborate displayed support wording/location with the exact occurrence."""
+    from corridor.prose_spans import PROSE_PAGE_STREAM
+    if native is None or type(source.source_segment_id) is not int:
+        return False
+    if native["kind"] == "spreadsheet_cell":
+        locator = f"sheet {native['sheet_name']}, cell {native['cell_range']}"
+    elif native["kind"] == "prose_span" or (native["kind"] == "pdf_span" and native.get("span_stream") == PROSE_PAGE_STREAM):
+        locator = f"page {native['page_no']}, characters {native['start_offset']}–{native['end_offset']}"
+    elif native["kind"] == "recorded_verbal_statement":
+        locator = "recorded verbal statement"
+    else:
+        return False
+    filename = filenames.get(native["document_id"]) if native["document_id"] is not None else "recorded verbal statement"
+    return (source.document_id, source.filename, source.locator, source.exact_text, source.role) == (
+        native["document_id"], filename, locator, native["exact_text"], "assessed")
+
+
 def _history(surface, session, project_id, revision, selected_revision, inventory, maximum):
     from corridor.record_history import SearchTerms, read_record_history
     history = read_record_history(session, project_id=project_id,
@@ -970,14 +1079,24 @@ def _history(surface, session, project_id, revision, selected_revision, inventor
         surface.blockers.append(f"support: history omits {sorted(expected-set(observed))} or adds {sorted(set(observed)-expected)} assessments")
     assessments = {row["id"]: row for row in inventory["support_assessments"]}
     predecessors = {row["superseded_by"]: row["id"] for row in assessments.values() if row["superseded_by"] is not None}
+    from corridor.models import Document
+    filenames = dict(session.execute(select(Document.id, Document.filename).where(Document.project_id == project_id)).all())
+    source_rows = {row["id"]: row for row in inventory["source_segments"]}
     for identity, assessment in observed.items():
         native = assessments.get(identity)
-        links = {row["source_segment_id"] for row in inventory["support_assessment_sources"] if row["support_assessment_id"] == identity}
-        rendered_links = {getattr(source, "source_segment_id", None) for source in assessment.segments}
+        links = [row["source_segment_id"] for row in sorted(inventory["support_assessment_sources"], key=lambda row: row["ordinal"])
+                 if row["support_assessment_id"] == identity]
+        rendered_links = [getattr(source, "source_segment_id", None) for source in assessment.segments]
         if rendered_links != links:
-            surface.blockers.append(f"support: assessment {identity} lacks exact public SourceSegment occurrence IDs")
-        if native is None or assessment.assessment != native["assessment"]:
-            surface.blockers.append(f"support: assessment {identity} differs from its stored judgment")
+            surface.blockers.append(f"support: assessment {identity} lacks exact ordered public SourceSegment occurrence IDs")
+        if (native is None or assessment.assessment != native["assessment"]
+            or assessment.authority != (native["human_principal"] or native["released_policy"] or "")
+            or assessment.assessed_at != datetime.fromisoformat(native["assessed_at"])
+            or assessment.evidence_role != native["evidence_role"]
+            or assessment.effective != (native["superseded_by"] is None)):
+            surface.blockers.append(f"support: assessment {identity} differs from its stored actor, time, role or judgment")
+        if any(not _support_source_matches(source, source_rows.get(source.source_segment_id), filenames) for source in assessment.segments):
+            surface.blockers.append(f"support: assessment {identity} source text/document/locator differs from its native occurrence")
         surface.add("support", f"support_assessments:{identity}", {
             "identity": {"table": "support_assessments", "id": identity}, "original_actor": assessment.authority,
             "original_time": _plain(assessment.assessed_at), "decision_type": {"kind": "support_assessment", "assessment": assessment.assessment},
@@ -1035,6 +1154,7 @@ def collect_native_reader_coverage(session, project_id: int, *, as_of_revision_i
     # The freeze is made here, not accepted from a caller who can forge it.
     try:
         with session.begin_nested():
+            authority = _authoritative_population(session, project_id, revision, inventory)
             reading = freeze_project_reading(session, project_id, today=evaluated_at.date())
             if reading.native_population is None or reading.native_population.revision_id != revision:
                 raise NativeReadingRefused("the public freeze does not expose the pinned native population")
@@ -1057,9 +1177,9 @@ def collect_native_reader_coverage(session, project_id: int, *, as_of_revision_i
         for blocker in (*reading.coverage_blockers, *getattr(reading.native_population, "coverage_blockers", ())):
             for surface in surfaces.values():
                 surface.blockers.append(f"native population: {blocker}")
-        observe("constraint_log", lambda s: _constraint_log(s, reading, inventory))
-        observe("coordination_report", lambda s: _report(s, session, reading, inventory, briefing_fixture_client))
-        observe("workbook_export", lambda s: _workbooks(s, session, reading, inventory))
+        observe("constraint_log", lambda s: _constraint_log(s, reading, inventory, authority))
+        observe("coordination_report", lambda s: _report(s, session, reading, inventory, briefing_fixture_client, authority))
+        observe("workbook_export", lambda s: _workbooks(s, session, reading, inventory, authority))
     observe("work_list", lambda s: _work_list(s, session, project_id, revision, evaluated_at, inventory))
     for kind, boundary in (("current", revision), ("as_of", as_of_revision_id)):
         observe("current_and_as_of_record", lambda s, k=kind, r=boundary: _record_values(s, session, project_id, r, k, inventory))
