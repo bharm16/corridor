@@ -338,6 +338,7 @@ def capture_key_date_table(
     row_accounting_sealed: bool = False,
     analytics_binding: AnalyticsBinding | None = None,
     images_dir: Path | str | None = None,
+    impact_evaluated_at: datetime | None = None,
 ) -> KeyDateTableCapture:
     """Capture one Key Date table, and propose its differences from the record.
 
@@ -365,6 +366,9 @@ def capture_key_date_table(
     """
 
     actor = require_human_principal(principal)
+    impact_instant = impact_evaluated_at if impact_evaluated_at is not None else datetime.now(timezone.utc)
+    if impact_instant.tzinfo is None:
+        raise KeyDateTableRefused("impact evaluation needs an explicit timezone")
     delivery = _refuse_unbound_delivery(session, project, staged, envelope)
 
     path = staged_file(staged.sha256)
@@ -415,7 +419,7 @@ def capture_key_date_table(
     impacts = _impacts(
         appended,
         accepted,
-        evaluated_at=_capture_instant(session, document_id),
+        evaluated_at=impact_instant,
         baseline_revision=baseline_revision,
     )
     from corridor.impact_derivations import append_impact_derivation

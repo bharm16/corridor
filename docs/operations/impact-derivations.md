@@ -13,8 +13,8 @@ time, affected Constraint and Key Date identities, and derivation digest.
 Re-evaluating identical inputs returns the original row, including its original
 evaluation time. Changing the rule version creates a separate immutable row;
 returning different consequences for identical inputs and rule version refuses.
-The evaluation time is supplied by the capture command from its retained Document
-registration time. Readback marks a derivation stale when the project's accepted
+The evaluation time is injected with `impact_evaluated_at`; production calls
+default to the current UTC instant. Readback marks a derivation stale when the project's accepted
 revision has advanced. A stale derivation is historical evidence, not a current
 impact assertion, and no derivation authorizes an accepted-record change.
 

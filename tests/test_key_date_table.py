@@ -138,6 +138,7 @@ def _capture(session, project, rows, tmp_path, *, name, **overrides):
         envelope=envelope,
         principal=PRINCIPAL,
         images_dir=tmp_path / "images",
+        impact_evaluated_at=DECIDED_AT,
         **overrides,
     )
 
@@ -562,6 +563,7 @@ def test_impact_readback_is_idempotent_versioned_and_visibly_stale(
     assert reading.affected_constraint_ids == (UC1, UC2)
     assert reading.affected_key_dates == ("RELO-CONSTR",)
     assert not reading.stale
+    assert reading.evaluated_at == DECIDED_AT
     from corridor.packet_review import read_review_items
     review = read_review_items(session, project_id=adopted.id, as_of=DECIDED_AT)
     assert [item.id for packet in review.items for child in packet.children
@@ -570,6 +572,7 @@ def test_impact_readback_is_idempotent_versioned_and_visibly_stale(
     replay_id = append_impact_derivation(session, project_id=adopted.id, delta_id=impact.delta_id,
         derivation=replace(impact.derivation, evaluated_at=datetime(2026, 9, 9, tzinfo=timezone.utc)))
     assert replay_id == reading.id
+    assert read_impact_derivations(session, project_id=adopted.id, delta_ids=capture.delta_ids)[0].evaluated_at == DECIDED_AT
     changed_id = append_impact_derivation(session, project_id=adopted.id, delta_id=impact.delta_id,
         derivation=replace(impact.derivation, rule_version="v2"))
     assert changed_id != reading.id
@@ -601,10 +604,7 @@ def test_impact_names_the_constraints_whose_required_by_is_the_moved_key_date(
     assert impact.derivation.affected_constraint_ids == (UC1, UC2)
     assert impact.derivation.inputs["accepted_key_date"] == "2026-03-31"
     assert impact.derivation.inputs["proposed_key_date"] == "2026-06-30"
-    # The evaluation instant is the one the database stamped on the registered
-    # export, not a clock this process read.
-    document = session.get(Document, capture.document_id)
-    assert impact.derivation.evaluated_at == document.created_at
+    assert impact.derivation.evaluated_at == DECIDED_AT
 
 
 def test_impact_refuses_cross_project_conflicting_results_and_raw_mutation(
