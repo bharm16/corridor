@@ -68,8 +68,8 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    # #456/#562 typed minutes scopes/timing and immutable project contact sources.
-    "d5e0887b2150e599a901ad845fb15db5aad8ffc53ae62e37d693f105075111cd"
+    # Isolated shadow receipts and original-authored history/support convergence.
+    "9bec8cc48be2668c4b48ed8ad50fd1b994651d43930347d10355b09dc74db9e1"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -302,6 +302,7 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
         # succeed. Exercise the same supported transition, with actual source
         # bytes and the normal SECURITY DEFINER append command.
         assert _alembic(database_url, "upgrade", "head").returncode == 0
+        _assert_history_downgrade_refuses_data_on_this_transition(database.session_factory, project_id)
         from corridor.models import Document, ExtractionRun
         from corridor.reader_segments import append_native_segments, read_native_pdf
         from pdf_fixture_support import PdfFixture
@@ -2070,3 +2071,54 @@ def test_the_report_revision_binding_refuses_a_downgrade_that_would_lose_it():
         downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert downgraded.returncode == 0, downgraded.stderr
         assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+
+
+def _assert_history_downgrade_refuses_data_on_this_transition(session_factory, project_id):
+    """Exercise data-loss guards in the existing supported-transition clone.
+
+    The owning test already proves empty downgrade/upgrade. These synthetic
+    rows live in one rollback scope, so checking loss refusal does not create
+    another blank database or erase retained rows to continue the rehearsal.
+    """
+    from alembic.migration import MigrationContext
+    from alembic.operations import Operations
+    from corridor.coordination_history import migrate_coordination_history
+    from corridor.legacy_history import capture_history, inventory_history, read_history
+    from corridor.migrations import coordination_history, legacy_history, support_history
+    from corridor.models import Dependency, Document, EvidenceLink, SourceSegment
+    from corridor.operative_support import designate_publication_support
+    from corridor.principals import HumanPrincipal
+    from corridor.support_history import migrate_support_history
+    from corridor.work_decisions import assign_internal_owner
+
+    with session_factory() as session:
+        rollback_scope = session.begin_nested()
+        try:
+            dependency = Dependency(project_id=project_id, ref_code="DEP-HISTORY-GUARD",
+                                    dep_type="utility_relocation", title="History loss guard")
+            document = Document(project_id=project_id, sha256="c" * 64, filename="history-guard.pdf",
+                                doc_type="minutes", parse_status="parsed", pages=1)
+            session.add_all([dependency, document])
+            session.flush()
+            words = "Retained source history."
+            segment = SourceSegment(project_id=project_id, document_id=document.id, kind="prose_span",
+                exact_text=words, content_sha256=sha256(words.encode()).hexdigest(), ordinal=1,
+                page_no=1, start_offset=0, end_offset=len(words))
+            evidence = EvidenceLink(dependency_id=dependency.id, document_id=document.id, page_no=1,
+                                    quote=words, verified=True)
+            session.add_all([segment, evidence])
+            session.flush()
+            principal = HumanPrincipal("local:history-loss-guard")
+            assign_internal_owner(session, dependency.id, "Original owner", principal=principal)
+            designate_publication_support(session, dependency.id, evidence.id, principal=principal)
+            batch = capture_history(session, inventory_history(session, project_id), run_key="loss-guard",
+                                    executor=session.scalar(text("select session_user")), code_revision="a" * 40)
+            migrate_coordination_history(session, batch)
+            migrate_support_history(session, batch)
+            operations = Operations(MigrationContext.configure(session.connection()))
+            for helper in (support_history, coordination_history, legacy_history):
+                with pytest.raises(RuntimeError, match="cannot be discarded"):
+                    helper.downgrade(operations)
+                assert read_history(session, project_id, batch.id).content_sha256 == batch.content_sha256
+        finally:
+            rollback_scope.rollback()

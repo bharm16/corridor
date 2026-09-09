@@ -310,6 +310,19 @@ class RetiredRow:
 
 
 @dataclass(frozen=True)
+class MappedWorkbookInput:
+    """One consumed mapping input, including cells whose bytes stayed unchanged."""
+
+    source_row_key: str
+    record_subject_key: str
+    fields: tuple[str, ...]
+    sheet_name: str
+    cell_range: str
+    rendered_value: str
+    accepted_fields: tuple[CurrentRecordValue, ...]
+
+
+@dataclass(frozen=True)
 class RenderedWorkbook:
     """The rendered artifact and every identity it is bound to.
 
@@ -340,6 +353,7 @@ class RenderedWorkbook:
     unchanged_parts: tuple[str, ...] = ()
     package_differences: tuple[str, ...] = ()
     external_references: tuple[tuple[str, str, str], ...] = ()
+    mapped_inputs: tuple[MappedWorkbookInput, ...] = ()
 
     @property
     def field_mapping_revision(self) -> str:
@@ -489,7 +503,30 @@ def render_project_record_workbook(
         unchanged_parts=tuple(sorted(set(parts) - changed)),
         package_differences=differences,
         external_references=plan.external_references,
+        mapped_inputs=plan.mapped_inputs,
     )
+
+
+def workbook_reader_input_manifest(rendered: RenderedWorkbook) -> dict:
+    """Read the exact render's complete mapped inputs without rereading state.
+
+    Cells that already matched the accepted value remain represented. This
+    carries no claim that unrendered native classes have coverage.
+    """
+    return {"project_id": rendered.project_id, "revision_id": rendered.revision_id,
+        "output_sha256": rendered.output_sha256,
+        "field_mapping_sha256": rendered.field_mapping_sha256,
+        "mapped_cells": [{"source_row_key": cell.source_row_key,
+            "record_subject_key": cell.record_subject_key, "fields": list(cell.fields),
+            "sheet_name": cell.sheet_name, "cell_range": cell.cell_range,
+            "rendered_value": cell.rendered_value,
+            "accepted_fields": [{"fact_type": value.fact_type, "value": _printed(value),
+                "fact_id": value.fact_id, "decision_kind": "fact_decision", "decision_id": value.decision_id,
+                "revision_id": value.revision_id, "fact_subject_key": value.fact_subject_key or value.subject_key} for value in cell.accepted_fields]}
+            for cell in rendered.mapped_inputs],
+        "retired_rows": [{"source_row_key": row.source_row_key, "record_subject_key": row.record_subject_key,
+            "sheet_name": row.sheet_name, "cell_range": row.cell_range, "wording": row.wording}
+            for row in rendered.retired_rows]}
 
 
 # --- Reading what is to be written -----------------------------------------
@@ -517,6 +554,7 @@ class _Plan:
     writes: dict[int, dict[str, str]]
     appended: tuple[tuple[int, dict[str, str]], ...]
     external_references: tuple[tuple[str, str, str], ...]
+    mapped_inputs: tuple[MappedWorkbookInput, ...]
 
 
 def _template_reading(
@@ -577,9 +615,14 @@ def _plan(
         for row in adopted_source_rows(session, project_id)
         if not row.excluded
     }
-    record = _record_by_subject(
-        read_project_record_as_of_revision(session, project_id, revision_id)
-    )
+    accepted_values = read_project_record_as_of_revision(session, project_id, revision_id)
+    record = _record_by_subject(accepted_values)
+    mapped_inputs = []
+
+    def retain_input(source_key, record_key, fields, row_number, column, rendered_value):
+        mapped_inputs.append(MappedWorkbookInput(source_key, record_key, fields, reading.adopted_sheet,
+            f"{column}{row_number}", rendered_value, tuple(value for value in accepted_values
+                if value.subject_key == source_key and value.fact_type in fields)))
 
     writes: dict[int, dict[str, str]] = {}
     changed: list[RenderedCell] = []
@@ -608,6 +651,12 @@ def _plan(
                 )
             )
             appended.append((next_row, cells))
+            for mapping in manifest.mappings:
+                rule = composition_rule(mapping.composition)
+                for index, heading in enumerate(mapping.source_columns):
+                    column = letters[heading]
+                    if column in cells:
+                        retain_input(subject_key, subject_key, rule.fields_at(mapping, index), next_row, column, cells[column])
             continue
         template_row = template_rows.get(subject_key)
         if template_row is None:
@@ -637,9 +686,11 @@ def _plan(
             for index, heading in enumerate(mapping.source_columns):
                 before = exact_text(template_row, mapping.target_fields[index])
                 after = composed[index]
+                column = letters[heading]
+                retain_input(source_row.source_row_key, source_row.record_subject_key or subject_key,
+                    rule.fields_at(mapping, index), source_row.row_number, column, after)
                 if after == before:
                     continue
-                column = letters[heading]
                 cell_range = f"{column}{source_row.row_number}"
                 locator = f"{reading.adopted_sheet}!{cell_range}"
                 if locator in formula_cells:
@@ -674,6 +725,7 @@ def _plan(
         )
 
     return _Plan(
+        mapped_inputs=tuple(mapped_inputs),
         changed_cells=tuple(changed),
         added_rows=tuple(added),
         retired_rows=tuple(retired),

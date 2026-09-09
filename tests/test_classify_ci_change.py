@@ -277,12 +277,14 @@ def test_the_documentation_allowlist_is_narrow_and_names_no_wildcard():
         assert not module.is_documentation(executable), executable
 
 
-def test_the_migration_path_set_is_the_one_the_retired_workflow_carried():
+def test_the_migration_path_set_covers_schema_and_the_database_harness():
     module = _module()
 
     assert set(module.MIGRATION_PATHS) == {
         "src/corridor/migrations/**",
         "src/corridor/models.py",
+        "src/corridor/shadow_schema.py",
+        "src/corridor/legacy_history_inventory.py",
         "src/corridor/db.py",
         "src/corridor/m8_acceptance_database.py",
         "tests/conftest.py",
@@ -295,6 +297,8 @@ def test_the_migration_path_set_is_the_one_the_retired_workflow_carried():
     }
     for adjacent in (
         "src/corridor/migrations/baseline_versions/0001_base.py",
+        "src/corridor/shadow_schema.py",
+        "src/corridor/legacy_history_inventory.py",
         "tests/test_database_migration.py",
         "alembic.ini",
         ".github/workflows/full-suite.yml",

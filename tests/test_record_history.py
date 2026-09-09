@@ -413,6 +413,12 @@ def test_a_value_names_the_source_fact_and_the_exact_passage(session, project, c
         "ucm-2026-08.xlsx"
     ]
     reference = row.current.sources[0]
+    from corridor.models import FactSource, SourceSegment
+    native_segment_id = session.scalar(select(FactSource.source_segment_id).where(FactSource.fact_id == fact.id))
+    assert reference.source_segment_id == native_segment_id
+    native_segment = session.get(SourceSegment, reference.source_segment_id)
+    assert native_segment.document_id == reference.document_id
+    assert native_segment.exact_text == reference.exact_text
     assert reference.exact_text == ACCEPTED
     assert reference.locator.startswith("sheet Utility Conflicts, cell ")
 
@@ -440,6 +446,11 @@ def test_support_assessments_for_a_value_are_shown_with_their_authority(
     assert [
         source.filename for source in row.current.assessments[0].segments
     ] == ["ucm-2026-08.xlsx"]
+    from corridor.models import SupportAssessmentSource
+    assessment = row.current.assessments[0]
+    native_segment_ids = set(session.scalars(select(SupportAssessmentSource.source_segment_id).where(
+        SupportAssessmentSource.support_assessment_id == assessment.assessment_id)))
+    assert {source.source_segment_id for source in assessment.segments} == native_segment_ids
 
     body = client.get(f"/record/{project.slug}").text
     assert "Support Assessments recorded for this value" in body
@@ -878,3 +889,159 @@ def test_every_search_control_carries_a_visible_bound_label(
     assert 'role="search"' in body
     # Every named landing place stays focusable for a later return (§4).
     assert body.count('tabindex="-1"') == 6
+
+
+def test_native_coordination_current_and_revision_history_preserve_original_authority(session, project, client):
+    from sqlalchemy import text
+    from corridor.coordination_history import migrate_coordination_history, read_coordination_record_as_of_revision
+    from corridor.legacy_history import capture_history, inventory_history
+    from corridor.models import Dependency, WorkDecision
+
+    dependency = Dependency(project_id=project.id, ref_code="COORD-HISTORY", dep_type="utility_relocation",
+        title="Historical coordination", internal_owner="Second owner")
+    session.add(dependency)
+    session.flush()
+    first = WorkDecision(dependency_id=dependency.id, field="internal_owner", decision_type="assign_internal_owner",
+        after_value="First owner", recorded_by="local:original-first", recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    session.add(first)
+    session.flush()
+    session.add(WorkDecision(dependency_id=dependency.id, field="internal_owner", decision_type="assign_internal_owner",
+        before_value="First owner", after_value="Second owner", recorded_by="local:original-second",
+        recorded_at=datetime(2026, 2, 1, tzinfo=timezone.utc), predecessor_decision_id=first.id))
+    session.flush()
+    batch = capture_history(session, inventory_history(session, project.id), run_key="record-history-native",
+        executor=session.scalar(text("select session_user")), code_revision="a" * 40)
+    native = migrate_coordination_history(session, batch)
+    first_revision = session.scalar(text("select min(revision_id) from coordination_record_decisions where project_id=:project"),
+        {"project": project.id})
+    before = _write_counts(session, project)
+    history = read_record_history(session, project_id=project.id, terms=SearchTerms(revision=first_revision))
+    row = next(row for row in history.coordination if row.current and row.current.field == "internal_owner")
+    assert row.current == native[0]
+    assert row.as_of == read_coordination_record_as_of_revision(session, project.id, first_revision)[0]
+    assert (row.current_text, row.as_of_text) == ("Second owner", "First owner")
+    assert row.current.recorded_by == "local:original-second"
+    assert row.current.recorded_at == datetime(2026, 2, 1, tzinfo=timezone.utc)
+    assert row.subject_id != str(dependency.id)
+    dependency.internal_owner = "Forged compatibility value"
+    session.flush()
+    assert read_record_history(session, project_id=project.id).coordination[0].current_text == "Second owner"
+    body = client.get(f"/record/{project.slug}?revision={first_revision}").text
+    assert "Coordination decisions from the native record" in body
+    assert "local:original-second" in body and "First owner" in body
+    assert "Forged compatibility value" not in body
+    assert _write_counts(session, project) == before
+
+
+def test_source_decision_history_keeps_superseded_source_and_original_revision_actor(session, project, client):
+    adopted = _adopted(session, project)
+    original = adopted.fact_of[(subject(ROW), "committed_date")]
+    baseline_revision = adopted.revision_of[(subject(ROW), "committed_date")]
+    _settle(session, project, APPLY)
+    history = read_record_history(session, project_id=project.id,
+        terms=SearchTerms(conflict="U-042", revision=baseline_revision))
+    old = next(decision for decision in history.source_decisions if decision.fact.fact_id == original.id)
+    new = next(decision for decision in history.source_decisions if decision.effective_now)
+    assert old.effective_at_revision and not old.effective_now and old.superseded_by == new.decision_id
+    assert new.effective_at_revision is False and new.authority == COORDINATOR.subject
+    assert new.authority_kind == "Human decision"
+    assert old.fact.recorded_by == original.recorded_by
+    assert old.fact.recorded_at == original.recorded_at
+    assert any(source.exact_text == ACCEPTED for source in old.fact.sources)
+    assert any(source.exact_text == INCOMING for source in new.fact.sources)
+    body = client.get(f"/record/{project.slug}?revision={baseline_revision}").text
+    assert "Source decisions and original authority" in body
+    assert "Accepted at selected revision" in body
+    assert ACCEPTED in body and INCOMING in body
+
+
+def test_unattributed_history_stays_explicit_compatibility_with_original_actor(session, project, client):
+    from sqlalchemy import text
+    from corridor.coordination_history import migrate_coordination_history
+    from corridor.legacy_history import capture_history, inventory_history
+    from corridor.models import Dependency, WorkDecision
+
+    dependency = Dependency(project_id=project.id, ref_code="UNATTRIBUTED", dep_type="utility_relocation",
+        title="Unattributed history", internal_owner="Historical owner")
+    session.add(dependency)
+    session.flush()
+    decision = WorkDecision(dependency_id=dependency.id, field="internal_owner", decision_type="assign_internal_owner",
+        after_value="Historical owner", recorded_by="reviewer", recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    session.add(decision)
+    session.flush()
+    batch = capture_history(session, inventory_history(session, project.id), run_key="record-history-gap",
+        executor=session.scalar(text("select session_user")), code_revision="b" * 40)
+    assert migrate_coordination_history(session, batch) == ()
+    history = read_record_history(session, project_id=project.id)
+    assert history.coordination == ()
+    assert history.retained_history.batch_id == batch.id
+    assert any(str(decision.id) in gap and "reviewer" in gap for gap in history.retained_history.gaps)
+    section = next(section for section in history.retained_history.sections if section.title == "Original coordination decisions")
+    assert section.records[0].actor == "reviewer"
+    assert section.records[0].actor != history.retained_history.executor
+    body = client.get(f"/record/{project.slug}").text
+    assert "Retained compatibility history" in body
+    assert "Historical owner" in body and "reviewer" in body
+    assert "Coordination decisions from the native record" not in body
+
+
+def test_no_retained_batch_reports_a_gap_instead_of_claiming_complete_history(session, project):
+    _adopted(session, project)
+    history = read_record_history(session, project_id=project.id)
+    assert history.retained_history.batch_id is None
+    assert history.retained_history.sections == ()
+    assert "No active retained" in history.retained_history.gaps[0]
+    assert history.values and history.source_decisions
+
+
+def test_native_publication_support_uses_exact_revision_and_keeps_citation_context(session, project, client):
+    from sqlalchemy import text
+    from corridor.legacy_history import capture_history, inventory_history
+    from corridor.models import Dependency, Document, EvidenceLink, OperativeSupport, SourceSegment
+    from corridor.support_history import migrate_support_history, refresh_migrated_publication_support
+
+    dependency = Dependency(project_id=project.id, ref_code="SUPPORT-HISTORY", dep_type="utility_relocation", title="Publication history")
+    session.add(dependency)
+    session.flush()
+    documents, links = [], []
+    for index, words in enumerate(("Original retained publication passage.", "Replacement retained publication passage."), 1):
+        document = Document(project_id=project.id, sha256=str(index) * 64, filename=f"history-support-{index}.pdf",
+            doc_type="agreement", parse_status="parsed", pages=1)
+        session.add(document)
+        session.flush()
+        segment = SourceSegment(project_id=project.id, document_id=document.id, kind="prose_span",
+            exact_text=words, content_sha256=sha256(words.encode()).hexdigest(), ordinal=1,
+            page_no=1, start_offset=0, end_offset=len(words))
+        link = EvidenceLink(dependency_id=dependency.id, document_id=document.id, page_no=1, quote=words, verified=True)
+        session.add_all([segment, link])
+        session.flush()
+        documents.append(document)
+        links.append(link)
+    support = OperativeSupport(dependency_id=dependency.id, evidence_link_id=links[0].id, role="publication",
+        designated_by="local:publication-first", designated_at=datetime(2026, 1, 1, tzinfo=timezone.utc))
+    session.add(support)
+    session.flush()
+    batch = capture_history(session, inventory_history(session, project.id), run_key="record-history-support",
+        executor=session.scalar(text("select session_user")), code_revision="c" * 40)
+    migrated = migrate_support_history(session, batch)
+    assert migrated[0]["outcome"] == "native"
+    original = read_record_history(session, project_id=project.id).publication_support[0]
+    support.evidence_link_id = links[1].id
+    support.designated_by = "local:publication-second"
+    support.designated_at = datetime(2026, 2, 1, tzinfo=timezone.utc)
+    session.flush()
+    # A changed unrefreshed source is a gap; stale native support is not shown.
+    stale = read_record_history(session, project_id=project.id)
+    assert stale.publication_support == () and stale.publication_support_gaps
+    refresh_migrated_publication_support(session, project_id=project.id, scope_id=support.id)
+    history = read_record_history(session, project_id=project.id, terms=SearchTerms(revision=original.revision_id))
+    assert history.publication_support[0].document_id == documents[1].id
+    assert history.publication_support_as_of[0].document_id == documents[0].id
+    assert history.publication_support[0].decision_actor == "local:publication-second"
+    assert history.publication_support_as_of[0].original_actor == "local:publication-first"
+    assert history.publication_support_as_of[0].original_time == datetime(2026, 1, 1, tzinfo=timezone.utc)
+    body = client.get(f"/record/{project.slug}?revision={original.revision_id}").text
+    assert "Native publication support at revision" in body
+    assert "Original citation context" in body
+    assert "Original retained publication passage." in body
+    assert "Replacement retained publication passage." in body

@@ -210,12 +210,15 @@ def sync_pull_connector(
     cursor that never moved.
     """
 
+    from corridor.activation_runtime import require_pull_delivery
+    require_pull_delivery(ledger, customer=customer, project=project, channel=channel)
     items, next_token = connector.list_changes(cursor)
     envelopes: list[SourceEnvelope] = []
     records: list[DeliveryRecord] = []
     blocked: list[str] = []
 
     for item in items:
+        require_pull_delivery(ledger, customer=customer, project=project, channel=channel)
         body = connector.fetch_version(item.item_id, item.version_id)
         digest = hashlib.sha256(body).hexdigest()
 
@@ -239,6 +242,8 @@ def sync_pull_connector(
             refusal_reason = f"scan_failed: {failure}"
         else:
             try:
+                # Re-read deployment inputs after fetch, before storing bytes.
+                require_pull_delivery(ledger, customer=customer, project=project, channel=channel)
                 # Persist through the object storage interface.
                 store_bytes(body, sha256=digest, suffix=suffix)
             except Exception as failure:

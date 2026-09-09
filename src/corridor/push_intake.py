@@ -359,6 +359,8 @@ def replay_delivery(
 ) -> PushReceipt | None:
     """The receipt of an already-taken delivery, without taking it again."""
 
+    from corridor.activation_runtime import require_source_delivery
+    require_source_delivery(session, _delivery_binding(binding))
     _delivery_identity, idempotency_key = delivery_identity_of(binding, payload)
     row = stored_delivery(session, idempotency_key=idempotency_key)
     if row is None:
@@ -392,6 +394,8 @@ def accept_delivery(
         raise PushIntakeRefused("a pushed delivery needs an established binding")
     digest = sha256(payload.body).hexdigest()
     delivery_binding = _delivery_binding(binding)
+    from corridor.activation_runtime import require_source_delivery
+    require_source_delivery(session, delivery_binding)
     # A push channel has no pass and no cursor: the run that took delivery is
     # this acceptance.  It is not part of the delivery's identity, so a replay
     # converges on the row the first run wrote and keeps that run's name.

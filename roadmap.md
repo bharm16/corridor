@@ -255,6 +255,10 @@ earlier.
    its first and least assumption-heavy source path: capture a later UCM
    revision as Source Facts and Proposed Deltas against the adopted baseline,
    with no model, no Microsoft 365, and no partner mailbox.
+   The isolated worker, database-sealed shadow receipts, native comparison,
+   and activation evidence/runtime tooling are built;
+   [operator contract](docs/operations/shadow-and-activation-tooling.md).
+   The actual authorized source, deployment, and activation evidence remain open.
 10. #495 UCM export and #534 change summary and weekly report are **done**,
     both from one frozen revision (ADR-0086). Three follow-ons remain:
     **#597** and **#596** are **done** — #597 makes the registered mapping
@@ -284,8 +288,8 @@ earlier.
     #456's five minutes capabilities are implemented with typed source facts,
     accepted-subject scope, explicit source questions and fixture proof;
     [minutes contract](docs/operations/minutes-source.md).
-    Reusable source software does not wait for partner selection; #450 schedule
-    source remains parallel work. Actual source/account configuration, signed
+    #450 schedule sources and #643 persisted Impact Derivations are also built.
+    Actual source/account configuration, signed
     authorization, deployments, customer runs and pilot findings are later proof.
 
 **Exit:** the slice runs end to end on one partner project with the partner's
@@ -309,6 +313,10 @@ before full cutover (ADR-0081 stages 4 through 6) either way.
 
 1. #424 net economics measurement; #499 shadow comparison against the
    customer's frozen later matrix revisions; #498 checkpoint report.
+   Their reporting, frozen comparison, attributed reconciliation, and checkpoint
+   software are built with fixture proof;
+   [reporting contract](docs/operations/pilot-reporting.md). Actual customer
+   evidence and a recorded checkpoint outcome remain required.
 2. #486 synthesizes the evidence record for ADR-0075 from #556's incumbent
    evidence and #428's interview findings, and qualifies buyer claims.
 3. Freeze each baseline and incoming-source event before coordinator action.
@@ -327,6 +335,11 @@ tables; it neither blocks the pilot nor is measured by it.
 1. #512 spine-native verbal and source origin (stage 1) — **done**. The
    legacy statement key survives only as a compatibility mapping.
 2. #513 historical backfill preserving original authorship (stage 2).
+   Inventory/custody, exact-source citation migration, and protected coordination
+   and support history are implemented in bounded batches #783–#786;
+   [class inventory and retained compatibility](docs/migrations/legacy-history-inventory.md).
+   Unproven historical acceptance authority remains a reported gap. Neither
+   an audit label nor the migration executor supplies the missing original act.
 3. #457 permanent-state dedup — **done** on its write-side half: a duplicate
    is now unrepresentable in PostgreSQL across the five permanent-state
    families. **#598** carries the other half, referencing permanent state by
@@ -379,7 +392,7 @@ cohort surface.
 - **Deployment and observability** beyond #491A's pilot minimum.
 - **Backup, restore, and recovery** hardening.
 - **Migration** — all of Phase 4. #512, #457 and #598 (with its children
-  #602-#605) are done; #513, #458 and #645 remain.
+  #602-#605) and #645 are done; #513 and #458 remain.
 - **Optional output formats** beyond the artifacts a project is configured to
   issue (ADR-0086 as amended by ADR-0091 keeps participation configurable).
 - **Deeper Record views** behind the Work List (ADR-0085 keeps the full

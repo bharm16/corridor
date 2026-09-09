@@ -63,7 +63,8 @@ from corridor.models import (
     is_critical,
 )
 from corridor.report_diff_reference import BaselineDrift, baseline_for_run
-from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal
+from corridor.report_reading import PROMISED_FOR_PROJECTION_RULE_VERSION, seal, read_entries, digest_is_intact
+from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text, visible_native_statements, native_field_visible
 
 
 @dataclass
@@ -172,6 +173,8 @@ def snapshot(
         raise ValueError(
             "the snapshot and evaluation describe different Committed Date readings"
         )
+    if evaluation.native_population is not None:
+        return native_reading_snapshot(evaluation)
     rows = browse(session, project_id, limit=100_000, evaluation=evaluation)
 
     by_dependency = {
@@ -258,9 +261,60 @@ def snapshot(
     })
 
 
+def native_reading_snapshot(evaluation: Evaluation) -> dict:
+    """Retain exactly the native accepted population and reading that rendered."""
+    population = evaluation.native_population
+    if population is None:
+        raise NativeReadingRefused("native snapshot requires its frozen population")
+    return seal({
+        "population_kind": "native_adopted_ucm", "record_revision_id": population.revision_id,
+        "native_population_sha256": population.fingerprint,
+        "ruleset_version": evaluation.ruleset_version, "thresholds": _thresholds_snapshot(evaluation.thresholds),
+        "promised_for_projection_rule_version": PROMISED_FOR_PROJECTION_RULE_VERSION,
+        "dependencies": {record.ref_code: {
+            "id": record.id, "identity_kind": "record_subject_key", "source_row_key": record.source_row_key,
+            "resolution_strategy": record.resolution_strategy,
+            "published_promised_for": (evaluation.committed_dates[record.id].isoformat()
+                                       if evaluation.committed_dates[record.id] else None),
+            "promised_for_statement": None,
+            "need_date": record.need_date.isoformat() if record.need_date else None,
+            "documentation_requirement_met": False,
+            "constraint_alerts": sorted(item.rule for item in evaluation.for_dependency(record.id)),
+            "accepted_field_values": {name: accepted_field_text(field) for name, field in record.fields.items()},
+            "accepted_field_decisions": {name: {"fact_id": field.fact_id, "decision_id": field.decision_id,
+                "revision_id": field.revision_id, "fact_subject_key": field.fact_subject_key,
+                "source_segment_ids": [source.source_segment_id for source in field.sources]}
+                for name, field in record.fields.items()},
+        } for record in population.open_records},
+        "external_party_commitments": {},
+        "accepted_statements": [{"subject_key": statement.subject_key,
+            "reading_revision_id": statement.reading_revision_id,
+            "fields": {name: {"value": str(field.value), "fact_id": field.fact_id,
+                "fact_subject_key": field.fact_subject_key, "decision_id": field.decision_id,
+                "revision_id": field.revision_id, "actor": field.actor,
+                "source_segment_ids": [source.source_segment_id for source in field.sources]}
+                for name, field in statement.fields.items() if native_field_visible(field, document_only=evaluation.statement_publication.document_only)},
+            "coverage_blockers": list(statement.coverage_blockers)}
+            for statement in visible_native_statements(population, document_only=evaluation.statement_publication.document_only)],
+        "inactive_record_decisions": {**{record.subject_key: {"state": "removed" if record.removal_decision_id else "closed",
+            "decision_id": record.removal_decision_id or record.fields["closure_result"].decision_id}
+            for record in population.records if record.removal_decision_id is not None or record.is_closed},
+            **{subject: {"state": "reversed", "decision_kind": "delta_review_packet_reversal", "decision_id": identity}
+                for subject, identity in population.withdrawn_subjects}},
+        "follow_up_plan_scope": population.follow_up_scope,
+        "follow_up_plans": [{"plan_id": plan.plan_id, "delta_id": plan.delta_id, "revision_id": plan.revision_id,
+            "target_subject_identity": plan.target_subject_identity, "question": plan.open_question,
+            "responsible_principal": plan.responsible_principal, "responsible_organization": plan.responsible_organization,
+            "return_date": plan.return_date.isoformat() if plan.return_date else None,
+            "recorded_by": plan.recorded_by, "recorded_at": plan.recorded_at.isoformat(),
+            "support_assessment_ids": list(plan.support_assessment_ids), "source_segment_ids": list(plan.source_segment_ids)}
+            for plan in population.follow_up_plans],
+    })
+
+
 def _dismissal_of(session: Session, dependency_id: int | None):
     """The decision that took a record off the working list, if any."""
-    if dependency_id is None:
+    if dependency_id is None or isinstance(dependency_id, str):
         return None
     return session.scalars(
         select(DependencyDismissal)
@@ -305,6 +359,11 @@ def diff_since_last(
     # downstream can detect it. `report_runs.id` is append-only and is the same
     # watermark `report_preparation` and `issue_rendering` already select on
     # (#488, #634).
+    if evaluation.native_population is not None:
+        # A historical revision may be rendered after later reports exist.
+        # Keep the established ReportRun-ID ordering/retirement boundary, but
+        # never use a reading from a future accepted revision as its baseline.
+        previous_query = previous_query.where(ReportRun.revision_id <= evaluation.native_population.revision_id)
     previous = session.scalars(
         previous_query.order_by(ReportRun.id.desc()).limit(1)
     ).first()
@@ -320,10 +379,24 @@ def diff_since_last(
         # changes" would read as "nothing moved" rather than "we have not
         # looked before".
         return Diff(previous_run_id=None, previous_ts=None,
-                    comparison_boundary_unknown=unknown_boundary)
+                    comparison_boundary_unknown=unknown_boundary or evaluation.native_population is not None)
 
-    baseline = baseline_for_run(session, previous)
-    before = baseline.dependencies
+    previous_native = (previous.snapshot_json or {}).get("population_kind") == "native_adopted_ucm"
+    current_native = current.get("population_kind") == "native_adopted_ucm"
+    if previous_native != current_native:
+        # No implicit identity conversion across an unproven legacy/native
+        # population boundary. The ReportRun-ID retirement query above remains
+        # the owner of any declared comparison watermark.
+        return Diff(previous_run_id=None, previous_ts=None, comparison_boundary_unknown=True)
+    if previous_native:
+        if digest_is_intact(previous.snapshot_json) is not True or previous.snapshot_json.get("record_revision_id") != previous.revision_id:
+            raise NativeReadingRefused("retained native report reading failed its digest or revision binding")
+        before = read_entries(previous.snapshot_json)
+        baseline_source, baseline_drift = "retained_native_reading", ()
+    else:
+        baseline = baseline_for_run(session, previous)
+        before = baseline.dependencies
+        baseline_source, baseline_drift = baseline.source, baseline.drift
     after = current["dependencies"]
     previous_ruleset = previous.ruleset_version
     # A snapshot written before thresholds were recorded has no such key. That
@@ -343,8 +416,8 @@ def diff_since_last(
             and previous_thresholds != current_thresholds
         ),
         previous_thresholds=previous_thresholds,
-        baseline_source=baseline.source,
-        baseline_drift=baseline.drift,
+        baseline_source=baseline_source,
+        baseline_drift=baseline_drift,
     )
 
     for ref, now in after.items():
@@ -475,6 +548,15 @@ def diff_since_last(
             # was thrown out as junk is the one mistake this report cannot
             # afford (ADR-0032). Dismissal is a decision with a reason on
             # it, so the change carries the reason rather than a guess.
+            inactive = current.get("inactive_record_decisions", {}).get(ref)
+            if current_native and inactive and inactive["state"] == "reversed":
+                diff.changes.append(Change(ref, "reversed", "record addition decision was explicitly reversed", before[ref].get("id")))
+                continue
+            if current_native and inactive and inactive["state"] == "removed":
+                diff.changes.append(Change(ref, "apparent_removal", "accepted apparent removal; source history retained", before[ref].get("id")))
+                continue
+            if current_native and inactive is None:
+                raise NativeReadingRefused("native record left the population without an explicit lifecycle decision")
             dismissal = _dismissal_of(session, before[ref].get("id"))
             if dismissal is not None:
                 diff.changes.append(
@@ -568,13 +650,15 @@ def record_run(
 ) -> ReportRun:
     """Store the state this report was published against.
 
-    The binding is resolved here rather than accepted from the caller: a run
-    records the revision standing at the moment it is written, in this same
-    transaction, and no caller can hand it one taken from an earlier read.
+    Native readers retain the revision already frozen into their evaluation,
+    exactly as rendered, even if another revision arrived afterward. Legacy
+    readers continue resolving the standing revision through their established
+    compatibility boundary.
     """
     run = ReportRun(
         project_id=project_id,
-        revision_id=accepted_revision_id(session, project_id),
+        revision_id=(evaluation.native_population.revision_id if evaluation.native_population is not None
+                     else accepted_revision_id(session, project_id)),
         # The evaluation's own version, not the module constant: the
         # snapshot inside this same row already records the former, and
         # a run that disagrees with its own snapshot is unreadable.

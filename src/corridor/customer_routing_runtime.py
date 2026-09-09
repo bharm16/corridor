@@ -30,6 +30,8 @@ def environment_credential(reference: str) -> str:
 def build_customer_router(
     url: str, customer: str, environment: str, deployment: str
 ) -> CustomerRouter:
+    from corridor.activation_runtime import require_customer_route
+    require_customer_route(CustomerIdentity(customer, environment, deployment))
     engine = None
     try:
         identity = CustomerIdentity(customer, environment, deployment)
@@ -54,6 +56,13 @@ def build_customer_router(
 
 
 def configured_customer_router() -> CustomerRouter | None:
+    from corridor.activation_runtime import current_activation, runtime_data_class
+    data_class = runtime_data_class()
+    if data_class == "shadow":
+        if settings.control_plane_resolver_database_url:
+            raise RouteRefused("shadow deployments cannot configure customer routing")
+        return None
+    current_activation()
     values = (
         settings.control_plane_resolver_database_url,
         settings.customer_id,

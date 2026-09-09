@@ -303,6 +303,10 @@ def test_real_source_and_delta_producers_bind_fresh_native_receipts(session, ado
         current = by_receipt[original.family, original.payload["receipt_id"]]
         assert current.payload["binding_event_ids"] == original.payload["binding_event_ids"]
         assert current.binding.code_revision == "producer-first"
+    for delta_id in result.delta_ids:
+        native = by_receipt[EventFamily.PROPOSED_DELTA_CREATION, delta_id]
+        assert native.payload["source_class"] == "matrix"
+        assert native.payload["source_family"].startswith("ucm_workbook:")
     assert (EventFamily.SOURCE_CAPTURE, ghost.document_id) not in by_receipt
     assert all((EventFamily.PROPOSED_DELTA_CREATION, i) not in by_receipt for i in ghost.delta_ids)
     assert by_receipt[EventFamily.SOURCE_ARRIVAL, refused.delivery_id].binding.code_revision == "producer-second"

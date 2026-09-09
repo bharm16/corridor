@@ -4,7 +4,8 @@
 interaction log and the built workflow's immutable receipts and writes a
 reproducible JSON report plus its exact input snapshot. It creates no domain
 state, decision, authorization, analytics database or infrastructure metric.
-The customer findings and economics remain #424/#498 work. A fixture is
+The [economics and checkpoint readers](pilot-reporting.md) consume this report
+for #424/#498; real customer findings require the declared pilot evidence. A fixture is
 software proof; it supplies no customer outcome.
 
 ## Reproduce the fixture

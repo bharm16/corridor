@@ -147,6 +147,7 @@ from corridor.issue_coverage import (
     latest_declaration,
 )
 from corridor.issue_profile import effective_issue_inventory
+from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
 from corridor.presentation import field_label
 from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
@@ -482,6 +483,9 @@ class ChildReading:
     consequence: ConsequenceLevel | None = None
     source_attention_reasons: tuple[str, ...] = ()
     incoming_fact_ids: tuple[int, ...] = ()
+    # Needs coordination records this question and its own responsible party.
+    # None of these fields replaces an accepted Constraint owner or value.
+    follow_up_plans: tuple[AcceptedFollowUpPlan, ...] = ()
 
     @property
     def consequence_heading(self) -> str | None:
@@ -921,6 +925,13 @@ class ReviewReading:
         return None
 
     @property
+    def follow_up_plans(self) -> tuple[AcceptedFollowUpPlan, ...]:
+        """Plans on owning active children, once each despite held-out copies."""
+        plans = {plan.plan_id: plan for item in self.items for child in item.children
+                 for plan in child.follow_up_plans}
+        return tuple(plans[identity] for identity in sorted(plans))
+
+    @property
     def actionable_delta_ids(self) -> tuple[int, ...]:
         return self.reading.actionable_delta_ids
 
@@ -967,6 +978,13 @@ def read_review_items(
     for impact in read_impact_derivations(session, project_id=project_id,
                                          delta_ids=reading.actionable_delta_ids):
         impacts[impact.delta_id].append(impact)
+    follow_up: dict[int, list[AcceptedFollowUpPlan]] = defaultdict(list)
+    if reading.accepted_revision_id is not None:
+        active_ids = set(reading.actionable_delta_ids)
+        for plan in read_adopted_follow_up_plans(session, project_id, reading.accepted_revision_id,
+                                                current=True, as_of=as_of):
+            if plan.delta_id in active_ids:
+                follow_up[plan.delta_id].append(plan)
     standing = standing_accepted_revisions(session, project_id=project_id)
     documents = _lineage_documents(session, project_id)
     incoming = _incoming_facts(session, project_id, deltas.values(), documents)
@@ -1029,7 +1047,8 @@ def read_review_items(
         for delta_id in reading.actionable_delta_ids
     }
 
-    readings = {identifier: replace(child, impacts=tuple(impacts.get(identifier, ())))
+    readings = {identifier: replace(child, impacts=tuple(impacts.get(identifier, ())),
+                                    follow_up_plans=tuple(follow_up.get(identifier, ())))
                 for identifier, child in readings.items()}
 
     from corridor.minutes_reading import read_minutes_work

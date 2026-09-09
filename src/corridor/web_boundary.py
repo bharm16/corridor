@@ -341,6 +341,17 @@ PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
         ),
         relations=frozenset(
             {
+                "current_coordination_record",
+                "coordination_record_subjects",
+                "coordination_subject_lineage",
+                "coordination_record_decisions",
+                "coordination_record_reversals",
+                "coordination_history_activations",
+                "coordination_decision_lineage",
+                "legacy_history_batches",
+                "legacy_history_reversals",
+                "support_scope_lineage",
+                "support_history_receipts",
                 "audit_log",
                 "candidates",
                 "current_project_record",

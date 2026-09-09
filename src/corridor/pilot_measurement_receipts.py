@@ -172,7 +172,8 @@ def read_domain_receipts(
                 source = (f"delivery:{document.source_delivery_id}" if document and document.source_delivery_id else
                           f"document:{document.id}" if document else None)
                 emit(EventFamily.PROPOSED_DELTA_CREATION, row, row.created_at,
-                     delta_id=row.id, source_identity=source, source_class=row.source_family,
+                     delta_id=row.id, source_identity=source,
+                     source_class=document.doc_type if document else "unavailable", source_family=row.source_family,
                      target_field=row.target_field, source_revision=row.source_revision,
                      comparison_rule_version=row.comparison_rule_version,
                      content_sha256=row.content_sha256, timestamp_basis="ProposedDelta.created_at")

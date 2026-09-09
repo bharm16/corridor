@@ -191,6 +191,8 @@ def record_delivery(
     holds rather than racing between a read and an insert.
     """
 
+    from corridor.activation_runtime import require_source_delivery
+    require_source_delivery(session, binding)
     if disposition not in DISPOSITIONS:
         raise SourceDeliveryRefused(f"{disposition!r} is not a delivery disposition")
     taken = disposition in (DISPOSITION_STORED, DISPOSITION_DUPLICATE)
@@ -368,6 +370,8 @@ def require_stored_envelope(session: Session, envelope: SourceEnvelope) -> Sourc
     row = stored_delivery(session, idempotency_key=envelope.idempotency_key)
     if row is None or envelope_for_delivery(session, row.id) != envelope:
         raise SourceDeliveryRefused("source requires its exact stored customer/project envelope")
+    from corridor.activation_runtime import require_source_project
+    require_source_project(session, row.project_id)
     return row
 
 

@@ -1,0 +1,39 @@
+{
+  "schema_version": "pilot-contract-v1",
+  "evidence_kind": "fixture",
+  "declared_at": "2026-09-07T00:00:00+00:00",
+  "packet_precision_basis": "all_surfaced",
+  "minimum_stratum_project_weeks": 2,
+  "source_classes": [
+    "ucm"
+  ],
+  "business_calendar": {
+    "timezone": "UTC",
+    "holidays": [],
+    "rule": "elapsed_weekdays_excluding_declared_holidays"
+  },
+  "shape": {
+    "partners": {
+      "synthetic-partner": {
+        "project_keys": [
+          "synthetic-customer|fixture|synthetic:customer-database|1"
+        ],
+        "signed_agreement_reference": null
+      }
+    },
+    "baseline_method": "No real baseline in this software fixture",
+    "comparison_method": "No customer comparison in this software fixture"
+  },
+  "cohorts": [
+    {
+      "id": "synthetic-software-proof",
+      "period_ids": [
+        "ordinary-week",
+        "quiet-week",
+        "burst-week"
+      ],
+      "full_feature_flags": {}
+    }
+  ],
+  "responses": {}
+}

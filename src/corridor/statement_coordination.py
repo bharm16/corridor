@@ -28,6 +28,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor import audit, notifications
+from corridor.coordination_history import coordination_operation, sync_coordination_reversals
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.statement_spine import (
     correct_statement_scope_on_spine,
@@ -658,6 +659,7 @@ def defer_admitted_statement(
         raise StatementCoordinationRefusal(str(exc)) from exc
 
 
+@coordination_operation
 def coordinate_statement(
     session: Session,
     draft: StatementCoordinationDraft,
@@ -883,6 +885,7 @@ def undo_statement_coordination(
             session.add(reversal)
             session.flush([reversal])
             _record_undo_effects(session, reversal, receipt)
+            sync_coordination_reversals(session, candidate.project_id)
 
             candidate.state = "pending"
             candidate.adjudicated_at = None

@@ -28,7 +28,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from corridor.models import EvidenceLink, EvidenceLinkSource, SourceSegment
@@ -106,7 +106,16 @@ def evidence_quotation(session: Session, link: EvidenceLink) -> EvidenceQuotatio
             EvidenceLinkSource,
             EvidenceLinkSource.source_segment_id == SourceSegment.id,
         )
-        .where(EvidenceLinkSource.evidence_link_id == link.id)
+        .where(
+            EvidenceLinkSource.evidence_link_id == link.id,
+            text("""(
+                not exists(select 1 from legacy_history_evidence_migrations m
+                    where m.evidence_link_source_id=evidence_link_sources.id)
+                or exists(select 1 from legacy_history_evidence_migrations m
+                    where m.evidence_link_source_id=evidence_link_sources.id
+                    and not exists(select 1 from legacy_history_reversals r where r.batch_id=m.batch_id))
+            )"""),
+        )
         .order_by(EvidenceLinkSource.ordinal)
     ).all()
     if cited:

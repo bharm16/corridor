@@ -28,6 +28,9 @@ version: the proposing path is a deliberate later ticket.
 
 from __future__ import annotations
 
+from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
+from corridor.presentation import field_label
+
 from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
@@ -45,6 +48,7 @@ from corridor.exceptions import (
     Evaluation,
     Thresholds,
     evaluate_dependency,
+    format_exception_name,
 )
 from corridor.models import (
     Assertion,
@@ -316,6 +320,8 @@ def _assemble(
     counters = {"E": 0, "A": 0, "V": 0, "X": 0, "XB": 0}
     instance_refs = {}
     committed_dates = publication.committed_dates
+    if evaluation.native_population is not None:
+        return assemble_native_citables(evaluation.native_population, evaluation, publication, project_scope=project_scope)
     memberships = current_statement_evidence_memberships(
         session, (dependency.id for dependency in dependencies)
     )
@@ -455,6 +461,55 @@ def _assemble(
             )
 
     return citables, tuple(floor), committed_dates
+
+
+def assemble_native_citables(population, evaluation, publication, *, project_scope):
+    """Citable native decisions and checked source cells, with the same rule floor."""
+    citables = []
+    floor = []
+    for record in population.open_records:
+        for name, field in sorted(record.fields.items()):
+            source_refs = ", ".join(f"{source.filename} {source.locator}" for source in field.sources)
+            citables.append(Citable(ref=f"A{len(citables)+1}", kind="assertion",
+                text=f"{record.ref_code}: accepted {field_label(name)} = {accepted_field_text(field)}; Fact {field.fact_id}, decision {field.decision_id}, revision {field.revision_id}; {source_refs}",
+                dependency_id=record.id))
+        for source in record.checked_source_passages:
+            citables.append(Citable(ref=f"E{len(citables)+1}", kind="evidence",
+                text=f"{record.ref_code}: {source.filename} {source.locator}: {source.quote}",
+                quote=source.quote, page_text=source.quote, text_source="cells", dependency_id=record.id))
+    for statement in visible_native_statements(population, document_only=publication.document_only):
+        for name, field in statement.fields.items():
+            if not native_field_visible(field, document_only=publication.document_only):
+                continue
+            value = str(field.value)
+            citables.append(Citable(ref=f"A{len(citables)+1}", kind="decision",
+                text=f"Statement {statement.subject_key}: accepted {name} = {value}; Fact {field.fact_id}, "
+                     f"Record Decision {field.decision_id}, revision {field.revision_id}, by {field.actor} on {field.decided_at}."))
+        for source in statement.sources:
+            if source.locator_validation_status != "valid" or (publication.document_only and source.document_id is None):
+                continue
+            citables.append(Citable(ref=f"E{len(citables)+1}", kind="evidence",
+                text=f"{source.filename or source.source_class}: {source.locator}: {source.quote}",
+                quote=source.quote, page_text=source.quote, text_source="cells"))
+    for plan in population.follow_up_plans:
+        citables.append(Citable(ref=f"A{len(citables)+1}", kind="decision",
+            text=f"Follow-up Plan {plan.plan_id} for Proposed Delta {plan.delta_id}: {plan.open_question}. "
+                 f"Responsible: {plan.responsible_principal or plan.responsible_organization}; "
+                 f"return date {plan.return_date or 'not yet known'}; decided by {plan.recorded_by} "
+                 f"in revision {plan.revision_id}. The proposed value remains unaccepted."))
+    if project_scope:
+        for index, facet in enumerate(evaluation.facets(), 1):
+            reference = f"XB{index}"
+            floor.append(reference)
+            citables.append(Citable(ref=reference, kind="exception_bucket",
+                text=f"{format_exception_name(facet.rule)}: {facet.count} record(s)", count=facet.count,
+                covers=tuple(str(item.dependency_id) for item in facet.exceptions)))
+    else:
+        for index, finding in enumerate(evaluation.found, 1):
+            reference = f"X{index}"
+            floor.append(reference)
+            citables.append(Citable(ref=reference, kind="exception", text=finding.detail, dependency_id=finding.dependency_id))
+    return citables, tuple(floor), publication.committed_dates
 
 
 def _user_message(

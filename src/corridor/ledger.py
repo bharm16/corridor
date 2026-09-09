@@ -18,6 +18,7 @@ from sqlalchemy import false as sa_false, func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.accepted_field_reading import AcceptedConstraint, NativeReadingRefused
 from corridor.check_configuration import effective_thresholds
 from corridor.dependency_events import (
     CurrentDependencyStatement,
@@ -207,6 +208,9 @@ def browse(
     """
     if evaluation.project_id != project_id:
         raise ValueError("the evaluation belongs to another project")
+    if evaluation.native_population is not None:
+        return browse_native_population(evaluation, org_id=org_id, resolution_strategy=resolution_strategy,
+                                        ready=ready, rule=rule, owner=owner, limit=limit)
     # A dismissed record is off the working list and stays in history
     # (ADR-0032). Filtered here rather than by every caller, because the
     # list is what "the working list" means.
@@ -322,6 +326,35 @@ def browse(
         rows = [r for r in rows if r.is_ready is ready]
     if rule:
         rows = [r for r in rows if any(e.rule == rule for e in r.exceptions)]
+    return rows[:limit]
+
+
+def browse_native_population(evaluation: Evaluation, *, org_id=None, resolution_strategy=None,
+                             ready=None, rule=None, owner=None, limit=200):
+    """Filter accepted native rows without querying legacy current-value columns."""
+    population = evaluation.native_population
+    if population is None:
+        raise NativeReadingRefused("native Constraint Log requires a native evaluation")
+    rows = []
+    for record in population.open_records:
+        if org_id is not None and record.external_org_id != org_id:
+            continue
+        if owner and ((owner == "unassigned" and record.internal_owner) or
+                      (owner != "unassigned" and record.internal_owner != owner)):
+            continue
+        if resolution_strategy and not (
+            (resolution_strategy == "critical" and is_critical(record.resolution_strategy))
+            or resolution_strategy == record.resolution_strategy):
+            continue
+        passages = record.source_passages
+        found = evaluation.for_dependency(record.id)
+        row = LedgerRow(record, record.org_name, False, len(passages), len(record.checked_source_passages),
+            len(record.fields), False, evaluation.statement_publication.by_dependency[record.id], found)
+        if ready is not None and row.is_ready is not ready:
+            continue
+        if rule and not any(item.rule == rule for item in found):
+            continue
+        rows.append(row)
     return rows[:limit]
 
 

@@ -30,6 +30,7 @@ from sqlalchemy import BigInteger, bindparam, cast, func, select
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB
 from sqlalchemy.orm import Session
 
+from corridor.activation_runtime import require_source_project
 from corridor.materializer import MaterializedValue
 from corridor.models import (
     ExtractedProposal,
@@ -116,6 +117,8 @@ def append_recorded_verbal_origin(
     key and the command records the compatibility mapping beside the origin.
     """
 
+    require_source_project(session, project_id)
+
     origin_id = session.scalar(
         select(
             func.append_recorded_verbal_origin(
@@ -142,6 +145,8 @@ def append_source_segments(
     segments: Sequence[SegmentValues],
 ) -> tuple[SourceSegment, ...]:
     """Append one rendition's segments, in ordinal order, at most once each."""
+
+    require_source_project(session, project_id)
 
     if not segments:
         return ()
@@ -201,6 +206,8 @@ def append_fact(
     applies_to_subjects: Sequence[ScopeSubjectValues] | None = None,
 ) -> Fact:
     """Append one materialized Fact with its role-tagged sources and typed satellites."""
+
+    require_source_project(session, project_id)
 
     if not isinstance(value, MaterializedValue):
         raise TypeError("a Source Fact value must be materialized from a Source Segment")
@@ -277,6 +284,8 @@ def append_extracted_proposal(
 ) -> ExtractedProposal:
     """Append one proposal identity over the Facts of one subject, in order."""
 
+    require_source_project(session, project_id)
+
     proposal_id = session.scalar(
         select(
             func.append_extracted_proposal(
@@ -305,6 +314,8 @@ def append_source_fact_receipt(
 ) -> SourceFactAppendReceipt:
     """Bind one scoped append's key to its content, once."""
 
+    require_source_project(session, project_id)
+
     receipt_id = session.scalar(
         select(
             func.append_source_fact_receipt(
@@ -326,6 +337,8 @@ def append_email_thread_reading(
     model: str | None,
 ) -> InboundThreadReading:
     """Retain a thread outcome and supersede its prior unaccepted deltas atomically."""
+
+    require_source_project(session, project_id)
     reading_id = session.scalar(select(func.append_email_thread_reading(
         project_id, thread_id, closing_message_id, input_sha256,
         source_fact_id, proposed_delta_id, question_segment_id, _jsonb(context),
@@ -338,6 +351,8 @@ def append_minutes_capture(session: Session, *, project_id: int, document_id: in
     extraction_run_id: int, source_family: str, source_revision: str, input_sha256: str,
     accepted_revision_id: int, output: dict) -> MinutesCapture:
     """Seal the reading and supersede only its source family's unaccepted deltas."""
+
+    require_source_project(session, project_id)
     identifier = session.scalar(select(func.append_minutes_capture(project_id, document_id,
         extraction_run_id, source_family, source_revision, input_sha256, accepted_revision_id, _jsonb(output))))
     return session.get_one(MinutesCapture, int(identifier))
@@ -365,6 +380,8 @@ def append_support_assessment(
     the same assessment; a different assessment of a proposition and role
     that already has an effective one must name it in ``supersedes_id``.
     """
+
+    require_source_project(session, project_id)
 
     assessment_id = session.scalar(
         select(
@@ -394,6 +411,8 @@ def append_delta_impact(session: Session, *, project_id: int, delta_id: int,
                        rule: str, rule_version: str, inputs: dict,
                        evaluated_at: datetime, constraints: list[str], key_dates: list[str]) -> int:
     """Persist derived consequences through the source-only capability (#643)."""
+
+    require_source_project(session, project_id)
     return int(session.scalar(select(func.append_delta_impact(
         cast(project_id, BigInteger), cast(delta_id, BigInteger), rule, rule_version,
         cast(inputs, JSONB), evaluated_at, cast(constraints, JSONB), cast(key_dates, JSONB)
@@ -411,6 +430,8 @@ def append_proposed_deltas(
     deltas: Sequence[dict[str, Any]],
 ) -> tuple[int, ...]:
     """Append one atomic delta group through the source-append command (#518)."""
+
+    require_source_project(session, project_id)
 
     if not deltas:
         return ()

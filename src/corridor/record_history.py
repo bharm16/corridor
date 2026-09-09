@@ -23,8 +23,12 @@ them itself.
 ``read_project_record_as_of_revision``, which are the spine's own ending
 (ADR-0075); the Support Assessments come from ``support_assessments``; the
 release history comes from ``report_release.external_report_release_history``.
-This module joins those readings to their sources and standings; it re-derives
-none of them, and it caches nothing.
+Native Coordination Decisions additionally come from ``coordination_history``
+and current publication support from ``support_history``. Original compatibility
+classes come only from ``legacy_history``'s verified retained batch and remain
+explicitly labeled snapshots. Source-decision history joins native decisions to
+their own revision authority and Fact sources. Nothing here upgrades a retained
+quote or a migration operator into native source or semantic authority.
 
 **No clock.**  A revision, not a wall-clock instant, selects the as-of reading.
 The caller may pass a revision the project does not hold; the reading says so
@@ -50,9 +54,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from corridor.models import (
@@ -67,12 +72,25 @@ from corridor.models import (
     DeltaSupersession,
     Document,
     Fact,
+    FactDecision,
     FactSource,
     ProjectRecordRevision,
     ProposedDelta,
     SourceSegment,
     SupportAssessment,
     SupportAssessmentSource,
+)
+from corridor.coordination_history import (
+    CoordinationRecordDecision, coordination_migration_gaps, coordination_subject_identities,
+    read_coordination_record, read_coordination_record_as_of_revision,
+)
+from corridor.legacy_history import (
+    HistoryRefused, history_rows, read_history, record_decisions_as_of,
+    statements_as_of, discrepancy_resolutions_as_of, support_designations_at_capture,
+)
+from corridor.support_history import (
+    NativePublicationSupport, native_publication_support,
+    native_publication_support_as_of_revision, support_scope_identities,
 )
 from corridor.presentation import field_label
 from corridor.record_projection import (
@@ -150,6 +168,7 @@ class SourceReference:
     locator: str
     exact_text: str
     role: str
+    source_segment_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -290,6 +309,70 @@ class AuditReading:
 
 
 @dataclass(frozen=True, slots=True)
+class CoordinationComparison:
+    """Native current and exact-revision values for one coordination subject."""
+    subject_id: str
+    subject_name: str
+    field_name: str
+    current: CoordinationRecordDecision | None
+    as_of: CoordinationRecordDecision | None
+    current_text: str | None
+    as_of_text: str | None
+
+    @property
+    def changed(self):
+        return (self.current is None, self.current_text) != (self.as_of is None, self.as_of_text)
+
+
+@dataclass(frozen=True, slots=True)
+class SourceDecisionReading:
+    """Native source decision provenance, including superseded decisions."""
+    decision_id: int
+    subject_name: str
+    field_name: str
+    disposition: str
+    command_type: str
+    authority: str | None
+    authority_kind: str
+    decided_at: datetime
+    revision_id: int
+    superseded_by: int | None
+    effective_now: bool
+    effective_at_revision: bool | None
+    fact: FactReading | None
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedHistoryRecord:
+    """An original compatibility assertion; never promoted to accepted authority."""
+    record_id: str
+    actor: str | None
+    recorded_at: str | None
+    summary: str
+    details: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedHistorySection:
+    title: str
+    records: tuple[RetainedHistoryRecord, ...]
+    total: int
+    limitation: str
+
+
+@dataclass(frozen=True, slots=True)
+class RetainedHistoryReading:
+    batch_id: int | None
+    captured_at: datetime | None
+    executor: str | None
+    digest: str | None
+    as_of_time: datetime | None
+    source_decisions_count: int | None
+    sections: tuple[RetainedHistorySection, ...]
+    gaps: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class RecordHistory:
     """One read-only investigation of one adopted project's record."""
 
@@ -304,6 +387,12 @@ class RecordHistory:
     deltas_total: int
     releases: tuple[ExternalReportReleaseHistory, ...]
     audit: tuple[AuditReading, ...]
+    coordination: tuple[CoordinationComparison, ...] = ()
+    source_decisions: tuple[SourceDecisionReading, ...] = ()
+    publication_support: tuple[NativePublicationSupport, ...] = ()
+    publication_support_as_of: tuple[NativePublicationSupport, ...] = ()
+    publication_support_gaps: tuple[str, ...] = ()
+    retained_history: RetainedHistoryReading | None = None
 
     @property
     def truncated(self) -> bool:
@@ -351,6 +440,20 @@ def read_record_history(
         else ()
     )
     comparisons = _compare(session, project_id, current, historic, names, terms)
+    retained = _retained_history(session, project_id, terms, revisions)
+    coordination = _coordination_comparisons(session, project_id, terms)
+    publication_scopes = support_scope_identities(session, project_id)
+    publication = native_publication_support(session, {scope.legacy_dependency_id for scope in publication_scopes})
+    earlier_publication = (native_publication_support_as_of_revision(session, project_id, as_of)
+                           if as_of is not None else {})
+    support_gaps = tuple(
+        f"Current publication support for constraint {scope.legacy_dependency_id}, {scope.field_name or 'whole record'}: {scope.reason}."
+        for scope in publication_scopes if not scope.native_route_active)
+    if as_of is not None:
+        support_gaps += tuple(
+            f"Publication support at revision {as_of} for constraint {scope.legacy_dependency_id}, {scope.field_name or 'whole record'}: {scope.reason}."
+            for scope in support_scope_identities(session, project_id, revision_id=as_of)
+            if not scope.native_route_active)
     deltas = _delta_history(session, project_id, names, terms)
     return RecordHistory(
         project_id=project_id,
@@ -364,7 +467,145 @@ def read_record_history(
         deltas_total=len(deltas),
         releases=external_report_release_history(session, project_id),
         audit=read_project_audit(session, project_id=project_id),
+        coordination=coordination,
+        source_decisions=_source_decision_history(session, project_id, terms, names, current, historic),
+        publication_support=tuple(publication[key] for key in sorted(publication, key=lambda key: (key[0], key[1] or ""))),
+        publication_support_as_of=tuple(earlier_publication[key] for key in sorted(earlier_publication, key=lambda key: (key[0], key[1] or ""))),
+        publication_support_gaps=support_gaps,
+        retained_history=retained,
         )
+
+
+# --- native coordination and original source-decision provenance -----------
+
+
+def _coordination_text(decision):
+    if decision is None:
+        return None
+    parts = [decision.value_text] if decision.value_text is not None else []
+    for label, value in (("Action due", decision.action_due_date),
+                         ("Due date not known", decision.action_due_date_reason),
+                         ("Deferral", decision.deferral_reason),
+                         ("Return", decision.deferral_return_date),
+                         ("No follow-up", decision.no_follow_up_reason),
+                         ("Cancellation", decision.cancellation_reason)):
+        if value is not None:
+            parts.append(f"{label}: {value}")
+    if decision.milestone_ids:
+        parts.append("Key dates: " + ", ".join(str(value) for value in decision.milestone_ids))
+    return "; ".join(parts) if parts else None
+
+
+def _coordination_comparisons(session, project_id, terms):
+    current = read_coordination_record(session, project_id)
+    historic = (read_coordination_record_as_of_revision(session, project_id, terms.revision)
+                if terms.revision is not None else ())
+    # The native subject kind supplies context. No mutable legacy value is
+    # used to label the native decision as current accepted state.
+    subjects = {row.subject_id: row.subject_kind for row in coordination_subject_identities(session, project_id)}
+    now = {(row.subject_id, row.field): row for row in current}
+    before = {(row.subject_id, row.field): row for row in historic}
+    found = []
+    for subject, field in sorted(now.keys() | before.keys()):
+        title = f"{subjects.get(subject, 'Coordination subject').capitalize()} {subject}"
+        label = field_label(field)
+        if (terms.conflict.strip().casefold() not in title.casefold()
+            or terms.field.strip().casefold() not in f"{field} {label}".casefold()
+            or terms.source.strip()):
+            continue
+        current_row, previous_row = now.get((subject, field)), before.get((subject, field))
+        found.append(CoordinationComparison(subject, title, label, current_row, previous_row,
+            _coordination_text(current_row), _coordination_text(previous_row)))
+    return tuple(found)
+
+
+def _source_decision_history(session, project_id, terms, names, current, historic):
+    rows = session.execute(select(FactDecision, ProjectRecordRevision)
+        .join(ProjectRecordRevision, ProjectRecordRevision.id == FactDecision.revision_id)
+        .where(FactDecision.project_id == project_id, ProjectRecordRevision.project_id == project_id)
+        .order_by(FactDecision.revision_id, FactDecision.id)).all()
+    facts = _fact_readings(session, project_id, tuple(row.fact_id for row, _ in rows))
+    current_ids, historic_ids = {row.decision_id for row in current}, {row.decision_id for row in historic}
+    result = []
+    for decision, revision in rows:
+        name = names.get(decision.subject_key, decision.subject_key)
+        label = field_label(decision.fact_type)
+        fact = facts.get(decision.fact_id)
+        sources = fact.sources if fact else ()
+        if (terms.conflict.strip().casefold() not in name.casefold()
+            or terms.field.strip().casefold() not in f"{decision.fact_type} {label}".casefold()
+            or (terms.source.strip() and not any(terms.source.strip().casefold() in source.filename.casefold() for source in sources))):
+            continue
+        authority_kind = "Human decision" if revision.human_principal else "Released policy" if revision.released_policy else "Authority not recorded"
+        result.append(SourceDecisionReading(decision.id, name, label, decision.disposition,
+            revision.command_type, revision.human_principal or revision.released_policy, authority_kind,
+            decision.decided_at, revision.id, decision.superseded_by, decision.id in current_ids,
+            decision.id in historic_ids if terms.revision is not None else None, fact))
+    return tuple(result)
+
+
+# --- explicit retained compatibility history, including known gaps ---------
+
+
+def _retained_section(title, rows, *, root=None, actor=None, time=None, summary=None, limitation):
+    entries = []
+    for value in rows[:AUDIT_LIMIT]:
+        original = value[root] if root else value
+        entries.append(RetainedHistoryRecord(str(original.get("id", "")),
+            original.get(actor) if actor else None, original.get(time) if time else None,
+            str(original.get(summary) or title) if summary else title,
+            json.dumps(value, sort_keys=True, indent=2, ensure_ascii=False, default=str)))
+    return RetainedHistorySection(title, tuple(entries), len(rows), limitation)
+
+
+def _retained_history(session, project_id, terms, revisions):
+    batch_id = session.scalar(text("""
+        select b.id from legacy_history_batches b where b.project_id=:project
+          and not exists(select 1 from legacy_history_reversals r where r.batch_id=b.id)
+        order by b.id desc limit 1
+    """), {"project": project_id})
+    if batch_id is None:
+        return RetainedHistoryReading(None, None, None, None, None, None, (),
+            ("No active retained legacy-history snapshot exists for this project. Native readings above remain independent.",))
+    try:
+        batch = read_history(session, project_id, batch_id)
+    except HistoryRefused as exc:
+        return RetainedHistoryReading(batch_id, None, None, None, None, None, (),
+            (f"The retained snapshot failed verification and is not displayed: {exc}",))
+    at = (next(row.recorded_at for row in revisions if row.revision_id == terms.revision)
+          if terms.revision is not None else batch.captured_at)
+    gaps = [f"Coordination decision {row['legacy_work_decision_id']}: {row['reason']} Original actor: {row['original_actor']}."
+            for row in coordination_migration_gaps(session, batch)]
+    sections = [_retained_section("Original coordination decisions", history_rows(batch, "work_decisions"),
+        actor="recorded_by", time="recorded_at", summary="after_value",
+        limitation="Retained compatibility history, including superseded original decisions; not a current native projection.")]
+    retained_decisions = None
+    if terms.revision is not None:
+        try:
+            retained_decisions = len(record_decisions_as_of(batch, revision_id=terms.revision))
+        except HistoryRefused as exc:
+            gaps.append(f"Retained source-decision revision reading unavailable: {exc}")
+    if at <= batch.captured_at:
+        sections.extend((
+            _retained_section("Original statements at the selected time", statements_as_of(batch, at=at),
+                root="statement", actor="created_by", time="created_at", summary="description",
+                limitation="Compatibility reading by original event time. Timing, scope and cited/verbal lineage are retained; no native coverage is implied."),
+            _retained_section("Original discrepancy resolutions at the selected time", discrepancy_resolutions_as_of(batch, at=at),
+                root="settlement", actor="settled_by", time="settled_at", summary="settled_value",
+                limitation="Compatibility reading; coverage reports whether a later original assertion reopened the field."),
+        ))
+    else:
+        gaps.append("The selected revision was recorded after this retained snapshot; statement and discrepancy history is unavailable at that time.")
+    sections.extend((
+        _retained_section("Original support designations at snapshot capture", support_designations_at_capture(batch),
+            root="designation", actor="designated_by", time="designated_at", summary="role",
+            limitation="Compatibility snapshot at capture only. Publication choices and readiness judgments remain distinct; earlier mutable designations cannot be reconstructed."),
+        _retained_section("Original evidence quotes", history_rows(batch, "evidence_links"),
+            time="created_at", summary="quote",
+            limitation="Retained historical quotes are not Source Segments unless an exact native locator has been proved. No locator is invented here."),
+    ))
+    return RetainedHistoryReading(batch.id, batch.captured_at, batch.executor, batch.content_sha256,
+        at, retained_decisions, tuple(sections), tuple(gaps))
 
 
 # --- the revision timeline -------------------------------------------------
@@ -500,7 +741,7 @@ def _fact_readings(
         return {}
     facts = {
         fact.id: fact
-        for fact in session.scalars(select(Fact).where(Fact.id.in_(fact_ids)))
+        for fact in session.scalars(select(Fact).where(Fact.project_id == project_id, Fact.id.in_(fact_ids)))
     }
     sources = _fact_sources(session, fact_ids)
     assessments = _assessments(session, project_id, fact_ids)
@@ -608,6 +849,7 @@ def _reference(
         locator=_locator(segment),
         exact_text=segment.exact_text,
         role=role,
+        source_segment_id=segment.id,
     )
 
 

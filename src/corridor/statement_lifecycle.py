@@ -169,6 +169,15 @@ def observe_current_statements(
             for impact in impacts
             if impact.commitment_lineage_id is not None
         }
+        from corridor.coordination_history import compatibility_statement_tails
+
+        native_lineages, native = compatibility_statement_tails(
+            session, date_change_lineage_ids, ("milestone_impact",)
+        )
+        impacts_by_lineage = {
+            key: value for key, value in impacts_by_lineage.items() if key not in native_lineages
+        }
+        impacts_by_lineage.update({key[0]: value for key, value in native.items()})
     return {
         lineage_id: CurrentStatementObservation(
             event,
