@@ -73,7 +73,7 @@ def adopted(session, tmp_path, monkeypatch):
 class CoveringClient:
     model = "synthetic-briefing"
     def complete(self, *, user, **kwargs):
-        references = sorted(set(re.findall(r"\b(?:XB|X|E|A|V)\d+\b", user)))
+        references = sorted(set(re.findall(r"^  \[((?:XB|X|E|A|V)\d+)\]", user, re.MULTILINE)))
         return {"sentences": [{"text": "Read the accepted values and their cited sources.", "cites": references}]}
 
 
