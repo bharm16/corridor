@@ -178,3 +178,21 @@ def test_direct_sql_cannot_backdate_policy_authority_from_legacy_machine_label(s
     assert receipts[0]["fact_decision_id"] is None
     assert session.scalar(text("select count(*) from project_record_revisions where project_id=:p"), {"p": project.id}) == before
     assert session.scalar(text("select exact_text from source_segments where id=:id"), {"id": segment.id}) == segment.exact_text
+
+
+def test_support_identity_does_not_bypass_unmigrated_coordination_history_drift(session, support_case):
+    from sqlalchemy.exc import DBAPIError
+
+    from corridor.coordination_history import migrate_coordination_history
+    from corridor.models import WorkDecision
+
+    project, dependency, _document, _segment, _link, _scope, batch = support_case
+    migrate_support_history(session, batch)
+    assert session.scalar(text("select count(*) from coordination_subject_lineage where history_batch_id=:batch"), {"batch": batch.id}) == 1
+    assert session.scalar(text("select count(*) from coordination_history_activations where history_batch_id=:batch"), {"batch": batch.id}) == 0
+    session.add(WorkDecision(dependency_id=dependency.id, field="internal_owner", decision_type="assign_internal_owner",
+        after_value="Later owner", recorded_by="local:later-coordination-author"))
+    session.flush()
+    with pytest.raises(DBAPIError, match="coordination history changed"), session.begin_nested():
+        migrate_coordination_history(session, batch)
+    assert session.scalar(text("select count(*) from coordination_history_activations where history_batch_id=:batch"), {"batch": batch.id}) == 0

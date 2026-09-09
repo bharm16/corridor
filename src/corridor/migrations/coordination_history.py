@@ -275,7 +275,7 @@ begin
   raise exception 'Coordination history requires an active reviewed batch' using errcode='23514';
  end if;
  select payload into reviewed from legacy_history_batches where id=p_batch;
- previously_imported:=exists(select 1 from coordination_subject_lineage where history_batch_id=p_batch)
+ previously_imported:=exists(select 1 from coordination_history_activations where history_batch_id=p_batch)
   and not exists(select 1 from jsonb_array_elements(reviewed->'classes'->'work_decisions'->'rows') r
    where not exists(select 1 from coordination_decision_lineage where legacy_work_decision_id=(r->>'id')::bigint));
  if not previously_imported then
