@@ -9,7 +9,9 @@ SCHEMA = """
 create function valid_coordination_history_actor(actor text) returns boolean
  language sql immutable as $$
  select coalesce(actor ~ '^[a-z][a-z0-9._-]{1,31}:[^[:space:]]+$'
-  and actor !~* '^[^:]+:(agent|demo|extractor|reviewer|system)$',false);
+  and actor !~* '^[^:]+:(agent|demo|extractor|reviewer|system)$'
+  and actor not in ('corridor:automatic-carry-forward','corridor:dependency-admission',
+                    'corridor:active-run-declaration','corridor:event-admission'),false);
 $$;
 create function attributable_coordination_subject(p_dependency bigint,p_lineage bigint) returns boolean
  language sql stable as $$

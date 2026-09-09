@@ -106,15 +106,16 @@ def test_grouped_follow_up_save_and_undo_each_have_one_native_revision(session, 
     assert all(row.value_text is None for row in undone)
 
 
-def test_unattributed_legacy_actor_remains_explicit_compatibility_history(session, project, dependency):
+@pytest.mark.parametrize("actor", ("reviewer", "corridor:automatic-carry-forward"))
+def test_unattributed_legacy_actor_remains_explicit_compatibility_history(session, project, dependency, actor):
     from corridor.coordination_history import coordination_migration_gaps
 
     session.add(WorkDecision(dependency_id=dependency.id, field="internal_owner", decision_type="assign_internal_owner",
-        after_value="Historical owner", recorded_by="reviewer", recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc)))
+        after_value="Historical owner", recorded_by=actor, recorded_at=datetime(2026, 1, 1, tzinfo=timezone.utc)))
     dependency.internal_owner = "Historical owner"
     session.flush()
     batch = _batch(session, project)
     assert migrate_coordination_history(session, batch) == ()
     gap = coordination_migration_gaps(session, batch)[0]
-    assert gap["original_actor"] == "reviewer"
-    assert current_internal_owner_decision(session, dependency.id).recorded_by == "reviewer"
+    assert gap["original_actor"] == actor
+    assert current_internal_owner_decision(session, dependency.id).recorded_by == actor
