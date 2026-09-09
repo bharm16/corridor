@@ -113,11 +113,34 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
         raise ActivationRefused("live pilot boundary must be explicitly enabled")
     if configuration.boundary_route_digest != route_manifest_digest():
         raise ActivationRefused("approved route manifest differs from deployed code")
-    readable = set(session.scalars(text("""select c.relname from pg_class c join pg_namespace n on n.oid=c.relnamespace
-        where n.nspname='public' and c.relkind in ('r','v','m','p')
-        and has_table_privilege(current_user,c.oid,'SELECT')""")))
-    if readable - PROTECTED_RELATIONS:
-        raise ActivationRefused("web login can read a revoked relation")
+    # SET reachability and privilege inheritance are different PostgreSQL 16
+    # membership options. Inspect every assumable identity, then let privilege
+    # functions follow that identity's INHERIT chains (including SET FALSE).
+    # Ownership and role attributes can bypass a partition even on an otherwise
+    # approved relation; column-only SELECT also conveys readable source data.
+    privileged, readable = session.execute(text("""
+        with reachable as (
+          select r.* from pg_roles r
+          where r.rolname=current_user or pg_has_role(session_user,r.oid,'SET')
+        ), relations as (
+          select c.oid,c.relname,c.relowner from pg_class c
+          join pg_namespace n on n.oid=c.relnamespace
+          where n.nspname='public' and c.relkind in ('r','v','m','p')
+        )
+        select exists(select 1 from reachable r
+            where r.rolsuper or r.rolbypassrls or r.rolcreaterole or r.rolcreatedb)
+          or exists(select 1 from reachable identity cross join relations relation
+            where pg_has_role(identity.oid,relation.relowner,'USAGE')),
+          array(select distinct relation.relname
+            from reachable identity cross join relations relation
+            where pg_has_role(identity.oid,relation.relowner,'USAGE')
+              or has_table_privilege(identity.oid,relation.oid,'SELECT')
+              or has_any_column_privilege(identity.oid,relation.oid,'SELECT'))
+    """)).one()
+    if set(readable) - PROTECTED_RELATIONS:
+        raise ActivationRefused("web login can read a revoked relation through its available identities")
+    if privileged:
+        raise ActivationRefused("web login can assume a privileged or relation-owner identity")
     approved = {(case["method"].upper(), case["template"]) for case in cases
         if (case["method"].upper(), case["template"]) in PILOT_ROUTES}
     if approved != set(PILOT_ROUTES):
