@@ -439,6 +439,9 @@ def _check_citations(surface, report, inventory):
     derived_inputs, record_inputs, plan_inputs = {}, {}, {}
     verified_refs = {f"revision:{identity}" for identity in revisions}
     verified_refs.update(f"native_decision:{identity}" for identity in decisions)
+    # AcceptedField names its authority namespace explicitly; an ID only
+    # verifies the fact_decision namespace, never an arbitrary decision kind.
+    verified_refs.update(f"native_decision:fact_decision:{identity}" for identity in decisions)
 
     def derived(cell, record_ids, *, scope="", refs=()):
         derived_inputs[id(cell)] = (tuple(record_ids), scope, tuple(refs))

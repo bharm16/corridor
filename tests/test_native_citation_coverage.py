@@ -107,3 +107,22 @@ def test_unchanged_native_citations_pass_their_lineage_checks(session, adopted):
     _accept_words(session, project)
     result = _collect(session, project, adoption)
     assert not [blocker for blocker in _report_blockers(result) if blocker.startswith("citations:")]
+
+
+def test_title_cites_typed_fact_decision_origins_and_rejects_another_namespace(session, adopted, monkeypatch):
+    import corridor.report as reports
+    project, adoption = adopted
+    actual = reports.build_report
+    def altered(*args, **kwargs):
+        report = actual(*args, **kwargs)
+        cell = next(cell for cell in report.cells if cell.label == "Title")
+        provenance = cell.provenance
+        assert provenance.input_refs
+        assert all(reference.startswith("native_decision:fact_decision:") for reference in provenance.input_refs)
+        cell.provenance = replace(provenance, input_refs=tuple(
+            reference.replace("native_decision:fact_decision:", "native_decision:coordination_record_decision:")
+            for reference in provenance.input_refs))
+        return report
+    monkeypatch.setattr(reports, "build_report", altered)
+    result = _collect(session, project, adoption)
+    assert any("'Title' derivation lacks its exact verified input identities" in blocker for blocker in _report_blockers(result))
