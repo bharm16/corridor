@@ -1139,6 +1139,10 @@ def _impacts(
                         "key_date_code": code,
                         "change_type": delta.change_type,
                         "accepted_key_date": accepted_date,
+                        "accepted_record_count": sum(
+                            field_name == SCHEDULED_DATE_FIELD
+                            for _, field_name in accepted
+                        ),
                         "proposed_key_date": _stated_date(delta),
                         "accepted_baseline_revision": revision_label(
                             baseline_revision

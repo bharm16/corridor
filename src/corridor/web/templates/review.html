@@ -157,6 +157,16 @@
         Affected Constraints: {{ impact.affected_constraint_ids|length }}.
         {% if impact.stale %}Computed against an earlier accepted revision; reassessment required.
         {% else %}Computed against accepted revision {{ impact.accepted_revision_id }}.{% endif %}</p>
+      <details><summary>How this was computed</summary>
+        <p>Computed by {{ impact.rule }}, {{ impact.rule_version }}, from
+          {{ impact.inputs.get("accepted_record_count", "the recorded") }} records
+          as of {{ impact.evaluated_at }}.</p>
+        <p>Accepted Key Date: {{ impact.inputs.get("accepted_key_date") or "Not recorded" }}.
+          Proposed Key Date: {{ impact.inputs.get("proposed_key_date") or "Not recorded" }}.</p>
+        {% if impact.accepted_revision_id %}
+        <a href="/record/{{ project.slug }}?revision={{ impact.accepted_revision_id }}&amp;field=need_date">Read the contributing accepted date records and their sources</a>
+        {% endif %}
+      </details>
       {%- endfor %}
       {%- for reason in child.source_attention_reasons %}
       <p>{{ ui.state(state_label("attention", reason)) }}</p>
