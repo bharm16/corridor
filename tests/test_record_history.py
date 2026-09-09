@@ -413,6 +413,12 @@ def test_a_value_names_the_source_fact_and_the_exact_passage(session, project, c
         "ucm-2026-08.xlsx"
     ]
     reference = row.current.sources[0]
+    from corridor.models import FactSource, SourceSegment
+    native_segment_id = session.scalar(select(FactSource.source_segment_id).where(FactSource.fact_id == fact.id))
+    assert reference.source_segment_id == native_segment_id
+    native_segment = session.get(SourceSegment, reference.source_segment_id)
+    assert native_segment.document_id == reference.document_id
+    assert native_segment.exact_text == reference.exact_text
     assert reference.exact_text == ACCEPTED
     assert reference.locator.startswith("sheet Utility Conflicts, cell ")
 
@@ -440,6 +446,11 @@ def test_support_assessments_for_a_value_are_shown_with_their_authority(
     assert [
         source.filename for source in row.current.assessments[0].segments
     ] == ["ucm-2026-08.xlsx"]
+    from corridor.models import SupportAssessmentSource
+    assessment = row.current.assessments[0]
+    native_segment_ids = set(session.scalars(select(SupportAssessmentSource.source_segment_id).where(
+        SupportAssessmentSource.support_assessment_id == assessment.assessment_id)))
+    assert {source.source_segment_id for source in assessment.segments} == native_segment_ids
 
     body = client.get(f"/record/{project.slug}").text
     assert "Support Assessments recorded for this value" in body

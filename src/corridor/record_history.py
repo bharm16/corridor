@@ -168,6 +168,7 @@ class SourceReference:
     locator: str
     exact_text: str
     role: str
+    source_segment_id: int
 
 
 @dataclass(frozen=True, slots=True)
@@ -848,6 +849,7 @@ def _reference(
         locator=_locator(segment),
         exact_text=segment.exact_text,
         role=role,
+        source_segment_id=segment.id,
     )
 
 
