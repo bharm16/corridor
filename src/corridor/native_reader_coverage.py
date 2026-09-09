@@ -296,6 +296,21 @@ def _record_values(surface, session, project_id, revision, kind, inventory):
                 "text_value", "date_value", "date_range_start", "date_range_end",
                 "external_org_value_id", "document_value_id"))):
             surface.blockers.append(f"{kind}: public value or source identity differs for FactDecision {value.decision_id}")
+        scope = sorted((row for row in inventory["fact_applies_to"] if row["fact_id"] == fact["id"]),
+                       key=lambda row: row["ordinal"])
+        closure = next((row for row in inventory["fact_closure_results"] if row["fact_id"] == fact["id"]), {})
+        closure_sources = sorted((row for row in inventory["fact_closure_sources"] if row["fact_id"] == fact["id"]),
+                                 key=lambda row: row["ordinal"])
+        timing = sorted((row for row in inventory["fact_statement_timings"] if row["fact_id"] == fact["id"]),
+                        key=lambda row: row["timing_role"])
+        if (value.applies_to_dependency_ids != tuple(row["dependency_id"] for row in scope if row["dependency_id"] is not None)
+            or value.applies_to_subject_keys != tuple(row["record_subject_key"] for row in scope if row["record_subject_key"] is not None)
+            or value.closure_kind != closure.get("closure_kind")
+            or value.closure_successor_dependency_id != closure.get("successor_dependency_id")
+            or value.closure_governing_source_segment_ids != tuple(row["source_segment_id"] for row in closure_sources)
+            or _plain(value.statement_timings) != [{key: row[key] for key in (
+                "timing_role", "text", "precision", "start_date", "end_date")} for row in timing]):
+            surface.blockers.append(f"{kind}: structured source metadata differs for FactDecision {value.decision_id}")
         sources = tuple(row["source_segment_id"] for row in sorted(inventory["fact_sources"], key=lambda r: (r["role"], r["ordinal"]))
                         if row["fact_id"] == value.fact_id)
         surface.add(kind, f"fact_decisions:{value.decision_id}", {"identity": {"subject": value.subject_key, "field": value.fact_type},
