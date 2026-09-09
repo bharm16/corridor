@@ -20,7 +20,7 @@ from corridor.legacy_history import (
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inventory", "capture", "backfill-evidence", "migrate-coordination", "reverse", "export"))
+    parser.add_argument("action", choices=("inventory", "capture", "backfill-evidence", "migrate-coordination", "migrate-support", "reverse", "export"))
     parser.add_argument("--project", required=True, type=int)
     parser.add_argument("--batch", type=int)
     parser.add_argument("--expected-digest")
@@ -32,7 +32,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.action == "capture" and not all((args.expected_digest, args.run_key, args.executor, args.code_revision)):
         parser.error("capture requires --expected-digest, --run-key, --executor and --code-revision")
-    if args.action in {"backfill-evidence", "migrate-coordination", "reverse", "export"} and args.batch is None:
+    if args.action in {"backfill-evidence", "migrate-coordination", "migrate-support", "reverse", "export"} and args.batch is None:
         parser.error("this action requires --batch")
     if args.action == "reverse" and not all((args.executor, args.reason)):
         parser.error("reverse requires --executor and --reason")
@@ -84,6 +84,12 @@ def main(argv=None):
                         decisions = migrate_coordination_history(session, batch)
                         result["native_decision_ids"] = [row.id for row in decisions]
                         result["retained_compatibility"] = coordination_migration_gaps(session, batch)
+                    elif args.action == "migrate-support":
+                        from corridor.support_history import migrate_support_history
+                        result["support_migrations"] = [
+                            {**row, "original_time": row["original_time"].isoformat()}
+                            for row in migrate_support_history(session, batch)
+                        ]
                     elif args.action == "reverse":
                         result["reversed"] = reverse_history(session, batch, actor=args.executor, reason=args.reason).reversed
                     else:

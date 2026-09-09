@@ -344,6 +344,10 @@ def run_automatic_carry_forward(
             policy_sha256=policy_sha256,
             result=result,
         )
+        from corridor.support_history import refresh_migrated_support_for_dependencies
+
+        refresh_migrated_support_for_dependencies(session, project_id,
+                                                  (receipt.dependency_id for receipt in result.carried))
         return result
 
     return AutomaticCarryForwardResult(
@@ -457,6 +461,8 @@ def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
         ("corridor.supersession", Path(supersession_module.__file__)),
         ("corridor.supersession_review", Path(supersession_review_module.__file__)),
         ("corridor.support_transfer", Path(support_transfer_module.__file__)),
+        ("corridor.support_history", Path(__file__).with_name("support_history.py")),
+        ("corridor.migrations.support_history", Path(__file__).parent / "migrations/support_history.py"),
         (
             "corridor.migrations.9d4f2a7c1e83",
             Path(__file__).parent

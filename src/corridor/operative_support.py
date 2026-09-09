@@ -8,7 +8,7 @@ from Evidence insertion order (ADR-0017).
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from typing import Any, Iterable
 
@@ -347,6 +347,9 @@ def _designate_publication_support_under_lock(
         )
         session.add(designation)
     else:
+        if (designation.evidence_link_id == evidence_link_id
+            and designation.scope_link_id == linked_scope):
+            return designation
         session.execute(
             update(OperativeSupport)
             .where(OperativeSupport.id == designation.id)
@@ -359,6 +362,9 @@ def _designate_publication_support_under_lock(
         )
         session.expire(designation)
     session.flush()
+    from corridor.support_history import refresh_migrated_publication_support
+
+    refresh_migrated_publication_support(session, project_id=dependency.project_id, scope_id=designation.id)
     return designation
 
 
@@ -598,6 +604,9 @@ def resolve_operative_support(
         legacy_ready_by_dependency=legacy_ready_by_dependency,
     )
 
+    from corridor.support_history import native_publication_support
+
+    native_publication = native_publication_support(session, ids)
     resolved: dict[int, ResolvedSupport] = {}
     for dependency_id in ids:
         evidence = evidence_by_dependency.get(dependency_id, [])
@@ -637,7 +646,11 @@ def resolve_operative_support(
         by_field: dict[str, EvidenceSupport] = {}
         superseded_scopes: list[SupersededOperativeScope] = []
         for designation in designations.get(dependency_id, []):
-            support = evidence_by_id.get((dependency_id, designation.evidence_link_id))
+            native = native_publication.get((dependency_id, designation.field_name))
+            evidence_id = native.evidence_lineage_id if native is not None else designation.evidence_link_id
+            support = evidence_by_id.get((dependency_id, evidence_id))
+            if native is not None and support is not None and native.document_id == support.document_id:
+                support = replace(support, quote=native.exact_text)
             # A human judgment cannot make a mechanically unverified quote
             # citable. Preserve the designation row, but it is not operative.
             if support is None or not support.verified:
