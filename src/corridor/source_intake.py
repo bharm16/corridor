@@ -259,6 +259,17 @@ def validate_and_stage(
     except HostileContentRefused as exc:
         raise IntakeRefused(exc.rule, exc.reason) from exc
 
+    if suffix == ".eml":
+        from corridor.email_segments import read_mime_segments
+
+        try:
+            has_sender = any(span.header_name == "from" and span.part_path == ()
+                             for span in read_mime_segments(body))
+        except (ValueError, UnicodeError, LookupError) as exc:
+            raise IntakeRefused("content_mismatch", "attachment is not readable MIME") from exc
+        if not has_sender:
+            raise IntakeRefused("content_mismatch", "attached email has no From header")
+
     sha256 = hashlib.sha256(body).hexdigest()
     binding = default_binding()
     emit_event(
@@ -618,13 +629,9 @@ def _safe_filename(filename: str) -> str:
 
 def _content_matches_suffix(suffix: str, body: bytes) -> bool:
     if suffix == ".eml":
-        from corridor.email_segments import read_mime_segments
-
-        try:
-            return any(span.header_name == "from" and span.part_path == ()
-                       for span in read_mime_segments(body))
-        except (ValueError, UnicodeError, LookupError):
-            return False
+        # MIME has no magic prefix. Its bounded structural reader runs after
+        # the byte/malware gate above, like every other rich source parser.
+        return True
     if suffix == ".pdf":
         return body[: len(_PDF_MAGIC)] == _PDF_MAGIC
     if suffix in SPREADSHEET_SUFFIXES:
