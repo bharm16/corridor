@@ -15,11 +15,16 @@ not declare ADR-0081 stages 2–6 complete or supersede ADR-0074.
    those whole words and a verified digest. Preserve every original quote.
    Missing/ambiguous matches remain permanent historical quote text. Implemented
    by this batch, with its own per-link outcome receipts.
-3. **Remaining active-history conversion**: native Coordination Decisions,
-   readiness/support role and scope, unresolved legacy assertion value classes,
-   existing statement lineage and corrections. Each consuming native projection
-   must reproduce the retained historical contract before removing routing.
-   Not implemented by this batch; keep #513 open.
+3. **Native Coordination Decisions**: implemented as a second bounded batch.
+   Independent native subject identity, typed decisions bound to the existing
+   ProjectRecordRevision family, original actor/time/predecessor, grouped plan
+   Save/Undo, and native current/as-of readings. Existing plan writers dual-write
+   migrated subjects; single/batched plan and milestone-impact reads use native
+   decisions through an explicit identity adapter. Unattributed/conflicting actor
+   history remains compatibility-only; its exact IDs and original actors are
+   reported, never relabeled. Remaining conversion includes readiness/support
+   role/scope, unresolved legacy assertion values, and complete statement/source
+   reader integration. Keep #513 open.
 4. **Independent native readers and field/record coverage**: complete all seven
    surfaces below, then bind their successful evidence to writer-switch commands.
    The generic semantic comparator is implemented, and the old misleading gate
@@ -192,3 +197,40 @@ Validation seams are `test_legacy_history.py`, `test_legacy_history_readings.py`
 The coordinator alone runs them. Storage reduction is **not claimed**: this
 rehearsal retains originals and custody payloads, increasing retained bytes until
 approved retirement and backup expiry. No table has been dropped.
+
+## Native coordination batch
+
+Run `legacy-history ARGS="migrate-coordination --project ... --batch ... --output ..."`
+with the migration database principal after custody capture. The command verifies
+that coordination decisions and grouping/reversal receipts still match the
+reviewed batch before enabling any subject's native route. All original members
+of a subject's chains must have attributable, compatible authorship. A subject
+with an unattributed actor remains on the legacy route and appears in the explicit
+compatibility-gap report.
+
+Native subjects are UUIDs. Original Dependency, Commitment Lineage and Work
+Decision IDs exist only in `coordination_subject_lineage` and
+`coordination_decision_lineage`; they are not native subject/decision authority.
+`coordination_record_decisions` stores typed ownership, next action/due date,
+milestone impact/members, deferral/reasons, original actor/time and native
+predecessor. It binds the existing `project_record_revisions` family directly.
+No Source Fact or Support Assessment is fabricated for a Coordination Decision.
+
+The current native view does not read the legacy value tables. Historical native
+reads use original recorded_at and native supersession/reversal chains. Grouped
+Constraint Follow-up Plan Save/Undo each share one native coordination revision;
+existing single-field commands nest under the outer operation identity. Cited
+Statement Save still has older per-fact source revisions before its coordination
+portion; consolidating that complete source/coordination act remains required
+before claiming the entire grouped statement flow shares one revision.
+
+Backfill rereads are idempotent and preserve the original actors and event times.
+Migration executor/code identity remains on the custody batch. Live migrated plan
+writes append the native decision in the existing command transaction; they still
+maintain the explicitly temporary legacy compatibility projection. Batch reversal
+withdraws native current routing and keeps original/native history readable.
+Application/database writer cutover for all legacy value classes remains #458.
+
+Additional validation: `tests/test_coordination_history.py`, existing
+`tests/test_work_decisions.py`, `tests/test_follow_up_plans.py`,
+`tests/test_statement_coordination.py`, and `tests/test_work_list.py`.

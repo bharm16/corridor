@@ -5,6 +5,7 @@ must own the narrow commands; runtime login credentials cannot execute them.
 No command here switches accepted writers or deletes history.
 """
 
+from dataclasses import replace
 import argparse
 import json
 from pathlib import Path
@@ -19,7 +20,7 @@ from corridor.legacy_history import (
 
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("inventory", "capture", "backfill-evidence", "reverse", "export"))
+    parser.add_argument("action", choices=("inventory", "capture", "backfill-evidence", "migrate-coordination", "reverse", "export"))
     parser.add_argument("--project", required=True, type=int)
     parser.add_argument("--batch", type=int)
     parser.add_argument("--expected-digest")
@@ -31,7 +32,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     if args.action == "capture" and not all((args.expected_digest, args.run_key, args.executor, args.code_revision)):
         parser.error("capture requires --expected-digest, --run-key, --executor and --code-revision")
-    if args.action in {"backfill-evidence", "reverse", "export"} and args.batch is None:
+    if args.action in {"backfill-evidence", "migrate-coordination", "reverse", "export"} and args.batch is None:
         parser.error("this action requires --batch")
     if args.action == "reverse" and not all((args.executor, args.reason)):
         parser.error("reverse requires --executor and --reason")
@@ -45,11 +46,14 @@ def main(argv=None):
                               "classes": {key: {"treatment": value["treatment"], "expiry": value["expiry"]}
                                           for key, value in inventory.classes.items()}}
                     if args.action == "capture":
-                        if args.expected_digest != inventory.content_sha256:
-                            parser.error("current inventory differs from the reviewed digest")
+                        # The command handles both replay of an existing run
+                        # and compare-and-swap of a new reviewed inventory.
+                        inventory = replace(inventory, content_sha256=args.expected_digest)
                         batch = capture_history(session, inventory, run_key=args.run_key,
                                                 executor=args.executor, code_revision=args.code_revision)
                         result["batch_id"] = batch.id
+                        result["content_sha256"] = batch.content_sha256
+                        result["counts"] = batch.counts
                 else:
                     batch = read_history(session, args.project, args.batch)
                     result = {"project_id": args.project, "batch_id": batch.id, "content_sha256": batch.content_sha256,
@@ -57,6 +61,11 @@ def main(argv=None):
                               "code_revision": batch.code_revision, "counts": batch.counts, "reversed": batch.reversed}
                     if args.action == "backfill-evidence":
                         result["evidence_migrations"] = backfill_evidence_sources(session, batch)
+                    elif args.action == "migrate-coordination":
+                        from corridor.coordination_history import migrate_coordination_history, coordination_migration_gaps
+                        decisions = migrate_coordination_history(session, batch)
+                        result["native_decision_ids"] = [row.id for row in decisions]
+                        result["retained_compatibility"] = coordination_migration_gaps(session, batch)
                     elif args.action == "reverse":
                         result["reversed"] = reverse_history(session, batch, actor=args.executor, reason=args.reason).reversed
                     else:

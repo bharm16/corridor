@@ -24,6 +24,9 @@ from sqlalchemy.orm import Session, aliased
 from sqlalchemy.exc import IntegrityError
 
 from corridor import audit, notifications
+from corridor.coordination_history import (
+    compatibility_coordination_tail, compatibility_statement_tails, coordination_operation, mirror_coordination_decision,
+)
 from corridor.models import (
     AuditLog,
     CommitmentLineage,
@@ -148,6 +151,7 @@ SubjectInput = CoordinationSubject | int
 SubjectProjection = Dependency | CommitmentLineage
 
 
+@coordination_operation
 def assign_internal_owner(
     session: Session,
     subject: SubjectInput,
@@ -181,6 +185,7 @@ def assign_internal_owner(
     )
 
 
+@coordination_operation
 def set_next_action(
     session: Session,
     subject: SubjectInput,
@@ -233,6 +238,7 @@ def set_next_action(
     )
 
 
+@coordination_operation
 def defer_work(
     session: Session,
     subject: SubjectInput,
@@ -292,6 +298,7 @@ def defer_work(
     )
 
 
+@coordination_operation
 def complete_next_action(
     session: Session,
     subject: SubjectInput,
@@ -323,6 +330,7 @@ def complete_next_action(
     )
 
 
+@coordination_operation
 def cancel_next_action(
     session: Session,
     subject: SubjectInput,
@@ -355,6 +363,7 @@ def cancel_next_action(
     )
 
 
+@coordination_operation
 def set_milestone_impact(
     session: Session,
     subject: CoordinationSubject,
@@ -502,6 +511,8 @@ def current_statement_decision_tails(
     if not requested_fields <= supported_fields:
         raise ValueError("unknown Work Decision field")
 
+    native_lineages, native = compatibility_statement_tails(session, lineage_ids, requested_fields)
+    lineage_ids = lineage_ids - native_lineages
     successor = aliased(WorkDecision)
     decisions = session.scalars(
         select(WorkDecision)
@@ -515,11 +526,12 @@ def current_statement_decision_tails(
         )
         .order_by(WorkDecision.id)
     ).all()
-    return {
+    legacy = {
         (decision.commitment_lineage_id, decision.field): decision
         for decision in decisions
         if decision.commitment_lineage_id is not None
     }
+    return {**legacy, **native}
 
 
 def _close_next_action(
@@ -674,6 +686,12 @@ def _consistent_tail(
 def _tail(
     session: Session, subject: CoordinationSubject, field: str
 ) -> WorkDecision | None:
+    known, native = compatibility_coordination_tail(
+        session, dependency_id=subject.dependency_id,
+        commitment_lineage_id=subject.commitment_lineage_id, field=field,
+    )
+    if known:
+        return native
     successor = aliased(WorkDecision)
     clause = (
         WorkDecision.dependency_id == subject.dependency_id
@@ -757,6 +775,8 @@ def _append(
     )
     session.add(decision)
     session.flush([decision])
+    projection = session.get(Dependency, subject.dependency_id) if subject.dependency_id is not None else session.get(CommitmentLineage, subject.commitment_lineage_id)
+    mirror_coordination_decision(session, project_id=projection.project_id, legacy_decision_id=decision.id)
     audit.record(
         session,
         principal=recorder,
@@ -984,6 +1004,7 @@ class FollowUpPlanResult:
     next_action_decision: WorkDecision | None
 
 
+@coordination_operation
 def save_follow_up_plan(
     session: Session,
     draft: FollowUpPlanDraft,
@@ -1097,6 +1118,7 @@ def save_follow_up_plan(
     )
 
 
+@coordination_operation
 def undo_follow_up_plan(
     session: Session,
     receipt_id: int,

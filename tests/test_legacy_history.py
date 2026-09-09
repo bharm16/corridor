@@ -67,7 +67,7 @@ def test_history_replay_preserves_original_actor_and_time_and_reverses_without_l
     withdrawn = reverse_history(session, batch, actor="local:reviewer", reason="rollback rehearsal")
     assert withdrawn.reversed
     assert history_rows(withdrawn, "work_decisions") == history_rows(batch, "work_decisions")
-    with session.begin_nested(), pytest.raises(DBAPIError, match="reactivated"):
+    with pytest.raises(DBAPIError, match="reactivated"), session.begin_nested():
         capture_history(session, inventory, run_key="rehearsal-1", executor="migration:operator", code_revision="a" * 40)
 
 
@@ -76,12 +76,12 @@ def test_capture_refuses_drift_and_database_rewrites(session, historical_project
     inventory = inventory_history(session, project.id)
     dependency.title = "Changed after inventory"
     session.flush()
-    with session.begin_nested(), pytest.raises(DBAPIError, match="changed since inventory"):
+    with pytest.raises(DBAPIError, match="changed since inventory"), session.begin_nested():
         capture_history(session, inventory, run_key="drift", executor="migration:operator", code_revision="a" * 40)
     inventory = inventory_history(session, project.id)
     batch = capture_history(session, inventory, run_key="fresh", executor="migration:operator", code_revision="a" * 40)
     for statement in ("update legacy_history_batches set executor='forged' where id=:id", "delete from legacy_history_batches where id=:id"):
-        with session.begin_nested(), pytest.raises(DBAPIError, match="immutable"):
+        with pytest.raises(DBAPIError, match="immutable"), session.begin_nested():
             session.execute(text(statement), {"id": batch.id})
     with pytest.raises(HistoryRefused, match="timezone-aware"):
         coordination_decisions_as_of(batch, at=datetime(2026, 1, 15))

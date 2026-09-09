@@ -21,7 +21,7 @@ create table legacy_history_batches (
  content_sha256 text not null check(content_sha256 ~ '^[0-9a-f]{64}$'),
  payload jsonb not null check(jsonb_typeof(payload)='object'),
  counts jsonb not null check(jsonb_typeof(counts)='object'),
- captured_at timestamptz not null default transaction_timestamp(),
+ captured_at timestamptz not null default clock_timestamp(),
  unique(project_id,run_key)
 );
 create table legacy_history_reversals (
@@ -64,7 +64,7 @@ create trigger guard_legacy_history_reversals before insert or update or delete 
 CAPTURE = """
 create function capture_legacy_history(p_project_id bigint, p_run_key text,
  p_executor text, p_code_revision text, p_expected_digest text) returns bigint
-language plpgsql security definer set search_path=public,pg_temp as $$
+language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare content jsonb; content_digest text; result bigint; previous legacy_history_batches;
 begin
  if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
@@ -98,7 +98,7 @@ begin
  return result;
 end; $$;
 create function reverse_legacy_history(p_project_id bigint,p_batch_id bigint,p_actor text,p_reason text)
- returns bigint language plpgsql security definer set search_path=public,pg_temp as $$
+ returns bigint language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare result bigint; previous legacy_history_reversals;
 begin
  if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
@@ -136,7 +136,7 @@ def upgrade(op):
     op.execute(SCHEMA)
     op.execute("""
       create function legacy_history_content(p_project_id bigint) returns jsonb
-      language plpgsql security definer set search_path=public,pg_temp as $$
+      language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
       declare result jsonb;
       begin
        if session_user='corridor_web' and not coalesce(p_project_id=any(current_project_partition()),false) then
@@ -179,7 +179,7 @@ def upgrade(op):
 
 EVIDENCE_BACKFILL = """
 create function backfill_legacy_evidence_sources(p_project_id bigint,p_batch_id bigint)
- returns bigint language plpgsql security definer set search_path=public,pg_temp as $$
+ returns bigint language plpgsql security definer set search_path=public,pg_temp set timezone='UTC' as $$
 declare batch legacy_history_batches; item jsonb; link evidence_links;
  segment_id bigint; matches bigint; citation_id bigint; migrated bigint:=0; outcome text; reason text;
 begin
