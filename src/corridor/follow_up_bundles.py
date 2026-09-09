@@ -37,13 +37,15 @@ alert for precisely this reason: nobody sending a document is not evidence that
 anyone failed to answer, and the rule fired just as hard on a record that was
 correctly quiet.  A no-response item here requires a *retained outgoing
 request* — the request itself, the moment it went, and the expected-response
-boundary it declared — and Corridor retains none today, so
-``read_retained_outgoing_requests`` truthfully returns nothing and the band is
-empty in production.  The predicate is implemented, versioned and covered by
-fixtures rather than left for later, because the temptation to approximate it
-from silence is the whole failure mode.  ``no movement`` is likewise an exact
-elapsed-time predicate and never a mood: it is the number of whole days between
-a plan's own recorded date and the declared cutoff.
+boundary it declared.  #652 gave Corridor a place to retain one
+(``outgoing_requests``), so ``read_retained_outgoing_requests`` reads that
+record rather than returning empty; a project that has retained nothing still
+reads as empty, and a request whose response was recorded on or before the
+cutoff has had its silence clock stopped and is not returned at all.  The
+predicate never approximates from silence, because that substitution is the
+whole failure mode.  ``no movement`` is likewise an exact elapsed-time
+predicate and never a mood: it is the number of whole days between a plan's own
+recorded date and the declared cutoff.
 
 **Ordering is bands, never a score.**  ADR-0010 abolished the severity scalar
 and ADR-0035 fixed ordering groups in its place; ``review_packet_reading``
@@ -74,8 +76,11 @@ who knows the address is not helped by Corridor hiding the ask.
 
 **No clock.**  ``as_of`` is the cutoff the caller declares, exactly as every
 reading under it requires, so a screen and its test agree about what "overdue"
-means.  This module writes nothing, needs no table, and adds no fact type: every
-bundle is derived from records that already exist.  ``emit_follow_up_reading``
+means.  This module writes nothing and adds no fact type: every bundle is
+derived from records that already exist.  Its one retained input, the outgoing
+requests #652 added, is read through ``read_retained_outgoing_requests`` and
+written elsewhere (``outgoing_requests.py``); this module only reads it.
+``emit_follow_up_reading``
 is the one thing that leaves it, and it leaves as a #558 measurement event
 rather than a row: being shown a chase list is not an act, so there is no
 receipt for having looked, and the event carries the reading's own digest so
@@ -96,7 +101,7 @@ from hashlib import sha256
 import json
 from typing import Any, Mapping, Sequence
 
-from sqlalchemy import select
+from sqlalchemy import exists, select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import (
@@ -110,6 +115,8 @@ from corridor.models import (
     BaselineSourceRow,
     DeltaFollowUpPlan,
     DeltaFollowUpPlanEvidence,
+    OutgoingRequest,
+    OutgoingRequestResponse,
     Project,
     ProposedDelta,
 )
@@ -382,12 +389,12 @@ class QuotedWording:
 class RetainedOutgoingRequest:
     """A request Corridor retained, and the response boundary it declared.
 
-    This is the only thing that can produce a no-response item. Corridor
-    retains no outgoing correspondence today, so
-    ``read_retained_outgoing_requests`` returns nothing and no production
-    reading contains this band. The type exists because the predicate is the
-    point: without a retained request and a declared boundary there is no
-    no-response fact to state, only an empty inbox.
+    This is the only thing that can produce a no-response item. Since #652
+    Corridor retains these (``outgoing_requests``), and
+    ``read_retained_outgoing_requests`` reads them; the type is the port's
+    shape, whether the request is injected by a test or read from that record.
+    Without a retained request and a declared boundary there is no no-response
+    fact to state, only an empty inbox.
     """
 
     request_identity: str
@@ -478,21 +485,53 @@ class FollowUpReading:
 def read_retained_outgoing_requests(
     session: Session, *, project_id: int, as_of: datetime
 ) -> tuple[RetainedOutgoingRequest, ...]:
-    """Every outgoing request Corridor retained for this project: none, today.
+    """Every outgoing request retained for this project and still unanswered.
 
-    Corridor holds inbound deliveries (``source_deliveries``,
-    ``inbound_messages``) and it holds what people decided, but it retains no
-    outgoing correspondence and no declared expected-response boundary. There
-    is therefore no source from which a no-response fact could honestly be
-    read, and this returns empty rather than approximating one from silence —
-    which is the exact substitution ADR-0090 retired ``STALE`` for making.
-
-    It is a function rather than a constant so the no-response rule above has a
-    real input to be exercised with, and so the seam that will one day retain a
-    sent request has one obvious place to arrive.
+    #652 gave Corridor a place to retain a sent request and the response
+    boundary it declared (``outgoing_requests``), so this reads that table
+    rather than returning empty. Two things bound what it returns, both from
+    the reading's own declared cutoff and never from a clock: a request sent
+    *after* ``as_of`` is not yet retained as of this reading, and a request with
+    a response recorded on or before ``as_of`` has had its silence clock
+    stopped — a received answer is not a no-response, whatever the boundary
+    says. A project that has retained nothing still reads as empty, which is the
+    honest state ADR-0090 retired ``STALE`` for approximating from silence.
     """
 
-    return ()
+    as_of_date = as_of.date()
+    answered = exists().where(
+        OutgoingRequestResponse.project_id == OutgoingRequest.project_id,
+        OutgoingRequestResponse.request_id == OutgoingRequest.id,
+        OutgoingRequestResponse.received_on <= as_of_date,
+    )
+    rows = session.scalars(
+        select(OutgoingRequest)
+        .where(
+            OutgoingRequest.project_id == project_id,
+            OutgoingRequest.sent_on <= as_of_date,
+            ~answered,
+        )
+        .order_by(OutgoingRequest.expected_response_by, OutgoingRequest.id)
+    ).all()
+    return tuple(
+        RetainedOutgoingRequest(
+            request_identity=str(row.id),
+            organization=row.external_organization,
+            subject_identities=tuple(row.covered_subject_keys),
+            question=row.question,
+            sent_on=row.sent_on,
+            expected_response_by=row.expected_response_by,
+            reference=SourceReference(
+                kind="outgoing_request",
+                identity=str(row.id),
+                detail=(
+                    f"outgoing request sent {row.sent_on.isoformat()} by "
+                    f"{row.sent_by_principal}"
+                ),
+            ),
+        )
+        for row in rows
+    )
 
 
 # --- the reading ------------------------------------------------------------

@@ -35,10 +35,12 @@ from __future__ import annotations
 
 from dataclasses import replace
 from datetime import date, datetime, timezone
+from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor.db import engine
@@ -66,8 +68,13 @@ from corridor.follow_up_bundles import (
     read_follow_up_bundles,
     read_retained_outgoing_requests,
 )
-from corridor.models import DeltaDeferral, DeltaFollowUpPlan, Project
+from corridor.models import DeltaDeferral, DeltaFollowUpPlan, OutgoingRequest, Project
 from corridor.operating_mode import adopt_project_baseline
+from corridor.outgoing_requests import (
+    OutgoingRequestRefused,
+    record_outgoing_request_response,
+    retain_outgoing_request,
+)
 from corridor.packet_review import (
     FocusedAnswer,
     focused_request,
@@ -697,10 +704,54 @@ def test_no_movement_is_an_exact_elapsed_time_predicate(session, project):
 # --- "no response" is a fact, not an empty inbox ---------------------------
 
 
-def test_corridor_retains_no_outgoing_request_so_no_response_never_fires(
+def _first_plan_id(session: Session, project: Project) -> int:
+    """The id of a Follow-up Plan a retained outgoing request can advance."""
+
+    return session.scalar(
+        select(DeltaFollowUpPlan.id)
+        .where(DeltaFollowUpPlan.project_id == project.id)
+        .order_by(DeltaFollowUpPlan.id)
+    )
+
+
+def _retain(
+    session: Session,
+    project: Project,
+    *,
+    plan_id: int,
+    sent_on: date,
+    expected_response_by: date,
+    subject_keys: tuple[str, ...] = (subject(FIRST),),
+    question: str = "Please confirm the relocation date for U-042.",
+    idempotency_key: str | None = None,
+    sent_bytes: bytes | None = None,
+    content_sha256: str | None = None,
+) -> OutgoingRequest:
+    return retain_outgoing_request(
+        session,
+        project_id=project.id,
+        follow_up_plan_id=plan_id,
+        external_organization=WATER,
+        question=question,
+        covered_subject_keys=subject_keys,
+        sent_on=sent_on,
+        sent_by_principal="local:coordinator",
+        expected_response_by=expected_response_by,
+        idempotency_key=idempotency_key or f"req:{uuid4().hex[:12]}",
+        sent_bytes=sent_bytes,
+        content_sha256=content_sha256,
+    )
+
+
+def test_a_project_that_retained_no_request_reads_empty_and_fires_no_band(
     session, project
 ):
-    """ADR-0090 retired STALE for exactly this. Silence is not evidence."""
+    """Since #652 Corridor can retain a request, but this project retained none.
+
+    ADR-0090 retired STALE because silence is not evidence, and the honest state
+    for a project with nothing on record is still empty: the port returns
+    nothing, the count is zero, and no no-response band appears.
+    """
 
     _cross_source(session, project)
     _plan_every_child(session, project, return_date=OVERDUE_RETURN)
@@ -716,6 +767,272 @@ def test_corridor_retains_no_outgoing_request_so_no_response_never_fires(
     assert all(
         bundle.band != UNANSWERED_REQUEST_BAND for bundle in reading.bundles
     )
+
+
+def test_a_retained_request_is_read_back_through_the_port_in_its_shape(
+    session, project
+):
+    """The retained record reads back as the port's RetainedOutgoingRequest."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+    row = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"Dear City Water, please confirm the relocation date.",
+    )
+    # Exact bytes were kept, so the digest still verifies against them.
+    assert row.digest_is_valid
+
+    (retained,) = read_retained_outgoing_requests(
+        session, project_id=project.id, as_of=NOW
+    )
+
+    assert retained.request_identity == str(row.id)
+    assert retained.organization == WATER
+    assert retained.subject_identities == (subject(FIRST),)
+    assert retained.question == "Please confirm the relocation date for U-042."
+    assert retained.sent_on == date(2026, 8, 1)
+    assert retained.expected_response_by == date(2026, 8, 15)
+    assert retained.reference.kind == "outgoing_request"
+    assert retained.reference.identity == str(row.id)
+
+
+def test_a_digest_only_request_needs_no_retained_bytes(session, project):
+    """"Whoever sent it, by whatever means" may keep only the digest."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+    digest = sha256(b"a letter Corridor never kept the bytes of").hexdigest()
+
+    row = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        content_sha256=digest,
+    )
+
+    assert row.sent_bytes is None
+    assert row.content_sha256 == digest
+    # With no bytes to compare, the digest stands on its own footing.
+    assert row.digest_is_valid
+    assert len(
+        read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
+    ) == 1
+
+
+def test_a_received_response_stops_the_silence_clock(session, project):
+    """A recorded response excludes the request as of any cutoff on or after it."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+    row = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+    )
+
+    # Before any response, the request is returned.
+    assert len(
+        read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
+    ) == 1
+
+    record_outgoing_request_response(
+        session,
+        project_id=project.id,
+        request_id=row.id,
+        received_on=date(2026, 8, 20),
+        recorded_by_principal="local:coordinator",
+    )
+
+    # As of a cutoff after the reply, the clock is stopped and it is gone.
+    assert (
+        read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
+        == ()
+    )
+    # As of a cutoff before the reply arrived, it is still outstanding: the
+    # exclusion is bound to the reading's own cutoff, never a clock.
+    before_reply = datetime(2026, 8, 18, 12, 0, tzinfo=timezone.utc)
+    assert len(
+        read_retained_outgoing_requests(
+            session, project_id=project.id, as_of=before_reply
+        )
+    ) == 1
+
+
+def test_a_retained_request_past_its_boundary_drives_the_band_through_the_port(
+    session, project
+):
+    """End to end through the real port, not the injection kwarg: the band fires."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+    _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+    )
+
+    reading = _read(session, project)
+
+    assert reading.retained_outgoing_requests == 1
+    unanswered = next(
+        bundle
+        for bundle in reading.bundles
+        if bundle.band == UNANSWERED_REQUEST_BAND
+    )
+    assert unanswered.ask == ASK_ANSWER_RETAINED_REQUEST
+    assert unanswered.quantity_name == "days_past_expected_response"
+    assert unanswered.quantity == (TODAY - date(2026, 8, 15)).days
+    assert unanswered.recipient.organization == WATER
+
+
+def test_a_recorded_response_removes_the_band_through_the_port(session, project):
+    """The same end-to-end path goes quiet once the answer is on record."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+    row = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+    )
+    record_outgoing_request_response(
+        session,
+        project_id=project.id,
+        request_id=row.id,
+        received_on=date(2026, 8, 20),
+        recorded_by_principal="local:coordinator",
+    )
+
+    reading = _read(session, project)
+
+    assert reading.retained_outgoing_requests == 0
+    assert all(
+        bundle.band != UNANSWERED_REQUEST_BAND for bundle in reading.bundles
+    )
+
+
+def test_a_retained_request_is_written_only_through_the_command(session, project):
+    """The write-role boundary is the database's, not a Python convention.
+
+    A direct insert as any role but the record-decision role is refused by the
+    guard trigger even though every value is otherwise valid; only the
+    SECURITY DEFINER command, which runs as that role, may write the row.
+    """
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+
+    with pytest.raises(DBAPIError) as refused:
+        with session.begin_nested():
+            session.execute(
+                text(
+                    "insert into outgoing_requests ("
+                    "project_id, follow_up_plan_id, external_organization, "
+                    "question, covered_subject_keys, content_sha256, sent_on, "
+                    "sent_by_principal, expected_response_by, idempotency_key"
+                    ") values ("
+                    ":project_id, :plan_id, :org, :question, "
+                    "cast(:subjects as jsonb), :digest, :sent_on, :principal, "
+                    ":boundary, :key)"
+                ),
+                {
+                    "project_id": project.id,
+                    "plan_id": plan_id,
+                    "org": WATER,
+                    "question": "A request nobody may write raw.",
+                    "subjects": '["' + subject(FIRST) + '"]',
+                    "digest": sha256(b"raw").hexdigest(),
+                    "sent_on": date(2026, 8, 1),
+                    "principal": "local:coordinator",
+                    "boundary": date(2026, 8, 15),
+                    "key": f"raw:{uuid4().hex[:10]}",
+                },
+            )
+    assert "written only through its append command" in str(refused.value)
+
+    # The command, running as the record-decision role, writes it.
+    row = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+    )
+    assert session.get(OutgoingRequest, row.id) is not None
+
+
+def test_a_replayed_retention_returns_the_row_it_already_wrote(session, project):
+    """The command is idempotent under one key, like its sibling receipts."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+
+    first = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+        idempotency_key="letter-2026-08-01",
+    )
+    again = _retain(
+        session,
+        project,
+        plan_id=plan_id,
+        sent_on=date(2026, 8, 1),
+        expected_response_by=date(2026, 8, 15),
+        sent_bytes=b"the request",
+        idempotency_key="letter-2026-08-01",
+    )
+
+    assert again.id == first.id
+    assert len(
+        read_retained_outgoing_requests(session, project_id=project.id, as_of=NOW)
+    ) == 1
+
+
+def test_a_boundary_before_the_send_day_is_refused(session, project):
+    """Silence before the boundary is not a finding, and the boundary follows the send."""
+
+    _cross_source(session, project)
+    _plan_every_child(session, project, return_date=RETURNS_AT)
+    plan_id = _first_plan_id(session, project)
+
+    with pytest.raises(DBAPIError):
+        with session.begin_nested():
+            _retain(
+                session,
+                project,
+                plan_id=plan_id,
+                sent_on=date(2026, 8, 15),
+                expected_response_by=date(2026, 8, 1),
+                sent_bytes=b"the request",
+            )
 
 
 def test_a_retained_request_past_its_declared_boundary_is_a_no_response(

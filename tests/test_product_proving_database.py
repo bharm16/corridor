@@ -230,9 +230,12 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # bigserial, adding five sequences. The fifth receipt table is ADR-0095's
     # recorded maintainer acceptance, the second basis a selection may stand on.
     # #656 adds one immutable customer-environment attestation, keyed by a
-    # checked boolean singleton, so it adds one table and no sequence.
-    assert fingerprint.table_count == 203
-    assert fingerprint.sequence_count == 184
+    # checked boolean singleton, so it adds one table and no sequence.  #652
+    # adds the retained outgoing request and the received response that stops
+    # its silence clock, each keyed by its own bigserial, so two more tables
+    # and two more sequences.
+    assert fingerprint.table_count == 205
+    assert fingerprint.sequence_count == 186
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(
