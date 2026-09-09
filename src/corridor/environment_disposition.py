@@ -28,8 +28,8 @@ Two invariants come straight from ADR-0083 and are enforced here:
 The provider-native destruction is expressed behind the ``EnvironmentDestroyer``
 protocol. ``SyntheticEnvironmentDestroyer`` is the hermetic test double that
 operates on in-process state and a local object store. ``AwsEnvironmentDestroyer``
-is the thin real adapter, and it is **human-gated (#535) and never exercised in
-tests**: #514 defines it and proves the orchestration on synthetic data. As the
+is exercised with SDK response stubs and requires a persisted, approved provider
+inventory before any real call. Pending deletion never means completion. As the
 non-production runbook states, definitions and synthetic tests are
 implementation evidence, not evidence that a deployment occurred; actually
 destroying a running AWS environment, and the live point-in-time-restore
@@ -40,7 +40,7 @@ scope here.
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -161,6 +161,7 @@ def manifest_digest(
     environment_id: str,
     binding: Mapping[str, Any],
     resolved_retain_until: datetime | None,
+    provider_resources_sha256: str | None = None,
 ) -> str:
     """A stable digest over the whole-environment plan; the stale-plan anchor."""
     payload = {
@@ -171,6 +172,8 @@ def manifest_digest(
             resolved_retain_until.isoformat() if resolved_retain_until else None
         ),
     }
+    if provider_resources_sha256 is not None:
+        payload["provider_resources_sha256"] = provider_resources_sha256
     raw = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return sha256(raw).hexdigest()
 
@@ -189,6 +192,7 @@ class DispositionManifest:
     status: str
     created_by: str
     created_at: datetime
+    provider_resources_sha256: str | None = None
 
 
 @dataclass(frozen=True)
@@ -277,23 +281,55 @@ class SyntheticEnvironmentDestroyer:
         return f"synthetic:{registration.environment_id}/backups-expire-{stamp}"
 
 
-class AwsEnvironmentDestroyer:
-    """Thin provider-native adapter for a customer's CorridorDataStack.
+@dataclass(frozen=True)
+class AwsDispositionResources:
+    """Exact provider inventory approved beside the disposition plan.
 
-    HUMAN-GATED (#535) and never exercised in tests. Every method refuses unless
-    the operator supplies the explicit live-activation token, and only then does
-    it reach AWS (RDS ``delete_db_instance`` with a final synthetic-only
-    snapshot policy, S3 whole-namespace removal under the customer prefix, KMS
-    ``schedule_key_deletion``, and RDS snapshot expiration). #514 does not
-    activate it; #535 owns live activation, and the point-in-time-restore
-    rehearsal that produces a real receipt is the runbook's human step.
+    An RDS instance identifier is not the SQL database name. Retain both the
+    ARN and immutable DbiResourceId so identifier reuse cannot delete a new DB.
+    This profile covers same-region RDS backups, one S3 namespace and dedicated
+    customer-managed keys. Other stores/copies require a wider inventory first.
+    """
+
+    customer_id: str
+    environment_id: str
+    deployment_id: str
+    account_id: str
+    region: str
+    database_host: str
+    database_port: int
+    database_name: str
+    db_instance_identifier: str
+    db_instance_arn: str
+    db_resource_id: str
+    object_namespace_ref: str
+    final_snapshot_identifier: str
+    kms_key_arns: tuple[str, ...]
+
+    @property
+    def sha256(self) -> str:
+        return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+class AwsEnvironmentDestroyer:
+    """Verified AWS deletion, with pending work returned as resumable failure.
+
+    Every mutation requires the caller's fresh hold/retention guard. A provider
+    acknowledging a deletion request is not evidence the resource is gone.
+    There is no implicit credential lookup; #535 supplies scoped clients and
+    the exact resource inventory it approved.
     """
 
     _LIVE_ACTIVATION = "live-aws-535"
 
-    def __init__(self, *, live_activation: str | None = None, clients: Any = None):
+    def __init__(self, *, live_activation: str | None = None, clients: Any = None,
+                 resources: AwsDispositionResources | None = None,
+                 approved_resource_sha256: str | None = None, before_delete=None):
         self._activated = live_activation == self._LIVE_ACTIVATION
         self._clients = clients
+        self.resources = resources
+        self.approved_resource_sha256 = approved_resource_sha256
+        self.before_delete = before_delete
 
     def _require_activation(self, component: str) -> None:
         if not self._activated:
@@ -302,36 +338,128 @@ class AwsEnvironmentDestroyer:
                 "activated by #514; run the operator's live-activation step"
             )
 
+    def _binding(self, registration: EnvironmentRegistration):
+        self._require_activation("environment")
+        resources = self.resources
+        if resources is None or self._clients is None or self.approved_resource_sha256 != resources.sha256:
+            raise DispositionRefused("AWS disposition requires its exact approved provider resource inventory and scoped clients")
+        if registration.enabled or registration.hold:
+            raise DispositionRefused("AWS disposition requires a disabled environment without a legal hold")
+        for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
+            if getattr(resources, name) != getattr(registration, name):
+                raise DispositionRefused("AWS resource inventory differs from the registered environment")
+        if self._clients["sts"].get_caller_identity()["Account"] != resources.account_id:
+            raise DispositionRefused("AWS account differs from the approved resource inventory")
+        for service in ("rds", "s3", "kms"):
+            if self._clients[service].meta.region_name != resources.region:
+                raise DispositionRefused("AWS client region differs from the approved resource inventory")
+        return resources
+
+    def _mutate(self, method, **parameters):
+        if self.before_delete is None:
+            raise DispositionRefused("AWS deletion requires a fresh hold and retention guard")
+        self.before_delete()
+        return method(**parameters)
+
+    def _evidence(self, component: str) -> str:
+        return f"aws:{self.resources.environment_id}/{component}/{self.resources.sha256}"
+
     def delete_database(self, registration: EnvironmentRegistration) -> str:
-        self._require_activation("postgresql")
-        client = self._rds()
-        client.delete_db_instance(
-            DBInstanceIdentifier=registration.database_name,
-            SkipFinalSnapshot=False,
-            FinalDBSnapshotIdentifier=f"{registration.database_name}-final",
-        )
-        return f"aws:{registration.environment_id}/rds-deleted"
+        resource = self._binding(registration)
+        client = self._clients["rds"]
+        try:
+            rows = client.describe_db_instances(DBInstanceIdentifier=resource.db_instance_identifier)["DBInstances"]
+        except client.exceptions.DBInstanceNotFoundFault:
+            return self._evidence("rds-absent")
+        if len(rows) != 1:
+            raise EnvironmentDestructionError("RDS did not identify exactly one approved instance")
+        row = rows[0]
+        if (row.get("DBInstanceArn"), row.get("DbiResourceId")) != (resource.db_instance_arn, resource.db_resource_id):
+            raise DispositionRefused("RDS identifier now names a different physical instance")
+        if row.get("DBInstanceStatus") == "deleting":
+            raise EnvironmentDestructionError("RDS deletion is still pending")
+        endpoint = row.get("Endpoint", {})
+        if (endpoint.get("Address"), endpoint.get("Port"), row.get("DBName")) != (
+                resource.database_host, resource.database_port, resource.database_name):
+            raise DispositionRefused("RDS endpoint does not match the customer environment")
+        self._mutate(client.delete_db_instance, DBInstanceIdentifier=resource.db_instance_identifier,
+            SkipFinalSnapshot=False, FinalDBSnapshotIdentifier=resource.final_snapshot_identifier,
+            DeleteAutomatedBackups=True)
+        raise EnvironmentDestructionError("RDS deletion requested; verify absence on retry")
 
     def delete_object_namespace(self, registration: EnvironmentRegistration) -> str:
-        self._require_activation("object_namespace")
-        # Whole-namespace removal under the customer prefix, not per-object
-        # deletion: the object namespace is a provider unit here.
-        return f"aws:{registration.environment_id}/s3-namespace-removed"
+        resource = self._binding(registration)
+        if not resource.object_namespace_ref.startswith("s3:"):
+            raise DispositionRefused("AWS object namespace must explicitly identify S3")
+        bucket, _, prefix = resource.object_namespace_ref.removeprefix("s3:").partition("/")
+        if not bucket or (prefix and not prefix.endswith("/")):
+            raise DispositionRefused("S3 namespace requires a bucket and a slash-bounded prefix")
+        client = self._clients["s3"]
+        parameters = {"Bucket": bucket, "Prefix": prefix, "ExpectedBucketOwner": resource.account_id}
+        for page in client.get_paginator("list_object_versions").paginate(**parameters):
+            objects = [{"Key": row["Key"], "VersionId": row["VersionId"]}
+                       for row in page.get("Versions", []) + page.get("DeleteMarkers", [])]
+            if any(not item["Key"].startswith(prefix) for item in objects):
+                raise DispositionRefused("S3 returned an object outside the approved namespace")
+            for offset in range(0, len(objects), 1000):
+                result = self._mutate(client.delete_objects, Bucket=bucket,
+                    ExpectedBucketOwner=resource.account_id, Delete={"Objects": objects[offset:offset+1000], "Quiet": True})
+                if result.get("Errors"):
+                    raise EnvironmentDestructionError("S3 reported object-version deletion failures")
+        for page in client.get_paginator("list_multipart_uploads").paginate(**parameters):
+            for upload in page.get("Uploads", []):
+                if not upload["Key"].startswith(prefix):
+                    raise DispositionRefused("S3 upload lies outside the approved namespace")
+                self._mutate(client.abort_multipart_upload, Bucket=bucket, Key=upload["Key"],
+                    UploadId=upload["UploadId"], ExpectedBucketOwner=resource.account_id)
+        for operation, fields in (("list_object_versions", ("Versions", "DeleteMarkers")),
+                                  ("list_objects_v2", ("Contents",)),
+                                  ("list_multipart_uploads", ("Uploads",))):
+            for page in client.get_paginator(operation).paginate(**parameters):
+                if any(page.get(field) for field in fields):
+                    raise EnvironmentDestructionError("S3 namespace is not yet empty")
+        return self._evidence("s3-namespace-empty")
 
     def destroy_encryption_key(self, registration: EnvironmentRegistration) -> str:
-        self._require_activation("encryption_key")
-        return f"aws:{registration.environment_id}/kms-key-scheduled-for-deletion"
+        resource = self._binding(registration)
+        client = self._clients["kms"]
+        pending = False
+        for arn in resource.kms_key_arns:
+            if not arn.startswith(f"arn:aws:kms:{resource.region}:{resource.account_id}:key/"):
+                raise DispositionRefused("KMS key lies outside the approved account and region")
+            try:
+                key = client.describe_key(KeyId=arn)["KeyMetadata"]
+            except client.exceptions.NotFoundException:
+                continue
+            if key.get("Arn") != arn or key.get("KeyManager") != "CUSTOMER" or key.get("MultiRegion"):
+                raise DispositionRefused("only declared dedicated single-region customer keys may be deleted")
+            pending = True
+            if key.get("KeyState") != "PendingDeletion":
+                self._mutate(client.schedule_key_deletion, KeyId=arn, PendingWindowInDays=30)
+        if pending:
+            raise EnvironmentDestructionError("KMS deletion is pending; scheduled deletion is not completion")
+        return self._evidence("declared-customer-keys-absent")
 
     def expire_backups(self, registration: EnvironmentRegistration) -> str:
-        self._require_activation("backups")
-        return f"aws:{registration.environment_id}/snapshots-expiration-recorded"
-
-    def _rds(self):
-        if self._clients is not None:
-            return self._clients
-        import boto3  # lazy: never imported on the tested (unactivated) path
-
-        return boto3.client("rds")
+        resource = self._binding(registration)
+        client = self._clients["rds"]
+        pending = False
+        for page in client.get_paginator("describe_db_snapshots").paginate(DBInstanceIdentifier=resource.db_instance_identifier):
+            for snapshot in page.get("DBSnapshots", []):
+                if snapshot.get("DbiResourceId") != resource.db_resource_id:
+                    raise DispositionRefused("RDS snapshot does not belong to the approved physical instance")
+                pending = True
+                if snapshot.get("Status") != "deleting":
+                    self._mutate(client.delete_db_snapshot, DBSnapshotIdentifier=snapshot["DBSnapshotIdentifier"])
+        for page in client.get_paginator("describe_db_instance_automated_backups").paginate(DbiResourceId=resource.db_resource_id):
+            for backup in page.get("DBInstanceAutomatedBackups", []):
+                if backup.get("DbiResourceId") != resource.db_resource_id:
+                    raise DispositionRefused("RDS automated backup differs from the approved instance")
+                pending = True
+                self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
+        if pending:
+            raise EnvironmentDestructionError("RDS backup expiration requested; verify absence on retry")
+        return self._evidence("declared-rds-backups-absent")
 
 
 # --------------------------------------------------------------------------
@@ -405,6 +533,7 @@ def plan_environment_disposition(
     principal: HumanPrincipal,
     as_of: datetime,
     plan_id: str | None = None,
+    provider_resources: AwsDispositionResources | None = None,
 ) -> DispositionManifest:
     """Persist the whole-environment dry-run manifest, or refuse a held one."""
     actor = require_human_principal(principal).subject
@@ -416,10 +545,12 @@ def plan_environment_disposition(
     # Refuse a raw-source disposition that still owes dereference at plan time.
     check_referential_retention(referential)
     resolved, precedence = resolve_retention(schedules)
+    resource_digest = provider_resources.sha256 if provider_resources is not None else None
     digest = manifest_digest(
         environment_id=environment_id,
         binding=environment_binding(registration),
         resolved_retain_until=resolved,
+        provider_resources_sha256=resource_digest,
     )
     created_at = _aware_utc(as_of)
     manifest = DispositionManifest(
@@ -433,6 +564,7 @@ def plan_environment_disposition(
         status="dry_run",
         created_by=actor,
         created_at=created_at,
+        provider_resources_sha256=resource_digest,
     )
     control_plane.record_disposition_plan(
         DispositionPlan(
@@ -443,6 +575,7 @@ def plan_environment_disposition(
             resolved_retain_until=resolved,
             created_by=actor,
             created_at=created_at,
+            provider_resources_sha256=resource_digest,
         )
     )
     return manifest
@@ -477,6 +610,7 @@ def execute_environment_disposition(
         environment_id=plan.environment_id,
         binding=environment_binding(registration),
         resolved_retain_until=plan.resolved_retain_until,
+        provider_resources_sha256=plan.provider_resources_sha256,
     )
     if expected_sha256 != plan.manifest_sha256 or recomputed != plan.manifest_sha256:
         control_plane.set_disposition_plan_status(plan_id, "refused")
@@ -484,6 +618,19 @@ def execute_environment_disposition(
             "the environment or plan changed after the dry run; re-plan before executing"
         )
     _guard_before_step(control_plane, plan, referential, now)
+    if isinstance(destroyer, AwsEnvironmentDestroyer):
+        if destroyer.resources is None or plan.provider_resources_sha256 != destroyer.resources.sha256:
+            raise DispositionRefused("AWS resource inventory differs from the persisted dry-run plan")
+        def before_aws_delete():
+            current = control_plane.inspect(plan.environment_id)
+            _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)
+            if current.enabled or manifest_digest(environment_id=plan.environment_id,
+                    binding=environment_binding(current), resolved_retain_until=plan.resolved_retain_until,
+                    provider_resources_sha256=plan.provider_resources_sha256) != expected_sha256:
+                raise DispositionRefused("AWS environment was enabled or its disposition binding changed")
+        destroyer.before_delete = before_aws_delete
+    elif plan.provider_resources_sha256 is not None:
+        raise DispositionRefused("a provider-bound plan cannot be executed by a synthetic destroyer")
 
     receipts = list(control_plane.destruction_receipts(plan.environment_id))
     completed = {
@@ -513,6 +660,9 @@ def execute_environment_disposition(
         receipt_id = _receipt_id(operation_id, component, attempt)
         try:
             evidence = _destroy(component, destroyer, registration, operation_id)
+        except DispositionRefused:
+            control_plane.set_disposition_plan_status(plan_id, "partial")
+            raise
         except EnvironmentDestructionError as exc:
             failure = DestructionReceipt(
                 receipt_id=receipt_id,
@@ -638,10 +788,16 @@ def _destroy(
     operation_id: str,
 ) -> str:
     if component == "environment":
+        if isinstance(destroyer, AwsEnvironmentDestroyer):
+            raise EnvironmentDestructionError("declared AWS components are gone; complete stack, logs, secrets and remote-copy disposal still require verified inventory coverage")
         # The terminal marker: the whole environment is gone once the four
         # provider components are. Its evidence is the control-plane operation.
         return f"receipt:{operation_id}/environment-destroyed"
-    return getattr(destroyer, _PROVIDER_METHOD[component])(registration)
+    from botocore.exceptions import BotoCoreError, ClientError
+    try:
+        return getattr(destroyer, _PROVIDER_METHOD[component])(registration)
+    except (BotoCoreError, ClientError) as exc:
+        raise EnvironmentDestructionError("AWS provider operation failed; no completion is established") from exc
 
 
 def _receipt_id(operation_id: str, component: str, attempt: int) -> str:

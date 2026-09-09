@@ -83,6 +83,7 @@ DISPOSITION_PLANS = Table(
         nullable=False,
     ),
     Column("manifest_sha256", String(64), nullable=False),
+    Column("provider_resources_sha256", String(64), nullable=True),
     Column("status", String(16), nullable=False),
     Column("resolved_retain_until", DateTime(timezone=True), nullable=True),
     Column("created_by", String(128), nullable=False),
@@ -130,6 +131,8 @@ def initialize_control_plane(engine: Engine) -> None:
                 )
         connection.execute(text("create schema if not exists control_plane"))
         CONTROL_PLANE_METADATA.create_all(connection)
+        # Additive control-plane upgrade; customer Alembic owns no table here.
+        connection.execute(text("alter table control_plane.disposition_plans add column if not exists provider_resources_sha256 varchar(64)"))
         for role in (OPERATIONS_ROLE, RESOLVER_ROLE):
             connection.execute(
                 text(
