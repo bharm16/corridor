@@ -22,7 +22,8 @@ destructive API call, including each S3 batch.
 
 - RDS deletion uses the physical instance identity, not the SQL database name.
   Request acceptance is partial; retry verifies absence. Identifier reuse
-  refuses. The final snapshot is retained until the backup-disposition step.
+  and renames refuse. Reads filter by immutable resource ID, so a name change
+  cannot masquerade as deletion. The final snapshot is retained until the backup-disposition step.
 - S3 removes versions and delete markers in the exact bucket/prefix and aborts
   multipart uploads. Per-object errors refuse completion. Final checks cover
   versions, current objects, and multipart uploads. Governance retention is
@@ -34,6 +35,10 @@ destructive API call, including each S3 batch.
 - RDS snapshot and automated-backup deletion remains partial until both
   declared same-region populations are absent. Physical resource identity is
   checked before deletion.
+
+Resume accepts only component evidence bound to this exact resource inventory
+and plan digest. Old synthetic or fabricated AWS receipts cannot skip provider
+verification, and no inherited whole-environment completion is accepted.
 
 This is a component profile, not proof of complete customer-environment
 destruction. Stack resources, customer logs, secrets, replicas, cross-region

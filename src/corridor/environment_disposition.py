@@ -306,6 +306,11 @@ class AwsDispositionResources:
     final_snapshot_identifier: str
     kms_key_arns: tuple[str, ...]
 
+    def require_registration(self, registration: EnvironmentRegistration) -> None:
+        for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
+            if getattr(self, name) != getattr(registration, name):
+                raise DispositionRefused("AWS resource inventory differs from the registered environment")
+
     @property
     def sha256(self) -> str:
         return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -345,9 +350,7 @@ class AwsEnvironmentDestroyer:
             raise DispositionRefused("AWS disposition requires its exact approved provider resource inventory and scoped clients")
         if registration.enabled or registration.hold:
             raise DispositionRefused("AWS disposition requires a disabled environment without a legal hold")
-        for name in ("customer_id", "environment_id", "deployment_id", "database_host", "database_port", "database_name", "object_namespace_ref"):
-            if getattr(resources, name) != getattr(registration, name):
-                raise DispositionRefused("AWS resource inventory differs from the registered environment")
+        resources.require_registration(registration)
         if self._clients["sts"].get_caller_identity()["Account"] != resources.account_id:
             raise DispositionRefused("AWS account differs from the approved resource inventory")
         for service in ("rds", "s3", "kms"):
@@ -367,9 +370,10 @@ class AwsEnvironmentDestroyer:
     def delete_database(self, registration: EnvironmentRegistration) -> str:
         resource = self._binding(registration)
         client = self._clients["rds"]
-        try:
-            rows = client.describe_db_instances(DBInstanceIdentifier=resource.db_instance_identifier)["DBInstances"]
-        except client.exceptions.DBInstanceNotFoundFault:
+        rows = [row for page in client.get_paginator("describe_db_instances").paginate(
+            Filters=[{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}])
+            for row in page.get("DBInstances", [])]
+        if not rows:
             return self._evidence("rds-absent")
         if len(rows) != 1:
             raise EnvironmentDestructionError("RDS did not identify exactly one approved instance")
@@ -444,7 +448,8 @@ class AwsEnvironmentDestroyer:
         resource = self._binding(registration)
         client = self._clients["rds"]
         pending = False
-        for page in client.get_paginator("describe_db_snapshots").paginate(DBInstanceIdentifier=resource.db_instance_identifier):
+        for page in client.get_paginator("describe_db_snapshots").paginate(
+                SnapshotType="manual", Filters=[{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}]):
             for snapshot in page.get("DBSnapshots", []):
                 if snapshot.get("DbiResourceId") != resource.db_resource_id:
                     raise DispositionRefused("RDS snapshot does not belong to the approved physical instance")
@@ -545,6 +550,8 @@ def plan_environment_disposition(
     # Refuse a raw-source disposition that still owes dereference at plan time.
     check_referential_retention(referential)
     resolved, precedence = resolve_retention(schedules)
+    if provider_resources is not None:
+        provider_resources.require_registration(registration)
     resource_digest = provider_resources.sha256 if provider_resources is not None else None
     digest = manifest_digest(
         environment_id=environment_id,
@@ -633,6 +640,17 @@ def execute_environment_disposition(
         raise DispositionRefused("a provider-bound plan cannot be executed by a synthetic destroyer")
 
     receipts = list(control_plane.destruction_receipts(plan.environment_id))
+    if isinstance(destroyer, AwsEnvironmentDestroyer):
+        evidence_kinds = {"postgresql": "rds-absent", "object_namespace": "s3-namespace-empty",
+                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent"}
+        for receipt in receipts:
+            if receipt.operation_id != operation_id:
+                continue
+            expected = (f"aws:{plan.environment_id}/{evidence_kinds.get(receipt.component)}/{plan.provider_resources_sha256}/{plan.manifest_sha256}"
+                        if receipt.outcome == "completed" else
+                        f"failure:{operation_id}/{receipt.component}/{plan.manifest_sha256}")
+            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed"):
+                raise DispositionRefused("AWS resume receipts do not bind this plan and provider inventory")
     completed = {
         receipt.component
         for receipt in receipts
@@ -670,7 +688,7 @@ def execute_environment_disposition(
                 operation_id=operation_id,
                 component=component,
                 outcome="failed",
-                evidence_ref=f"failure:{operation_id}/{component}",
+                evidence_ref=f"failure:{operation_id}/{component}/{plan.manifest_sha256}",
                 recorded_by=recorded_by,
                 observed_at=now,
             )
@@ -686,6 +704,8 @@ def execute_environment_disposition(
                 observed_at=now,
                 receipts=tuple(receipts),
             )
+        if isinstance(destroyer, AwsEnvironmentDestroyer):
+            evidence = evidence + "/" + plan.manifest_sha256
         receipt = DestructionReceipt(
             receipt_id=receipt_id,
             environment_id=plan.environment_id,
