@@ -100,17 +100,20 @@ class Prediction:
     created_at: datetime
     source_class: str
     source_reference: str
+    present: bool = True
 
     def __post_init__(self):
         _aware(self.created_at)
         if self.delta_id <= 0 or not self.subject or not self.field or not self.source_reference:
             raise ValueError("a prediction requires its native delta and exact source reference")
+        if type(self.present) is not bool or (not self.present and self.value is not None):
+            raise ValueError("a removal must explicitly omit its value")
         object.__setattr__(self, "value", _immutable(json.loads(_canonical(self.value))))
 
     def payload(self):
         return {"delta_id": self.delta_id, "subject": self.subject, "field": self.field, "value": _plain(self.value),
                 "created_at": self.created_at.isoformat(), "source_class": self.source_class,
-                "source_reference": self.source_reference}
+                "source_reference": self.source_reference, "present": self.present}
 
 
 @dataclass(frozen=True)
@@ -154,7 +157,8 @@ def freeze_predictions(baseline: FrozenRevision, policy: ComparisonPolicy,
         elif prediction.source_class not in SOURCE_CLASSES:
             raise ValueError("prediction source class lies outside the initial population")
         else:
-            if _canonical(baseline.values.get(prediction.subject, {}).get(prediction.field)) == _canonical(prediction.value):
+            row = baseline.values.get(prediction.subject, {})
+            if (prediction.field in row) == prediction.present and _canonical(row.get(prediction.field)) == _canonical(prediction.value):
                 raise ValueError("unchanged values are not Proposed Delta comparison questions")
             selected.append(prediction)
     return PredictionFreeze(baseline, policy, tuple(sorted(selected, key=lambda p: (p.delta_id, p.field))),
@@ -177,12 +181,14 @@ def compare_revisions(frozen: PredictionFreeze, successor: FrozenRevision, *, re
     for subject, field in sorted(targets):
         old = frozen.baseline.values.get(subject, {}).get(field)
         new = successor.values.get(subject, {}).get(field)
+        old_present = field in frozen.baseline.values.get(subject, {})
+        new_present = field in successor.values.get(subject, {})
         predicted = by_target.get((subject, field), [])
-        changed = _canonical(old) != _canonical(new)
+        changed = (old_present, _canonical(old)) != (new_present, _canonical(new))
         if not changed and not predicted:
             continue
-        distinct = {_canonical(p.value) for p in predicted}
-        if len(distinct) > 1 or (changed and predicted and _canonical(new) not in distinct):
+        distinct = {(p.present, _canonical(p.value)) for p in predicted}
+        if len(distinct) > 1 or (changed and predicted and (new_present, _canonical(new)) not in distinct):
             classification = "ambiguous"
         elif changed and predicted:
             classification = "matched"
@@ -193,6 +199,7 @@ def compare_revisions(frozen: PredictionFreeze, successor: FrozenRevision, *, re
         findings.append({"subject": subject, "field": field, "classification": classification,
             "material": field in frozen.policy.material_fields, "reference_changed": changed,
             "baseline_value": _plain(old), "reference_value": _plain(new),
+            "baseline_present": old_present, "reference_present": new_present,
             "predictions": [p.payload() for p in predicted],
             "days_earlier": ((successor.seen_at - min(p.created_at for p in predicted)).total_seconds() / 86400
                              if classification == "matched" else None),
@@ -260,7 +267,10 @@ def assess_material_sample(arrivals: Sequence[Mapping[str, str]], *, policy: Com
         arrival_id = inspection["arrival_id"]
         if arrival_id not in selected or arrival_id in seen:
             raise ValueError("inspection must name one unique selected arrival")
-        if not inspection.get("reviewer") or not inspection.get("resolver") or inspection["reviewer"] == inspection["resolver"]:
+        resolvers = inspection.get("resolvers")
+        if (not inspection.get("reviewer") or not isinstance(resolvers, (list, tuple, set, frozenset))
+                or any(not isinstance(person, str) or not person for person in resolvers)
+                or inspection["reviewer"] in resolvers):
             raise ValueError("material-change inspection needs an independent named reviewer")
         seen.add(arrival_id)
         for case in inspection["material_cases"]:
