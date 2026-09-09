@@ -69,7 +69,7 @@ SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
     # Isolated shadow receipts and original-authored history/support convergence.
-    "5fc78022047d87ed99b8ef7d4145bf14e78eceb092ce51d45cf884b77c7fd9f5"
+    "9bec8cc48be2668c4b48ed8ad50fd1b994651d43930347d10355b09dc74db9e1"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
