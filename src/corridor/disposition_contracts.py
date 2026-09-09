@@ -82,3 +82,22 @@ def require_no_rds_replicas(row):
     if observed["read_replica_instances"] or observed["read_replica_clusters"] or observed["read_replica_source"]:
         raise DispositionRefused("live RDS replicas require expanded custody and disposition inventory")
     return observed
+
+
+def automated_backup_rows(client, resource_id):
+    """Read this physical instance's backups, including AWS's modeled absence.
+
+    AWS may report an empty population as DBInstanceAutomatedBackupNotFound
+    instead of returning an empty list. No other provider error proves absence.
+    A late not-found response cannot erase rows already observed on an earlier
+    page; that inconsistent pagination must be reconciled on another pass.
+    """
+    backups = []
+    try:
+        for page in client.get_paginator("describe_db_instance_automated_backups").paginate(DbiResourceId=resource_id):
+            backups.extend(page.get("DBInstanceAutomatedBackups", []))
+    except client.exceptions.DBInstanceAutomatedBackupNotFoundFault as exc:
+        if backups:
+            raise DispositionRefused("RDS backup pagination lost an already observed population") from exc
+        return []
+    return backups

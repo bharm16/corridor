@@ -245,3 +245,16 @@ completed restore, state-verification, cleanup and backup-expiration observation
 for one rehearsal specification. Its freshness timestamp comes from the retained
 observations; regenerating a JSON artifact cannot freshen old provider evidence.
 The result is evidence for the separate activation gate, never an activation.
+
+The automated-backup collector recognizes the provider's documented
+[`DBInstanceAutomatedBackupNotFound` response](https://docs.aws.amazon.com/AmazonRDS/latest/APIReference/API_DescribeDBInstanceAutomatedBackups.html)
+as an empty population. Permission failures and other errors remain failures;
+a not-found response after an earlier page already returned backups also refuses
+that inconsistent observation. Source-window checks, regional inventory,
+disposition expiration and rehearsal cleanup share this collector.
+
+A rehearsal binds the first observed target `DbiResourceId`, including an identity
+returned with an asynchronous restore request. Subsequent restore and verification
+passes use that physical identity. Renaming the instance does not create another
+database under the original name, and disappearance or a conflicting physical
+identity requires operator reconciliation instead of silently recreating it.

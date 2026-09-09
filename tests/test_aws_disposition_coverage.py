@@ -33,6 +33,7 @@ class ScriptedClient:
         self.calls = []
         self.meta = SimpleNamespace(region_name="us-east-1")
         self.exceptions = SimpleNamespace(DBInstanceNotFoundFault=self.NotFound,
+            DBInstanceAutomatedBackupNotFoundFault=self.NotFound,
             ResourceNotFoundException=self.NotFound, NotFoundException=self.NotFound,
             DBSubnetGroupNotFoundFault=self.NotFound, RepositoryNotFoundException=self.NotFound)
 
@@ -203,7 +204,8 @@ def test_restore_request_uses_observed_pitr_window_and_persists_pending():
         ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, {"DBInstanceAutomatedBackups": [{"DbiResourceId": r.db_resource_id, "RestoreWindow": {"EarliestTime": NOW, "LatestTime": NOW}}]}),
         ("restore_db_instance_to_point_in_time", {"SourceDbiResourceId": r.db_resource_id, "TargetDBInstanceIdentifier": spec.target_identifier,
             "RestoreTime": NOW, "UseLatestRestorableTime": False, "DBSubnetGroupName": "isolated-subnets", "VpcSecurityGroupIds": ["sg-isolated"],
-            "PubliclyAccessible": False, "DeletionProtection": False, "CopyTagsToSnapshot": True, "Tags": [{"Key": "corridor:rehearsal", "Value": spec.sha256}]}, {}),
+            "PubliclyAccessible": False, "DeletionProtection": False, "CopyTagsToSnapshot": True, "Tags": [{"Key": "corridor:rehearsal", "Value": spec.sha256}]},
+            {"DBInstance": {"DbiResourceId": "db-RESTORED", "DBInstanceIdentifier": spec.target_identifier}}),
     ])
     sts = ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})])
     store = ReceiptStore()
@@ -212,6 +214,7 @@ def test_restore_request_uses_observed_pitr_window_and_persists_pending():
         clock=SimpleNamespace(now=lambda: NOW), before_mutation=lambda: None)
     receipt = runner.restore()
     assert receipt["outcome"] == "pending"
+    assert receipt["evidence"]["target_resource_id"] == "db-RESTORED"
     assert all(row["outcome"] == "pending" for row in store.rows)
     assert not rds.script and not sts.script
 
@@ -241,11 +244,11 @@ def test_whole_environment_receipt_requires_final_observation_of_every_populatio
     rds = ScriptedClient([
         ("describe_db_instances", db_filter, {}),
         ("describe_db_snapshots", snapshots, {}),
-        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, {}),
+        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, ScriptedClient.NotFound()),
         ("describe_db_subnet_groups", {"DBSubnetGroupName": "subnets"}, ScriptedClient.NotFound()),
         ("describe_db_instances", db_filter, {}),
         ("describe_db_snapshots", snapshots, {}),
-        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, {}),
+        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, ScriptedClient.NotFound()),
     ])
     sts = ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})] * 5)
     backup = ScriptedClient([("list_recovery_points_by_resource", {"ResourceArn": r.db_instance_arn}, {})])
@@ -596,3 +599,93 @@ def test_disposition_cli_status_reads_control_plane_without_aws_and_writes_priva
         "--control-plane-url-env", "DISPOSITION_TEST_CONTROL_URL"]) == 0
     assert json.loads(output.read_text())["environment_id"] == "environment"
     assert stat.S_IMODE(output.stat().st_mode) == 0o600
+
+
+def test_automated_backup_absence_uses_only_the_modeled_sdk_not_found():
+    import boto3
+    from botocore.exceptions import ClientError
+    from botocore.stub import Stubber
+    from corridor.disposition_contracts import automated_backup_rows
+    client = boto3.client("rds", region_name="us-east-1", aws_access_key_id="fixture",
+                          aws_secret_access_key="fixture", endpoint_url="http://127.0.0.1:9")
+    try:
+        with Stubber(client) as stub:
+            parameters = {"DbiResourceId": "db-RESTORED"}
+            stub.add_client_error("describe_db_instance_automated_backups", "DBInstanceAutomatedBackupNotFound",
+                                  http_status_code=404, expected_params=parameters)
+            assert automated_backup_rows(client, "db-RESTORED") == []
+            stub.add_client_error("describe_db_instance_automated_backups", "AccessDenied",
+                                  http_status_code=403, expected_params=parameters)
+            with pytest.raises(ClientError):
+                automated_backup_rows(client, "db-RESTORED")
+            stub.add_response("describe_db_instance_automated_backups",
+                {"DBInstanceAutomatedBackups": [{"DbiResourceId": "db-RESTORED"}], "Marker": "next"}, parameters)
+            stub.add_client_error("describe_db_instance_automated_backups", "DBInstanceAutomatedBackupNotFound",
+                                  http_status_code=404, expected_params={**parameters, "Marker": "next"})
+            with pytest.raises(DispositionRefused, match="already observed"):
+                automated_backup_rows(client, "db-RESTORED")
+            stub.assert_no_pending_responses()
+    finally:
+        client.close()
+
+
+def test_rehearsal_cleanup_converges_on_modeled_automated_backup_absence():
+    spec = rehearsal_spec()
+    rds = ScriptedClient([
+        ("describe_db_instances", {"Filters": [{"Name": "dbi-resource-id", "Values": ["db-RESTORED"]}]}, {}),
+        ("describe_db_snapshots", {"SnapshotType": "manual", "Filters": [{"Name": "dbi-resource-id", "Values": ["db-RESTORED"]}]}, {}),
+        ("describe_db_instance_automated_backups", {"DbiResourceId": "db-RESTORED"}, ScriptedClient.NotFound()),
+    ])
+    store = ReceiptStore()
+    store.record_disposition_rehearsal(environment_id="environment", operation_id=spec.operation_id,
+        phase="state_verification", outcome="completed", evidence={"spec_sha256": spec.sha256, "target_resource_id": "db-RESTORED"})
+    destroyer = AwsStackEnvironmentDestroyer(resources=resource(), live_activation="live-aws-535",
+        clients={"rds": rds, "sts": ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})])})
+    runner = AwsRestoreRehearsal(destroyer=destroyer, control_plane=store, specification=spec,
+        clock=SimpleNamespace(now=lambda: NOW), before_mutation=lambda: pytest.fail("nothing remains to delete"))
+    receipt = runner.cleanup()
+    assert receipt["phase"] == "backup_expiration" and receipt["outcome"] == "completed"
+    assert receipt["evidence"]["automated_backup_count"] == 0
+    assert not rds.script
+
+
+def test_restore_retry_follows_the_first_observed_physical_target_after_rename():
+    spec = rehearsal_spec()
+    target_arn = f"arn:aws:rds:us-east-1:{ACCOUNT}:db:renamed-rehearsal"
+    target = {"DBInstanceArn": target_arn, "DBInstanceIdentifier": "renamed-rehearsal", "DbiResourceId": "db-RESTORED",
+              "DBInstanceStatus": "available", "PubliclyAccessible": False,
+              "DBSubnetGroup": {"DBSubnetGroupName": spec.subnet_group}, "VpcSecurityGroups": [{"VpcSecurityGroupId": "sg-isolated"}]}
+    rds = ScriptedClient([
+        ("describe_db_instances", {"Filters": [{"Name": "dbi-resource-id", "Values": ["db-RESTORED"]}]}, {"DBInstances": [target]}),
+        ("list_tags_for_resource", {"ResourceName": target_arn}, {"TagList": [{"Key": "corridor:rehearsal", "Value": spec.sha256}]}),
+    ])
+    store = ReceiptStore()
+    store.record_disposition_rehearsal(environment_id="environment", operation_id=spec.operation_id,
+        phase="restore", outcome="pending", evidence={"spec_sha256": spec.sha256, "target_resource_id": "db-RESTORED"})
+    destroyer = AwsStackEnvironmentDestroyer(resources=resource(), live_activation="live-aws-535",
+        clients={"rds": rds, "sts": ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})])})
+    runner = AwsRestoreRehearsal(destroyer=destroyer, control_plane=store, specification=spec,
+        clock=SimpleNamespace(now=lambda: NOW), before_mutation=lambda: pytest.fail("must not create another restore"))
+    receipt = runner.restore()
+    assert receipt["outcome"] == "completed"
+    assert receipt["evidence"]["target_resource_id"] == "db-RESTORED"
+    assert receipt["evidence"]["target_arn"] == target_arn
+    assert not rds.script
+
+
+@pytest.mark.parametrize("observed_target", [None, {"DbiResourceId": "db-REPLACEMENT"}])
+def test_restore_never_recreates_or_rebinds_an_already_observed_target(observed_target):
+    spec = rehearsal_spec()
+    rds = ScriptedClient([("describe_db_instances", {"Filters": [{"Name": "dbi-resource-id", "Values": ["db-RESTORED"]}]},
+                          {"DBInstances": [] if observed_target is None else [observed_target]})])
+    store = ReceiptStore()
+    store.record_disposition_rehearsal(environment_id="environment", operation_id=spec.operation_id,
+        phase="restore", outcome="pending", evidence={"spec_sha256": spec.sha256, "target_resource_id": "db-RESTORED"})
+    destroyer = AwsStackEnvironmentDestroyer(resources=resource(), live_activation="live-aws-535",
+        clients={"rds": rds, "sts": ScriptedClient([("get_caller_identity", {}, {"Account": ACCOUNT})])})
+    runner = AwsRestoreRehearsal(destroyer=destroyer, control_plane=store, specification=spec,
+        clock=SimpleNamespace(now=lambda: NOW), before_mutation=lambda: pytest.fail("must not create another restore"))
+    with pytest.raises(DispositionRefused, match="(cannot create another|different physical)"):
+        runner.restore()
+    assert len(store.rows) == 1
+    assert not rds.script
