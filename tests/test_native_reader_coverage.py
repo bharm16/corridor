@@ -91,6 +91,15 @@ def test_reader_omission_is_a_gap_not_an_empty_class(session, adopted, monkeypat
     assert actual.population_evidence['decision']['count'] > 0
     assert 'decision' not in actual.reading.observed_record_kinds
     assert any('native decision IDs absent' in b for b in actual.blockers)
+    from corridor.reader_equivalence import compare_native_reader_surfaces
+    # Even identical supplied semantic rows cannot erase a collector's actual
+    # omission findings. The wrapper must collect again and carry those findings.
+    compared = compare_native_reader_surfaces(session, project.id, legacy=result.readings,
+        as_of_revision_id=adoption.revision_id,
+        evaluated_at=datetime.combine(TODAY, datetime.min.time(), timezone.utc))
+    history_result = next(row for row in compared if row.surface == 'source_and_decision_history')
+    assert not history_result.passed
+    assert any('native decision IDs absent' in b for b in history_result.blockers)
 
 
 def test_foreign_project_revision_is_refused_before_any_surface(session, adopted):

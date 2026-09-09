@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from copy import copy
 from dataclasses import dataclass, replace
-from datetime import date
+from datetime import date, datetime
 from io import BytesIO
 from pathlib import Path
 import re
@@ -26,8 +26,30 @@ from corridor.record_projection import read_current_project_record
 
 from corridor.report import build_report, render as render_report
 from corridor.report_release import render_external_report_pdf
-from corridor.reader_coverage import CONTRACTS, CoverageResult, SemanticRecord, SurfaceReading
+from corridor.reader_coverage import CONTRACTS, CoverageResult, SemanticRecord, SurfaceReading, compare_all_surfaces
 from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text
+
+
+def compare_native_reader_surfaces(session: Session, project_id: int, *,
+                                  legacy: tuple[SurfaceReading, ...],
+                                  as_of_revision_id: int,
+                                  evaluated_at: datetime) -> tuple[CoverageResult, ...]:
+    """Compare a retained reference with freshly observed native reader outputs.
+
+    Native evidence is collected here, never supplied by the caller. Collection
+    blockers survive even if the caller's semantic values happen to match. The
+    reference's independent custody and the live cutover decision remain separate
+    requirements; this function cannot authenticate caller-supplied history.
+    """
+    from corridor.native_reader_coverage import collect_native_reader_coverage
+
+    observed = collect_native_reader_coverage(session, project_id,
+        as_of_revision_id=as_of_revision_id, evaluated_at=evaluated_at)
+    collected = {surface.reading.surface: surface for surface in observed.surfaces}
+    return tuple(replace(result,
+        passed=result.passed and not collected[result.surface].blockers,
+        blockers=(*result.blockers, *collected[result.surface].blockers))
+        for result in compare_all_surfaces(legacy, observed.readings))
 
 
 @dataclass(frozen=True)
