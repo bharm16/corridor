@@ -235,8 +235,9 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # its silence clock, each keyed by its own bigserial, so two more tables
     # and two more sequences. #456/#562 add the minutes capture, contact
     # import, and contact occurrence tables, each with its own bigserial.
-    assert fingerprint.table_count == 208
-    assert fingerprint.sequence_count == 189
+    # #643 adds the Impact Derivation relation and its bigserial sequence.
+    assert fingerprint.table_count == 209
+    assert fingerprint.sequence_count == 190
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

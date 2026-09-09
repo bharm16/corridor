@@ -69,7 +69,7 @@ SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
     # #456/#562 typed minutes scopes/timing and immutable project contact sources.
-    "9d86919267b985e44a058f036a740fcb42fdd721833d19abad359e54e75f9571"
+    "e8a4a6cc7130ea786e60c570924ea0fdab3c2702e002dcfeea71a19e3597ec81"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
