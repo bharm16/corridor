@@ -46,7 +46,13 @@ SPINE_TABLE_PATTERN = re.compile(
     # revision it was prepared from, and a cleanup that removed the revision
     # and left the candidate behind would leave it pointing at a revision that
     # never was.
-    r"release_[a-z_]+|issue_coverage_declarations)$"
+    r"release_[a-z_]+|issue_coverage_declarations|"
+    # Not spine state either: a retained outgoing request and the received
+    # response that stops its silence clock (#652). They are deleted with the
+    # spine because a request advances a Follow-up Plan that cites the accepted
+    # revision, and a cleanup that removed the plan and left the request behind
+    # would leave it pointing at a plan that no longer exists.
+    r"outgoing_requests|outgoing_request_[a-z_]+)$"
 )
 SPINE_ROOTS = frozenset({"facts", "source_segments", "project_record_revisions"})
 

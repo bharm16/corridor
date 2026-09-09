@@ -2270,6 +2270,147 @@ class DeltaFollowUpPlanEvidence(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
 
 
+class OutgoingRequest(Base):
+    """A retained outgoing request, and the response boundary it declared (#652).
+
+    The chase list's ``unanswered_request`` band is the one place Corridor may
+    say a specific thing has gone unanswered, and ADR-0090 retired the legacy
+    ``STALE`` alert precisely because silence is not evidence: nobody sending a
+    document does not mean anybody failed to answer.  A no-response fact
+    therefore needs a *retained request* behind it, and until this table existed
+    ``follow_up_bundles.read_retained_outgoing_requests`` truthfully returned
+    nothing.  This is that record: what was asked, of which External
+    Organization, covering which Utility Conflicts, its exact sent bytes or a
+    digest of them, the declared expected-response boundary (silence before it
+    is not a finding), the attributable sender and day, and the Follow-up Plan
+    the request advances.
+
+    It is Corridor-originated correspondence, not source-derived evidence and
+    not an accepted-record decision, so it does not join the spine's append
+    matrix.  It is written only through ``append_outgoing_request`` under the
+    record-decision role, and it is append-only: a guard trigger refuses every
+    update, delete, and truncate, and refuses an insert that does not arrive as
+    that role, so not even the schema owner can write one raw (#492 idiom).
+
+    ``sent_bytes`` is the exact request when Corridor kept it and null when it
+    did not — whoever sent it, by whatever means, may not have retained the
+    bytes — so ``content_sha256`` is the digest that stands on either footing,
+    the same choice ``SourceDelivery`` makes for a delivery whose bytes were
+    never kept.  ``expected_response_by`` is the resolved boundary the band
+    reads; ``boundary_rule_version`` and ``boundary_interval_days`` record how
+    it was derived when an interval and a rule produced it rather than a date
+    stated outright.
+    """
+
+    __tablename__ = "outgoing_requests"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_outgoing_requests_project_id"),
+        UniqueConstraint(
+            "project_id", "idempotency_key", name="uq_outgoing_requests_key"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "follow_up_plan_id"],
+            ["delta_follow_up_plans.project_id", "delta_follow_up_plans.id"],
+            name="fk_outgoing_requests_plan",
+        ),
+        CheckConstraint(
+            "length(btrim(external_organization)) > 0",
+            name="ck_outgoing_requests_organization",
+        ),
+        CheckConstraint(
+            "length(btrim(question)) > 0", name="ck_outgoing_requests_question"
+        ),
+        CheckConstraint(
+            "length(btrim(sent_by_principal)) > 0",
+            name="ck_outgoing_requests_principal",
+        ),
+        CheckConstraint(
+            "content_sha256 ~ '^[0-9a-f]{64}$'", name="ck_outgoing_requests_digest"
+        ),
+        CheckConstraint(
+            "expected_response_by >= sent_on", name="ck_outgoing_requests_boundary"
+        ),
+        CheckConstraint(
+            "jsonb_typeof(covered_subject_keys) = 'array'",
+            name="ck_outgoing_requests_subjects",
+        ),
+        CheckConstraint(
+            "sent_bytes is null or octet_length(sent_bytes) > 0",
+            name="ck_outgoing_requests_bytes",
+        ),
+        CheckConstraint(
+            "boundary_interval_days is null or boundary_interval_days >= 0",
+            name="ck_outgoing_requests_interval",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    follow_up_plan_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    external_organization: Mapped[str] = mapped_column(String(255))
+    responsible_role: Mapped[str | None] = mapped_column(String(255))
+    question: Mapped[str] = mapped_column(Text)
+    covered_subject_keys: Mapped[Any] = mapped_column(JSONB)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    sent_bytes: Mapped[bytes | None] = mapped_column(LargeBinary)
+    sent_on: Mapped[date] = mapped_column(Date)
+    sent_by_principal: Mapped[str] = mapped_column(String(128))
+    expected_response_by: Mapped[date] = mapped_column(Date)
+    boundary_rule_version: Mapped[str | None] = mapped_column(String(64))
+    boundary_interval_days: Mapped[int | None] = mapped_column(Integer)
+    idempotency_key: Mapped[str] = mapped_column(String(160))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    @property
+    def digest_is_valid(self) -> bool:
+        """Whether retained bytes still match the digest; true when none were kept."""
+        if self.sent_bytes is None:
+            return True
+        return sha256(self.sent_bytes).hexdigest() == self.content_sha256
+
+
+class OutgoingRequestResponse(Base):
+    """A received response that stops one retained request's silence clock (#652).
+
+    Recording that a reply arrived, at least enough to stop the no-response
+    clock: the band fires only for a retained request whose boundary has passed
+    *and* which has no recorded response as of the reading's cutoff.  Full
+    receipt and delivery tracking is deliberately out of scope (#652); this row
+    exists to make "they answered" a fact the chase list can read.  It is
+    append-only and written only through ``append_outgoing_request_response``
+    under the record-decision role, held by the same guard trigger as the
+    request it answers.  One response per request stops the clock; the
+    command converges a replay on the row it already wrote.
+    """
+
+    __tablename__ = "outgoing_request_responses"
+    __table_args__ = (
+        UniqueConstraint(
+            "project_id", "request_id", name="uq_outgoing_request_responses_request"
+        ),
+        ForeignKeyConstraint(
+            ["project_id", "request_id"],
+            ["outgoing_requests.project_id", "outgoing_requests.id"],
+            name="fk_outgoing_request_responses_request",
+        ),
+        CheckConstraint(
+            "length(btrim(recorded_by_principal)) > 0",
+            name="ck_outgoing_request_responses_principal",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    request_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    received_on: Mapped[date] = mapped_column(Date)
+    recorded_by_principal: Mapped[str] = mapped_column(String(128))
+    recorded_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
 class DeltaReviewPacketReceipt(Base):
     """The one receipt for one guided Review Packet act (#526, ADR-0085).
 

@@ -45,7 +45,7 @@ for everything else.
 | [ADR-0060](0060-a-condition-is-a-field-in-its-own-words.md) | A condition is a field in its own words | optional module | — | — | — | `audit`, `condition_tracking`, `documentation_checklist`, `ledger`, `models`, `operative_support`, `web.app` | — |
 | [ADR-0061](0061-a-disagreement-settles-by-history-then-narrative-then-a-name.md) | A disagreement settles by history, then narrative, then a name | current product | — | [ADR-0035](0035-human-work-is-attributable-guided-and-reversible.md) | — | `dispute_timeline`, `disputes`, `models` | — |
 | [ADR-0071](0071-the-record-has-one-time-axis-and-the-current-view-projects-effective-decisions.md) | The record has one time axis, and the current view projects effective decisions | current product | — | — | [ADR-0076](0076-the-record-changes-by-captured-fact-adopted-baseline-and-resolved-delta.md), [ADR-0092](0092-a-report-run-retains-the-reading-it-published.md) | `current_record`, `fact_decisions` | — |
-| [ADR-0090](0090-the-accepted-record-has-its-own-alerts-not-the-legacy-task-systems.md) | The accepted record's alerts are its own, not the legacy task system's | current product | — | [ADR-0010](0010-an-exception-is-a-fact-to-filter-not-a-score-to-rank.md) | — | `follow_up_bundles`, `issue_rendering`, `presentation`, `web.follow_up_view` | — |
+| [ADR-0090](0090-the-accepted-record-has-its-own-alerts-not-the-legacy-task-systems.md) | The accepted record's alerts are its own, not the legacy task system's | current product | — | [ADR-0010](0010-an-exception-is-a-fact-to-filter-not-a-score-to-rank.md) | — | `follow_up_bundles`, `issue_rendering`, `models`, `outgoing_requests`, `presentation`, `web.follow_up_view` | — |
 
 ### record-inclusion
 
