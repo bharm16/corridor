@@ -82,7 +82,10 @@ def test_support_history_preserves_policy_authority_and_refuses_missing_approval
                             "designated_by": "corridor:automatic-carry-forward", "designated_at": "2026-02-01T00:00:00+00:00", "role": "publication", "field_name": None}],
         evidence_links=[{"id": 4, "document_id": 6, "quote": "Original supporting words."}],
         automatic_carry_forward_receipts=[{"audit_log_id": 7, "dependency_id": 9, "new_evidence_link_id": 4,
-            "policy_approval_id": 8, "family": "automatic-carry-forward", "policy_version": "support-v1", "policy_sha256": "a" * 64}],
+            "policy_approval_id": 8, "family": "automatic-carry-forward", "policy_version": "support-v1", "policy_sha256": "a" * 64,
+            "after_json": {"moved_scopes": [{"role": "publication", "field_name": None, "to_evidence_link_id": 4}]}}],
+        audit_log=[{"id": 7, "actor": "corridor:automatic-carry-forward", "action": "automatic_carry_forward",
+                    "entity_type": "dependency", "entity_id": 9, "ts": "2026-02-01T00:00:00+00:00"}],
         policy_approvals=[{"id": 8, "family": "automatic-carry-forward", "policy_version": "support-v1",
                            "policy_sha256": "a" * 64, "approved_by": "local:approver"}],
     )
@@ -93,3 +96,6 @@ def test_support_history_preserves_policy_authority_and_refuses_missing_approval
     missing = support_designations_at_capture(_batch(**{**values, "policy_approvals": []}))[0]
     assert missing["authority"]["kind"] == "unknown"
     assert missing["evidence"]["quote"] == "Original supporting words."
+    wrong_role = {**values["operative_support"][0], "role": "readiness"}
+    mismatched = support_designations_at_capture(_batch(**{**values, "operative_support": [wrong_role]}))[0]
+    assert mismatched["authority"]["kind"] == "unknown"

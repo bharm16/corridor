@@ -253,12 +253,22 @@ def support_designation_authority(batch: HistoryBatch, designation: dict) -> dic
                    and row["new_evidence_link_id"] == designation["evidence_link_id"]]
         if len(matches) == 1:
             receipt = matches[0]
+            scope_matches = [scope for scope in (receipt.get("after_json") or {}).get("moved_scopes", ())
+                             if scope.get("role") == designation.get("role")
+                             and scope.get("field_name") == designation.get("field_name")
+                             and scope.get("to_evidence_link_id") == designation["evidence_link_id"]]
+            audit_matches = [row for row in history_rows(batch, "audit_log")
+                             if row["id"] == receipt["audit_log_id"] and row["actor"] == actor
+                             and row["action"] == "automatic_carry_forward"
+                             and row["entity_type"] == "dependency"
+                             and row["entity_id"] == designation["dependency_id"]
+                             and row["ts"] == designation["designated_at"]]
             approvals = [row for row in history_rows(batch, "policy_approvals")
                          if row["id"] == receipt["policy_approval_id"]
                          and row["family"] == receipt["family"] == "automatic-carry-forward"
                          and row["policy_version"] == receipt["policy_version"]
                          and row["policy_sha256"] == receipt["policy_sha256"]]
-            if len(approvals) == 1:
+            if len(approvals) == len(scope_matches) == len(audit_matches) == 1:
                 return {"kind": "released_policy", "original_actor": actor,
                         "receipt": receipt, "approval": approvals[0]}
     elif actor not in machine_actors:
