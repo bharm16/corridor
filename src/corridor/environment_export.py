@@ -39,7 +39,7 @@ def _copy_digest(source, destination=None):
 def export_environment_archive(*, resources, inventory, clients, output_path,
                                pgpass_file, database_username, principal, before_export,
                                unavailability_disclosure: bytes = b"", run=subprocess.run,
-                               restore_run=subprocess.run):
+                               restore_run=subprocess.run, postgres_tls_root_cert=None):
     """Create a complete archive after the caller has frozen application writes.
 
     ``before_export`` is the operator's fresh binding/hold/quiescence check; the
@@ -82,6 +82,9 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
         import os
         environment = {k: v for k, v in os.environ.items() if not k.startswith("PG")}
         environment["PGPASSFILE"] = str(Path(pgpass_file).resolve(strict=True))
+        if postgres_tls_root_cert is not None:
+            environment["PGSSLMODE"] = "verify-full"
+            environment["PGSSLROOTCERT"] = str(Path(postgres_tls_root_cert).resolve(strict=True))
         run(command, env=environment, check=True, capture_output=True)
         if not database.is_file():
             raise DispositionRefused("pg_dump did not create a PostgreSQL custom-format archive")
