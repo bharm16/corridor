@@ -40,7 +40,9 @@ with project-coordination membership. The CLI reads `CORRIDOR_SESSION_TOKEN` and
 `CORRIDOR_CSRF_TOKEN` from the operator's environment, never an actor display
 string. The endpoint accepts only contact values, a reason and idempotency key;
 the authenticated session supplies the principal. A stale predecessor refuses.
-Original imports and corrections remain immutable and readable.
+Original imports and corrections remain immutable and readable. New chase-list
+registrations use renderer v2; existing issue profiles pinned to v1 still bind
+and render the historical v1 reading, without relabeling v2 bytes as v1.
 
 Resolution selects the newest recorded occurrence of each source contact at the
 requested cutoff, then applies its validity interval. It does not resurrect an

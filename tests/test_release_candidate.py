@@ -378,12 +378,17 @@ def test_a_configured_weekly_report_joins_the_mandatory_ucm(session, adopted, st
     assert rows[0].renderer_identity == WEEKLY_REPORT_IDENTITY
 
 
+@pytest.mark.parametrize("chase_version", ["v1", "v2"])
 def test_a_configured_chase_list_and_summary_join_the_mandatory_ucm(
-    session, adopted, store
+    session, adopted, store, chase_version
 ):
-    _configure(session, adopted, artifacts=[CHASE, SUMMARY])
+    chase = ArtifactEntry("chase_list", RendererRevision(CHASE_LIST_IDENTITY, chase_version))
+    _configure(session, adopted, artifacts=[chase, SUMMARY])
 
-    bound, _, candidate = _prepare(session, adopted, store)
+    bound, rendered, candidate = _prepare(session, adopted, store)
+    artifact = next(artifact for artifact in rendered if artifact.artifact_type == "chase_list")
+    assert artifact.renderer_version == chase_version
+    assert json.loads(artifact.content)["rule_version"] == chase_version
 
     assert bound.artifact_types == (
         UPDATED_UCM,

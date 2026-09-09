@@ -99,7 +99,7 @@ visible levels are ADR-0085's own accepted words, kept in
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Mapping
 
 from sqlalchemy import select
@@ -180,7 +180,7 @@ CHANGE_SUMMARY_VERSION = "v1"
 WEEKLY_REPORT_IDENTITY = "weekly_coordination_report_from_accepted_revision"
 WEEKLY_REPORT_VERSION = "v1"
 CHASE_LIST_IDENTITY = "follow_up_bundles_from_accepted_authority"
-CHASE_LIST_VERSION = "v1"
+CHASE_LIST_VERSION = "v2"
 
 # ``None`` in ``accepted_record_fields`` means "the fields the project's own
 # registered field-mapping manifest targets". Only the customer's native
@@ -336,6 +336,12 @@ ARTIFACT_WORDS: Mapping[str, str] = {
     "provenance_sidecar": "the provenance sidecar",
 }
 
+
+# Existing issue profiles may still pin the released v1 chase list. Its
+# accepted-authority content contract remains available beside the v2 contact
+# resolver, and the configured version selects its actual bound reading.
+CONTENT_REGISTRY += tuple(replace(contract, renderer_version="v1") for contract in CONTENT_REGISTRY
+                          if contract.artifact_type == "chase_list")
 
 _BY_KEY: Mapping[tuple[str, str, str], RendererContract] = {
     contract.key: contract for contract in CONTENT_REGISTRY

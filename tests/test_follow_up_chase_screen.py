@@ -33,7 +33,8 @@ Nothing here reads a clock.  Every instant is declared by the test.
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+from html import unescape
 import re
 from uuid import uuid4
 
@@ -341,7 +342,7 @@ def _reading(session: Session, project: Project, **kwargs):
 def _rendered_keys(body: str) -> list[str]:
     """The bundle identities the page rendered, in document order."""
 
-    return _BUNDLE_KEY.findall(body)
+    return [unescape(value) for value in _BUNDLE_KEY.findall(body)]
 
 
 # --- the screen and the reading cannot disagree ----------------------------
@@ -531,25 +532,44 @@ def test_a_bundle_with_no_recorded_contact_is_rendered_with_its_role(
     assert _rendered_keys(body) == [reading.bundles[0].bundle_key]
     assert POWER in body
     assert recipient.responsible_role in body
-    assert "no contact is recorded for this organization" in body
+    assert "no contact is recorded for this role" in body
     assert "Contact not recorded" in body
 
 
 def test_a_resolved_contact_names_the_individual_and_the_channel(
-    session, project, client
+    session, project, client, tmp_path, monkeypatch
 ):
-    """Where the record carries one, the bundle says who and how."""
+    """An explicit imported person and address appear on the actual screen."""
+    from corridor.config import settings
+    from corridor.models import ExternalOrg
+    from corridor.project_contacts import import_contact_csv
+    from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential, register_push_credential
 
     _addressed(session, project)
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
+    if session.scalar(select(ExternalOrg).where(ExternalOrg.name == WATER)) is None:
+        session.add(ExternalOrg(name=WATER))
+        session.flush()
+    register_push_credential(session, customer="fixture", project=project, channel="webhook", material=project.slug)
+    binding = bind_credential(session, PushCredential(channel="webhook", material=project.slug))
+    raw = ("source_contact_id,organization_ref,responsible_role,person_name,channel,address\n"
+           f"lead,{WATER},the responsible contact,Pat,email,{WATER_CONTACT}\n").encode()
+    delivery = accept_delivery(session, binding, PushPayload(body=raw, filename="contacts.csv"))
+    receipt = import_contact_csv(session, delivery.envelope, import_identity="screen-contacts")
+    # A live import supplies its own recorded instant. Read after that receipt;
+    # the fixed historical cutoff used by other screen tests must not see it.
+    cutoff = receipt.recorded_at + timedelta(seconds=1)
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: cutoff)
 
     body = client.get(f"/work/{project.slug}").text
-    reading = _reading(session, project)
+    reading = read_follow_up_bundles(session, project_id=project.id, as_of=cutoff)
 
     assert all(
         bundle.recipient.contact_state == CONTACT_RESOLVED
         for bundle in reading.bundles
     )
     assert WATER_CONTACT in body
+    assert "Pat" in body and "by email" in body
     assert "Contact recorded" in body
     assert "Contact not recorded" not in body
 
