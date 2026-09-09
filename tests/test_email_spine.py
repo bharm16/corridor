@@ -396,6 +396,27 @@ def test_draft_status_does_not_depend_on_a_nonempty_body(session, with_attachmen
     assert session.scalars(select(Fact).where(Fact.project_id == project.id)).all() == []
 
 
+def test_refused_attachment_replays_its_declared_type_without_reclassifying_it(session):
+    from hashlib import sha256
+    from corridor.email_intake import InboundMailRefused
+    from corridor.email_spine import capture_email_thread
+
+    payload = b"utility_id,notes\nUC-1,unvalidated export\n"
+    digest = sha256(payload).hexdigest()
+    message = EmailMessage()
+    message["From"] = "utility@example.test"
+    message["Message-ID"] = "<refused-attachment@example.test>"
+    message.set_content("Please review this export.\n")
+    message.add_attachment(payload, maintype="text", subtype="csv", filename="matrix.csv")
+    raw = message.as_bytes()
+    project, envelope = deliver(session, raw, attachment_doc_types={digest: "matrix"})
+    reading = capture_email_thread(session, envelope, client=ClosingStatement())
+    _, replay = deliver(session, raw, project, attachment_doc_types={digest: "matrix"})
+    assert capture_email_thread(session, replay, client=ClosingStatement()).id == reading.id
+    with pytest.raises(InboundMailRefused, match="different attachment type"):
+        deliver(session, raw, project, attachment_doc_types={digest: "plan"})
+
+
 def test_a_return_to_the_accepted_wording_supersedes_only_the_unaccepted_change(session):
     from datetime import datetime, timezone
     from corridor.delta_generation import accepted_values

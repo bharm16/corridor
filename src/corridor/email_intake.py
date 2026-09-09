@@ -283,7 +283,7 @@ def receive_pushed_message(
         )
     ).first()
     if already is not None:
-        _check_attachment_type_replay(session, already, attachment_doc_types)
+        _check_attachment_type_replay(already, attachment_doc_types)
         return ReceivedMessage(
             message_id=already.id,
             thread_id=already.thread_id,
@@ -320,7 +320,7 @@ def _register_bound_message(
         )
     ).first()
     if same_bytes is not None:
-        _check_attachment_type_replay(session, same_bytes, attachment_doc_types)
+        _check_attachment_type_replay(same_bytes, attachment_doc_types)
         return ReceivedMessage(
             message_id=same_bytes.id,
             thread_id=same_bytes.thread_id,
@@ -606,9 +606,9 @@ def _register_routed_content(
         digest = sha256(payload).hexdigest()
         if digest in already:
             continue
+        declared_type = (attachment_doc_types or {}).get(digest, "other")
         try:
             staged = validate_and_stage(payload, filename or f"{digest[:12]}.bin", allow_email=True)
-            declared_type = (attachment_doc_types or {}).get(digest, "other")
             existing_document = session.scalar(select(Document).where(
                 Document.project_id == inbound.project_id, Document.sha256 == digest))
             if (digest in (attachment_doc_types or {}) and existing_document is not None
@@ -639,6 +639,8 @@ def _register_routed_content(
                     "filename": filename,
                     "sha256": digest,
                     "refused": refusal.reason,
+                    "source_type": declared_type,
+                    "source_type_status": "refused",
                 }
             )
         already.add(digest)
@@ -646,12 +648,12 @@ def _register_routed_content(
     session.flush()
 
 
-def _check_attachment_type_replay(session, inbound, declared):
+def _check_attachment_type_replay(inbound, declared):
     if not declared:
         return
-    registered = {item["sha256"]: session.get(Document, item["document_id"])
-                  for item in inbound.attachments_json or [] if item.get("document_id")}
-    if any(digest not in registered or registered[digest].doc_type != kind
+    registered = {item["sha256"]: item.get("source_type", "other")
+                  for item in inbound.attachments_json or []}
+    if any(digest not in registered or registered[digest] != kind
            for digest, kind in declared.items()):
         raise InboundMailRefused("duplicate mail carries different attachment type declarations")
 
