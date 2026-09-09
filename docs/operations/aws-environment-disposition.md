@@ -173,3 +173,75 @@ verified destination intact and removes the partial file.
 Rehearsal cleanup locates the restored database by its persisted `DbiResourceId`.
 Renaming the temporary instance does not make it disappear: cleanup checks its
 rehearsal tags and requests deletion using the currently observed identifier.
+
+## Operator CLI
+
+Use `make environment-disposition ARGS="..."`. `--help` creates no clients and
+makes no connections. Each command requires `--configuration <private-json>` and
+`--output <private-json>`. The output is a new configuration/result artifact;
+feed it to the next command. The original configuration is preserved unless the
+operator explicitly names it as the output destination.
+
+The initial configuration contains:
+
+- `resources`: the `AwsDispositionResources` identity fields from the registered
+  deployment: customer/environment/deployment IDs, AWS account/region, database
+  host/port/name, instance identifier/ARN/physical `DbiResourceId`, dedicated
+  `s3:<bucket>` namespace, chosen final-snapshot identifier and `kms_key_arns`.
+  `whole_environment` starts as null and is populated by `inventory`.
+- `application_stack_id` and `data_stack_id`: immutable deployment stack ARNs.
+- `retention_schedules`: explicit `{label, retain_until}` entries, or an
+  explicitly empty list when no retention obligation applies.
+- `referential_retention`: explicit `open_dereference_promises`,
+  `custody_transferred` and `unavailability_disclosed` declarations. These do not
+  substitute for verified export/disclosure bytes.
+- `custody_destination`: a separately owned `bucket`, `key` and AWS `owner`.
+
+Database URLs are read only through named environment variables. The default
+control-plane reference is `CONTROL_PLANE_OPERATIONS_DATABASE_URL`, matching
+`make control-plane`; override the **variable name**, not its value, using
+`--control-plane-url-env`. Provider commands require `--aws-profile <name>`,
+`--principal <human-subject>` and `--authorize-aws-535`. Planning, custody transfer
+and execution additionally require `--custody-profile <separate-profile>` so the
+archive can be read using the custodian's explicit access. No credential values
+belong in configuration JSON, command arguments, stdout or result artifacts.
+
+For example, with those operator-owned environment/profile references already
+configured:
+
+```bash
+make environment-disposition ARGS="inventory --configuration input.json --output inventory.json --aws-profile disposition --principal local:operator --authorize-aws-535"
+make environment-disposition ARGS="export --configuration inventory.json --output exported.json --archive-output customer-export.tar --pgpass-file /private/operator/export.pgpass --database-username export_reader --postgres-ca-file /private/operator/rds-ca.pem --aws-profile disposition --principal local:operator --authorize-aws-535"
+make environment-disposition ARGS="custody --configuration exported.json --output custody.json --aws-profile disposition --custody-profile archive-custodian --principal local:operator --authorize-aws-535"
+make environment-disposition ARGS="plan --configuration custody.json --output plan.json --aws-profile disposition --custody-profile archive-custodian --principal local:operator --authorize-aws-535"
+make environment-disposition ARGS="execute --configuration plan.json --output execution.json --operation-id approved-disposition-001 --aws-profile disposition --custody-profile archive-custodian --principal local:operator --authorize-aws-535"
+make environment-disposition ARGS="status --configuration plan.json --output status.json --operation-id approved-disposition-001"
+```
+
+Export uses explicit RDS certificate verification (`sslmode=verify-full`) and a
+pgpass reference. Add `--disclosure-file <path>` where retained dereference needs
+the exported disclosure. No command disables services or edits the registry on
+the operator's behalf; freeze the deployment using its existing deployment and
+`make control-plane state` commands before planning.
+
+`rehearsal-restore`, `rehearsal-verify` and `rehearsal-cleanup` consume a `rehearsal`
+entry matching `RestoreRehearsal`. Verification additionally needs explicit
+`rehearsal_queries` for the synthetic fixture and
+`--restored-database-url-env <variable-name>`; the probe verifies that connection
+against the RDS-described isolated target before reading. Re-run the same
+configuration and operation identity to observe asynchronous progress.
+
+The CLI returns **3** for a recorded partial/pending/refused execution or rehearsal
+observation, **2** for a policy refusal and **1** for another failure. It returns
+0 for a completed requested operation or a successful read/plan. A written
+pending artifact does not mean destruction or restoration is complete. `status`
+and `gate` read the control plane and never construct AWS clients.
+
+For activation evidence, `gate` requires the executed `disposition_plan`,
+`--operation-id`, the `rehearsal.operation_id`, the exact
+`activation_configuration_identity` and `disposition_inventory_digest`.
+`disposition_gate_payload` verifies the precise final AWS receipt and the latest
+completed restore, state-verification, cleanup and backup-expiration observations
+for one rehearsal specification. Its freshness timestamp comes from the retained
+observations; regenerating a JSON artifact cannot freshen old provider evidence.
+The result is evidence for the separate activation gate, never an activation.

@@ -532,3 +532,67 @@ def test_custody_consumes_real_dump_data_blocks_beyond_the_table_of_contents(run
     data, checksum = _archive_containing_dump(truncated)
     with pytest.raises(DispositionRefused, match="full archive validation failed"):
         verify_export_archive(BytesIO(data), expected_sha256=checksum, environment_id="environment", inventory_sha256=digest(inventory()), restore_run=restore_runner)
+
+
+def test_disposition_gate_requires_real_final_receipt_and_same_spec_rehearsal():
+    from corridor.control_plane import DestructionReceipt
+    from corridor.disposition_evidence import disposition_gate_payload
+    provider_resources = json.loads(json.dumps(__import__("dataclasses").asdict(resource(whole_environment=inventory()))))
+    inventory_sha = digest(provider_resources)
+    plan = SimpleNamespace(status="executed", environment_id="environment", manifest_sha256="a" * 64,
+        provider_resources_sha256=inventory_sha, provider_resources=provider_resources)
+    final = DestructionReceipt("environment-final", "environment", "dispose-one", "environment", "completed",
+        f"aws:environment/whole-environment-absent/{inventory_sha}/{plan.manifest_sha256}", "local:operator", NOW)
+    rows = [{"receipt_id": f"phase-{phase}", "environment_id": "environment", "operation_id": "rehearsal-one",
+             "phase": phase, "outcome": "completed", "observed_at": NOW, "evidence": {"spec_sha256": "b" * 64}}
+            for phase in ("restore", "state_verification", "cleanup", "backup_expiration")]
+    store = SimpleNamespace(disposition_plan=lambda plan_id: plan, destruction_receipts=lambda env: [final],
+                            disposition_rehearsal_receipts=lambda env, op: rows)
+    arguments = dict(plan_id="plan-one", operation_id="dispose-one", rehearsal_operation_id="rehearsal-one",
+                     configuration_identity="configured-identity", inventory_digest=inventory_sha)
+    result = disposition_gate_payload(store, **arguments)
+    assert result["gate"] == "disposition" and result["configuration"] == "configured-identity"
+    assert result["external_receipt_reference"] == "control-plane:destruction/environment-final"
+    assert result["observed_at"] == NOW.isoformat()
+    rows[-1]["outcome"] = "pending"
+    with pytest.raises(DispositionRefused, match="not completed"):
+        disposition_gate_payload(store, **arguments)
+    rows[-1]["outcome"] = "completed"
+    rows[-1]["evidence"]["spec_sha256"] = "c" * 64
+    with pytest.raises(DispositionRefused, match="one pinned"):
+        disposition_gate_payload(store, **arguments)
+    final = replace(final, evidence_ref="synthetic:environment/gone")
+    with pytest.raises(DispositionRefused, match="exact AWS"):
+        disposition_gate_payload(store, **arguments)
+
+
+def test_disposition_cli_refuses_aws_without_authorization_before_client_creation(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    import boto3
+    import corridor.environment_disposition_cli as cli
+    configuration = tmp_path / "configuration.json"
+    configuration.write_text(json.dumps({"resources": asdict(resource())}))
+    monkeypatch.setenv("DISPOSITION_TEST_CONTROL_URL", "postgresql+psycopg://fixture@127.0.0.1:9/unopened")
+    monkeypatch.setattr(boto3, "Session", lambda **kwargs: pytest.fail("must not construct AWS session"))
+    output = tmp_path / "output.json"
+    assert cli.main(["inventory", "--configuration", str(configuration), "--output", str(output),
+        "--control-plane-url-env", "DISPOSITION_TEST_CONTROL_URL", "--aws-profile", "fixture"]) == 2
+    assert not output.exists()
+
+
+def test_disposition_cli_status_reads_control_plane_without_aws_and_writes_private_artifact(tmp_path, monkeypatch):
+    from dataclasses import asdict
+    import stat
+    import sqlalchemy
+    import corridor.environment_disposition_cli as cli
+    configuration = tmp_path / "configuration.json"
+    configuration.write_text(json.dumps({"resources": asdict(resource())}))
+    monkeypatch.setenv("DISPOSITION_TEST_CONTROL_URL", "postgresql+psycopg://fixture@127.0.0.1:9/unopened")
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *args, **kwargs: SimpleNamespace(dispose=lambda: None))
+    monkeypatch.setattr(cli, "ControlPlane", lambda engine: SimpleNamespace(disposition_plans=lambda env: [], destruction_receipts=lambda env: []))
+    monkeypatch.setattr(cli, "_provider_clients", lambda *args, **kwargs: pytest.fail("status must not load AWS clients"))
+    output = tmp_path / "status.json"
+    assert cli.main(["status", "--configuration", str(configuration), "--output", str(output),
+        "--control-plane-url-env", "DISPOSITION_TEST_CONTROL_URL"]) == 0
+    assert json.loads(output.read_text())["environment_id"] == "environment"
+    assert stat.S_IMODE(output.stat().st_mode) == 0o600
