@@ -169,10 +169,16 @@ Focused entrypoints use a 30-second default deadline and stop at the first
 failure; deliberate diagnostics can name a different deadline or failure limit.
 
 GitHub partial reruns may reuse successful receipts from earlier attempts of
-the same run and tested SHA. The summary verifies them against GitHub's latest
-successful jobs and preserves those jobs' full measured critical-path cost.
-A summary-only retry therefore cannot erase expensive test work, and a failed
-job can be repaired without needlessly rerunning its successful siblings.
+the same run and tested SHA. In [run `34292528190`](https://github.com/bharm16/corridor/actions/runs/34292528190),
+GitHub assigned reused jobs new IDs and the latest attempt number while
+preserving their original execution intervals and earlier receipt outputs.
+The summary accepts that reuse only when the inventory also contains the
+successful original-attempt job with the same name and exact start and end
+times. Missing, failed or ambiguous original evidence and changed intervals
+fail closed. Receipt identities remain unchanged, and the summary preserves
+the jobs' full measured critical-path cost. A summary-only retry therefore
+cannot erase expensive test work, and a failed job can be repaired without
+needlessly rerunning its successful siblings.
 
 The separate CDK toolchain is installed, asserted, and synthesized only for
 infrastructure inputs: the infrastructure project, deployment workflows and

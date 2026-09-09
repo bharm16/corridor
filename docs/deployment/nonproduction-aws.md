@@ -281,8 +281,8 @@ These are historical planning figures. A serving release now requires the
 worker as well as web, so it uses the **Both running** column; the web-only
 column is no longer a supported release configuration. The separate
 control-plane store is not included in this older estimate. The approved
-monthly budget is recorded below; refresh the complete topology estimate
-under #601 before deployment.
+monthly budget and refreshed estimate for the complete configured topology
+are recorded below.
 
 | Item | Unit | Idle (web 1, batch 0) | Both running |
 |---|---|---:|---:|
@@ -306,8 +306,12 @@ On 2026-09-08, the owner approved USD 150/month and
 actual-spend alerts at 80% and 100%, and forecast-spend alert at 100%, were
 verified against the owner-selected email; #601 retains that verification.
 The earlier $100 example remains a historical estimate excluding the control
-plane. A current estimate for the complete serving topology is still required
-before deployment. Budgets alert; they do not cap spend.
+plane. The [2026-09-08 topology estimate in #601](https://github.com/bharm16/corridor/issues/601#issuecomment-5593591225)
+prices the continuously running web, worker and both databases at
+**$126.04/month including configured monitoring**, or **$136.42/month with
+the stated low-usage allowances**, using 730 hours/month. These are prospective
+costs; taxes and unrelated account use are excluded. The account-wide budget
+also covers unrelated use. Budgets alert; they do not cap spend.
 
 ## What is deliberately not here
 

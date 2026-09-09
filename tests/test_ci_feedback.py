@@ -331,6 +331,54 @@ def test_partial_retry_keeps_the_successful_jobs_cost_and_verifies_their_attempt
         ci.verified_gate_seconds(report["receipts"], run, jobs, "2026-09-08T11:00:10Z")
 
 
+def test_partial_retry_accepts_cloned_jobs_without_relabeling_receipts_or_losing_cost():
+    report = _report()
+    report["receipts"][1]["run_attempt"] = 2
+    original = _jobs("2026-09-08T10:00:00Z", "2026-09-08T10:00:10Z")
+    original[2].update(started_at="2026-09-08T10:00:15Z", completed_at="2026-09-08T10:04:15Z")
+    latest = [{**job, "id": job["id"] + 100, "run_attempt": 2} for job in original]
+    latest[3].update(started_at="2026-09-08T11:00:00Z", completed_at="2026-09-08T11:00:20Z")
+    latest[-1].update(started_at="2026-09-08T11:00:20Z", completed_at=None, conclusion=None)
+    run = {"run_attempt": 2, "created_at": "2026-09-08T10:00:00Z", "run_started_at": "2026-09-08T11:00:00Z"}
+
+    seconds = ci.verified_gate_seconds(report["receipts"], run, [*original, *latest], "2026-09-08T11:00:30Z")
+
+    # The 30-second retry retains ten seconds of classification, the reused
+    # four-minute test job, and ten seconds of summary work.
+    assert seconds == 260
+    retained = ci.aggregate_receipts(report["receipts"], {**report["expected"], "run_attempt": 2}, seconds)
+    assert retained["receipts"] == report["receipts"]
+    assert [receipt["run_attempt"] for receipt in retained["receipts"]] == [1, 2]
+
+
+@pytest.mark.parametrize("defect", [
+    "missing original", "failed original", "ambiguous original", "failed latest",
+    "changed start", "changed end", "new execution",
+])
+def test_reused_receipt_requires_its_successful_original_and_unchanged_execution(defect):
+    original = _jobs("2026-09-08T10:00:00Z", "2026-09-08T10:04:00Z")
+    latest = [{**job, "id": job["id"] + 100, "run_attempt": 2} for job in original]
+    latest[-1].update(started_at="2026-09-08T11:04:00Z", completed_at=None, conclusion=None)
+    run = {"run_attempt": 2, "created_at": "2026-09-08T10:00:00Z", "run_started_at": "2026-09-08T11:00:00Z"}
+    if defect == "missing original":
+        original.pop(2)
+    elif defect == "failed original":
+        original[2]["conclusion"] = "failure"
+    elif defect == "ambiguous original":
+        original.append({**original[2], "id": 1000})
+    elif defect == "failed latest":
+        latest[2]["conclusion"] = "failure"
+    elif defect == "changed start":
+        latest[2]["started_at"] = "2026-09-08T10:00:01Z"
+    elif defect == "changed end":
+        latest[2]["completed_at"] = "2026-09-08T10:04:01Z"
+    elif defect == "new execution":
+        latest[2].update(started_at="2026-09-08T11:00:00Z", completed_at="2026-09-08T11:04:00Z")
+
+    with pytest.raises(ci.EvidenceError, match="successful GitHub job: pytest"):
+        ci.verified_gate_seconds(_report()["receipts"], run, [*original, *latest], "2026-09-08T11:04:10Z")
+
+
 def test_independent_check_path_does_not_pay_classifier_time_twice():
     jobs = _jobs("2026-09-08T10:00:00Z", "2026-09-08T10:01:00Z")
     jobs[1]["completed_at"] = "2026-09-08T10:02:30Z"
