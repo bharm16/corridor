@@ -354,7 +354,9 @@ def read_accepted_field_population(session: Session, project_id: int, *, revisio
         if isinstance(payload, dict):
             payload = MappingProxyType({name: tuple(item) if isinstance(item, list) else item
                                         for name, item in payload.items()})
-        held[value.fact_type] = AcceptedField(value.fact_type, value.subject_key, payload, value.fact_id,
+        if value.fact_subject_key is None:
+            raise NativeReadingRefused("native accepted field has no original source-subject identity")
+        held[value.fact_type] = AcceptedField(value.fact_type, value.fact_subject_key, payload, value.fact_id,
                                              value.decision_id, value.revision_id, passages,
                                              value.external_org_value_id)
     vocabulary = RESOLUTION_VOCABULARIES.get(project.slug)

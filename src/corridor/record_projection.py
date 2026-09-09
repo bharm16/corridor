@@ -65,6 +65,7 @@ class CurrentRecordValue:
     statement_timings: tuple[CurrentStatementTiming, ...] = ()
     applies_to_subject_keys: tuple[str, ...] = ()
     subject_kind: str | None = None
+    fact_subject_key: str | None = None
 
 
 def record_value_payload(value: CurrentRecordValue):
@@ -227,7 +228,7 @@ def read_native_record_values(
     rows = session.execute(text("""
         select d.project_id, null::bigint as dependency_id, d.subject_key, d.fact_type,
                f.text_value, f.date_value, f.date_range_start, f.date_range_end,
-               f.external_org_value_id, f.document_value_id, d.id, f.id, d.revision_id, f.subject_kind
+               f.external_org_value_id, f.document_value_id, d.id, f.id, d.revision_id, f.subject_kind, f.subject_key
         from fact_decisions d join facts f on f.id=d.fact_id and f.project_id=d.project_id
         left join fact_decisions successor on successor.id=d.superseded_by
         where d.project_id=:project and d.revision_id<=:revision
@@ -242,4 +243,4 @@ def read_native_record_values(
                 and (lifted.id is null or lifted.revision_id>:revision))
         order by d.subject_key,d.fact_type,d.id
     """), {"project": project_id, "revision": revision_id}).all()
-    return _attach_structured_values(session, tuple(CurrentRecordValue(*row[:13], subject_kind=row[13]) for row in rows))
+    return _attach_structured_values(session, tuple(CurrentRecordValue(*row[:13], subject_kind=row[13], fact_subject_key=row[14]) for row in rows))

@@ -341,3 +341,41 @@ def test_historical_native_report_uses_no_future_revision_as_its_predecessor(ses
     report = build_report(session, project.id, today=TODAY, frozen_reading=historical)
     assert report.diff.previous_run_id == first.id
     assert report.diff.previous_run_id != future.id
+
+
+def test_native_projection_keeps_record_decision_subject_apart_from_original_fact_subject(session, adopted):
+    from sqlalchemy import text
+    from corridor.record_projection import read_native_record_values
+    project, adoption = adopted
+    source_row = session.scalar(select(BaselineSourceRow).where(BaselineSourceRow.project_id == project.id).order_by(BaselineSourceRow.id))
+    original = session.scalar(select(FactDecision).where(FactDecision.project_id == project.id,
+        FactDecision.subject_key == source_row.source_row_key, FactDecision.fact_type == "station_from"))
+    fact_id, predecessor = original.fact_id, original.id
+    # Model the native migration/identity binding the record-decision role may
+    # write: the accepted subject changes, while the captured Fact remains the
+    # original source row. Source bytes and Fact rows are not rewritten.
+    with session.begin_nested():
+        session.execute(text("set local role corridor_fact_decision_writer"))
+        revision = session.scalar(text("""
+            insert into project_record_revisions(project_id, predecessor_revision_id,
+                command_type, human_principal, idempotency_key)
+            values(:project,:prior,'resolve_discrepancy','local:coordinator','native-subject-binding') returning id
+        """), {"project": project.id, "prior": adoption.revision_id})
+        decision = session.scalar(text("select nextval('fact_decisions_id_seq')"))
+        session.execute(text("update fact_decisions set superseded_by=:successor where id=:prior"),
+                        {"successor": decision, "prior": predecessor})
+        session.execute(text("""
+            insert into fact_decisions(id,project_id,fact_id,subject_key,fact_type,revision_id,disposition)
+            values(:id,:project,:fact,:subject,'station_from',:revision,'include')
+        """), {"id": decision, "project": project.id, "fact": fact_id,
+               "subject": source_row.record_subject_key, "revision": revision})
+        session.execute(text("reset role"))
+    values = read_native_record_values(session, project.id, revision)
+    selected = next(value for value in values if value.decision_id == decision)
+    assert selected.subject_key == source_row.record_subject_key
+    assert selected.fact_subject_key == source_row.source_row_key
+    assert selected.subject_key != selected.fact_subject_key
+    population = read_accepted_field_population(session, project.id)
+    field = next(record for record in population.records if record.subject_key == source_row.record_subject_key).fields["station_from"]
+    assert field.fact_subject_key == source_row.source_row_key
+    assert field.fact_id == fact_id and field.decision_id == decision
