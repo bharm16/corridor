@@ -108,3 +108,32 @@ only canonical JSON representation is PostgreSQL `payload::text`, identified as
 `postgresql-jsonb-text-v1`. `read_shadow_run` exports those exact bytes and their
 SHA alongside the verified parsed payload; Python never recreates the output
 digest through its own JSON serializer. There is no second stored payload copy.
+
+## Operator commands
+
+`make activation ARGS="validate --configuration configuration.json --evidence evidence.json --operator local:operator --revision activation-1"`
+checks all prerequisite artifacts and writes nothing. The evidence manifest maps
+each gate to `{"path": "artifact.json", "sha256": "..."}`; relative paths resolve
+beside that manifest. Use `freeze` with the same arguments and `--custody <dir>`
+to publish the immutable receipt. Neither command enables a route or produces
+missing live evidence.
+
+`make shadow-processing ARGS="provision --database-url-env SHADOW_OWNER_URL --project-id <id> --customer <customer> --environment <environment> --operator <principal>"`
+provisions isolation for an existing, separately human-adopted baseline. The named
+environment variable holds the explicit schema-owner URL; the URL is never a
+command-line argument. Optional `--intake-secret-env SHADOW_INTAKE_SECRET` binds
+a webhook credential to this project or verifies its existing exact binding.
+
+Use `run` with `--database-url-env SHADOW_WORKER_URL`, the same project/customer/
+environment, a named operator, `--source-configuration`, `--deletion-date`,
+`--authorization`, `--compatibility-receipt`, and `--compatibility-sha256`.
+Choose an existing `--delivery-id`, or provide `--input` with the registered
+`--intake-secret-env` and an optional stable `--transport-delivery-id`. Exact
+compatibility and signed shadow authorization are verified before input storage.
+Use `--complete --sealed` only for an explicitly complete enumerative source;
+both default to false. Runtime commands accept only the actual worker credential.
+
+Use `export` with the worker URL, project/customer/environment, frozen `--identity`
+and `--output`. It writes a verified envelope containing the exact PostgreSQL
+payload text and its SHA, without printing source content. Repeating the export
+is idempotent; an existing destination with different bytes refuses.

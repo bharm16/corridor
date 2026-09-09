@@ -158,6 +158,40 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
     An existing revision is immutable; a changed configuration requires a new
     explicit revision and processing_authorized rejects the preceding receipt.
     """
+    payload = validate_activation_evidence(configuration, evidence=evidence,
+        operator=operator, revision=revision, now=now)
+    custody.mkdir(parents=True, exist_ok=True)
+    # Derive filenames from the revision; arbitrary operator text cannot escape
+    # the dedicated receipt namespace. O_EXCL also serializes competing writers.
+    path = custody / (_digest({"environment": configuration.environment,
+        "project": configuration.project_id, "revision": revision}) + ".json")
+    body = _bytes(payload)
+    # Publish only a complete fsynced object. A crash before link leaves an
+    # unreferenced temporary file; a crash after link leaves a complete receipt.
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".activation-", dir=custody)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(body)
+            stream.flush()
+            os.fsync(stream.fileno())
+        try:
+            os.link(temporary, path)
+        except FileExistsError:
+            previous = json.loads(path.read_bytes())
+            if any(previous.get(key) != payload[key] for key in payload if key != "activated_at"):
+                raise ActivationRefused("activation revision already binds different evidence or configuration")
+            return EvidenceArtifact(path, sha256(path.read_bytes()).hexdigest())
+        return EvidenceArtifact(path, sha256(body).hexdigest())
+    finally:
+        temporary.unlink(missing_ok=True)
+
+
+def validate_activation_evidence(configuration: ActivationConfiguration, *,
+                                 evidence: dict[str, EvidenceArtifact],
+                                 operator: str, revision: str,
+                                 now: datetime | None = None):
+    """Validate the exact activation manifest without writing a receipt."""
     now = now or datetime.now(timezone.utc)
     values = asdict(configuration)
     if now.tzinfo is None or not operator or not revision or not all(
@@ -199,31 +233,7 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
         receipts[gate] = evidence[gate].sha256
     payload = {"version": VERSION, "configuration": values, "configuration_digest": configuration.identity,
         "operator": operator, "revision": revision, "activated_at": now.isoformat(), "evidence": receipts}
-    custody.mkdir(parents=True, exist_ok=True)
-    # Derive filenames from the revision; arbitrary operator text cannot escape
-    # the dedicated receipt namespace. O_EXCL also serializes competing writers.
-    path = custody / (_digest({"environment": configuration.environment,
-        "project": configuration.project_id, "revision": revision}) + ".json")
-    body = _bytes(payload)
-    # Publish only a complete fsynced object. A crash before link leaves an
-    # unreferenced temporary file; a crash after link leaves a complete receipt.
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".activation-", dir=custody)
-    temporary = Path(temporary_name)
-    try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            previous = json.loads(path.read_bytes())
-            if any(previous.get(key) != payload[key] for key in payload if key != "activated_at"):
-                raise ActivationRefused("activation revision already binds different evidence or configuration")
-            return EvidenceArtifact(path, sha256(path.read_bytes()).hexdigest())
-        return EvidenceArtifact(path, sha256(body).hexdigest())
-    finally:
-        temporary.unlink(missing_ok=True)
+    return payload
 
 
 def _complete_route_observations(observations):

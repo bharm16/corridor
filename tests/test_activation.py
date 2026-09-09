@@ -215,3 +215,26 @@ def test_ucm_only_activation_requires_matching_built_image_observations(tmp_path
         activate(configuration, evidence=artifacts, operator="local:operator", revision="one",
             custody=tmp_path / "custody", now=NOW)
     assert not (tmp_path / "custody").exists()
+
+
+def test_operator_validate_writes_nothing_and_freeze_publishes_receipt(tmp_path, configuration, capsys):
+    from dataclasses import asdict
+    from corridor.activation_cli import main
+    from pathlib import Path
+    configuration_path = tmp_path / "configuration.json"
+    configuration_path.write_text(json.dumps(asdict(configuration)))
+    artifacts = evidence(tmp_path, configuration)
+    evidence_path = tmp_path / "evidence.json"
+    evidence_path.write_text(json.dumps({gate: {"path": artifact.path.name, "sha256": artifact.sha256}
+        for gate, artifact in artifacts.items()}))
+    common = ["--configuration", str(configuration_path), "--evidence", str(evidence_path),
+        "--operator", "local:operator", "--revision", "cli-revision"]
+    before = set(tmp_path.iterdir())
+    assert main(["validate", *common]) == 0
+    assert json.loads(capsys.readouterr().out)["outcome"] == "validated"
+    assert set(tmp_path.iterdir()) == before
+    assert main(["freeze", *common, "--custody", str(tmp_path / "custody")]) == 0
+    frozen = json.loads(capsys.readouterr().out)
+    assert frozen["outcome"] == "frozen"
+    receipt = EvidenceArtifact(Path(frozen["receipt_path"]), frozen["receipt_sha256"])
+    assert processing_authorized(configuration, receipt)

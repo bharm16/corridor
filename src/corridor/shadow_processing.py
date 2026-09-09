@@ -129,6 +129,27 @@ def _compatibility(receipt, *, source_sha256, customer, project, environment):
     return payload
 
 
+def validate_shadow_input(*, compatibility_receipt, authorization, source_sha256,
+                          customer, project_slug, environment, deletion_date, now=None):
+    """Check authorization and exact compatibility before intake stores bytes."""
+    now = now or datetime.now(timezone.utc)
+    if now.tzinfo is None or deletion_date <= now.date():
+        raise ShadowRefused("aware time and future deletion are required")
+    if (not isinstance(authorization, CustomerAuthorization)
+        or not authorization.record_id or not authorization.signed_by
+        or not authorization.signed_on or not authorization.retention_disclosed
+        or "ucm" not in authorization.source_classes
+        or "shadow-processing" not in authorization.purposes
+        or "shadow" not in authorization.stages or authorization.customer != customer
+        or project_slug not in authorization.projects or source_sha256 not in authorization.source_sha256s):
+        raise ShadowRefused("signed authorization does not cover these bytes for shadow processing")
+    compatibility = _compatibility(compatibility_receipt, source_sha256=source_sha256,
+        customer=customer, project=project_slug, environment=environment)
+    if date.fromisoformat(compatibility["deletion_date"]) < deletion_date:
+        raise ShadowRefused("shadow retention exceeds compatibility authorization treatment")
+    return compatibility
+
+
 def run_shadow_ucm(session, *, project: Project, staged, envelope,
                    compatibility_receipt: CompatibilityReceipt,
                    authorization: CustomerAuthorization, customer: str,
@@ -148,18 +169,9 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
     if now.tzinfo is None or deletion_date <= now.date() or not source_configuration:
         raise ShadowRefused("aware time, future deletion and source configuration are required")
     verify_runtime(session, project_id=project.id, customer=customer, environment=environment)
-    if (not isinstance(authorization, CustomerAuthorization)
-        or not authorization.record_id or not authorization.signed_by
-        or not authorization.signed_on or not authorization.retention_disclosed
-        or "ucm" not in authorization.source_classes
-        or "shadow-processing" not in authorization.purposes
-        or "shadow" not in authorization.stages or authorization.customer != customer
-        or project.slug not in authorization.projects or staged.sha256 not in authorization.source_sha256s):
-        raise ShadowRefused("signed authorization does not cover these bytes for shadow processing")
-    compatibility = _compatibility(compatibility_receipt, source_sha256=staged.sha256,
-        customer=customer, project=project.slug, environment=environment)
-    if date.fromisoformat(compatibility["deletion_date"]) < deletion_date:
-        raise ShadowRefused("shadow retention exceeds compatibility authorization treatment")
+    compatibility = validate_shadow_input(compatibility_receipt=compatibility_receipt,
+        authorization=authorization, source_sha256=staged.sha256, customer=customer,
+        project_slug=project.slug, environment=environment, deletion_date=deletion_date, now=now)
     delivery = require_stored_envelope(session, envelope)
     if delivery.project_id != project.id or envelope.customer != customer:
         raise ShadowRefused("delivery is outside the shadow customer/project")
