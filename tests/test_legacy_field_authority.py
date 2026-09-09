@@ -10,7 +10,7 @@ from corridor.db import Session, engine
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.legacy_field_authority import read_legacy_field_authority
 from corridor.legacy_history import capture_history, inventory_history
-from corridor.models import ActiveExtractionRun, Dependency, Document, ExtractionRun, Fact, FactSource, Project, SourceSegment
+from corridor.models import ActiveExtractionRun, Candidate, Dependency, Document, ExtractedProposal, ExtractedProposalFact, ExtractionRun, Fact, FactSource, Project, SourceSegment
 from corridor.principals import HumanPrincipal
 from corridor.subject_resolution import decide_subject_alias, resolve_subject_reference
 
@@ -27,7 +27,7 @@ def session():
     connection.close()
 
 
-def _source(session, project, label):
+def _source(session, project, dependency, label):
     document = Document(project_id=project.id, sha256=sha256(label.encode()).hexdigest(),
         filename=f"{label}.xlsx", doc_type="matrix", pages=1, parse_status="parsed")
     session.add(document)
@@ -53,6 +53,19 @@ def _source(session, project, label):
             source_segment_id=segment.id, role="value_source", ordinal=1))
         facts.append(fact)
         segments.append(segment)
+    candidate = Candidate(project_id=project.id, kind="dependency", payload_json={"fields": {}},
+        source_document_id=document.id, source_pages=[1], prompt_version=run.prompt_version,
+        citations_verified=True, state="accepted", merged_into=dependency.id)
+    session.add(candidate)
+    session.flush()
+    proposal = ExtractedProposal(project_id=project.id, document_id=document.id,
+        extraction_run_id=run.id, candidate_id=candidate.id, kind="dependency",
+        subject_key=facts[0].subject_key, candidate_metadata_json={"state": "pending", "source_pages": [1]})
+    session.add(proposal)
+    session.flush()
+    for ordinal, fact in enumerate(facts, 1):
+        session.add(ExtractedProposalFact(project_id=project.id, document_id=document.id,
+            extraction_run_id=run.id, proposal_id=proposal.id, fact_id=fact.id, ordinal=ordinal))
     session.flush()
     return facts, segments
 
@@ -72,7 +85,7 @@ def test_exact_alias_requires_accepted_identifier_and_preserves_independent_revi
     dependency = Dependency(project_id=project.id, ref_code="DEP-FIELD", dep_type="utility_relocation", title="Compatibility title")
     session.add(dependency)
     session.flush()
-    facts, segments = _source(session, project, "SOURCE-ONE")
+    facts, segments = _source(session, project, dependency, "SOURCE-ONE")
     value = include_structured_cell_fact_by_policy(session, facts[1], idempotency_key="field-value")
     alias = _alias(session, project, dependency, segments[0])
     batch = capture_history(session, inventory_history(session, project.id), run_key="field-identity",
@@ -98,7 +111,7 @@ def test_exact_alias_requires_accepted_identifier_and_preserves_independent_revi
 
     # A different accepted source can identify the same record. Equal source
     # values are still competing ownership claims, never a tie to pick by age.
-    other_facts, other_segments = _source(session, project, "SOURCE-TWO")
+    other_facts, other_segments = _source(session, project, dependency, "SOURCE-TWO")
     _alias(session, project, dependency, other_segments[0])
     for fact in other_facts:
         include_structured_cell_fact_by_policy(session, fact, idempotency_key=f"other:{fact.fact_type}")
