@@ -68,8 +68,8 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    # #455's MIME locators, Fact contracts and guarded thread-reading links.
-    "057370f6138af9e20a6a24a82e1c89bdf6c27ad58e717277a0ae8b50768d90bf"
+    # #456/#562 typed minutes scopes/timing and immutable project contact sources.
+    "9d86919267b985e44a058f036a740fcb42fdd721833d19abad359e54e75f9571"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]

@@ -11,10 +11,22 @@ from __future__ import annotations
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date
+import re
 
 
 class StatementRefusal(ValueError):
     """The proposed statement would manufacture a fact the record lacks."""
+
+
+def reports_completion(text: str) -> bool:
+    """An explicit report of completion, with negation/future language unresolved."""
+    normalized = text.replace("\u2019", "'")
+    return bool(re.search(r"\b(?:completed|complete|finished)\b", normalized, re.I)) and not bool(
+        re.search(r"\b(?:not|never|incomplete|will|would|could|should|may|might|if|expect\w*|almost|nearly|partially|reportedly)\b|\b\w+n['’]t\b|\?", normalized, re.I))
+
+
+def states_unknown_scope(text: str) -> bool:
+    return bool(re.search(r"\b(?:scope|applies to)\s*(?::|is)?\s*(?:not yet known|unknown|TBD)\b", text, re.I))
 
 
 @dataclass(frozen=True)

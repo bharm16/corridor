@@ -68,6 +68,19 @@
     Leaving an item records nothing.
   </p>
 
+  {%- if reading.source_questions %}
+  <section aria-label="Statements to review">
+    <h2>Statements to review</h2>
+    {%- for question in reading.source_questions %}
+    <article class="item">
+      <p>{{ question.filename }}{% if question.page_no %}, page {{ question.page_no }}{% endif %}</p>
+      <blockquote>{{ question.text }}</blockquote>
+      <p>{{ question.reasons|join("; ") }}</p>
+    </article>
+    {%- endfor %}
+  </section>
+  {%- endif %}
+
   {%- if saved %}
   {% call ui.outcome("saved", saved.heading, focus) %}
     <p>{{ saved.detail }}</p>
@@ -138,6 +151,11 @@
       {%- endfor %}
     {% endcall %}
     {%- endif %}
+    {%- for child in view.item.children %}
+      {%- for reason in child.source_attention_reasons %}
+      <p>{{ ui.state(state_label("attention", reason)) }}</p>
+      {%- endfor %}
+    {%- endfor %}
 
     {%- if view.item.focused %}
 

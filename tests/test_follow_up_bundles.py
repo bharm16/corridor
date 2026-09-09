@@ -399,7 +399,7 @@ def test_one_organization_produces_several_bundles_for_different_windows(
     windows = [bundle.due_window for bundle in reading.bundles]
     assert windows == ["2026-W37", "2026-W39"]
     assert all(
-        bundle.recipient.contact_name == WATER_CONTACT
+        bundle.recipient.contact_state == CONTACT_UNRESOLVED
         for bundle in reading.bundles
     )
 
@@ -447,7 +447,7 @@ def test_a_bundle_is_never_suppressed_for_want_of_an_address(session, project):
     assert "no contact is recorded" in bundle.recipient.sentence()
 
 
-def test_a_resolved_contact_carries_its_channel_and_keys_the_bundle(
+def test_legacy_v1_preserves_its_prior_recipient_rendering(
     session, project
 ):
     """Channel participates only where a contact actually resolved to one."""
@@ -459,7 +459,7 @@ def test_a_resolved_contact_carries_its_channel_and_keys_the_bundle(
     made.promised(SECOND, SOON)
     made.adopt()
 
-    reading = _read(session, project)
+    reading = _read(session, project, rule_version="v1")
 
     states = {bundle.recipient.contact_state for bundle in reading.bundles}
     assert states == {CONTACT_RESOLVED, CONTACT_UNRESOLVED}

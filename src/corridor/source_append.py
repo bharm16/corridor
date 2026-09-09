@@ -35,6 +35,7 @@ from corridor.models import (
     ExtractedProposal,
     Fact,
     InboundThreadReading,
+    MinutesCapture,
     RecordedVerbalOrigin,
     SourceFactAppendReceipt,
     SourceSegment,
@@ -85,6 +86,13 @@ class TimingValues:
     precision: str
     start_date: date | None
     end_date: date | None
+
+
+@dataclass(frozen=True)
+class ScopeSubjectValues:
+    subject_key: str
+    source_segment_id: int
+    reference_text: str
 
 
 def append_recorded_verbal_origin(
@@ -190,6 +198,7 @@ def append_fact(
     applies_to: Sequence[int] | None = None,
     closure: ClosureValues | None = None,
     timings: Sequence[TimingValues] | None = None,
+    applies_to_subjects: Sequence[ScopeSubjectValues] | None = None,
 ) -> Fact:
     """Append one materialized Fact with its role-tagged sources and typed satellites."""
 
@@ -207,6 +216,10 @@ def append_fact(
     satellites: dict[str, object] = {}
     if applies_to is not None:
         satellites["applies_to"] = list(applies_to)
+    if applies_to_subjects is not None:
+        satellites["applies_to_subjects"] = [
+            {"subject_key": member.subject_key, "source_segment_id": member.source_segment_id,
+             "reference_text": member.reference_text} for member in applies_to_subjects]
     if closure is not None:
         satellites["closure"] = {
             "closure_kind": closure.closure_kind,
@@ -319,6 +332,15 @@ def append_email_thread_reading(
         prompt_version, model,
     )))
     return session.get_one(InboundThreadReading, int(reading_id))
+
+
+def append_minutes_capture(session: Session, *, project_id: int, document_id: int,
+    extraction_run_id: int, source_family: str, source_revision: str, input_sha256: str,
+    accepted_revision_id: int, output: dict) -> MinutesCapture:
+    """Seal the reading and supersede only its source family's unaccepted deltas."""
+    identifier = session.scalar(select(func.append_minutes_capture(project_id, document_id,
+        extraction_run_id, source_family, source_revision, input_sha256, accepted_revision_id, _jsonb(output))))
+    return session.get_one(MinutesCapture, int(identifier))
 
 
 def append_support_assessment(

@@ -92,6 +92,11 @@ class PilotRoute:
 
 
 PILOT_ROUTES: dict[tuple[str, str], PilotRoute] = {
+    ("POST", "/projects/{slug}/contacts/{contact_id}/correct"): PilotRoute(
+        why="#562 an authenticated, project-scoped onboarding correction",
+        relations=frozenset({"projects", "project_roster_entries", "project_contacts", "project_contact_imports",
+                             "current_project_record", "external_orgs"}),
+    ),
     ("GET", "/readyz"): PilotRoute(
         why=(
             "the load balancer's readiness probe. It resolves no principal "
@@ -546,6 +551,18 @@ def undocumented_public_privileges(
             if (relation, privilege.upper()) not in allowed
         )
     )
+
+
+# These routes consume the shared native review reading (#456), and the
+# project workflow also consumes source-backed recipient resolution (#562).
+for _key in (("GET", "/work/{slug}"), ("POST", "/work/{slug}/issue/prepare"),
+             ("POST", "/work/{slug}/issue/authorize"), ("GET", "/review/{slug}"),
+             ("POST", "/review/{slug}"), ("POST", "/review/{slug}/answers")):
+    _route = PILOT_ROUTES[_key]
+    _relations = _route.relations | {"minutes_captures", "source_segments", "documents"}
+    if _key[1].startswith("/work/"):
+        _relations |= {"project_contact_imports", "project_contacts", "external_orgs", "current_project_record"}
+    PILOT_ROUTES[_key] = PilotRoute(_route.why, frozenset(_relations))
 
 
 def route_is_enabled(method: str, template: str) -> bool:

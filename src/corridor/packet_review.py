@@ -350,6 +350,11 @@ class IncomingCapture:
     fact: Fact
     segment: SourceSegment | None
     document: Document | None
+    additional_facts: tuple[Fact, ...] = ()
+
+    @property
+    def facts(self) -> tuple[Fact, ...]:
+        return (self.fact, *self.additional_facts)
 
 
 @dataclass(frozen=True, slots=True)
@@ -473,6 +478,8 @@ class ChildReading:
     # ``None`` where the project's issue profile cannot be executed as
     # configured (#641): an absent heading, never a default one.
     consequence: ConsequenceLevel | None = None
+    source_attention_reasons: tuple[str, ...] = ()
+    incoming_fact_ids: tuple[int, ...] = ()
 
     @property
     def consequence_heading(self) -> str | None:
@@ -871,6 +878,7 @@ class ReviewReading:
     # was derived from this object; a surface that wants to explain a level, or
     # to say why there is none, reads its problems rather than asking again.
     issue_content: EffectiveIssueContent | None = None
+    source_questions: tuple = ()
 
     def standing_sentence(self, delta_id: int) -> str:
         """Why this proposed change is no longer offered, in the reading's terms.
@@ -1015,6 +1023,13 @@ def read_review_items(
         for delta_id in reading.actionable_delta_ids
     }
 
+    from corridor.minutes_reading import read_minutes_work
+
+    source_questions, minutes_context = read_minutes_work(session, project_id=project_id, as_of=as_of)
+    readings = {identifier: replace(child,
+        subject_name=minutes_context[identifier]["subject_name"],
+        source_attention_reasons=minutes_context[identifier]["scope_attention"])
+        if identifier in minutes_context else child for identifier, child in readings.items()}
     items: list[ItemReading] = []
     for item in reading.items:
         children = tuple(readings[delta_id] for delta_id in item.delta_ids)
@@ -1084,6 +1099,7 @@ def read_review_items(
         items=tuple(items),
         reading=reading,
         issue_content=issue_content,
+        source_questions=source_questions,
     )
 
 
@@ -1132,11 +1148,12 @@ def _child(
     outside_boundary: frozenset[int],
 ) -> ChildReading:
     capture = incoming.get(delta.id)
-    support_ids = support.get(capture.fact.id, ()) if capture is not None else ()
+    fact_ids = tuple(fact.id for fact in capture.facts) if capture is not None else ()
+    support_ids = tuple(sorted({identifier for fact_id in fact_ids for identifier in support.get(fact_id, ())}))
     row = rows.get(delta.target_subject_identity)
     if capture is None:
         not_ready: str | None = NOT_READY_NO_INCOMING_FACT
-    elif not support_ids:
+    elif any(not support.get(fact_id) for fact_id in fact_ids):
         not_ready = NOT_READY_NO_SUPPORT
     else:
         not_ready = None
@@ -1146,16 +1163,17 @@ def _child(
         subject_name=_subject_name(delta.target_subject_identity, row),
         field=delta.target_field,
         field_name=(
-            field_label(delta.target_field)
+            ("Completion Reported" if delta.proposed_value == {"closure_kind": "completion_reported"}
+             else field_label(delta.target_field))
             if delta.target_field
-            else "the whole row"
+            else "Statement" if isinstance(delta.proposed_value, dict) and "statement_wording" in delta.proposed_value else "the whole row"
         ),
         change_type=delta.change_type,
-        accepted_value=_value_text(delta.accepted_value),
+        accepted_value=_value_text(delta.accepted_value, rows=rows),
         accepted_revision_id=standing.get(
             (delta.target_subject_identity, delta.target_field or "")
         ),
-        incoming_value=_value_text(delta.proposed_value),
+        incoming_value=_value_text(delta.proposed_value, rows=rows),
         source_family=delta.source_family,
         source_revision=delta.source_revision,
         band=band,
@@ -1164,6 +1182,7 @@ def _child(
         source=_source_reference(capture),
         external_links=_external_links(row),
         incoming_fact_id=capture.fact.id if capture is not None else None,
+        incoming_fact_ids=fact_ids,
         support_assessment_ids=support_ids,
         not_ready_reason=not_ready,
         selected=not_ready is None,
@@ -1213,11 +1232,26 @@ def _subject_name(subject_identity: str, row: BaselineSourceRow | None) -> str:
     return f"{row.sheet_name} row {row.row_number}"
 
 
-def _value_text(value: Any) -> str | None:
+def _value_text(value: Any, *, rows=None) -> str | None:
     if value is None:
         return None
     if isinstance(value, str):
         return value
+    if isinstance(value, dict):
+        if "timings" in value:
+            return "; ".join(item["text"] for item in value["timings"])
+        if value.get("closure_kind") == "completion_reported":
+            return "Completion Reported"
+        if value.get("mode") == "unknown":
+            return "Applies To: not yet known"
+        if value.get("mode") == "selected" and "subject_keys" in value:
+            return "Applies To: " + ", ".join(_subject_name(key, (rows or {}).get(key)) for key in value["subject_keys"])
+        if "statement_wording" in value:
+            parts = [value["statement_wording"]]
+            for field in ("statement_timing", "applies_to"):
+                if field in value:
+                    parts.append(_value_text(value[field], rows=rows))
+            return " — ".join(parts)
     return str(value)
 
 
@@ -1368,10 +1402,12 @@ def _incoming_facts(
         delta.id: (
             documents.get(f"{delta.source_family}@{delta.source_revision}", ()),
             delta.target_subject_identity,
-            delta.target_field,
+            (delta.target_field,) if delta.target_field else (
+                tuple(sorted(delta.proposed_value, key=lambda name: (name != "statement_wording", name))) if delta.target_type == "proposed_subject"
+                and isinstance(delta.proposed_value, dict) else ()
+            ),
         )
         for delta in deltas
-        if delta.target_field is not None
     }
     document_ids = sorted(
         {value for scope, _, _ in wanted.values() for value in scope}
@@ -1401,11 +1437,11 @@ def _incoming_facts(
         by_key[key] = IncomingCapture(fact=fact, segment=segment, document=document)
 
     found: dict[int, IncomingCapture] = {}
-    for delta_id, (scope, subject, field_name) in wanted.items():
+    for delta_id, (scope, subject, fields) in wanted.items():
         for document_id in reversed(scope):
-            capture = by_key.get((document_id, subject, field_name or ""))
-            if capture is not None:
-                found[delta_id] = capture
+            captures = [by_key.get((document_id, subject, field_name)) for field_name in fields]
+            if captures and all(capture is not None for capture in captures):
+                found[delta_id] = replace(captures[0], additional_facts=tuple(capture.fact for capture in captures[1:]))
                 break
     return found
 
@@ -1415,7 +1451,7 @@ def _value_support(
 ) -> dict[int, tuple[int, ...]]:
     """The effective value-support assessments of each incoming Source Fact."""
 
-    fact_ids = sorted({int(capture.fact.id) for capture in captures})
+    fact_ids = sorted({int(fact.id) for capture in captures for fact in capture.facts})
     if not fact_ids:
         return {}
     support: dict[int, list[int]] = defaultdict(list)
@@ -1839,11 +1875,12 @@ def focused_idempotency_key(
 
 
 def _apply_effects(child: ChildReading) -> tuple[RecordEffect, ...]:
-    """The one Source Fact an Apply makes effective, or none to be refused by #519."""
+    """Every captured field of this proposal, applied atomically by #519."""
 
     if child.incoming_fact_id is None:
         return ()
-    return (RecordEffect(fact_id=child.incoming_fact_id),)
+    return tuple(RecordEffect(fact_id=identifier) for identifier in
+                 (child.incoming_fact_ids or (child.incoming_fact_id,)))
 
 
 def idempotency_key(

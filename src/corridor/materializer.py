@@ -445,6 +445,20 @@ def materialize_typed_satellite(
     )
 
 
+def materialize_prose_scope(segments) -> MaterializedValue:
+    """Seal the complete cited span set for an explicit accepted-subject scope."""
+    if not segments:
+        raise FactValidationError("a selected scope requires source references")
+    contract = FACT_TYPE_CONTRACTS["applies_to"]
+    scope = (segments[0].project_id, segments[0].document_id)
+    for segment in segments:
+        _certify(segment, "applies_to", contract)
+        if (segment.project_id, segment.document_id) != scope:
+            raise FactValidationError("scope references cross source boundaries")
+    return _sealed(fact_type="applies_to", transformation=contract.transformation,
+                   source_links=tuple(("value_source", segment.id) for segment in segments))
+
+
 def materialize_document_reference(document_id: int) -> MaterializedValue:
     """Materialize the relationship to one registered document revision."""
 

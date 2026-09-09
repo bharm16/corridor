@@ -91,6 +91,7 @@ class AppliesToFactValue:
     """One replayed, FK-backed Applies To reference set."""
 
     dependency_ids: tuple[int, ...]
+    record_subject_keys: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -1390,7 +1391,7 @@ def _replay_fact(
         # `pdf_span` on the page stream rather than the retired reader's
         # `prose_span`. Sending it into the matrix replay would fail it on the
         # roles rather than on anything about the reading.
-        if contract.subject_kind != "statement_candidate" and any(
+        if fact.subject_kind != "statement_candidate" and any(
             segment is not None and segment.kind in {"pdf_cell", "pdf_span"}
             for segment in segments
         ):
@@ -1398,6 +1399,8 @@ def _replay_fact(
         roles = {source.role for source in sources}
         if roles != contract.required_roles:
             raise FactValidationError("Fact support roles do not match its contract")
+        if fact.fact_type == "applies_to" and fact.subject_kind == "statement_candidate" and fact.document_id is not None:
+            return _replay_minutes_scope(session, document, fact, sources, path)
         value_sources = tuple(
             source for source in sources if source.role == "value_source"
         )
@@ -1410,6 +1413,22 @@ def _replay_fact(
         raise FactValidationError("Fact source kind does not match its contract")
     exact = (replay_cell(segment) if replay_cell is not None
              else dereference_source_segment(document, segment, path))
+    if fact.fact_type == "statement_timing":
+        from corridor.statement_timing_parser import promised_timing_options
+
+        options = [option.value for option in promised_timing_options(exact)]
+        rows = session.scalars(select(FactStatementTiming).where(FactStatementTiming.fact_id == fact.id)
+                               .order_by(FactStatementTiming.timing_role)).all()
+        if not rows:
+            raise FactReplayMismatch("minutes timing has no stated member")
+        for row in rows:
+            observed = {"text": row.text, "precision": row.precision,
+                        "start_date": row.start_date.isoformat() if row.start_date else None,
+                        "end_date": row.end_date.isoformat() if row.end_date else None}
+            if observed not in options:
+                raise FactReplayMismatch("minutes timing does not replay from its exact source")
+        return StatementTimingFactValue(tuple((row.timing_role, StatementTiming(
+            text=row.text, precision=row.precision, start_date=row.start_date, end_date=row.end_date)) for row in rows))
     if segment.kind == "email_span":
         from corridor.materializer import materialize_email_metadata, materialize_prose_wording
 
@@ -1462,6 +1481,11 @@ def _replay_fact(
                 dereference_source_segment(document, governing_segment, path)
         if result.closure_kind == "source_marked_resolved" and not exact.strip():
             raise FactReplayMismatch("source closure mark is empty")
+        if result.closure_kind == "completion_reported":
+            from corridor.statement_values import reports_completion
+
+            if not reports_completion(exact):
+                raise FactReplayMismatch("source does not explicitly report completion")
         return ClosureFactValue(
             closure_kind=result.closure_kind,
             successor_dependency_id=result.successor_dependency_id,
@@ -1472,6 +1496,28 @@ def _replay_fact(
     if replayed != materialized:
         raise FactReplayMismatch("materialized Fact value does not reproduce")
     return replayed
+
+
+def _replay_minutes_scope(session, document, fact, sources, path):
+    from corridor.statement_values import states_unknown_scope
+
+    text_by_id = {}
+    for source in sources:
+        segment = session.get(SourceSegment, source.source_segment_id)
+        if segment is None:
+            raise FactReplayMismatch("minutes scope source is missing")
+        text_by_id[segment.id] = dereference_source_segment(document, segment, path)
+    rows = session.scalars(select(FactAppliesTo).where(FactAppliesTo.fact_id == fact.id)
+                           .order_by(FactAppliesTo.ordinal)).all()
+    if not rows:
+        if not any(states_unknown_scope(text) for text in text_by_id.values()):
+            raise FactReplayMismatch("empty minutes scope was not explicitly stated unknown")
+        return AppliesToFactValue(())
+    for row in rows:
+        if (row.record_subject_key is None or not row.reference_text
+                or row.reference_text not in text_by_id.get(row.source_segment_id, "")):
+            raise FactReplayMismatch("minutes scope member does not replay from its own source")
+    return AppliesToFactValue((), tuple(row.record_subject_key for row in rows))
 
 
 def _replay_native_fact(session, document, fact, sources, segments, path, reading):

@@ -585,6 +585,7 @@ ARTIFACT_INVOKERS: Mapping[tuple[str, str, str], Invoker] = {
         WEEKLY_REPORT_VERSION,
     ): _render_weekly_report,
     ("chase_list", CHASE_LIST_IDENTITY, CHASE_LIST_VERSION): _render_chase_list,
+    ("chase_list", CHASE_LIST_IDENTITY, "v1"): _render_chase_list,
 }
 
 if set(ARTIFACT_INVOKERS) != {contract.key for contract in CONTENT_REGISTRY}:
@@ -844,8 +845,10 @@ def bind_preparation(
     except MixedIssueInputs as exc:
         raise PreparationRefused(MIXED_READING, str(exc)) from exc
 
+    chase = content.artifact("chase_list")
     follow_up = read_follow_up_bundles(
-        session, project_id=project_id, as_of=source_cutoff
+        session, project_id=project_id, as_of=source_cutoff,
+        rule_version=chase.renderer.version if chase else CHASE_LIST_VERSION,
     )
 
     unread = int(

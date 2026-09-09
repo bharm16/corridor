@@ -244,6 +244,36 @@ def replay_native_segment(
     raise SourceSegmentLocatorMismatch("native source locator does not exist")
 
 
+def replay_native_segments(document, segments, path):
+    """Verify one coherent prose reading once, including every retained locator."""
+    segments = tuple(segments)
+    if sha256(Path(path).read_bytes()).hexdigest() != document.sha256:
+        raise SourceDocumentDigestMismatch("prose rendition bytes changed")
+    if not segments:
+        return {}
+    if len({segment.reading_sha256 for segment in segments}) != 1:
+        raise SourceSegmentLocatorMismatch("prose capture requires one coherent native reading")
+    first = segments[0]
+    identity = first.reader_identity or {}
+    config = identity.get("native_layer", {})
+    try:
+        reading = read_native_pdf(path, source_sha256=document.sha256,
+            engine=config["configuration"]["reader_engine"], dpi=config["dpi"])
+    except (KeyError, TypeError) as exc:
+        raise SourceSegmentLocatorMismatch("prose reader identity is incomplete") from exc
+    if reading.identity != identity or reading.reading_sha256 != first.reading_sha256:
+        raise SourceSegmentLocatorMismatch("prose reading does not reproduce")
+    expected = {(item.kind, item.ordinal): item for item in native_segment_values(reading)}
+    result = {}
+    for segment in segments:
+        value = expected.get((segment.kind, segment.ordinal))
+        if (segment.project_id != document.project_id or segment.document_id != document.id or value is None
+                or any(getattr(segment, field) != getattr(value, field) for field in value.__dataclass_fields__)):
+            raise SourceSegmentLocatorMismatch("prose source locator changed under replay")
+        result[segment.id] = value.exact_text
+    return result
+
+
 @dataclass(frozen=True, init=False)
 class NativeCellIndex:
     """A document-scoped immutable address index, constructed once per reading.

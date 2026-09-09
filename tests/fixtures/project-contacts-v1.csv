@@ -1,0 +1,4 @@
+source_contact_id,organization_ref,responsible_role,person_name,channel,address,effective_from,effective_until,external_system,external_id
+coordination-lead,Utility A,the responsible contact,Pat Example,email,pat@example.test,2026-01-01,,fixture-directory,contact-101
+field-lead,Utility A,field coordination,Alex Example,phone,+17135550123,2026-01-01,,fixture-directory,contact-102
+role-only,Utility A,backup,,,,2026-01-01,,fixture-directory,contact-103

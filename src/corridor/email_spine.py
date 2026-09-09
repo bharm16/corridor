@@ -36,6 +36,7 @@ from corridor.proposed_deltas import (
 )
 from corridor.source_append import append_email_thread_reading, append_fact
 from corridor.storage import stored_file
+from corridor.source_delivery import envelope_for_delivery
 from corridor.typed_output import StrictOutputModel, strict_output_schema, validate_typed_output
 
 
@@ -70,20 +71,6 @@ def email_extractor_config(client):
         request_controls={"api": "structured_client", "strict": True, "store": False,
                           "provider_base_url": getattr(client, "base_url", None),
                           "reasoning_effort": getattr(client, "effort", None)},
-    )
-
-
-def envelope_for_delivery(session, delivery_id: int) -> SourceEnvelope:
-    """Reconstruct a stored envelope for the operator/worker command."""
-    row = session.get_one(SourceDelivery, delivery_id)
-    project = session.get_one(Project, row.project_id)
-    return SourceEnvelope(
-        customer=row.customer, project=project.slug, channel=row.channel,
-        external_identity=row.external_identity, external_version=row.external_version,
-        original_timestamps=dict(row.original_timestamps_json or {}),
-        content_digest=row.content_sha256, bytes_reference=row.bytes_reference,
-        metadata=dict(row.metadata_json or {}), delivery_identity=row.delivery_identity,
-        idempotency_key=row.idempotency_key,
     )
 
 

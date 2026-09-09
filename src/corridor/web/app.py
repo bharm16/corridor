@@ -8372,6 +8372,37 @@ async def receive_inbound_mail(
     }
 
 
+@app.post("/projects/{slug}/contacts/{contact_id}/correct")
+async def correct_onboarding_contact(
+    slug: str, contact_id: int, request: Request,
+    session: Session = Depends(get_session),
+    principal: HumanPrincipal = Depends(get_human_principal),
+):
+    """One attributable onboarding correction through the existing auth boundary."""
+    from sqlalchemy.exc import DBAPIError
+    from corridor.project_contacts import ContactInput, ContactImportRefused, correct_contact
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    from corridor.operating_mode import is_adopted_baseline
+    if not is_adopted_baseline(session, project.id):
+        _refuse_legacy_project_under_the_boundary(request, project)
+    try:
+        body = await request.json()
+        if not isinstance(body, dict) or set(body) != {"contact", "reason", "idempotency_key"}:
+            raise ValueError("correction requires contact, reason and idempotency_key")
+        changed = correct_contact(session, project_id=project.id, contact_id=contact_id,
+            replacement=ContactInput(**body["contact"]), principal=principal,
+            reason=body["reason"], idempotency_key=body["idempotency_key"])
+    except (ContactImportRefused, ValueError, TypeError, KeyError) as exc:
+        raise HTTPException(422, str(exc)) from exc
+    except DBAPIError as exc:
+        raise HTTPException(409, "contact correction conflicts with the retained predecessor") from exc
+    response = {"contact_id": changed.id, "corrects_id": changed.corrects_id,
+                "corrected_by": changed.corrected_by, "record": changed.values_json}
+    session.commit()
+    return response
+
+
 @app.get("/projects/{slug}/inbound")
 def inbound_mail_readback(
     slug: str,

@@ -52,6 +52,7 @@ from corridor.baseline_workbook import (
     OperationsReading,
 )
 from corridor.fact_types import FACT_TYPE_CONTRACTS
+from corridor.contact_mapping import ContactMapping
 
 
 # The shape of the manifest itself, apart from the version of any one mapping
@@ -220,6 +221,7 @@ class FieldMappingManifest:
     mappings: tuple[MaterialMapping, ...]
     external_references: tuple[ExternalReference, ...] = ()
     schema_version: str = MANIFEST_SCHEMA_VERSION
+    contact_mapping: ContactMapping | None = None
 
     @property
     def revision(self) -> str:
@@ -240,7 +242,7 @@ class FieldMappingManifest:
         return None
 
     def as_payload(self) -> dict[str, object]:
-        return {
+        payload = {
             "schema_version": self.schema_version,
             "identity": self.identity,
             "version": self.version,
@@ -257,6 +259,9 @@ class FieldMappingManifest:
                 )
             ],
         }
+        if self.contact_mapping is not None:
+            payload["contact_mapping"] = self.contact_mapping.as_payload()
+        return payload
 
     @property
     def declaration_json(self) -> str:
@@ -320,6 +325,7 @@ def manifest_from_declaration(declaration: str) -> FieldMappingManifest:
                 for heading, role in payload["external_references"]
             ),
             schema_version=payload["schema_version"],
+            contact_mapping=_contact_mapping(payload.get("contact_mapping")),
         )
     except (KeyError, TypeError, ValueError) as exc:
         raise MappingManifestRefused(
@@ -334,6 +340,10 @@ def manifest_from_declaration(declaration: str) -> FieldMappingManifest:
             f"they read back as digests to {manifest.content_sha256}"
         )
     return manifest
+
+
+def _contact_mapping(value):
+    return ContactMapping.from_payload(value) if value is not None else None
 
 
 def _mapping_from_payload(payload: Mapping[str, object]) -> MaterialMapping:
@@ -574,6 +584,7 @@ class MappingDeclaration:
     version: str = FIELD_MAPPING_VERSION
     external_references: tuple[ExternalReference, ...] = ()
     mappings: tuple[MaterialMapping, ...] = ()
+    contact_mapping: ContactMapping | None = None
 
     @property
     def external_reference_headings(self) -> dict[str, str]:
@@ -635,6 +646,7 @@ def declared_field_mapping(
         version=declaration.version,
         mappings=tuple(mappings),
         external_references=tuple(declaration.external_references),
+        contact_mapping=declaration.contact_mapping,
     )
     for mapping in manifest.mappings:
         for heading in mapping.source_columns:

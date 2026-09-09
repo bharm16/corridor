@@ -1391,7 +1391,7 @@ class Fact(Base):
             f"or (fact_type in ({_STRUCTURED_SATELLITE_FACT_TYPES_SQL}) "
             "and subject_kind = 'source_row' and length(trim(subject_key)) > 0) "
             "or (fact_type in "
-            "('statement_wording', 'statement_timing', 'applies_to') "
+            "('statement_wording', 'statement_timing', 'applies_to', 'closure_result') "
             "and subject_kind = 'statement_candidate' "
             "and length(trim(subject_key)) > 0) "
             "or (fact_type = 'supporting_documentation_in_use' "
@@ -1404,7 +1404,7 @@ class Fact(Base):
         CheckConstraint(
             "(document_id is not null and extraction_run_id is not null "
             "and fact_type not in "
-            "('statement_timing', 'supporting_documentation_in_use')) "
+            "('supporting_documentation_in_use')) "
             "or (document_id is null and extraction_run_id is null "
             "and fact_type in "
             "('statement_wording', 'statement_timing', 'applies_to', "
@@ -1550,6 +1550,26 @@ class FactSource(Base):
     ordinal: Mapped[int] = mapped_column(Integer)
 
 
+class MinutesCapture(Base):
+    """One immutable five-capability minutes reading and its unresolved outcomes."""
+
+    __tablename__ = "minutes_captures"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_minutes_capture_scope"),
+        UniqueConstraint("project_id", "source_family", "source_revision", name="uq_minutes_capture_revision"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    extraction_run_id: Mapped[int] = mapped_column(ForeignKey("extraction_runs.id"))
+    source_family: Mapped[str] = mapped_column(Text)
+    source_revision: Mapped[str] = mapped_column(Text)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    accepted_revision_id: Mapped[int] = mapped_column(ForeignKey("project_record_revisions.id"))
+    output_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
+
+
 class FactAppliesTo(Base):
     """One exact Constraint member of a structured Applies To Fact."""
 
@@ -1568,12 +1588,17 @@ class FactAppliesTo(Base):
             name="fk_fact_applies_to_dependency_scope",
         ),
         CheckConstraint("ordinal > 0", name="ck_fact_applies_to_ordinal"),
+        UniqueConstraint("fact_id", "record_subject_key", name="uq_fact_applies_to_record_subject"),
+        CheckConstraint("num_nonnulls(dependency_id, record_subject_key) = 1", name="ck_fact_applies_to_target"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
     fact_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    dependency_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    dependency_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
+    record_subject_key: Mapped[str | None] = mapped_column(Text)
+    source_segment_id: Mapped[int | None] = mapped_column(ForeignKey("source_segments.id"))
+    reference_text: Mapped[str | None] = mapped_column(Text)
     ordinal: Mapped[int] = mapped_column(Integer)
 
 
@@ -1595,7 +1620,7 @@ class FactClosureResult(Base):
         ),
         CheckConstraint(
             "closure_kind in ('source_marked_resolved', 'constraint_closed', "
-            "'constraint_remains_open')",
+            "'constraint_remains_open', 'completion_reported')",
             name="ck_fact_closure_result_kind",
         ),
     )
@@ -1667,7 +1692,7 @@ class FactStatementTiming(Base):
             name="ck_fact_statement_timing_role",
         ),
         CheckConstraint(
-            "precision in ('day', 'month', 'approximate')",
+            "precision in ('day', 'month', 'range', 'approximate')",
             name="ck_fact_statement_timing_precision",
         ),
         CheckConstraint(
@@ -1681,6 +1706,7 @@ class FactStatementTiming(Base):
             "and start_date = date_trunc('month', start_date::timestamp)::date "
             "and end_date = (date_trunc('month', start_date::timestamp) "
             "+ interval '1 month - 1 day')::date) "
+            "or (precision = 'range' and start_date is not null and end_date is not null and start_date <= end_date) "
             "or (precision = 'approximate' and start_date is null "
             "and end_date is null)",
             name="ck_fact_statement_timing_bounds",
@@ -2016,7 +2042,9 @@ class DeltaSupersession(Base):
             "prior_delta_id <> superseding_delta_id",
             name="ck_delta_supersessions_not_self",
         ),
-        CheckConstraint("superseding_delta_id is not null or source_reading_id is not null",
+        ForeignKeyConstraint(["project_id", "minutes_capture_id"], ["minutes_captures.project_id", "minutes_captures.id"],
+                             use_alter=True, name="fk_delta_supersession_minutes"),
+        CheckConstraint("superseding_delta_id is not null or source_reading_id is not null or minutes_capture_id is not null",
                         name="ck_delta_supersessions_successor"),
     )
 
@@ -2025,6 +2053,7 @@ class DeltaSupersession(Base):
     prior_delta_id: Mapped[int] = mapped_column(BigInteger, index=True)
     superseding_delta_id: Mapped[int | None] = mapped_column(BigInteger, index=True)
     source_reading_id: Mapped[int | None] = mapped_column(BigInteger)
+    minutes_capture_id: Mapped[int | None] = mapped_column(BigInteger)
     reason: Mapped[str] = mapped_column(String(64))
     superseded_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -6159,6 +6188,57 @@ class RevisionComparisonFinding(Base):
     match_score: Mapped[float | None] = mapped_column(Float)
     field_changes: Mapped[list] = mapped_column(JSONB)
     matcher_detail: Mapped[dict] = mapped_column(JSONB)
+
+
+class ProjectContactImport(Base):
+    """One immutable, bound contact import and complete row accounting (#562)."""
+
+    __tablename__ = "project_contact_imports"
+    __table_args__ = (
+        UniqueConstraint("project_id", "id", name="uq_contact_import_scope"),
+        UniqueConstraint("project_id", "idempotency_key", name="uq_contact_import_key"),
+        UniqueConstraint("project_id", "source_family", "source_revision", name="uq_contact_import_revision"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    delivery_id: Mapped[int | None] = mapped_column(ForeignKey("source_deliveries.id"))
+    customer: Mapped[str] = mapped_column(Text)
+    source_family: Mapped[str] = mapped_column(Text)
+    source_revision: Mapped[str] = mapped_column(Text)
+    idempotency_key: Mapped[str] = mapped_column(Text)
+    content_sha256: Mapped[str] = mapped_column(String(64))
+    mapping_json: Mapped[dict] = mapped_column(JSONB)
+    accounting_json: Mapped[dict] = mapped_column(JSONB)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
+
+
+class ProjectContact(Base):
+    """An imported contact or attributable replacement, never a mutable address book."""
+
+    __tablename__ = "project_contacts"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "import_id"], ["project_contact_imports.project_id", "project_contact_imports.id"]),
+        UniqueConstraint("project_id", "id", name="uq_project_contact_scope"),
+        ForeignKeyConstraint(["project_id", "corrects_id"], ["project_contacts.project_id", "project_contacts.id"]),
+        UniqueConstraint("corrects_id", name="uq_project_contact_correction"),
+        UniqueConstraint("project_id", "correction_key", name="uq_project_contact_correction_key"),
+        Index("uq_project_contact_import_identity", "import_id", "source_contact_id", unique=True,
+              postgresql_where=text("corrects_id is null")),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    import_id: Mapped[int] = mapped_column(BigInteger)
+    source_contact_id: Mapped[str] = mapped_column(Text)
+    organization_id: Mapped[int | None] = mapped_column(ForeignKey("external_orgs.id"))
+    values_json: Mapped[dict] = mapped_column(JSONB)
+    source_locators: Mapped[dict] = mapped_column(JSONB)
+    unresolved_reason: Mapped[str | None] = mapped_column(Text)
+    corrects_id: Mapped[int | None] = mapped_column(BigInteger)
+    correction_key: Mapped[str | None] = mapped_column(Text)
+    corrected_by: Mapped[str | None] = mapped_column(Text)
+    correction_reason: Mapped[str | None] = mapped_column(Text)
+    recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.clock_timestamp())
 
 
 class ExternalParty(Base):
