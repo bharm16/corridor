@@ -135,7 +135,10 @@ def run_shadow_ucm(session, *, project: Project, staged, envelope,
         raise ShadowRefused("aware time, future deletion and source configuration are required")
     verify_runtime(session, project_id=project.id, customer=customer, environment=environment)
     if (not isinstance(authorization, CustomerAuthorization)
-        or not authorization.signed_by or not authorization.signed_on or not authorization.retention_disclosed
+        or not authorization.record_id or not authorization.signed_by
+        or not authorization.signed_on or not authorization.retention_disclosed
+        or "ucm" not in authorization.source_classes
+        or "shadow-processing" not in authorization.purposes
         or "shadow" not in authorization.stages or authorization.customer != customer
         or project.slug not in authorization.projects or staged.sha256 not in authorization.source_sha256s):
         raise ShadowRefused("signed authorization does not cover these bytes for shadow processing")

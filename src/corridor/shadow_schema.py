@@ -48,6 +48,9 @@ select not exists (select 1 from shadow_projects where project_id = p_id)
 $$;
 revoke all on function public.shadow_project_visible(bigint) from public;
 grant execute on function public.shadow_project_visible(bigint) to corridor_web;
+alter table public.projects enable row level security;
+create policy shadow_project_acl on public.projects for all to public
+using (true) with check (true);
 create policy shadow_projects_hidden on public.projects as restrictive
 for select to corridor_web using (public.shadow_project_visible(id));
 create function public.preserve_shadow_receipt() returns trigger language plpgsql as $$
@@ -57,6 +60,10 @@ create trigger immutable_shadow_project before update or delete on public.shadow
 for each row execute function public.preserve_shadow_receipt();
 create trigger immutable_shadow_run before update or delete on public.shadow_runs
 for each row execute function public.preserve_shadow_receipt();
+create trigger immutable_shadow_project_truncate before truncate on public.shadow_projects
+for each statement execute function public.preserve_shadow_receipt();
+create trigger immutable_shadow_run_truncate before truncate on public.shadow_runs
+for each statement execute function public.preserve_shadow_receipt();
 """
 
 
@@ -76,6 +83,8 @@ def uninstall(op):
                         ("shadow_release_package", "release_packages")):
         op.execute(f"drop trigger {name} on public.{table}")
     op.execute("drop policy shadow_projects_hidden on public.projects")
+    op.execute("drop policy shadow_project_acl on public.projects")
+    op.execute("alter table public.projects disable row level security")
     op.execute("drop function public.shadow_project_visible(bigint)")
     op.execute("drop function public.guard_shadow_customer_surface()")
     op.execute("drop table public.shadow_runs")
