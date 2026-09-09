@@ -1,6 +1,6 @@
 """Production UCM readers consume explicit native identities and accepted decisions."""
 from dataclasses import FrozenInstanceError
-from datetime import date
+from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -46,8 +46,7 @@ def session():
     connection.close()
 
 
-@pytest.fixture
-def adopted(session, tmp_path, monkeypatch):
+def _adopt_native_workbook(session, tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     project = Project(slug=f"native-readers-{uuid4().hex[:8]}", name="Native Reader Test", is_synthetic=True)
@@ -68,6 +67,11 @@ def adopted(session, tmp_path, monkeypatch):
     result = adopt_baseline(session, preview=preview, principal=PRINCIPAL,
         idempotency_key="adopt-native-readers", images_dir=tmp_path / "images")
     return project, result
+
+
+@pytest.fixture
+def adopted(session, tmp_path, monkeypatch):
+    return _adopt_native_workbook(session, tmp_path, monkeypatch)
 
 
 class CoveringClient:
@@ -194,3 +198,128 @@ def test_native_revision_and_legacy_population_gaps_are_explicit(session, adopte
     with pytest.raises(ValueError, match="revision"):
         from corridor.record_projection import read_native_record_values
         read_native_record_values(session, other.id, result.revision_id)
+
+
+def _follow_up_plan(session, project, adoption):
+    from corridor.models import SupportAssessment, SupportAssessmentSource
+    from corridor.proposed_deltas import ExistingSubjectTarget, ProposedDeltaValues, create_proposed_delta_group
+    from corridor.review_packets import CoordinationRequest, PacketChildRequest, ReviewPacketRequest, NEEDS_COORDINATION, SAVED, resolve_review_packet
+    fact = session.scalar(select(Fact).where(Fact.project_id == project.id, Fact.fact_type == "committed_date").order_by(Fact.id))
+    assessment = session.scalar(select(SupportAssessment).where(SupportAssessment.fact_id == fact.id,
+        SupportAssessment.evidence_role == "value_support", SupportAssessment.superseded_by.is_(None)))
+    source_ids = tuple(session.scalars(select(SupportAssessmentSource.source_segment_id).where(
+        SupportAssessmentSource.support_assessment_id == assessment.id).order_by(SupportAssessmentSource.ordinal)))
+    revision = "native-reader-follow-up"
+    (delta,) = create_proposed_delta_group(session, project_id=project.id,
+        source_family="ucm-workbook", source_revision=revision,
+        deltas=[ProposedDeltaValues(change_type="modify",
+            target=ExistingSubjectTarget(subject_identity=fact.subject_key, field="committed_date"),
+            accepted_value=fact.date_value.isoformat(), proposed_value="2026-11-01",
+            accepted_baseline_revision=f"revision:{adoption.revision_id}")])
+    at = datetime.now(timezone.utc)
+    result = resolve_review_packet(session, ReviewPacketRequest(project_id=project.id,
+        grouping_rule_version="packetizer-v1", grouping_key_kind="source_revision", grouping_key=revision,
+        principal=PRINCIPAL, idempotency_key="native-reader-plan", decided_at=at,
+        observed_accepted_revision_id=adoption.revision_id,
+        children=(PacketChildRequest(delta_id=delta.id, outcome=NEEDS_COORDINATION,
+            observed_source_revision=revision, coordination=CoordinationRequest(
+                question="Which Promised For date does the utility confirm?",
+                responsible_principal="local:utility-coordinator", responsible_organization="City Water",
+                return_date=at + timedelta(days=7), affected_scope={"subject": fact.subject_key, "field": "committed_date"},
+                evidence_support_assessment_ids=(assessment.id,))),)))
+    assert result.status == SAVED
+    return result, delta, assessment.id, source_ids
+
+
+def test_native_follow_up_plan_preserves_question_evidence_without_accepting_its_proposal(session, adopted, tmp_path):
+    from corridor.changes import snapshot
+    from corridor.models import DeltaDisposition
+    project, adoption = adopted
+    result, delta, assessment_id, source_ids = _follow_up_plan(session, project, adoption)
+    reading = freeze_project_reading(session, project.id, today=TODAY)
+    (plan,) = reading.native_population.follow_up_plans
+    assert plan.plan_id == result.children[0].follow_up_plan_id
+    assert plan.revision_id == result.revision_id
+    assert plan.support_assessment_ids == (assessment_id,)
+    assert plan.source_segment_ids == source_ids
+    assert plan.responsible_principal == "local:utility-coordinator"
+    assert all(record.internal_owner is None and record.next_action is None for record in reading.native_population.records)
+    assert all(value is None for value in reading.statement_publication.committed_dates.values())
+    assert "2026-11-01" not in {str(record.committed_date) for record in reading.native_population.records}
+    assert session.scalar(select(DeltaDisposition.id).where(DeltaDisposition.delta_id == delta.id)) is None
+    report = build_report(session, project.id, frozen_reading=reading)
+    body = render(report)
+    assert plan.open_question in body and "local:utility-coordinator" in body
+    assert f"Follow-up Plan {plan.plan_id}" in body
+    briefing = brief_project(session, project.id, client=CoveringClient(), frozen_reading=reading)
+    assert not briefing.refused
+    assert any(item.kind == "decision" and plan.open_question in item.text for item in briefing.citables)
+    stored = snapshot(session, project.id, evaluation=reading.evaluation)
+    assert stored["follow_up_plans"][0]["support_assessment_ids"] == [assessment_id]
+    assert stored["follow_up_plans"][0]["source_segment_ids"] == list(source_ids)
+    output = to_xlsx(session, project.id, tmp_path / "follow-up.xlsx", evaluation=reading.evaluation,
+        statement_publication=reading.statement_publication, frozen_reading=reading)
+    book = load_workbook(output, data_only=True)
+    try:
+        assert book["Follow-up Plans"]["C2"].value == plan.open_question
+        assert str(assessment_id) == book["Follow-up Plans"]["I2"].value
+        assert book.active["I2"].value is None  # source date is not statement-projected Promised For
+    finally:
+        book.close()
+    before = freeze_project_reading(session, project.id, today=TODAY, revision_id=adoption.revision_id)
+    assert before.native_population.follow_up_plans == ()
+
+
+def test_report_command_persists_the_exact_rendered_native_reading(runtime_database, tmp_path, monkeypatch):
+    import corridor.db as database_module
+    import corridor.export as export_module
+    import corridor.project_reading as reading_module
+    import corridor.report as report_module
+    from corridor.models import ReportRun
+    from corridor.report_reading import digest_is_intact
+    database_engine = runtime_database.session_factory.kw["bind"]
+    with runtime_database.session_factory() as setup:
+        project, adoption = _adopt_native_workbook(setup, tmp_path, monkeypatch)
+        project_id, slug, revision_id = project.id, project.slug, adoption.revision_id
+        setup.commit()
+    monkeypatch.setattr(database_module, "WorkerSession", runtime_database.session_factory)
+    monkeypatch.chdir(tmp_path)
+    def pdf_sink(body, path):
+        Path(path).write_bytes(b"%PDF-synthetic-sink")
+        return Path(path)
+    monkeypatch.setattr(export_module, "to_pdf", pdf_sink)
+    original = reading_module.read_accepted_field_population
+    populations = []
+    def captured(*args, **kwargs):
+        value = original(*args, **kwargs)
+        populations.append(value)
+        return value
+    monkeypatch.setattr(reading_module, "read_accepted_field_population", captured)
+    forbidden = re.compile(r"\b(?:dependencies|candidates|assertions|evidence_links|work_decisions|operative_support)\b", re.I)
+    def inspect_sql(connection, cursor, statement, parameters, context, executemany):
+        if statement.lstrip().lower().startswith("select"):
+            assert not forbidden.search(statement), statement
+    event.listen(database_engine, "before_cursor_execute", inspect_sql)
+    try:
+        assert report_module.main([slug]) == 0
+        assert len(populations) == 1
+        assert report_module.main([slug]) == 0
+        assert len(populations) == 2  # once per command, never a second legacy reading for the snapshot
+    finally:
+        event.remove(database_engine, "before_cursor_execute", inspect_sql)
+    assert "100+00" in (tmp_path / "out/report.html").read_text()
+    with runtime_database.session_factory() as verify:
+        runs = tuple(verify.scalars(select(ReportRun).where(ReportRun.project_id == project_id).order_by(ReportRun.id)))
+        assert len(runs) == 2 and runs[1].id > runs[0].id
+        for run, population in zip(runs, populations):
+            assert run.revision_id == revision_id == population.revision_id
+            assert run.snapshot_json["native_population_sha256"] == population.fingerprint
+            assert digest_is_intact(run.snapshot_json) is True
+            records = run.snapshot_json["dependencies"]
+            assert set(records) == set(population.record_ids)
+            assert len(records) == 2
+            for record in population.records:
+                entry = records[record.ref_code]
+                assert entry["published_promised_for"] is None
+                assert entry["accepted_field_values"]["committed_date"] == record.committed_date.isoformat()
+                assert entry["accepted_field_decisions"]["station_from"]["decision_id"] == record.fields["station_from"].decision_id
