@@ -111,3 +111,50 @@ def test_missing_report_cannot_reuse_an_earlier_green_receipt(tmp_path, monkeypa
     (tmp_path / "pytest-1.xml").write_text("old")
     assert gate.main(["--suite", "pytest", "--shards", "1", "--shard", "1", "--workers", "2", "--output", str(tmp_path)]) == 1
     assert not receipt.exists()
+
+
+def test_slow_partition_spreads_zero_time_imports_without_changing_coverage(monkeypatch, tmp_path):
+    """Zero-time reports mean no measured cases, not free module collection.
+
+    Six large files nearly fill three work buckets. At the old 0.05s cost all
+    278 zero-time imports fit in the lightest bucket, even though both workers
+    must import them. The slow-only floor spreads that load without pruning a
+    single file or moving the expensive modules in this regression population.
+    """
+    from scripts.test_shard import shard, SLOW_MINIMUM_FILE_SECONDS
+    heavy = {f"tests/test_heavy_{i}.py": value for i, value in enumerate((100, 98, 90, 85, 74, 55))}
+    durations = {**heavy, **{f"tests/test_zero_{i:03}.py": 0.0 for i in range(278)}}
+    files = sorted(durations)
+    monkeypatch.setattr(gate, "test_files", lambda: files)
+    monkeypatch.setenv("CORRIDOR_CI_WEIGHTS", json.dumps({"slow": durations, "pytest": durations}))
+    previous = shard(files, durations, 3)
+    slow = [gate.partition("slow", 3, index, tmp_path) for index in range(1, 4)]
+    ordinary = [gate.partition("pytest", 3, index, tmp_path) for index in range(1, 4)]
+    assert ordinary == previous
+    assert slow == shard(files, durations, 3, minimum_file_seconds=SLOW_MINIMUM_FILE_SECONDS)
+    assert max(map(len, previous)) > 250
+    assert max(map(len, slow)) < 125
+    assert max(map(len, slow)) - min(map(len, slow)) < 45
+    assert sorted(name for bucket in slow for name in bucket) == files
+    assert [{name for name in bucket if name in heavy} for bucket in slow] == [
+        {name for name in bucket if name in heavy} for bucket in previous]
+
+
+@pytest.mark.parametrize("floor", [-1, float("inf"), float("nan")])
+def test_nonfinite_or_negative_collection_floors_cannot_create_a_partition(floor):
+    from scripts.test_shard import shard
+    with pytest.raises(ValueError, match="finite and nonnegative"):
+        shard(["tests/test_one.py"], {}, 1, minimum_file_seconds=floor)
+
+
+def test_slow_shard_cli_and_required_runner_use_the_same_floor(monkeypatch, tmp_path, capsys):
+    from scripts import test_shard
+    files = [f"tests/test_{i}.py" for i in range(30)]
+    durations = {name: (20 if i < 5 else 0) for i, name in enumerate(files)}
+    monkeypatch.setattr(test_shard, "test_files", lambda: files)
+    monkeypatch.setattr(test_shard, "recorded_seconds", lambda *_: durations)
+    monkeypatch.setattr(gate, "test_files", lambda: files)
+    monkeypatch.setenv("CORRIDOR_CI_WEIGHTS", json.dumps({"slow": durations}))
+    for index in range(1, 4):
+        assert test_shard.main(["--slow", "--shards", "3", "--shard", str(index)]) == 0
+        assert capsys.readouterr().out.split() == gate.partition("slow", 3, index, tmp_path)

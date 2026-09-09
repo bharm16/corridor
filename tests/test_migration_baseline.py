@@ -426,10 +426,14 @@ def test_downgrade_across_the_consolidated_baseline_is_unsupported():
         repo_root=ROOT,
         error_cls=RuntimeError,
         database_prefix="corridor_baseline_downgrade_",
+        migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
     ) as database:
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
         database_url = configured.set(database=database.name)
-        # The consolidated baseline is the whole executable graph, so the
-        # only downgrade target left is `base`.
+        # This case owns baseline -> base refusal. The separate fresh-head and
+        # supported-transition cases already prove the successor in both
+        # directions; rebuilding it here only repeats that setup and rollback.
         completed = _alembic(database_url, "downgrade", "base")
 
     assert completed.returncode != 0
