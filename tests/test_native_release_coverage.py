@@ -1,7 +1,6 @@
 """Retained report metadata must match authority, without changing published bytes."""
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from types import SimpleNamespace
 
 import pytest
 from sqlalchemy import select
@@ -17,6 +16,19 @@ from test_native_accepted_readers import _adopt_native_workbook, PRINCIPAL, TODA
 
 PDF = b"%PDF-1.7\nretained native report fixture\n%%EOF"
 NOW = datetime.combine(TODAY, datetime.min.time(), timezone.utc)
+
+
+class _ReadbackOverride:
+    """Retain the real public artifact contract while corrupting one readback."""
+
+    def __init__(self, original, **changes):
+        self._original = original
+        self._changes = changes
+
+    def __getattr__(self, name):
+        if name in self._changes:
+            return self._changes[name]
+        return getattr(self._original, name)
 
 
 @pytest.fixture
@@ -76,7 +88,7 @@ def test_retained_manifest_checks_complete_fields_parent_identity_and_source_edg
         else:
             record["subject_key"] = "another-native-parent"
         monkeypatch.setattr(release, "retrieve_prepared_external_report", lambda *a, context=forged, **kw:
-            SimpleNamespace(record_context_json=context, pdf_sha256=artifact.pdf_sha256))
+            _ReadbackOverride(artifact, record_context_json=context))
         observed = _collect_release(session, project, adoption.revision_id)
         assert any("exact as-of" in blocker for blocker in observed.blockers), (defect, observed.blockers)
         assert "release" not in observed.reading.observed_record_kinds
@@ -108,8 +120,7 @@ def test_release_readback_actor_and_time_must_match_inventory_authority(session,
     assert _collect_release(session, project, adoption.revision_id).blockers == ()
     for defect in ("actor", "time"):
         monkeypatch.setattr(release, "retrieve_released_external_report", lambda *a, defect=defect, **kw:
-            SimpleNamespace(record_context_json=receipt.record_context_json, pdf_sha256=receipt.pdf_sha256,
-                released_by="local:invented-releaser" if defect == "actor" else receipt.released_by,
+            _ReadbackOverride(receipt, released_by="local:invented-releaser" if defect == "actor" else receipt.released_by,
                 released_at=receipt.released_at + timedelta(days=1) if defect == "time" else receipt.released_at))
         observed = _collect_release(session, project, adoption.revision_id)
         assert any("approval actor/time differs" in blocker for blocker in observed.blockers)
