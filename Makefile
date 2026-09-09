@@ -60,6 +60,13 @@ test-focused:
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 .PHONY: control-plane
+.PHONY: shadow-comparison
+# Freeze predicted changes before loading the successor working reference.
+# make shadow-comparison ARGS="freeze prediction-input.json"
+# make shadow-comparison ARGS="compare --freeze-sha256 <digest> --successor successor.json --reference-dataset <identity>"
+shadow-comparison:
+	uv run python -m corridor.shadow_comparison_cli $(ARGS)
+
 .PHONY: m365-replay
 # Replay recorded Graph pages into an existing synthetic project; never connects a tenant.
 # make m365-replay ARGS="recording.json --project-id 1 --customer fixture --run-identity replay-1"
