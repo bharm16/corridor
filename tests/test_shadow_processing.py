@@ -156,8 +156,11 @@ def test_database_seal_overrides_forged_chronology_and_freezes_native_scope(shad
     # This comparison input already exists before the attempted forged freeze.
     with database.session_factory.begin() as owner:
         project = owner.get(Project, project_id)
-        _, reference = deliver(owner, project, staged.stored_path.read_bytes(),
-            external_identity="already-seen-comparison-revision")
+        from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential
+        binding = bind_credential(owner, PushCredential("webhook", f"secret-{project.slug}"))
+        reference = accept_delivery(owner, binding, PushPayload(
+            staged.stored_path.read_bytes(), staged.filename,
+            transport_delivery_id="already-seen-comparison-revision")).envelope
         reference_id = owner.scalar(text("select id from source_deliveries where idempotency_key=:key and disposition='stored'"),
             {"key": reference.idempotency_key})
         reference_at = owner.scalar(text("select received_at from source_deliveries where id=:id"), {"id": reference_id})
