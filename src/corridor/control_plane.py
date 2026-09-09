@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass
 from datetime import datetime
+from typing import Any
 import re
 
 from sqlalchemy import select, text, update
@@ -20,6 +21,7 @@ from sqlalchemy.exc import SQLAlchemyError
 from corridor.control_plane_schema import (
     DESTRUCTION_RECEIPTS,
     DISPOSITION_PLANS,
+    DISPOSITION_REHEARSAL_RECEIPTS,
     ENVIRONMENTS,
 )
 
@@ -134,6 +136,7 @@ class DispositionPlan:
     created_by: str
     created_at: datetime
     provider_resources_sha256: str | None = None
+    provider_resources: dict[str, Any] | None = None
 
     def __post_init__(self):
         for value in (self.plan_id, self.environment_id, self.created_by):
@@ -289,6 +292,36 @@ class ControlPlane:
                 )
             ).mappings()
             return tuple(DestructionReceipt(**row) for row in rows)
+
+    def record_disposition_rehearsal(self, *, receipt_id, environment_id, operation_id,
+                                    phase, outcome, evidence, observed_at):
+        """Append provider observations outside the customer database."""
+        import json
+        for value in (receipt_id, environment_id, operation_id):
+            identifier(value)
+        if phase not in {"restore", "state_verification", "cleanup", "backup_expiration", "hold_cancellation"}:
+            raise ValueError("unknown rehearsal phase")
+        if outcome not in {"pending", "completed", "refused"}:
+            raise ValueError("unknown rehearsal outcome")
+        if observed_at.tzinfo is None or len(json.dumps(evidence)) > 65536:
+            raise ValueError("rehearsal needs a bounded observation and explicit timezone")
+        values = dict(receipt_id=receipt_id, environment_id=environment_id, operation_id=operation_id,
+                      phase=phase, outcome=outcome, evidence=evidence, observed_at=observed_at)
+        with self.engine.begin() as connection:
+            connection.execute(pg_insert(DISPOSITION_REHEARSAL_RECEIPTS).values(**values).on_conflict_do_nothing())
+            row = connection.execute(select(DISPOSITION_REHEARSAL_RECEIPTS).where(
+                DISPOSITION_REHEARSAL_RECEIPTS.c.receipt_id == receipt_id)).mappings().one()
+            if dict(row) != values:
+                raise ValueError("rehearsal receipt identity already has another observation")
+        return values
+
+    def disposition_rehearsal_receipts(self, environment_id, operation_id):
+        with self.engine.connect() as connection:
+            return tuple(dict(row) for row in connection.execute(select(DISPOSITION_REHEARSAL_RECEIPTS).where(
+                DISPOSITION_REHEARSAL_RECEIPTS.c.environment_id == identifier(environment_id),
+                DISPOSITION_REHEARSAL_RECEIPTS.c.operation_id == identifier(operation_id),
+            ).order_by(DISPOSITION_REHEARSAL_RECEIPTS.c.observed_at,
+                       DISPOSITION_REHEARSAL_RECEIPTS.c.receipt_id)).mappings())
 
     def record_disposition_plan(self, plan: DispositionPlan) -> DispositionPlan:
         """Retain one dry-run plan; re-recording the same identity is idempotent."""

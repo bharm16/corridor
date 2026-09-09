@@ -243,6 +243,8 @@ class CorridorDataStack(Stack):
         self.database.node.add_dependency(postgres_logs)
 
         CfnOutput(self, "ArtifactBucketName", value=self.artifact_bucket.bucket_name)
+        CfnOutput(self, "DispositionArtifactLogsBucket", value=access_logs.bucket_name)
+        CfnOutput(self, "DispositionDatabaseArn", value=self.database.instance_arn)
         CfnOutput(self, "DatabaseEndpoint",
                   value=self.database.db_instance_endpoint_address)
 

@@ -51,6 +51,7 @@ def test_control_plane_metadata_has_no_customer_content_relations():
         "control_plane.customer_environments",
         "control_plane.destruction_receipts",
         "control_plane.disposition_plans",
+        "control_plane.disposition_rehearsal_receipts",
     }
     assert {table.name for table in tables.values()}.isdisjoint(Base.metadata.tables)
     assert all(foreign_key.column.table.metadata is CONTROL_PLANE_METADATA for table in tables.values() for foreign_key in table.foreign_keys)
