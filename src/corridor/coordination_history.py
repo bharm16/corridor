@@ -225,3 +225,31 @@ def coordination_migration_gaps(session: Session, batch: HistoryBatch) -> tuple[
           and not exists(select 1 from coordination_decision_lineage l where l.legacy_work_decision_id=(r->>'id')::bigint)
         order by (r->>'id')::bigint
     """), {"batch": batch.id, "project": batch.project_id}).mappings())
+
+
+@dataclass(frozen=True)
+class CoordinationSubjectIdentity:
+    subject_id: str
+    project_id: int
+    subject_kind: str
+    legacy_dependency_id: int | None
+    legacy_commitment_lineage_id: int | None
+    coordination_route_active: bool
+
+
+def coordination_subject_identities(session: Session, project_id: int) -> tuple[CoordinationSubjectIdentity, ...]:
+    """Read the explicit identity adapter without importing legacy values.
+
+    Identity mapping is not proof that every accepted field of a Constraint
+    has been migrated. Consumers must separately require their field coverage.
+    """
+    rows = session.execute(text("""
+        select s.id as subject_id,s.project_id,s.subject_kind,
+          l.legacy_dependency_id,l.legacy_commitment_lineage_id,
+          exists(select 1 from coordination_history_activations a where a.subject_id=s.id
+            and not exists(select 1 from legacy_history_reversals r where r.batch_id=a.history_batch_id)) as coordination_route_active
+        from coordination_record_subjects s join coordination_subject_lineage l
+          on l.subject_id=s.id and l.project_id=s.project_id
+        where s.project_id=:project order by s.id
+    """), {"project": project_id}).mappings()
+    return tuple(CoordinationSubjectIdentity(**{**dict(row), "subject_id": str(row["subject_id"])}) for row in rows)
