@@ -69,7 +69,7 @@ SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
     # #456/#562 typed minutes scopes/timing and immutable project contact sources.
-    "9d86919267b985e44a058f036a740fcb42fdd721833d19abad359e54e75f9571"
+    "e8a4a6cc7130ea786e60c570924ea0fdab3c2702e002dcfeea71a19e3597ec81"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -263,6 +263,10 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+            assert session.scalar(text("select count(*) from proposed_delta_impact_derivations")) == 0
+            for role in ("corridor_web", "corridor_worker"):
+                assert session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'SELECT')"), {"role": role})
+                assert not session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'INSERT')"), {"role": role})
             for table in ("pipeline_observations", "pipeline_comparisons", "pipeline_qualifications",
                           "pipeline_acceptances", "pipeline_selections"):
                 assert session.scalar(text(f"select count(*) from public.{table}")) == 0

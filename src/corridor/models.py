@@ -1982,6 +1982,29 @@ class ProposedDelta(Base):
     )
 
 
+class ProposedDeltaImpactDerivation(Base):
+    """Immutable versioned consequences, never Source Facts or accepted values."""
+
+    __tablename__ = "proposed_delta_impact_derivations"
+    __table_args__ = (
+        ForeignKeyConstraint(["project_id", "delta_id"],
+            ["proposed_deltas.project_id", "proposed_deltas.id"]),
+        UniqueConstraint("project_id", "delta_id", "rule", "rule_version", "input_sha256"),
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    delta_id: Mapped[int] = mapped_column(BigInteger)
+    rule: Mapped[str] = mapped_column(Text)
+    rule_version: Mapped[str] = mapped_column(Text)
+    accepted_revision_id: Mapped[int | None] = mapped_column(ForeignKey("project_record_revisions.id"))
+    inputs: Mapped[dict] = mapped_column(JSONB)
+    input_sha256: Mapped[str] = mapped_column(String(64))
+    evaluated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    affected_constraint_ids: Mapped[list] = mapped_column(JSONB)
+    affected_key_dates: Mapped[list] = mapped_column(JSONB)
+    derivation_sha256: Mapped[str] = mapped_column(String(64))
+
+
 class DeltaDisposition(Base):
     """Semantic resolution (accept, edit, reject) of a proposed delta (#518)."""
 

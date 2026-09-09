@@ -390,6 +390,16 @@ def append_support_assessment(
     return session.get_one(SupportAssessment, int(assessment_id))
 
 
+def append_delta_impact(session: Session, *, project_id: int, delta_id: int,
+                       rule: str, rule_version: str, inputs: dict,
+                       evaluated_at: datetime, constraints: list[str], key_dates: list[str]) -> int:
+    """Persist derived consequences through the source-only capability (#643)."""
+    return int(session.scalar(select(func.append_delta_impact(
+        cast(project_id, BigInteger), cast(delta_id, BigInteger), rule, rule_version,
+        cast(inputs, JSONB), evaluated_at, cast(constraints, JSONB), cast(key_dates, JSONB)
+    ))))
+
+
 def append_proposed_deltas(
     session: Session,
     *,

@@ -148,6 +148,7 @@ from corridor.issue_coverage import (
 )
 from corridor.issue_profile import effective_issue_inventory
 from corridor.presentation import field_label
+from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import (
     CONSEQUENCE_BANDS,
@@ -461,6 +462,7 @@ class ChildReading:
     band: str
     attention_reasons: tuple[str, ...]
     customer_artifacts: tuple[str, ...]
+    impacts: tuple[ImpactReading, ...] = ()
     source: SourceReference | None = None
     external_links: tuple[ExternalRecordLink, ...] = ()
     incoming_fact_id: int | None = None
@@ -961,6 +963,10 @@ def read_review_items(
         session, project_id=project_id, as_of=as_of, rule_version=rule_version
     )
     deltas = _deltas_by_id(session, project_id, reading.actionable_delta_ids)
+    impacts: dict[int, list[ImpactReading]] = defaultdict(list)
+    for impact in read_impact_derivations(session, project_id=project_id,
+                                         delta_ids=reading.actionable_delta_ids):
+        impacts[impact.delta_id].append(impact)
     standing = standing_accepted_revisions(session, project_id=project_id)
     documents = _lineage_documents(session, project_id)
     incoming = _incoming_facts(session, project_id, deltas.values(), documents)
@@ -1022,6 +1028,9 @@ def read_review_items(
         )
         for delta_id in reading.actionable_delta_ids
     }
+
+    readings = {identifier: replace(child, impacts=tuple(impacts.get(identifier, ())))
+                for identifier, child in readings.items()}
 
     from corridor.minutes_reading import read_minutes_work
 
