@@ -6,6 +6,8 @@ amends:
   - ADR-0087
   - ADR-0088
   - ADR-0093
+amended_by:
+  - ADR-0097
 ---
 
 # The required gate measures its own cost and rejects feedback-budget regressions

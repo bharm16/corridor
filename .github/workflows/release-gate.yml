@@ -324,7 +324,7 @@ jobs:
           printf 'release gate satisfied\n'
       - uses: actions/checkout@v4
         if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
-      - name: Enforce the measured feedback budget
+      - name: Verify test evidence and report timing targets
         if: ${{ success() && needs.classify.outputs.behavior_required == 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}

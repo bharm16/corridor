@@ -123,9 +123,14 @@ def test_malformed_final_record_cannot_fall_back_to_an_earlier_good_record():
             ci.logged_json(log, ci.RECEIPT_MARKER)
 
 
-def test_history_uses_completed_attempt_time_and_validated_job_log_weights(monkeypatch):
+@pytest.mark.parametrize("step_name", [
+    "Enforce the measured feedback budget",
+    "Verify test evidence and report timing targets",
+])
+def test_history_uses_completed_attempt_time_and_validated_job_log_weights(monkeypatch, step_name):
     run = _run(attempt=2)
     jobs = _jobs(run["run_started_at"], run["updated_at"], attempt=2)
+    jobs[-1]["steps"] = [{"name": step_name, "conclusion": "success"}]
     older_summary = {**jobs[-1], "id": 9, "run_attempt": 1}
     calls = _history_api(monkeypatch, [run], {100: [older_summary, *jobs]},
                          {14: _log(ci.REPORT_MARKER, _report(attempt=2))})
@@ -208,7 +213,7 @@ def test_unavailable_historical_logs_do_not_block_current_job_outputs(monkeypatc
         raise subprocess.CalledProcessError(1, ["gh", "api"], stderr=b"HTTP 403: log access unavailable")
     monkeypatch.setattr(ci, "github", github)
     assert ci.previous_reports("owner/repo", "200") == []
-    assert "current-run budget remains enforced" in capsys.readouterr().out
+    assert "Current-run test evidence remains required" in capsys.readouterr().out
 
 
 def test_prepare_emits_one_shared_output_for_measured_and_bootstrap_weights(tmp_path, monkeypatch):
@@ -231,11 +236,24 @@ def test_retry_measures_its_own_attempt_instead_of_hours_since_creation():
     assert ci._elapsed(ci._attempt_start(run), "2026-09-08T10:00:30Z") == 30
 
 
-def _finish_api(monkeypatch, *, defect=None):
+def _finish_api(monkeypatch, *, defect=None, gate_seconds=5, migration_seconds=None):
     report = _report()
-    start = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
+    if migration_seconds is not None:
+        expected = dict(report["expected"], suites={**report["expected"]["suites"], "migration": 1})
+        migration = dict(report["receipts"][0], suite="migration", elapsed_seconds=migration_seconds,
+                         per_file_seconds={"tests/test_migration_baseline.py": migration_seconds})
+        report = ci.aggregate_receipts([*report["receipts"], migration], expected, gate_seconds)
+    start = (datetime.now(timezone.utc) - timedelta(seconds=gate_seconds)).isoformat()
     end = (datetime.now(timezone.utc) - timedelta(seconds=1)).isoformat()
     jobs = _jobs(start, end)
+    if migration_seconds is not None:
+        jobs.insert(-1, dict(jobs[2], id=20, name="migration"))
+    # The real behavior jobs depend on classify; check runs independently.
+    classified_at = (datetime.fromisoformat(start) + timedelta(seconds=1)).isoformat()
+    jobs[0]["completed_at"] = classified_at
+    jobs[1]["completed_at"] = (datetime.fromisoformat(start) + timedelta(seconds=2)).isoformat()
+    for job in jobs[2:-1]:
+        job["started_at"] = classified_at
     jobs[-1].update(completed_at=None, conclusion=None)
     jobs[-1]["started_at"] = end
     outputs = {receipt["suite"]: {f"{receipt['suite']}_1": json.dumps(receipt)} for receipt in report["receipts"]}
@@ -263,7 +281,7 @@ def _finish_api(monkeypatch, *, defect=None):
     monkeypatch.setattr(ci, "test_files", lambda: ["tests/test_one.py"] + (
         ["tests/test_missing.py"] if defect == "missing file" else []
     ))
-    for key, value in {"PYTEST_SHARDS": "1", "SLOW_SHARDS": "1", "MIGRATION_REQUIRED": "false",
+    for key, value in {"PYTEST_SHARDS": "1", "SLOW_SHARDS": "1", "MIGRATION_REQUIRED": "true" if migration_seconds is not None else "false",
                        "GITHUB_RUN_ATTEMPT": "1", "GITHUB_SHA": "a" * 40}.items():
         monkeypatch.setenv(key, value)
     for suite, output in outputs.items():
@@ -283,6 +301,23 @@ def test_finish_uses_job_outputs_without_fetching_unpublished_current_logs(tmp_p
     assert "Current gate:" in summary.read_text()
     assert not any(path.endswith("/logs") for path in calls)
     assert not any("artifact" in path for path in calls)
+
+
+@pytest.mark.parametrize("gate_seconds,migration_seconds", [
+    (169.346954, 45.49),  # Actual run 34384002900: half a second over migration target.
+    (193.13249, 47.83),  # Actual run 34381546750: every behavior command succeeded.
+    (370, 40),  # Queue/setup delay changes the feedback report, not correctness.
+])
+def test_successful_complete_ci_proof_reports_timing_targets_without_failing_the_merge(
+    monkeypatch, capsys, gate_seconds, migration_seconds,
+):
+    _finish_api(monkeypatch, gate_seconds=gate_seconds, migration_seconds=migration_seconds)
+    assert ci.finish("owner/repo", "100") == 0
+    output = capsys.readouterr().out
+    report = ci.validate_report(ci.logged_json(output.encode(), ci.REPORT_MARKER))
+    assert report["suites"]["migration"]["elapsed_seconds"] == migration_seconds
+    assert "::warning::Timing targets exceeded" in output
+    assert '"passed": false' in output  # The measured target breach remains visible.
 
 
 def test_finish_fetches_independent_metadata_together_before_validating(monkeypatch, capsys):

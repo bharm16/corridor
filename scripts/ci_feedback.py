@@ -1,8 +1,10 @@
-"""Reuse completed CI measurements and enforce feedback on the required run.
+"""Verify current test proof and report completed CI performance measurements.
 
 Only completed release-gate job logs from this repository supply weights. They are inert, validated JSON, never executable configuration or
 a test-selection list. A missing historical measurement uses the checked-in
 starting weights; unavailable or corrupt current proof fails the gate.
+Shared-runner timing targets are diagnostic (ADR-0097); a stopwatch fluctuation
+cannot invalidate successful, complete test evidence.
 """
 
 from __future__ import annotations
@@ -24,6 +26,10 @@ from scripts.test_shard import test_files
 
 
 WORKFLOW = ".github/workflows/release-gate.yml"
+TIMING_STEP_NAMES = frozenset({
+    "Enforce the measured feedback budget",  # Historical ADR-0096 reports.
+    "Verify test evidence and report timing targets",
+})
 
 
 def github(path: str, *, binary: bool = False):
@@ -98,7 +104,7 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
     )]
     def load(run):
         summaries = [job for job in run_jobs(repository, str(run["id"])) if job["name"] == "release-gate" and job["run_attempt"] == run["run_attempt"]]
-        if len(summaries) != 1 or not any(step["name"] == "Enforce the measured feedback budget" and step["conclusion"] in ("success", "failure") for step in summaries[0].get("steps", [])):
+        if len(summaries) != 1 or not any(step["name"] in TIMING_STEP_NAMES and step["conclusion"] in ("success", "failure") for step in summaries[0].get("steps", [])):
             return None
         log = github(f"repos/{repository}/actions/jobs/{summaries[0]['id']}/logs", binary=True)
         try:
@@ -120,7 +126,7 @@ def previous_reports(repository: str, run_id: str) -> list[dict]:
             if isinstance(detail, bytes):
                 detail = detail.decode("utf-8", errors="replace")
             detail = detail.replace("\x1b", "\\x1b")
-            print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. The current-run budget remains enforced.")
+            print(f"::warning::Historical timing for run {run['id']} is unavailable: {detail.strip()[:500] or type(error).__name__}. Current-run test evidence remains required.")
             return None
     # The ten-run history window is I/O-bound metadata, not test execution.
     # Eight bounded readers avoid serial waves of independent job/log calls
@@ -241,7 +247,12 @@ def finish(repository: str, run_id: str) -> int:
     # Logs already belong to this workflow. No subsequent upload can turn a
     # successful test job into a failure and force its tests to run again.
     print(REPORT_MARKER + " " + json.dumps(report, separators=(",", ":"), allow_nan=False), flush=True)
-    summary = ["### Test feedback", "", f"Current gate: **{report['gate_elapsed_seconds']:.1f}s** (through this decision).", "", "```json", json.dumps(result, indent=2, sort_keys=True), "```", "", "| Suite | Executed tests | Slowest test command |", "|---|---:|---:|"]
+    timing_status = "within target" if result["passed"] else "above target (advisory)"
+    summary = ["### Test feedback", "", "Required test evidence: **verified**.", "",
+               f"Current gate: **{report['gate_elapsed_seconds']:.1f}s** (through this decision).",
+               f"Timing targets: **{timing_status}**. Job timeouts remain enforced.", "",
+               "```json", json.dumps(result, indent=2, sort_keys=True), "```", "",
+               "| Suite | Executed tests | Slowest test command |", "|---|---:|---:|"]
     for name, measured in report["suites"].items():
         summary.append(f"| {name} | {measured['test_count']} | {measured['elapsed_seconds']:.1f}s |")
     rendered = "\n".join(summary) + "\n"
@@ -249,7 +260,12 @@ def finish(repository: str, run_id: str) -> int:
     if os.environ.get("GITHUB_STEP_SUMMARY"):
         with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as stream:
             stream.write(rendered)
-    return 0 if result["passed"] else 1
+    if not result["passed"]:
+        print("::warning::Timing targets exceeded: " + "; ".join(result["failures"]))
+    # Required job results and every current receipt were verified above.
+    # Keep the target assessment and measurements intact for investigation;
+    # hosted scheduling/CPU variance is not a failed correctness proof.
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:
