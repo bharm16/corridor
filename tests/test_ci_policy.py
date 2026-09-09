@@ -23,7 +23,7 @@ ROOT = Path(__file__).resolve().parents[1]
 GATE = "release-gate.yml"
 # Ten test runners plus check and migration. Keep the capacity trial explicit;
 # the required timing receipts assess it against the unchanged ADR-0096 budget.
-DOWNLOADING_JOB_COUNT = 12
+DOWNLOADING_JOB_COUNT = 13
 
 
 def _workflow(name: str) -> dict:
@@ -272,8 +272,8 @@ def test_the_added_jobs_download_no_packages():
     """Package concurrency is explicit, so it may not grow unnoticed.
 
     `classify` and `release-gate` are new, but they run alone at either end
-    of the gate and install nothing. The 2026-09-08 capacity trial adds one
-    ordinary runner to the prior eleven downloading jobs (ADR-0096).
+    of the gate and install nothing. The 2026-09-09 capacity trial adds one
+    ordinary runner to the prior twelve downloading jobs (ADR-0096).
     """
 
     jobs = _workflow(GATE)["jobs"]
