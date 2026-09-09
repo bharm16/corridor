@@ -500,9 +500,10 @@ def test_custody_consumes_real_dump_data_blocks_beyond_the_table_of_contents(run
     import subprocess
     from sqlalchemy import text
     engine = runtime_database.session_factory.kw["bind"]
+    probe_payload = os.urandom(16384).hex()
     with engine.begin() as connection:
         connection.execute(text("create table public.disposition_dump_probe (payload text not null)"))
-        connection.execute(text("insert into public.disposition_dump_probe values (:payload)"), {"payload": os.urandom(16384).hex()})
+        connection.execute(text("insert into public.disposition_dump_probe values (:payload)"), {"payload": probe_payload})
     url = engine.url
     environment = {key: value for key, value in os.environ.items() if not key.startswith("PG")}
     environment["PGPASSWORD"] = url.password or ""
@@ -515,7 +516,7 @@ def test_custody_consumes_real_dump_data_blocks_beyond_the_table_of_contents(run
     use_compose = url.host in {"localhost", "127.0.0.1"} and url.port == 5433 and _compose_service_is_running(compose_root)
     dump_command = (["docker", "compose", "exec", "-T", "postgres", "pg_dump"] if use_compose else ["pg_dump", "--host", url.host, "--port", str(url.port)])
     with output.open("wb") as destination:
-        subprocess.run([*dump_command, "--format=custom", "--no-password", "--username", url.username,
+        subprocess.run([*dump_command, "--format=custom", "--compress=0", "--no-password", "--username", url.username,
             "--dbname", url.database, "--table=public.disposition_dump_probe"], env=environment,
             cwd=compose_root, check=True, stdout=destination, stderr=subprocess.PIPE)
     def restore_runner(command, **options):
@@ -527,7 +528,11 @@ def test_custody_consumes_real_dump_data_blocks_beyond_the_table_of_contents(run
     data, checksum = _archive_containing_dump(output.read_bytes())
     verified = verify_export_archive(BytesIO(data), expected_sha256=checksum, environment_id="environment", inventory_sha256=digest(inventory()), restore_run=restore_runner)
     assert verified["database_validation"]["method"] == "pg-restore-full-stream-v1"
-    truncated = output.read_bytes()[:-32]
+    complete_dump = output.read_bytes()
+    payload_offset = complete_dump.index(probe_payload.encode())
+    # Client versions add different trailer bytes. Cut inside the known COPY
+    # payload, not an arbitrary suffix that may contain only optional metadata.
+    truncated = complete_dump[:payload_offset + len(probe_payload) // 2]
     output.write_bytes(truncated)
     # The TOC remains readable while the data block is incomplete. A --list
     # check would incorrectly accept these customer export bytes.
