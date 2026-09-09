@@ -268,3 +268,12 @@ waited; that isolation level is explicitly refused for this command. With READ
 COMMITTED, its post-lock reads see that Save and either match the reviewed batch
 or refuse drift. The custody manifest itself is one SQL statement, so READ
 COMMITTED does not split it across several source snapshots.
+
+
+The supporting-document Fact contract now names the exact receipted transfer
+exception from ADR-0083 as well as Human Record Decisions. Its automatic segment
+kind set remains empty: finding a cell, passage or document never authorizes
+inclusion. Only the support-history command's original transfer receipt,
+matching scope/audit identity, and exact approval or managed-policy run/outcome
+can take the policy branch. Locator checks still establish no readiness or
+semantic-support conclusion.

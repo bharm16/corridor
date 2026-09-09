@@ -145,3 +145,19 @@ def test_direct_sql_cannot_select_an_arbitrary_duplicate_locator_or_refresh_with
     with pytest.raises(DBAPIError, match="active reviewed native admission"), session.begin_nested():
         session.execute(text("select refresh_support_scope(:p,:s,:f,:segment,:digest)"),
             {"p": project.id, "s": scope.id, "f": fact_id, "segment": segment.id, "digest": descriptor["digest"]})
+
+
+def test_receipted_transfer_contract_does_not_allow_generic_automatic_inclusion(session, support_case):
+    from corridor.fact_decisions import FactDecisionRefused, include_structured_cell_fact_by_policy
+    from corridor.models import Fact
+
+    project, _dependency, document, _segment, _link, _scope, _batch = support_case
+    fact_id = session.scalar(text("""
+        select id from facts where project_id=:project
+          and fact_type='supporting_documentation_in_use' and document_value_id=:document
+    """), {"project": project.id, "document": document.id})
+    fact = session.get(Fact, fact_id)
+    before = session.scalar(text("select count(*) from fact_decisions where project_id=:project"), {"project": project.id})
+    with pytest.raises(FactDecisionRefused, match="not eligible for automatic inclusion"):
+        include_structured_cell_fact_by_policy(session, fact, idempotency_key="generic-support-policy-refused")
+    assert session.scalar(text("select count(*) from fact_decisions where project_id=:project"), {"project": project.id}) == before

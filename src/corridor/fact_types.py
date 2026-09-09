@@ -41,6 +41,14 @@ class FactTypeContract:
     inclusion_rule: str
 
 
+# ADR-0083 permits an exact unchanged support transfer on its original
+# released-policy receipt. This is not generic automatic Fact inclusion:
+# supporting documents still have no eligible automatic segment kinds.
+EXACT_SUPPORT_TRANSFER_INCLUSION_RULE = (
+    "receipted_unchanged_support_transfer_else_human_record_decision"
+)
+
+
 STRUCTURED_TEXT_FACT_TYPES = (
     "utility_id",
     "external_org",
@@ -202,7 +210,7 @@ FACT_TYPE_CONTRACTS = {
         automatic_segment_kinds=frozenset(),
         required_roles=frozenset(),
         validation_rule="registered_document_revision",
-        current_value_rule="human_decision_effectiveness",
-        inclusion_rule="human_record_decision",
+        current_value_rule="record_decision_effectiveness",
+        inclusion_rule=EXACT_SUPPORT_TRANSFER_INCLUSION_RULE,
     ),
 }
