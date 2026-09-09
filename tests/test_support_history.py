@@ -106,7 +106,6 @@ def test_missing_locator_is_an_explicit_gap_and_cannot_hide_as_native(session, s
 
 def test_direct_sql_cannot_replay_old_human_support_over_a_later_native_decision(session, support_case):
     from corridor.fact_decisions import record_human_fact_decision
-    from corridor.facts import append_supporting_documentation_fact
     from corridor.models import Fact
 
     project, dependency, _document, segment, _link, scope, batch = support_case
