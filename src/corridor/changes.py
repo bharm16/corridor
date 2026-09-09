@@ -345,6 +345,11 @@ def diff_since_last(
     # downstream can detect it. `report_runs.id` is append-only and is the same
     # watermark `report_preparation` and `issue_rendering` already select on
     # (#488, #634).
+    if evaluation.native_population is not None:
+        # A historical revision may be rendered after later reports exist.
+        # Keep the established ReportRun-ID ordering/retirement boundary, but
+        # never use a reading from a future accepted revision as its baseline.
+        previous_query = previous_query.where(ReportRun.revision_id <= evaluation.native_population.revision_id)
     previous = session.scalars(
         previous_query.order_by(ReportRun.id.desc()).limit(1)
     ).first()
@@ -360,7 +365,7 @@ def diff_since_last(
         # changes" would read as "nothing moved" rather than "we have not
         # looked before".
         return Diff(previous_run_id=None, previous_ts=None,
-                    comparison_boundary_unknown=unknown_boundary)
+                    comparison_boundary_unknown=unknown_boundary or evaluation.native_population is not None)
 
     previous_native = (previous.snapshot_json or {}).get("population_kind") == "native_adopted_ucm"
     current_native = current.get("population_kind") == "native_adopted_ucm"

@@ -323,3 +323,21 @@ def test_report_command_persists_the_exact_rendered_native_reading(runtime_datab
                 assert entry["published_promised_for"] is None
                 assert entry["accepted_field_values"]["committed_date"] == record.committed_date.isoformat()
                 assert entry["accepted_field_decisions"]["station_from"]["decision_id"] == record.fields["station_from"].decision_id
+
+
+def test_historical_native_report_uses_no_future_revision_as_its_predecessor(session, adopted):
+    from corridor.changes import record_run
+    project, adoption = adopted
+    original = freeze_project_reading(session, project.id, today=TODAY)
+    first = record_run(session, project.id, evaluation=original.evaluation)
+    field = original.native_population.records[0].fields["station_from"]
+    record_human_fact_decision(session, session.get(Fact, field.fact_id), principal=PRINCIPAL,
+        command_type="resolve_discrepancy", idempotency_key="future-station-removal",
+        expected_predecessor=field.decision_id, disposition="do_not_add")
+    later = freeze_project_reading(session, project.id, today=TODAY)
+    future = record_run(session, project.id, evaluation=later.evaluation)
+    assert future.id > first.id and future.revision_id > adoption.revision_id
+    historical = freeze_project_reading(session, project.id, today=TODAY, revision_id=adoption.revision_id)
+    report = build_report(session, project.id, today=TODAY, frozen_reading=historical)
+    assert report.diff.previous_run_id == first.id
+    assert report.diff.previous_run_id != future.id
