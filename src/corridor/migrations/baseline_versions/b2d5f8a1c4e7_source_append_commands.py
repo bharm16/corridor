@@ -11605,6 +11605,13 @@ def upgrade() -> None:
     from corridor.migrations import retirement_watermark
 
     retirement_watermark.upgrade(op)
+    from corridor import shadow_schema
+
+    shadow_schema.install(op)
+    from corridor.migrations import legacy_history, coordination_history
+
+    legacy_history.upgrade(op)
+    coordination_history.upgrade(op)
     op.execute(PUBLIC_PRIVILEGE_REVOKE)
 
 
@@ -11625,6 +11632,13 @@ def downgrade() -> None:
 
     from corridor.migrations import retirement_watermark
 
+    from corridor import shadow_schema
+
+    from corridor.migrations import legacy_history, coordination_history
+
+    coordination_history.downgrade(op)
+    legacy_history.downgrade(op)
+    shadow_schema.uninstall(op)
     retirement_watermark.downgrade(op)
     impact_derivations.downgrade(op)
     minutes_spine.downgrade(op)

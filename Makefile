@@ -11,6 +11,15 @@ LOCAL_BROAD_REASON ?=
 pilot-measurement:
 	uv run python -m corridor.pilot_measurement_cli $(ARGS)
 
+.PHONY: pilot-report pilot-checkpoint
+# Reproduce economics from native measurement receipts and predeclared evidence.
+pilot-report:
+	uv run python -m corridor.pilot_report_cli report $(ARGS)
+
+# Produce one evidence-backed finding per predeclared pilot criterion.
+pilot-checkpoint:
+	uv run python -m corridor.pilot_report_cli checkpoint $(ARGS)
+
 # Which engine-absent proof `make test-engine-absent` runs: imports, collect
 # or the complete suite.
 MODE ?= suite
@@ -60,7 +69,24 @@ test-focused:
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 .PHONY: control-plane
+.PHONY: legacy-history environment-disposition
+# Inventory, capture, read and reverse retained legacy history and bounded native migrations.
+legacy-history:
+	uv run python -m corridor.legacy_history_cli $(ARGS)
+
+# Explicit operator inventory/export/plan/execute/rehearsal; no provider action by default.
+environment-disposition:
+	uv run python -m corridor.environment_disposition_cli $(ARGS)
 .PHONY: shadow-comparison
+.PHONY: shadow-processing activation
+# Provision an isolated baseline-adopted shadow project, capture a revision, or export its sealed output.
+shadow-processing:
+	uv run python -m corridor.shadow_cli $(ARGS)
+
+# Validate or freeze explicit deployment evidence; processing checks the receipt at runtime.
+activation:
+	uv run python -m corridor.activation_cli $(ARGS)
+
 # Freeze predicted changes before loading the successor working reference.
 # make shadow-comparison ARGS="freeze prediction-input.json"
 # make shadow-comparison ARGS="compare --freeze-sha256 <digest> --successor successor.json --reference-dataset <identity>"

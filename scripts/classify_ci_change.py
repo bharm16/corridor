@@ -77,6 +77,8 @@ DOCUMENTATION_PATHS: tuple[str, ...] = (
 MIGRATION_PATHS: tuple[str, ...] = (
     "src/corridor/migrations/**",
     "src/corridor/models.py",
+    "src/corridor/shadow_schema.py",
+    "src/corridor/legacy_history_inventory.py",
     "src/corridor/db.py",
     "src/corridor/m8_acceptance_database.py",
     "tests/conftest.py",

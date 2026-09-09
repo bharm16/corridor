@@ -30,6 +30,7 @@ SPINE_TABLE_PATTERN = re.compile(
     r"project_record_[a-z_]+|project_baseline_[a-z_]+|"
     r"extracted_proposal_facts|recorded_verbal_[a-z_]+|"
     r"support_assessment[a-z_]*|proposed_delta[a-z_]*|delta_[a-z_]+|"
+    r"legacy_history_[a-z_]+|coordination_(record_subjects|record_decisions|record_reversals|subject_lineage|decision_lineage|reversal_lineage|history_activations)|"
     # Not spine state: two report readings that *cite* the accepted revision
     # they were produced against (#602). They are deleted with the spine
     # because a cleanup that removed a revision and left one behind would

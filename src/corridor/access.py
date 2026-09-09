@@ -851,10 +851,21 @@ PARTITION_CLASSIFICATIONS = (
     "protected through another relation",
     "customer-wide",
     "not yet partitioned",
+    "not web-readable",
 )
 
 PARTITIONED_RELATIONS: frozenset[str] = frozenset(
     {
+        "legacy_history_batches",
+        "legacy_history_reversals",
+        "legacy_history_evidence_migrations",
+        "coordination_record_subjects",
+        "coordination_subject_lineage",
+        "coordination_history_activations",
+        "coordination_record_decisions",
+        "coordination_decision_lineage",
+        "coordination_record_reversals",
+        "coordination_reversal_lineage",
         "pipeline_observations",
         "pipeline_comparisons",
         "pipeline_qualifications",
@@ -963,6 +974,7 @@ AUTHORIZATION_INPUT_RELATIONS: dict[str, str] = {
 }
 
 PROTECTED_RELATIONS: dict[str, str] = {
+    "current_coordination_record": "security-invoker view over project-partitioned native coordination decisions and reversals",
     "current_project_record": (
         "a view over `fact_decisions` and `facts`, both partitioned. #657 set "
         "`security_invoker` on it, so it reads as the caller and the "
@@ -996,6 +1008,12 @@ CUSTOMER_WIDE_RELATIONS: dict[str, str] = {
         "project and carries no project column"
     ),
 }
+
+NON_WEB_RELATIONS: dict[str, str] = {
+    "shadow_projects": "isolated shadow binding; web privileges are revoked and its project is hidden by a restrictive registry policy",
+    "shadow_runs": "non-authoritative frozen source predictions; only the isolated worker may read or append them",
+}
+
 
 NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
     "active_extraction_runs": (
@@ -1809,6 +1827,7 @@ def classify_relation(name: str) -> tuple[str, str]:
         ("protected through another relation", PROTECTED_RELATIONS),
         ("customer-wide", CUSTOMER_WIDE_RELATIONS),
         ("not yet partitioned", NOT_YET_PARTITIONED_RELATIONS),
+        ("not web-readable", NON_WEB_RELATIONS),
     ):
         if name in relations:
             return (classification, relations[name])

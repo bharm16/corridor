@@ -655,7 +655,7 @@ TESSERACT_PACKAGES = frozenset({"pytesseract"})
 ENGINE_ALLOWLIST: tuple[tuple[str, tuple[str, ...]], ...] = ()
 
 
-def _engines_used(nodes: tuple[ast.AST, ...]) -> frozenset[str]:
+def _engines_used(nodes: tuple[ast.AST, ...], *, absence_audit: bool = False) -> frozenset[str]:
     """The engines one module depends on.
 
     PyMuPDF is an import of `pymupdf` or its `fitz` alias. Tesseract is an
@@ -679,6 +679,26 @@ def _engines_used(nodes: tuple[ast.AST, ...]) -> frozenset[str]:
             and isinstance(first.value.value, str)
         ):
             docstrings.add(first.value)
+    # Activation consumes the #766 absence receipt. Only membership checks
+    # against its exact observation fields, and literal absent fixture values,
+    # are metadata. Imports and executable arguments remain dependencies.
+    audit_literals: set[ast.Constant] = set()
+    if absence_audit:
+        for node in nodes:
+            if (isinstance(node, ast.Compare) and len(node.ops) == 1
+                and isinstance(node.ops[0], ast.In)
+                and isinstance(node.left, ast.Constant)
+                and node.left.value in {"tesseract", "tesseract-ocr"}
+                and isinstance(node.comparators[0], ast.Subscript)
+                and isinstance(node.comparators[0].slice, ast.Constant)
+                and node.comparators[0].slice.value in {"executables", "system_packages"}):
+                audit_literals.add(node.left)
+            if isinstance(node, ast.Dict):
+                for key, value in zip(node.keys, node.values):
+                    if (isinstance(key, ast.Constant)
+                        and key.value in {"tesseract", "tesseract-ocr"}
+                        and isinstance(value, ast.Constant) and value.value is None):
+                        audit_literals.add(key)
     engines: set[str] = set()
     for node in nodes:
         packages: set[str] = set()
@@ -690,6 +710,7 @@ def _engines_used(nodes: tuple[ast.AST, ...]) -> frozenset[str]:
             isinstance(node, ast.Constant)
             and isinstance(node.value, str)
             and node not in docstrings
+            and node not in audit_literals
             and "tesseract" in node.value.lower()
         ):
             engines.add("tesseract")
@@ -714,7 +735,8 @@ def _engine_uses() -> dict[str, frozenset[str]]:
             relative = path.relative_to(REPO_ROOT)
             if path == Path(__file__).resolve():
                 continue
-            engines = _engines_used(read_python(path).nodes)
+            engines = _engines_used(read_python(path).nodes, absence_audit=relative.as_posix() in {
+                "src/corridor/activation.py", "tests/test_activation.py"})
             if engines:
                 uses[relative.as_posix()] = engines
     return uses
@@ -737,6 +759,16 @@ def test_the_engine_scanner_sees_every_form_of_dependency():
     assert {
         source: set(_engines_used(tuple(ast.walk(ast.parse(source))))) for source in cases
     } == cases
+
+    audit_cases = {
+        "'tesseract' in observed['executables']": set(),
+        "{'tesseract-ocr': None}": set(),
+        "subprocess.run(['tesseract', 'page.png'])": {"tesseract"},
+        "import pytesseract": {"tesseract"},
+        "{'tesseract': executable}": {"tesseract"},
+    }
+    assert {source: set(_engines_used(tuple(ast.walk(ast.parse(source))), absence_audit=True))
+            for source in audit_cases} == audit_cases
 
 
 def test_only_allowlisted_modules_still_use_pymupdf_or_tesseract():
@@ -1196,6 +1228,13 @@ REPORT_READING_PAYLOADS = {
     ("scheduled_report_publications", "snapshot_json"),
 }
 
+# This is an identity checksum constrained to 64 lowercase hex characters,
+# not another home for quotation text. The migrated citation references its
+# original Source Segment; rollback uses this digest to verify old custody.
+QUOTE_IDENTITY_DIGESTS = {
+    ("legacy_history_evidence_migrations", "original_quote_sha256"),
+}
+
 # Not carriers either, and not exempt: these two columns are the reference the
 # rule asks for (#640). They name the registered field-mapping revision that
 # *owns* the mapping — a foreign key into `project_baseline_formats`, not a
@@ -1254,7 +1293,7 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
         for table in Base.metadata.sorted_tables
         for column in table.columns
         if _VALUE_COPYING_COLUMN.search(column.name)
-    } - REPORT_READING_PAYLOADS - MAPPING_REGISTRATION_REFERENCES
+    } - REPORT_READING_PAYLOADS - MAPPING_REGISTRATION_REFERENCES - QUOTE_IDENTITY_DIGESTS
     introduced = sorted(
         f"{table}.{column}"
         for table, column in present - VALUE_COPYING_CARRIERS
@@ -1280,6 +1319,7 @@ def test_no_new_relation_copies_quote_field_map_or_snapshot_state():
 # named here rather than being silently outside it.
 UNMAPPED_WEB_READABLE_RELATIONS = frozenset(
     {
+        "current_coordination_record",
         "current_project_record",
         "retired_automatic_carry_forward_policy_activations",
     }
@@ -1328,6 +1368,7 @@ def test_the_classification_names_no_relation_that_no_longer_exists():
         | set(access.PROTECTED_RELATIONS)
         | set(access.CUSTOMER_WIDE_RELATIONS)
         | set(access.NOT_YET_PARTITIONED_RELATIONS)
+        | set(access.NON_WEB_RELATIONS)
     )
     relations = set(Base.metadata.tables) | UNMAPPED_WEB_READABLE_RELATIONS
 
@@ -1345,6 +1386,7 @@ def test_no_relation_carries_two_classifications():
         set(access.PROTECTED_RELATIONS),
         set(access.CUSTOMER_WIDE_RELATIONS),
         set(access.NOT_YET_PARTITIONED_RELATIONS),
+        set(access.NON_WEB_RELATIONS),
     )
     overlaps = sorted(
         name
@@ -1392,6 +1434,7 @@ def test_every_recorded_reason_says_something_specific():
             access.PROTECTED_RELATIONS,
             access.CUSTOMER_WIDE_RELATIONS,
             access.NOT_YET_PARTITIONED_RELATIONS,
+            access.NON_WEB_RELATIONS,
         )
         for name, reason in relations.items()
         if len(reason.split()) < 8

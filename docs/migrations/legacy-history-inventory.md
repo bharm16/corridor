@@ -6,16 +6,16 @@ not declare ADR-0081 stages 2–6 complete or supersede ADR-0074.
 
 ## Decomposition for the issue tracker
 
-1. **Inventory and retained-history custody**: explicit per-class ownership,
+1. **Inventory and retained-history custody (#783)**: explicit per-class ownership,
    complete original rows, native lineage, original actors and recorded times,
    run executor/code revision kept separately, counts/digest, exact replay and
    append-only reversal. Implemented by this batch.
-2. **Bounded exact Evidence Link citation migration**: migrate a quote only when
+2. **Bounded exact Evidence Link citation migration (#784)**: migrate a quote only when
    one existing located Source Segment on the same document/page has exactly
    those whole words and a verified digest. Preserve every original quote.
    Missing/ambiguous matches remain permanent historical quote text. Implemented
    by this batch, with its own per-link outcome receipts.
-3. **Native Coordination Decisions**: implemented as a second bounded batch.
+3. **Native Coordination Decisions (#785)**: implemented as a second bounded batch.
    Independent native subject identity, typed decisions bound to the existing
    ProjectRecordRevision family, original actor/time/predecessor, grouped plan
    Save/Undo, and native current/as-of readings. Existing plan writers dual-write
@@ -25,7 +25,7 @@ not declare ADR-0081 stages 2–6 complete or supersede ADR-0074.
    reported, never relabeled. Remaining conversion includes readiness/support
    role/scope, unresolved legacy assertion values, and complete statement/source
    reader integration. Keep #513 open.
-4. **Independent native readers and field/record coverage**: complete all seven
+4. **Independent native readers and field/record coverage (#786)**: complete all seven
    surfaces below, then bind their successful evidence to writer-switch commands.
    The generic semantic comparator is implemented, and the old misleading gate
    is corrected. The actual legacy readers remain unconverted; keep #458 open.
@@ -35,7 +35,8 @@ not declare ADR-0081 stages 2–6 complete or supersede ADR-0074.
    window evaluator exists; no live switch or retirement is implemented here.
 
 All schema objects fold into the one existing successor; no migration edge is
-added. The coordinator publishes the inventory/batch split before delivery.
+added. The inventory and batches are published as #513's linked sub-issues,
+with native dependency edges from the migration batches to the inventory.
 
 ## Exact history custody
 
