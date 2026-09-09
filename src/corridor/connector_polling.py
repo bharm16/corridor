@@ -90,8 +90,14 @@ def _box_shared_files(scope: Mapping[str, Any]) -> PullConnector:
     return BoxPullConnector(shared_urls=(str(scope["source_url"]),))
 
 
+def _recorded_m365(scope: Mapping[str, Any]) -> PullConnector:
+    """Offline configurations require the replay command's injected recording."""
+    raise ConnectorPollingRefusal("recorded Microsoft 365 configurations run only through m365-replay")
+
+
 CONNECTOR_FACTORIES: Mapping[str, Callable[[Mapping[str, Any]], PullConnector]] = (
-    MappingProxyType({"txdot-rid-box-v1": _box_shared_files})
+    MappingProxyType({"txdot-rid-box-v1": _box_shared_files,
+                     "m365-graph-recording-v1": _recorded_m365})
 )
 
 

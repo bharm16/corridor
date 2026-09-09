@@ -60,6 +60,12 @@ test-focused:
 	uv run python scripts/run_local_tests.py --suite focused --timeout-seconds $(FOCUSED_TEST_TIMEOUT_SECONDS) $(if $(LOCAL_BROAD_REASON),--diagnostic-reason $(LOCAL_BROAD_REASON),) -- -n 1 --dist loadfile $(ARGS)
 
 .PHONY: control-plane
+.PHONY: m365-replay
+# Replay recorded Graph pages into an existing synthetic project; never connects a tenant.
+# make m365-replay ARGS="recording.json --project-id 1 --customer fixture --run-identity replay-1"
+m365-replay:
+	uv run python -m corridor.m365_replay $(ARGS)
+
 .PHONY: email-source
 .PHONY: contacts
 # Retained contact imports/resolution; corrections use an authenticated web session.
