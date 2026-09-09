@@ -17,7 +17,11 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.engine import Engine
 from sqlalchemy.exc import SQLAlchemyError
 
-from corridor.control_plane_schema import DESTRUCTION_RECEIPTS, ENVIRONMENTS
+from corridor.control_plane_schema import (
+    DESTRUCTION_RECEIPTS,
+    DISPOSITION_PLANS,
+    ENVIRONMENTS,
+)
 
 
 class RouteRefused(ValueError):
@@ -110,6 +114,40 @@ class DestructionReceipt:
             raise ValueError("unknown destruction outcome")
         if self.observed_at.tzinfo is None or self.observed_at.utcoffset() is None:
             raise ValueError("receipt observation needs an explicit timezone")
+
+
+@dataclass(frozen=True)
+class DispositionPlan:
+    """The persisted subset of a whole-environment disposition dry run (#514).
+
+    The full manifest (components, resolved precedence, referential state) is
+    recomputed deterministically from the registration and declared inputs; only
+    the digest, status, resolved retention and attribution are retained here so
+    the executor can refuse a stale plan and resume a partial one.
+    """
+
+    plan_id: str
+    environment_id: str
+    manifest_sha256: str
+    status: str
+    resolved_retain_until: datetime | None
+    created_by: str
+    created_at: datetime
+
+    def __post_init__(self):
+        for value in (self.plan_id, self.environment_id, self.created_by):
+            identifier(value)
+        if not re.fullmatch(r"[0-9a-f]{64}", self.manifest_sha256):
+            raise ValueError("manifest digest must be a lowercase hex SHA-256")
+        if self.status not in {"dry_run", "executed", "refused", "partial"}:
+            raise ValueError("unknown disposition plan status")
+        if self.resolved_retain_until is not None and (
+            self.resolved_retain_until.tzinfo is None
+            or self.resolved_retain_until.utcoffset() is None
+        ):
+            raise ValueError("resolved retention needs an explicit timezone")
+        if self.created_at.tzinfo is None or self.created_at.utcoffset() is None:
+            raise ValueError("plan creation needs an explicit timezone")
 
 
 class ControlPlane:
@@ -248,3 +286,63 @@ class ControlPlane:
                 )
             ).mappings()
             return tuple(DestructionReceipt(**row) for row in rows)
+
+    def record_disposition_plan(self, plan: DispositionPlan) -> DispositionPlan:
+        """Retain one dry-run plan; re-recording the same identity is idempotent."""
+        with self.engine.begin() as connection:
+            connection.execute(
+                pg_insert(DISPOSITION_PLANS)
+                .values(**asdict(plan))
+                .on_conflict_do_nothing()
+            )
+            row = (
+                connection.execute(
+                    select(DISPOSITION_PLANS).where(
+                        DISPOSITION_PLANS.c.plan_id == plan.plan_id
+                    )
+                )
+                .mappings()
+                .one()
+            )
+            if dict(row) != asdict(plan):
+                raise ValueError(
+                    "disposition plan identity was already used for a different plan"
+                )
+        return plan
+
+    def disposition_plan(self, plan_id: str) -> DispositionPlan | None:
+        with self.engine.connect() as connection:
+            row = (
+                connection.execute(
+                    select(DISPOSITION_PLANS).where(
+                        DISPOSITION_PLANS.c.plan_id == identifier(plan_id)
+                    )
+                )
+                .mappings()
+                .first()
+            )
+        return None if row is None else DispositionPlan(**row)
+
+    def disposition_plans(self, environment_id: str) -> tuple[DispositionPlan, ...]:
+        with self.engine.connect() as connection:
+            rows = connection.execute(
+                select(DISPOSITION_PLANS)
+                .where(
+                    DISPOSITION_PLANS.c.environment_id == identifier(environment_id)
+                )
+                .order_by(DISPOSITION_PLANS.c.created_at, DISPOSITION_PLANS.c.plan_id)
+            ).mappings()
+            return tuple(DispositionPlan(**row) for row in rows)
+
+    def set_disposition_plan_status(self, plan_id: str, status: str) -> None:
+        """Advance the one mutable column; the plan's identity stays fixed."""
+        if status not in {"dry_run", "executed", "refused", "partial"}:
+            raise ValueError("unknown disposition plan status")
+        with self.engine.begin() as connection:
+            result = connection.execute(
+                update(DISPOSITION_PLANS)
+                .where(DISPOSITION_PLANS.c.plan_id == identifier(plan_id))
+                .values(status=status)
+            )
+            if result.rowcount != 1:
+                raise RouteRefused("disposition plan unavailable")
