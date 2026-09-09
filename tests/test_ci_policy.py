@@ -334,32 +334,25 @@ def test_every_gate_job_runs_the_one_concurrent_setup_step():
             )
 
 
-def test_the_gate_migrates_the_database_its_shared_state_tests_read():
-    """The workflow's `alembic upgrade head` is not redundant (#595).
+def test_the_gate_defers_empty_shared_state_to_the_coordinated_harness():
+    """The executable fixture guard below still prevents #595 UndefinedTable.
 
-    tests/conftest.py migrates a per-run template and clones it per worker,
-    which makes the workflow's own upgrade look like duplicated work. It is
-    not: `shared_source_database_url` hands tests the *configured* database
-    rather than a worker clone, and three tests read it —
-    tests/test_briefing.py, tests/test_sh99_admission_acceptance.py and
-    tests/test_sh99_shared_admission_seal.py. Each is written to skip when
-    the shared corpus is absent, which is the outcome CI wants. Measured on
-    an empty database all three raise UndefinedTable instead, and all three
-    skip again once it is migrated.
+    A marked empty CI source uses a clone of the already migrated template;
+    another full schema in each job's setup is no longer necessary.
     """
-
     setup = (ROOT / "scripts" / "ci_environment.sh").read_text()
-
-    assert "alembic upgrade head" in setup
+    assert "alembic upgrade head" not in setup
+    assert "CORRIDOR_CI_EMPTY_SHARED_SOURCE=1" in setup
+    assert setup.index('wait "$postgres_job"') < setup.index("CORRIDOR_CI_EMPTY_SHARED_SOURCE=1")
 
 
 def test_the_shared_state_fixture_reaches_a_migrated_database(
     shared_source_database_url,
 ):
-    """The executable half of the guard above.
+    """The shared fixture must supply a migrated schema before corpus queries.
 
-    This fails on a CI job whose setup stopped migrating the configured
-    database, and it fails there instead of in three unrelated test files.
+    Preserve #595's executable proof without rebuilding the template schema
+    in the configured empty CI database as well.
     """
 
     engine = create_engine(shared_source_database_url)
@@ -372,7 +365,7 @@ def test_the_shared_state_fixture_reaches_a_migrated_database(
         engine.dispose()
 
     assert present is not None, (
-        "the configured database carries no schema, so the shared-state "
+        "the shared-state fixture carries no schema, so the corpus "
         "tests will raise UndefinedTable instead of skipping"
     )
 

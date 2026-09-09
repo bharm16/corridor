@@ -5,7 +5,9 @@ This harness only changes which migrated database each xdist worker reaches, so
 schema rehearsals and fixed fixture identities cannot deadlock across workers.
 Provisioning starts at the first real connection to a worker database; pure
 tests never contact PostgreSQL, even when xdist is enabled. Serial pytest
-runs continue to use the configured development database.
+runs continue to use the configured development database. The shared-corpus
+fixture also preserves that database; only an explicitly disposable empty CI
+source uses a separate empty clone of the same migrated template.
 """
 
 from __future__ import annotations
@@ -42,10 +44,11 @@ SOURCE_DATABASE_URL_ENV = "CORRIDOR_PYTEST_SOURCE_DATABASE_URL"
 _RUN_ID = re.compile(r"^([1-9][0-9]*)_[0-9a-f]{8}$")
 _WORKER_ID = re.compile(r"^gw[0-9]+$")
 _DATABASE_NAME = re.compile(
-    r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_(gw[0-9]+|tmpl)$"
+    r"^corridor_pytest_([1-9][0-9]*)_[0-9a-f]{8}_(gw[0-9]+|tmpl|source)$"
 )
 TEMPLATE_ENV = "CORRIDOR_PYTEST_TEMPLATE"
 COORDINATION_ENV = "CORRIDOR_PYTEST_COORDINATION"
+EMPTY_CI_SOURCE_ENV = "CORRIDOR_CI_EMPTY_SHARED_SOURCE"
 LOCAL_BROAD_REASON_ENV = "CORRIDOR_LOCAL_BROAD_REASON"
 LOCAL_BROAD_REASONS = frozenset({"failure-reproduction", "performance-investigation"})
 
@@ -154,38 +157,74 @@ class LazyWorkerDatabase:
                     return
                 # Share one template across processes. Readiness is published
                 # only after migration succeeds, while the file lock is held.
-                with (self.coordination / "database.lock").open("a+b") as lock:
-                    fcntl.flock(lock, fcntl.LOCK_EX)
-                    try:
-                        self._provision()
-                    finally:
-                        fcntl.flock(lock, fcntl.LOCK_UN)
+                with self._database_lock():
+                    self._provision()
             except BaseException:
                 self.failed = True
                 raise
 
-    def _provision(self) -> None:
-        parsed = _validated_admin_url(
-            self.admin_url.render_as_string(hide_password=False)
-        )
-        if self.coordination is not None:
-            (self.coordination / "database-started").touch()
-            ready = self.coordination / "template-ready"
-            failed = self.coordination / "template-failed"
+    @contextmanager
+    def _database_lock(self):
+        if self.coordination is None:
+            raise RuntimeError("shared test databases require controller coordination")
+        with (self.coordination / "database.lock").open("a+b") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock, fcntl.LOCK_UN)
+
+    def _ensure_template(self, parsed: URL) -> str:
+        """Publish the migrated template once, while the shared lock is held."""
+        if self.coordination is None or not self.template:
+            raise RuntimeError("shared test databases require a controller template")
+        (self.coordination / "database-started").touch()
+        ready = self.coordination / "template-ready"
+        failed = self.coordination / "template-failed"
+        if failed.exists():
+            raise RuntimeError("parallel test template provisioning failed in another worker")
+        if not ready.exists():
+            reap_abandoned_worker_databases(parsed)
+            try:
+                _create_database(parsed, self.template)
+                _migrate_database(parsed.set(database=self.template))
+            except BaseException:
+                failed.touch()
+                _drop_databases(parsed, (self.template,))
+                raise
+            ready.touch()
+        return self.template
+
+    def ensure_template(self) -> str:
+        """Provision the empty schema without creating or reusing a worker DB."""
+        with self._provision_lock, self._database_lock():
+            parsed = _validated_admin_url(self.admin_url.render_as_string(hide_password=False))
+            return self._ensure_template(parsed)
+
+    def shared_empty_source_url(self) -> str:
+        """Share one empty clone, never a worker's mutable fixture population."""
+        with self._provision_lock, self._database_lock():
+            parsed = _validated_admin_url(self.admin_url.render_as_string(hide_password=False))
+            template = self._ensure_template(parsed)
+            name = template.removesuffix("_tmpl") + "_source"
+            ready = self.coordination / "shared-source-ready"
+            failed = self.coordination / "shared-source-failed"
             if failed.exists():
-                raise RuntimeError("parallel test template provisioning failed in another worker")
+                raise RuntimeError("shared source provisioning failed in another worker")
             if not ready.exists():
-                reap_abandoned_worker_databases(parsed)
                 try:
-                    _create_database(parsed, self.template)
-                    _migrate_database(parsed.set(database=self.template))
+                    _clone_database(parsed, template, name)
                 except BaseException:
-                    # A broken migration must not be attempted again by every
-                    # remaining test or by the other workers in this run.
                     failed.touch()
-                    _drop_databases(parsed, (self.template,))
+                    _drop_databases(parsed, (name,))
                     raise
                 ready.touch()
+            return parsed.set(database=name).render_as_string(hide_password=False)
+
+    def _provision(self) -> None:
+        parsed = _validated_admin_url(self.admin_url.render_as_string(hide_password=False))
+        if self.coordination is not None:
+            self._ensure_template(parsed)
         self.cleanup_needed = True
         if self.template:
             _clone_database(parsed, self.template, self.database_name)
@@ -338,11 +377,50 @@ def isolated_content_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "content-store"))
 
 
-@pytest.fixture(scope="session")
-def shared_source_database_url() -> str:
-    """Configured shared state for the few explicitly live-state tests."""
+def _configured_source_has_relations(source_url: str) -> bool:
+    """Observe existing shared state without changing the configured database.
 
-    return os.environ.get(SOURCE_DATABASE_URL_ENV) or _configured_database_url()
+    Any user relation, including a partial schema, preserves the original source.
+    A broken corpus must fail its reader, not disappear behind an empty clone.
+    """
+    engine = create_engine(source_url, poolclass=NullPool)
+    try:
+        with engine.connect() as connection:
+            return bool(connection.scalar(text("""
+                select exists (
+                    select 1 from pg_class c join pg_namespace n on n.oid=c.relnamespace
+                    where n.nspname not in ('pg_catalog', 'information_schema')
+                      and n.nspname not like 'pg_toast%'
+                      and c.relkind in ('r', 'p', 'v', 'm', 'S', 'f')
+                )
+            """)))
+    finally:
+        engine.dispose()
+
+
+def _shared_source_url(config) -> str:
+    source = os.environ.get(SOURCE_DATABASE_URL_ENV) or _configured_database_url()
+    # Only the explicitly marked database created by ci_postgres.sh may use an
+    # empty clone. Local and externally prepared corpora keep their original URL.
+    if os.environ.get("GITHUB_ACTIONS") != "true" or os.environ.get(EMPTY_CI_SOURCE_ENV) != "1":
+        return source
+    parsed = _local_postgres_url(source)
+    if parsed.database != "corridor" or parsed.port != 5433:
+        return source
+    if _configured_source_has_relations(source):
+        return source
+    state = getattr(config, "_corridor_pytest_database", None)
+    if state is None:
+        raise RuntimeError("empty CI shared source requires the coordinated xdist harness")
+    if state.admin_url != parsed:
+        raise RuntimeError("shared source differs from the controller's configured database")
+    return state.shared_empty_source_url()
+
+
+@pytest.fixture(scope="session")
+def shared_source_database_url(request) -> str:
+    """Configured corpus, or a schema-only CI clone when no corpus exists."""
+    return _shared_source_url(request.config)
 
 
 @pytest.fixture
