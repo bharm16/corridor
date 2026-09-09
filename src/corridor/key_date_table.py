@@ -418,6 +418,11 @@ def capture_key_date_table(
         evaluated_at=_capture_instant(session, document_id),
         baseline_revision=baseline_revision,
     )
+    from corridor.impact_derivations import append_impact_derivation
+
+    for impact in impacts:
+        append_impact_derivation(session, project_id=project.id,
+            delta_id=impact.delta_id, derivation=impact.derivation)
     audit.record(
         session,
         principal=actor,

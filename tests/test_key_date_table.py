@@ -190,6 +190,8 @@ def _accept_every_key_date(session, project, capture):
     """
 
     for delta in _key_date_deltas(session, project):
+        if delta.id not in capture.delta_ids:
+            continue
         fact = session.scalars(
             select(Fact).where(
                 Fact.project_id == project.id,
@@ -208,6 +210,7 @@ def _accept_every_key_date(session, project, capture):
                 action=ACCEPT,
                 principal=PRINCIPAL,
                 idempotency_key=f"accept:{delta.id}",
+                observed_accepted_revision_id=session.scalar(select(func.max(ProjectRecordRevision.id)).where(ProjectRecordRevision.project_id == project.id)),
                 decided_at=DECIDED_AT,
                 record_effects=(RecordEffect(fact_id=fact.id),),
                 support_assessment_ids=(assessment.id,),
@@ -545,6 +548,37 @@ def test_an_apparent_removal_never_names_a_utility_conflict(
 # --- the derived impact -----------------------------------------------------
 
 
+def test_impact_readback_is_idempotent_versioned_and_visibly_stale(
+    session, adopted, tmp_path, store
+):
+    from dataclasses import replace
+    from corridor.impact_derivations import append_impact_derivation, read_impact_derivations
+
+    first = _capture(session, adopted, KEY_DATE_ROWS, tmp_path, name="a")
+    _accept_every_key_date(session, adopted, first)
+    capture = _capture(session, adopted, moved(KEY_DATE_ROWS, "RELO-CONSTR", "2026-06-30"), tmp_path, name="b")
+    (impact,) = capture.impacts
+    (reading,) = read_impact_derivations(session, project_id=adopted.id, delta_ids=capture.delta_ids)
+    assert reading.affected_constraint_ids == (UC1, UC2)
+    assert reading.affected_key_dates == ("RELO-CONSTR",)
+    assert not reading.stale
+    from corridor.packet_review import read_review_items
+    review = read_review_items(session, project_id=adopted.id, as_of=DECIDED_AT)
+    assert [item.id for packet in review.items for child in packet.children
+            if child.delta_id == impact.delta_id for item in child.impacts] == [reading.id]
+    assert len(reading.derivation_sha256) == 64
+    replay_id = append_impact_derivation(session, project_id=adopted.id, delta_id=impact.delta_id,
+        derivation=replace(impact.derivation, evaluated_at=datetime(2026, 9, 9, tzinfo=timezone.utc)))
+    assert replay_id == reading.id
+    changed_id = append_impact_derivation(session, project_id=adopted.id, delta_id=impact.delta_id,
+        derivation=replace(impact.derivation, rule_version="v2"))
+    assert changed_id != reading.id
+    assert len(read_impact_derivations(session, project_id=adopted.id, delta_ids=capture.delta_ids)) == 2
+    assert read_impact_derivations(session, project_id=-1, delta_ids=capture.delta_ids) == ()
+    _accept_every_key_date(session, adopted, capture)
+    assert all(item.stale for item in read_impact_derivations(session, project_id=adopted.id, delta_ids=capture.delta_ids))
+
+
 def test_impact_names_the_constraints_whose_required_by_is_the_moved_key_date(
     session, adopted, tmp_path, store
 ):
@@ -571,6 +605,28 @@ def test_impact_names_the_constraints_whose_required_by_is_the_moved_key_date(
     # export, not a clock this process read.
     document = session.get(Document, capture.document_id)
     assert impact.derivation.evaluated_at == document.created_at
+
+
+def test_impact_refuses_cross_project_conflicting_results_and_raw_mutation(
+    session, adopted, tmp_path, store
+):
+    from dataclasses import replace
+    from sqlalchemy import text
+    from sqlalchemy.exc import DBAPIError
+    from corridor.impact_derivations import append_impact_derivation
+
+    capture = _capture(session, adopted, KEY_DATE_ROWS, tmp_path, name="a")
+    impact = capture.impacts[0]
+    with pytest.raises(DBAPIError, match="outside project"), session.begin_nested():
+        append_impact_derivation(session, project_id=-1, delta_id=impact.delta_id, derivation=impact.derivation)
+    with pytest.raises(DBAPIError, match="different consequences"), session.begin_nested():
+        append_impact_derivation(session, project_id=adopted.id, delta_id=impact.delta_id,
+            derivation=replace(impact.derivation, affected_constraint_ids=("invented",)))
+    with pytest.raises(DBAPIError, match="immutable source append"), session.begin_nested():
+        session.execute(text("update proposed_delta_impact_derivations set rule='rewritten' where project_id=:p"), {"p": adopted.id})
+    with pytest.raises(DBAPIError, match="permission denied"), session.begin_nested():
+        session.execute(text("set local role corridor_worker"))
+        session.execute(text("delete from proposed_delta_impact_derivations where project_id=:p"), {"p": adopted.id})
 
 
 def test_the_impact_derivation_is_retained_with_the_act_that_produced_it(

@@ -263,6 +263,10 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
                     row.end_offset, row.created_at) == old_segment
             assert row.reading_sha256 is None and row.reader_identity is None
             assert _fact_and_revision_bytes(session, historical_fact) == old_fact_and_authority
+            assert session.scalar(text("select count(*) from proposed_delta_impact_derivations")) == 0
+            for role in ("corridor_web", "corridor_worker"):
+                assert session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'SELECT')"), {"role": role})
+                assert not session.scalar(text("select has_table_privilege(:role, 'proposed_delta_impact_derivations', 'INSERT')"), {"role": role})
             for table in ("pipeline_observations", "pipeline_comparisons", "pipeline_qualifications",
                           "pipeline_acceptances", "pipeline_selections"):
                 assert session.scalar(text(f"select count(*) from public.{table}")) == 0

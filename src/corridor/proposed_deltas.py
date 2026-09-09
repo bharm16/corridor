@@ -118,6 +118,7 @@ class ImpactDerivation:
     evaluated_at: datetime
     affected_constraint_ids: tuple[str, ...] = field(default_factory=tuple)
     affected_key_dates: tuple[str, ...] = field(default_factory=tuple)
+    rule_version: str = "v1"
 
 
 @dataclass(frozen=True)

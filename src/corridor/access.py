@@ -901,6 +901,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "project_contact_imports",
         "project_contacts",
         "minutes_captures",
+        "proposed_delta_impact_derivations",
         "project_issue_profile_artifacts",
         "project_issue_profiles",
         "project_record_revisions",
