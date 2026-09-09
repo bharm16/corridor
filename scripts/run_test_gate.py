@@ -22,7 +22,9 @@ from xml.etree import ElementTree
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.test_shard import DURATIONS, SLOW_DURATIONS, recorded_seconds, shard, test_files
+from scripts.test_shard import (
+    DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard, test_files,
+)
 
 
 CHECK_OWNED_FILES = (
@@ -52,7 +54,8 @@ def partition(suite: str, shards: int, number: int, inputs: Path) -> list[str]:
         raise ValueError("partition weights must be finite nonnegative seconds")
     if suite == "pytest":
         weights.update({name: 0.0 for name in CHECK_OWNED_FILES})
-    return shard(test_files(), weights, shards)[number - 1]
+    return shard(test_files(), weights, shards,
+                 minimum_file_seconds=SLOW_MINIMUM_FILE_SECONDS if suite == "slow" else 0.0)[number - 1]
 
 
 def pytest_command(suite: str, files: list[str], workers: int, junit: Path) -> list[str]:

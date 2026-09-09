@@ -29,6 +29,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 from pathlib import Path
 import sys
 
@@ -40,6 +41,11 @@ SLOW_DURATIONS = ROOT / "tests" / "durations-slow.json"
 # any of its tests run: 0.025s measured locally, doubled for a CI runner
 # (#548).
 COLLECTION_SECONDS = 0.05
+# A slow shard still imports files whose cases its marker expression deselects.
+# The 2026-09-09 189/3/92-file split showed that near-free zero weights can pile
+# almost the whole suite onto one shard. This is a scheduling floor, not a new
+# timing claim or test-selection rule; every file remains assigned exactly once.
+SLOW_MINIMUM_FILE_SECONDS = 0.5
 
 
 def test_files() -> list[str]:
@@ -63,14 +69,20 @@ def recorded_seconds(path: Path = DURATIONS) -> dict[str, float]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def shard(files: list[str], durations: dict[str, float], shards: int) -> list[list[str]]:
+def shard(
+    files: list[str], durations: dict[str, float], shards: int,
+    *, minimum_file_seconds: float = 0.0,
+) -> list[list[str]]:
     """Fill the smallest shard with the longest remaining file."""
+
+    if not math.isfinite(minimum_file_seconds) or minimum_file_seconds < 0:
+        raise ValueError("minimum file weight must be finite and nonnegative")
 
     known = [value for value in durations.values() if value > 0]
     average = sum(known) / len(known) if known else 1.0
     weighted = sorted(
         (
-            (durations.get(name, average) + COLLECTION_SECONDS, name)
+            (max(durations.get(name, average), minimum_file_seconds) + COLLECTION_SECONDS, name)
             for name in files
         ),
         key=lambda item: (-item[0], item[1]),
@@ -102,7 +114,8 @@ def main(argv: list[str] | None = None) -> int:
     durations = recorded_seconds(
         SLOW_DURATIONS if arguments.slow else DURATIONS
     )
-    buckets = shard(test_files(), durations, arguments.shards)
+    buckets = shard(test_files(), durations, arguments.shards,
+                    minimum_file_seconds=SLOW_MINIMUM_FILE_SECONDS if arguments.slow else 0.0)
     print(" ".join(buckets[arguments.shard - 1]))
     return 0
 
