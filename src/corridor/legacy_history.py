@@ -271,6 +271,20 @@ def support_designation_authority(batch: HistoryBatch, designation: dict) -> dic
             if len(approvals) == len(scope_matches) == len(audit_matches) == 1:
                 return {"kind": "released_policy", "original_actor": actor,
                         "receipt": receipt, "approval": approvals[0]}
+            if receipt["policy_approval_id"] is None and len(scope_matches) == len(audit_matches) == 1:
+                outcomes = [row for row in history_rows(batch, "automatic_carry_forward_outcomes")
+                            if row["receipt_audit_log_id"] == receipt["audit_log_id"]
+                            and row["outcome"] == "carried"]
+                if len(outcomes) == 1:
+                    runs = [row for row in history_rows(batch, "policy_runs")
+                            if row["id"] == outcomes[0]["run_id"] and row["family"] == receipt["family"]
+                            and row["policy_version"] == receipt["policy_version"]
+                            and row["policy_sha256"] == receipt["policy_sha256"]
+                            and row["policy_approval_id"] is None]
+                    if len(runs) == 1:
+                        return {"kind": "released_policy", "original_actor": actor,
+                                "receipt": receipt, "approval": None,
+                                "run": runs[0], "outcome": outcomes[0]}
     elif actor not in machine_actors:
         try:
             HumanPrincipal(actor)

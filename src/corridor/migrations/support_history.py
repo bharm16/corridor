@@ -137,7 +137,7 @@ begin
     select id into policy_approval from policy_approvals where id=receipt.policy_approval_id
      and project_id=p_project and family=receipt.family and policy_version=receipt.policy_version and policy_sha256=receipt.policy_sha256;
    else
-    select r.id into policy_run from policy_runs r join automatic_carry_forward_outcomes o on o.run_id=r.id
+    select case when count(*)=1 then min(r.id) end into policy_run from policy_runs r join automatic_carry_forward_outcomes o on o.run_id=r.id
      where o.receipt_audit_log_id=receipt.audit_log_id and o.outcome='carried' and o.project_id=p_project
       and r.project_id=p_project and r.family=receipt.family and r.policy_version=receipt.policy_version
       and r.policy_sha256=receipt.policy_sha256 and r.policy_approval_id is null;

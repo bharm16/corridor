@@ -99,3 +99,14 @@ def test_support_history_preserves_policy_authority_and_refuses_missing_approval
     wrong_role = {**values["operative_support"][0], "role": "readiness"}
     mismatched = support_designations_at_capture(_batch(**{**values, "operative_support": [wrong_role]}))[0]
     assert mismatched["authority"]["kind"] == "unknown"
+    managed = {**values,
+        "automatic_carry_forward_receipts": [{**values["automatic_carry_forward_receipts"][0], "policy_approval_id": None}],
+        "policy_approvals": [],
+        "automatic_carry_forward_outcomes": [{"receipt_audit_log_id": 7, "outcome": "carried", "run_id": 12}],
+        "policy_runs": [{"id": 12, "family": "automatic-carry-forward", "policy_version": "support-v1",
+                         "policy_sha256": "a" * 64, "policy_approval_id": None}],
+    }
+    managed_reading = support_designations_at_capture(_batch(**managed))[0]
+    assert managed_reading["authority"]["kind"] == "released_policy"
+    assert managed_reading["authority"]["approval"] is None
+    assert managed_reading["authority"]["run"]["id"] == 12

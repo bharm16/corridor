@@ -218,7 +218,8 @@ def coordination_migration_gaps(session: Session, batch: HistoryBatch) -> tuple[
     return tuple(dict(row) for row in session.execute(text("""
         select (r->>'id')::bigint as legacy_work_decision_id,
                r->>'recorded_by' as original_actor,
-               'Subject history has an unattributed or conflicting actor; retain compatibility history.' as reason
+               case when valid_coordination_history_actor(r->>'recorded_by') then 'Native coordination history is not available for this subject; migration or a related authority gap remains.'
+               else 'Subject history has an unattributed or conflicting actor; retain compatibility history.' end as reason
         from legacy_history_batches b,
              jsonb_array_elements(b.payload->'classes'->'work_decisions'->'rows') r
         where b.id=:batch and b.project_id=:project
