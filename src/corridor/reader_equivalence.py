@@ -26,7 +26,8 @@ from corridor.record_projection import read_current_project_record
 
 from corridor.report import build_report, render as render_report
 from corridor.report_release import render_external_report_pdf
-from corridor.reader_coverage import CONTRACTS, CoverageResult
+from corridor.reader_coverage import CONTRACTS, CoverageResult, SemanticRecord, SurfaceReading
+from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text
 
 
 @dataclass(frozen=True)
@@ -65,6 +66,10 @@ def freeze_project_reading_from_current_view(
     legacy_reading: FrozenProjectReading | None = None,
 ) -> FrozenProjectReading:
     legacy = legacy_reading or freeze_project_reading(session, project_id, today=today)
+    if legacy.native_population is not None:
+        # Production adopted UCM readers already consume the native frozen
+        # population. Never copy a legacy row or replace selected fields here.
+        return legacy
     values = {
         (value.dependency_id, value.fact_type): value.text_value
         for value in read_current_project_record(session, project_id)
@@ -167,13 +172,43 @@ def prove_reader_equivalence(
         workbook_cells_identical=workbook_identical,
         release_pdf_text_identical=release_identical,
         coverage=tuple(CoverageResult(contract.name, False, 0,
-            ("Legacy overlay supplies population, evaluation and statement publication; only station_from/station_to are projected.",))
+            (("Native UCM population is read directly; no independent legacy seven-surface comparison was supplied."
+              if viewed.native_population is not None else
+              "Legacy overlay supplies population, evaluation and statement publication; only station_from/station_to are projected."),))
             for contract in CONTRACTS),
         explanations=(
             "XLSX package timestamps are excluded; every workbook cell is compared.",
             "PDF container metadata is excluded; normalized rendered page text is compared.",
         ),
     )
+
+
+def native_constraint_log_surface(reading: FrozenProjectReading) -> SurfaceReading:
+    """Describe the actual native Constraint Log and check population for comparison.
+
+    This is one surface's observed input, not a seven-surface cutover receipt.
+    A reviewer must compare it with independently retained legacy semantics.
+    """
+    population = reading.native_population
+    if population is None:
+        raise NativeReadingRefused("legacy overlays cannot supply native surface provenance")
+    rows = []
+    for record in population.open_records:
+        fields = {
+            "identity": {"record_subject_key": record.subject_key, "source_row_key": record.source_row_key},
+            "accepted_values": {name: accepted_field_text(field) for name, field in sorted(record.fields.items())},
+            "source_support": tuple(source.reference for source in record.source_passages),
+            "coordination": {"internal_owner": None, "next_action": None, "action_due_date": None},
+            "check_results": tuple((item.rule, item.detail, item.quantity_days) for item in reading.evaluation.for_dependency(record.id)),
+        }
+        origins = {name: f"revision:{population.revision_id}" for name in fields}
+        origins["accepted_values"] += "/decisions:" + ",".join(str(field.decision_id) for field in record.fields.values())
+        origins["source_support"] += "/source_segments:" + ",".join(str(source.source_segment_id) for source in record.source_passages)
+        rows.append(SemanticRecord("constraint", record.subject_key, fields, origins))
+        for finding in reading.evaluation.for_dependency(record.id):
+            rows.append(SemanticRecord("check", f"{record.subject_key}/{finding.rule}",
+                {**fields, "check_results": ((finding.rule, finding.detail, finding.quantity_days),)}, origins))
+    return SurfaceReading("constraint_log", tuple(rows), frozenset({"constraint", "check"}))
 
 
 def _workbook_cells(path: Path) -> tuple:

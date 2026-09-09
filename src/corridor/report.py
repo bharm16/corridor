@@ -14,6 +14,9 @@ anything: rendering refuses to emit a value that carries neither.
 
 from __future__ import annotations
 
+from corridor.accepted_field_reading import accepted_field_text
+from corridor.presentation import field_label
+
 import html
 from dataclasses import dataclass, field
 from datetime import date, datetime, timezone
@@ -65,11 +68,18 @@ class BareCell(Exception):
 class Assertion:
     document_id: int
     filename: str
-    page_no: int
+    page_no: int | None
     quote: str
+    locator: str | None = None
+    source_segment_id: int | None = None
+    fact_id: int | None = None
+    decision_id: int | None = None
+    revision_id: int | None = None
 
     @property
     def marker(self) -> str:
+        if self.locator is not None:
+            return f"[D{self.document_id} {self.locator} · F{self.fact_id} · decision {self.decision_id} · revision {self.revision_id}]"
         return f"[D{self.document_id} p.{self.page_no}]"
 
 
@@ -138,6 +148,7 @@ class WorkDecision:
     decision_ids: tuple[int, ...]
     recorded_by: str
     recorded_at: date
+    decision_kind: str = "work_decision"
 
     @property
     def resolves(self) -> bool:
@@ -145,7 +156,8 @@ class WorkDecision:
 
     @property
     def marker(self) -> str:
-        ids = ", ".join(f"WD{i}" for i in self.decision_ids)
+        prefix = "Follow-up Plan " if self.decision_kind == "delta_follow_up_plan" else "WD"
+        ids = ", ".join(f"{prefix}{i}" for i in self.decision_ids)
         return f"[decided {self.recorded_by} {self.recorded_at} · {ids}]"
 
     @property
@@ -271,6 +283,8 @@ def build_report(
     reading = frozen_reading or freeze_project_reading(
         session, project_id, today=today, document_only=document_only
     )
+    if reading.native_population is not None:
+        return build_native_report(session, reading, document_only=document_only)
     publication = reading.statement_publication
     committed_dates = publication.committed_dates
     committed_events = publication.committed_events
@@ -375,6 +389,79 @@ def build_report(
         ),
         _appendix(rows),
     ]
+    return report
+
+
+def native_source_assertion(source):
+    """Adapt an exact native cell locator without inventing a PDF page."""
+    return Assertion(source.document_id, source.filename, source.page_no, source.quote,
+        source.locator, source.source_segment_id, source.fact_id, source.decision_id, source.revision_id)
+
+
+def build_native_report(session, reading: FrozenProjectReading, *, document_only=False):
+    """Render the complete supported UCM cohort from its frozen accepted values."""
+    population = reading.native_population
+    if population is None:
+        raise ValueError("native report requires an accepted population")
+    evaluation = reading.evaluation
+    records = population.open_records
+    ids = population.record_ids
+    report = Report(project_name=reading.project.name, generated_at=datetime.now(timezone.utc),
+        document_only=document_only, committed_dates=dict(evaluation.committed_dates), evaluation=evaluation,
+        statement_publication=reading.statement_publication,
+        covered_records=tuple((record.id, record.ref_code) for record in records),
+        coverage_note=f"Project Record revision {population.revision_id}; {len(population.excluded_source_rows)} source row(s) explicitly excluded at adoption.")
+    supported = tuple(record.id for record in records if record.source_passages)
+    report.summary = [
+        _derived(label("constraints"), str(len(records)), ids, scope=EMPTY_LEDGER),
+        _derived(documentation_review_label(True), "0", ids, scope=EMPTY_LEDGER),
+        _derived("With checked source passages", str(len(supported)), supported or ids, scope=EMPTY_LEDGER),
+        _derived("% with checked source passages", f"{100 * len(supported) / len(records):.1f}%" if records else "0.0%", ids, scope=EMPTY_LEDGER),
+    ]
+    appendix = Section("Appendix — constraint log", columns=["Ref", "Source ID", label("organization"), "Title",
+        "Station from", "Station to", label("resolution_strategy"), label("promised_for"), label("required_by")])
+    accepted = Section("Accepted Project Record values", columns=["Ref", "Field", "Accepted value"],
+        note="Each value names its deciding revision and exact source passage.")
+    def field_cell(record, field_name, display_name):
+        field = record.fields.get(field_name)
+        if field is None:
+            return _derived(display_name, "—", (record.id,), input_refs=(f"revision:{population.revision_id}",))
+        value = accepted_field_text(field)
+        provenance = (native_source_assertion(field.sources[0]) if field.sources else
+            Derivation(evaluation.ruleset_version, (record.id,), input_refs=(f"revision:{field.revision_id}", field.origin)))
+        return Cell(display_name, value, provenance)
+    for record in records:
+        appendix.rows.append([
+            _derived("Ref", record.ref_code, (record.id,), input_refs=(f"revision:{record.adoption_revision_id}",)),
+            field_cell(record, "utility_id", "Source ID"), field_cell(record, "external_org", label("organization")),
+            _derived("Title", record.title, (record.id,), input_refs=tuple(field.origin for name in ("utility_type", "external_org") if (field := record.fields.get(name)))),
+            field_cell(record, "station_from", "Station from"), field_cell(record, "station_to", "Station to"),
+            field_cell(record, "resolution_strategy", label("resolution_strategy")),
+            _derived(label("promised_for"), "—", (record.id,), input_refs=(f"revision:{population.revision_id}",)),
+            field_cell(record, "need_date", label("required_by")),
+        ])
+        for name in sorted(record.fields):
+            accepted.rows.append([_derived("Ref", record.ref_code, (record.id,)),
+                _derived("Field", field_label(name), (record.id,)), field_cell(record, name, "Accepted value")])
+    follow_up = Section(label("follow_up_plan"), columns=["Proposed Delta", "Open question", label("assigned_to"), "Return date"],
+        empty_message="No Follow-up Plans are recorded for open Proposed Deltas.",
+        note=("These questions leave the proposed values unaccepted."
+              if population.follow_up_scope == "current_open_deltas" else
+              "Plans recorded through this Project Record revision; source-workflow status is not inferred from the current reading."))
+    for plan in population.follow_up_plans:
+        authority = WorkDecision((plan.plan_id,), plan.recorded_by, plan.recorded_at.date(), "delta_follow_up_plan")
+        follow_up.rows.append([Cell("Proposed Delta", str(plan.delta_id), authority),
+            Cell("Open question", plan.open_question, authority),
+            Cell(label("assigned_to"), plan.responsible_principal or plan.responsible_organization or "—", authority),
+            Cell("Return date", plan.return_date.date().isoformat() if plan.return_date else "—", authority)])
+    report.diff = diff_since_last(session, population.project_id, evaluation=evaluation,
+                                  committed_dates=report.committed_dates, document_only=document_only)
+    report.sections = [
+        Section(label("milestone_readiness"), empty_message="No key dates are linked to these Constraints."),
+        follow_up,
+        _exceptions_summary(evaluation), _changes_since_last(report.diff, committed_events={}), appendix, accepted,
+    ]
+    assert_no_bare_cells(report)
     return report
 
 

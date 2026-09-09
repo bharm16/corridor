@@ -7,6 +7,9 @@ spreadsheet that loses the provenance is just the matrix they already had.
 
 from __future__ import annotations
 
+from corridor.accepted_field_reading import accepted_field_text
+from corridor.presentation import field_label
+
 from pathlib import Path
 
 from sqlalchemy.orm import Session
@@ -113,6 +116,8 @@ def to_xlsx(
         dependency_id: [format_exception_label(e) for e in found]
         for dependency_id, found in evaluation.by_dependency().items()
     }
+    if reading.native_population is not None:
+        return native_population_workbook(reading, path, internal_working_copy=internal_working_copy)
     evidence_by_dependency = primary_evidence(
         session, [row.dependency.id for row in rows]
     )
@@ -210,3 +215,59 @@ def to_xlsx(
     path.parent.mkdir(parents=True, exist_ok=True)
     workbook.save(path)
     return path
+
+
+def native_population_workbook(reading: FrozenProjectReading, path, *, internal_working_copy=False):
+    """Export native identities and field-exact source cells without legacy rows."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font
+    population = reading.native_population
+    if population is None:
+        raise ValueError("native workbook requires an accepted population")
+    book = Workbook()
+    sheet = book.active
+    sheet.title = label("constraint_log")
+    sheet.append(COLUMNS)
+    for cell in sheet[1]:
+        cell.font = Font(bold=True)
+    sources = book.create_sheet("Accepted value sources")
+    sources.append(["Record subject", "Source row", "Field", "Accepted value", "Fact", "Decision", "Revision", "Source Segment", "Supporting document", "Source location", "Cited passage"])
+    for record in population.open_records:
+        field = record.fields.get("committed_date")
+        timing_source = field.sources[0] if field and field.sources else None
+        source = record.source_passages[0] if record.source_passages else None
+        sheet.append([record.ref_code, record.source_ref, record.org_name, record.dep_type,
+            record.title, record.station_from, record.station_to,
+            record.value("resolution_strategy"), reading.statement_publication.committed_dates[record.id],
+            None,
+            record.need_date, documentation_review_label(False), "Not specified",
+            ", ".join(format_exception_label(item) for item in reading.evaluation.for_dependency(record.id)),
+            source.filename if source else None, source.locator if source else None, source.quote if source else None])
+        for name, held in sorted(record.fields.items()):
+            printed = accepted_field_text(held)
+            for passage in held.sources or (None,):
+                sources.append([record.subject_key, record.source_row_key, field_label(name), printed, held.fact_id,
+                    held.decision_id, held.revision_id, passage.source_segment_id if passage else None,
+                    passage.filename if passage else None, passage.locator if passage else None, passage.quote if passage else None])
+    plans = book.create_sheet("Follow-up Plans")
+    plans.append(["Plan", "Proposed Delta", "Open question", "Responsible person", "Responsible organization", "Return date", "Recorded by", "Revision", "Support Assessments", "Source Segments"])
+    for plan in population.follow_up_plans:
+        plans.append([plan.plan_id, plan.delta_id, plan.open_question, plan.responsible_principal,
+            plan.responsible_organization, plan.return_date.isoformat() if plan.return_date else None,
+            plan.recorded_by, plan.revision_id, ", ".join(map(str, plan.support_assessment_ids)),
+            ", ".join(map(str, plan.source_segment_ids))])
+    meta = book.create_sheet(label("provenance"))
+    for row in (("Project", reading.project.name), ("Project Record revision", population.revision_id),
+        ("Native population digest", population.fingerprint), ("Evaluated on", reading.evaluation.today.isoformat()),
+        ("Ruleset version", reading.evaluation.ruleset_version), ("Records", len(population.open_records)),
+        ("Explicitly excluded source rows", len(population.excluded_source_rows)),
+        ("Follow-up Plan scope", population.follow_up_scope)):
+
+        meta.append(row)
+    if internal_working_copy:
+        meta.append(("Working view", "Internal working copy — not an approved external release."))
+    sheet.freeze_panes = "A2"
+    destination = Path(path)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    book.save(destination)
+    return destination

@@ -208,3 +208,37 @@ def _attach_structured_values(
         )
         for value in values
     )
+
+
+def read_native_record_values(
+    session: Session, project_id: int, revision_id: int,
+) -> tuple[CurrentRecordValue, ...]:
+    """Read exact accepted subject/field decisions without legacy identity joins.
+
+    Candidate.merged_into is an optional compatibility identity, not authority
+    to combine several source subjects. Native consumers bind subject keys with
+    an explicit adoption/migration map and never derive population from it.
+    """
+    if not session.scalar(text(
+        "select exists(select 1 from project_record_revisions where project_id=:project and id=:revision)"
+    ), {"project": project_id, "revision": revision_id}):
+        raise ValueError("accepted revision does not belong to the requested project")
+    rows = session.execute(text("""
+        select d.project_id, null::bigint as dependency_id, d.subject_key, d.fact_type,
+               f.text_value, f.date_value, f.date_range_start, f.date_range_end,
+               f.external_org_value_id, f.document_value_id, d.id, f.id, d.revision_id
+        from fact_decisions d join facts f on f.id=d.fact_id and f.project_id=d.project_id
+        left join fact_decisions successor on successor.id=d.superseded_by
+        where d.project_id=:project and d.revision_id<=:revision
+          and (successor.id is null or successor.revision_id>:revision)
+          and d.disposition='include'
+          and not exists(
+              select 1 from fact_decisions suppression
+              left join fact_decisions lifted on lifted.id=suppression.superseded_by
+              where suppression.project_id=d.project_id and suppression.subject_key=d.subject_key
+                and suppression.fact_type='statement_wording' and suppression.disposition='do_not_add'
+                and suppression.revision_id<=:revision
+                and (lifted.id is null or lifted.revision_id>:revision))
+        order by d.subject_key,d.fact_type,d.id
+    """), {"project": project_id, "revision": revision_id}).all()
+    return _attach_structured_values(session, tuple(CurrentRecordValue(*row) for row in rows))

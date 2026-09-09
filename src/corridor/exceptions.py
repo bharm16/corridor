@@ -24,11 +24,14 @@ from sqlalchemy.orm import Session, undefer
 
 from corridor.dependency_events import (
     StatementPublication,
+    PublishedDependencyStatement,
     StatementPublicationFingerprint,
     current_dependency_statements,
     published_dependency_statements,
 )
 from corridor.disputes import contradicted_fields
+from corridor.accepted_field_reading import AcceptedFieldPopulation, read_accepted_field_population, NativeReadingRefused
+from corridor.operating_mode import is_adopted_baseline
 from corridor.models import (
     Dependency,
     is_critical,
@@ -216,6 +219,9 @@ def evaluate(
     statement_publication: StatementPublication | None = None,
 ) -> list[Exception_]:
     """Every exception on every dependency in the project, worst first."""
+    if is_adopted_baseline(session, project_id):
+        return list(evaluate_project(session, project_id, today=today, thresholds=thresholds,
+            committed_dates=committed_dates, statement_publication=statement_publication).found)
     today = today or date.today()
     thresholds = thresholds or Thresholds()
 
@@ -315,6 +321,7 @@ class Evaluation:
     committed_dates: Mapping[int, date | None]
     statement_publication_fingerprint: StatementPublicationFingerprint | None = None
     statement_publication: StatementPublication | None = None
+    native_population: AcceptedFieldPopulation | None = None
 
     def __post_init__(self) -> None:
         """Preserve the exact input map the Exceptions were computed against."""
@@ -351,6 +358,10 @@ def evaluate_project(
     statement_publication: StatementPublication | None = None,
 ) -> Evaluation:
     """Evaluate a project once, and hand back the clock along with the facts."""
+    if is_adopted_baseline(session, project_id):
+        return evaluate_native_population(read_accepted_field_population(session, project_id),
+            today=today, thresholds=thresholds, statement_publication=statement_publication,
+            committed_dates=committed_dates)
     today = today or date.today()
     thresholds = thresholds or Thresholds()
     dependencies = session.scalars(
@@ -406,6 +417,40 @@ def evaluate_project(
         statement_publication_fingerprint=publication.fingerprint,
         statement_publication=publication,
     )
+
+
+def evaluate_native_population(population: AcceptedFieldPopulation, *, today=None,
+                               thresholds=None, statement_publication=None, committed_dates=None,
+                               document_only=False) -> Evaluation:
+    """Apply the existing deterministic rules to one native immutable population."""
+    today = today or date.today()
+    thresholds = thresholds or Thresholds()
+    statements = {}
+    for record in population.open_records:
+        field = record.fields.get("committed_date")
+        source = field.sources[0] if field and field.sources else None
+        # ADR-0092: an accepted UCM date cell is not the separate date
+        # projected from an External Party Statement. No such statement is
+        # attached in this cohort; keep that projection absent.
+        statements[record.id] = PublishedDependencyStatement(None, None, None,
+            None, None, record.is_closed, False)
+    expected = StatementPublication(population.project_id, statements, document_only=document_only)
+    publication = statement_publication or expected
+    if (publication.project_id != population.project_id or publication.committed_dates != expected.committed_dates
+            or set(publication.by_dependency) != set(statements)):
+        raise NativeReadingRefused("statement publication does not match the native accepted population")
+    if committed_dates is not None and dict(committed_dates) != expected.committed_dates:
+        raise NativeReadingRefused("native accepted dates cannot be replaced by a caller's scalar overrides")
+    found = []
+    for record in population.open_records:
+        dated = [source.document_date for source in record.source_passages if source.document_date]
+        facts = _Facts(record, is_ready=False, readiness_lapsed=False,
+            has_verified_evidence=bool(record.source_passages),
+            last_evidenced_at=max(dated) if dated else None, has_closure=record.is_closed,
+            contradicted_fields=[], superseded_scopes=())
+        found.extend(_apply(facts, today, thresholds, committed_date=publication.committed_dates[record.id]))
+    return Evaluation(population.project_id, today, thresholds, RULESET_VERSION, tuple(found),
+        publication.committed_dates, publication.fingerprint, publication, population)
 
 
 def evaluate_dependency(

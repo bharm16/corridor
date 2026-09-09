@@ -20,7 +20,9 @@ from corridor.dependency_events import (
     StatementPublication,
     published_dependency_statements,
 )
-from corridor.exceptions import Evaluation, evaluate_project
+from corridor.exceptions import Evaluation, evaluate_project, evaluate_native_population
+from corridor.accepted_field_reading import AcceptedFieldPopulation, NativeReadingRefused, read_accepted_field_population
+from corridor.operating_mode import is_adopted_baseline
 from corridor.ledger import LedgerRow, browse
 from corridor.models import Dependency, Project
 
@@ -33,6 +35,8 @@ class FrozenProjectReading:
     rows: tuple[LedgerRow, ...]
     evaluation: Evaluation
     statement_publication: StatementPublication
+    native_population: AcceptedFieldPopulation | None = None
+    coverage_blockers: tuple[str, ...] = ()
 
     @property
     def dependency_ids(self) -> tuple[int, ...]:
@@ -92,11 +96,33 @@ def freeze_project_reading(
     document_only: bool = False,
     evaluation: Evaluation | None = None,
     statement_publication: StatementPublication | None = None,
+    revision_id: int | None = None,
 ) -> FrozenProjectReading:
     """Create or read-verify one exact project-wide publication input."""
     project = session.get(Project, project_id)
     if project is None:
         raise LookupError(f"no project {project_id}")
+    if is_adopted_baseline(session, project_id):
+        if (evaluation is None) != (statement_publication is None):
+            raise NativeReadingRefused("a frozen native reading requires both evaluation and publication")
+        if evaluation is not None:
+            population = evaluation.native_population
+            if population is None or population.project_id != project_id or (revision_id is not None and population.revision_id != revision_id):
+                raise NativeReadingRefused("evaluation does not bind this native project/revision")
+            if evaluation.statement_publication is not statement_publication:
+                raise NativeReadingRefused("native evaluation and publication are not the same frozen reading")
+        else:
+            population = read_accepted_field_population(session, project_id, revision_id=revision_id)
+            evaluation = evaluate_native_population(population, today=today,
+                thresholds=effective_thresholds(session, project_id), document_only=document_only)
+            statement_publication = evaluation.statement_publication
+        validate_frozen_reading(project_id=project_id, evaluation=evaluation,
+            statement_publication=statement_publication, dependency_ids=population.record_ids,
+            document_only=document_only)
+        return FrozenProjectReading(project, tuple(browse(session, project_id, limit=100_000, evaluation=evaluation)),
+                                    evaluation, statement_publication, population)
+    if revision_id is not None:
+        raise NativeReadingRefused("legacy population has no complete revision-bound native accepted-field mapping")
     current_ids = tuple(
         session.scalars(
             select(Dependency.id)
@@ -150,4 +176,5 @@ def freeze_project_reading(
         rows=rows,
         evaluation=evaluation,
         statement_publication=statement_publication,
+        coverage_blockers=("Legacy population and accepted-field ownership are not native.",),
     )
