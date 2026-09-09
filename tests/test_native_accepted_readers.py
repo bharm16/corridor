@@ -478,6 +478,14 @@ def test_resolve_delta_reordered_source_updates_only_its_explicit_canonical_targ
     assert changed.fields["station_from"].decision_id in result.fact_decision_ids
     assert changed.fields["station_from"].fact_subject_key == fact.subject_key
     assert changed.fields["station_from"].sources[0].source_segment_id == segment.id
+    from corridor.accepted_field_reading import native_reader_input_manifest
+    manifest = native_reader_input_manifest(current)
+    exclusions = manifest["excluded_accepted_decisions"]
+    displaced = [item for item in exclusions if item["record_subject_key"] == target.record_subject_key
+                 and item["fact_type"] == "station_from"]
+    assert len(displaced) == 1
+    assert displaced[0]["delta_record_decision_id"] == result.decision_id
+    assert displaced[0]["replacement_decision_id"] in result.fact_decision_ids
     assert changed.fields["station_from"].sources[0].locator.endswith("!D3")
     assert changed.source_row_key == target.source_row_key  # adopted row was !4; later source moved to !3
     before = read_accepted_field_population(session, project.id, revision_id=adoption.revision_id)
@@ -601,3 +609,77 @@ def test_semantic_coverage_owns_equivalence_except_declared_unchanged_surfaces()
     failed = tuple(CoverageResult(contract.name, contract.name != "workbook_export", 0,
         ("unchanged-output identity differs",) if contract.name == "workbook_export" else ()) for contract in CONTRACTS)
     assert not ReaderEquivalence(True, True, False, True, (), failed).passed
+
+
+@pytest.mark.parametrize("fact_type", ["email_header", "email_attachment"])
+def test_every_accepted_email_metadata_decision_requires_an_explicit_reader(session, adopted, fact_type):
+    from email.message import EmailMessage
+    from corridor.email_segments import append_email_segments
+    from corridor.email_spine import email_extractor_config
+    from corridor.extraction_runs import record_extraction_run
+    from corridor.extractor_lineage import zero_token_usage
+    from corridor.materializer import materialize_email_metadata
+    from corridor.models import Document
+    from corridor.object_storage import store_bytes
+    project, adoption = adopted
+    message = EmailMessage()
+    message["From"] = "utility@example.test"
+    message["To"] = "project@example.test"
+    message.set_content("Attached project information.")
+    message.add_attachment(b"project information", maintype="application", subtype="octet-stream", filename="information.bin")
+    raw = message.as_bytes()
+    digest = sha256(raw).hexdigest()
+    store_bytes(raw, sha256=digest, suffix=".eml")
+    document = Document(project_id=project.id, sha256=digest, filename="information.eml", doc_type="email")
+    session.add(document)
+    session.flush()
+    segments = append_email_segments(session, document, raw)
+    segment = next(item for item in segments if item.location_json["section"] == fact_type.removeprefix("email_"))
+    config = email_extractor_config(None)
+    run = record_extraction_run(session, document, prompt_version=config.prompt_version, schema_version=config.schema_version,
+        candidate_count=0, page_errors=0, outcome="completed", model=None, extractor_config=config,
+        token_usage=zero_token_usage(document.id), row_accounting_json=None)
+    fact = append_fact(session, project_id=project.id, document_id=document.id, extraction_run_id=run.id,
+        subject_kind="email_message", subject_key="message:retained-metadata", recorded_by="email-native-test",
+        content_sha256=sha256(f"{digest}:{fact_type}".encode()).hexdigest(), value=materialize_email_metadata(segment))
+    # Merely captured metadata does not affect the accepted reader census.
+    assert len(read_accepted_field_population(session, project.id).open_records) == 2
+    record_human_fact_decision(session, fact, principal=PRINCIPAL,
+        command_type="resolve_discrepancy", idempotency_key=f"accept-{fact_type}")
+    with pytest.raises(NativeReadingRefused, match=rf"accepted decision .*email_message/{fact_type}.*no native reader"):
+        read_accepted_field_population(session, project.id)
+    assert len(read_accepted_field_population(session, project.id, revision_id=adoption.revision_id).open_records) == 2
+
+
+@pytest.mark.parametrize("authority_kind", ["governing", "registration"])
+@pytest.mark.parametrize("relative_time", ["after", "before", "equal"])
+def test_schedule_authority_census_respects_historical_revision_time(session, adopted, authority_kind, relative_time):
+    from corridor.models import ProjectRecordRevision, ScheduleGoverningDerivation, Milestone, MilestoneRegistration
+    project, adoption = adopted
+    revision = session.get(ProjectRecordRevision, adoption.revision_id)
+    original = read_accepted_field_population(session, project.id, revision_id=revision.id)
+    offset = {"after": timedelta(seconds=1), "before": -timedelta(seconds=1), "equal": timedelta()}[relative_time]
+    at = revision.recorded_at + offset
+    # These legacy receipt families have no Project Record revision FK. Append
+    # their valid immutable recorded-time fixtures, without altering a receipt.
+    if authority_kind == "governing":
+        receipt = ScheduleGoverningDerivation(project_id=project.id, source_name="synthetic.xer",
+            source_sha256="a" * 64, method="human_pick", recorded_by=PRINCIPAL.subject,
+            matches_json=[], created_at=at)
+    else:
+        milestone = Milestone(project_id=project.id, code="K1", name="Utility work complete", created_at=at)
+        session.add(milestone)
+        session.flush()
+        receipt = MilestoneRegistration(milestone_id=milestone.id, source_name="synthetic.csv",
+            source_sha256="b" * 64, source_row_json={"code": "K1"}, recorded_by=PRINCIPAL.subject, created_at=at)
+    session.add(receipt)
+    session.flush()
+    if relative_time == "after":
+        repeated = read_accepted_field_population(session, project.id, revision_id=revision.id)
+        assert repeated.fingerprint == original.fingerprint
+    else:
+        reason = "no provable order" if relative_time == "equal" else "exact native subject adapter"
+        with pytest.raises(NativeReadingRefused, match=reason):
+            read_accepted_field_population(session, project.id, revision_id=revision.id)
+    with pytest.raises(NativeReadingRefused, match="exact native subject adapter"):
+        read_accepted_field_population(session, project.id)

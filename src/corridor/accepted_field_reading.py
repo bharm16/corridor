@@ -200,6 +200,21 @@ class AcceptedConstraint:
 
 
 @dataclass(frozen=True)
+class AcceptedDecisionExclusion:
+    """An accepted source decision displaced by an exact canonical target act."""
+
+    decision_id: int
+    fact_id: int
+    fact_subject_key: str
+    fact_type: str
+    revision_id: int
+    replacement_decision_id: int
+    delta_record_decision_id: int
+    record_subject_key: str
+    reason: str = "replaced_by_explicit_record_target_decision"
+
+
+@dataclass(frozen=True)
 class AcceptedFieldPopulation:
     project_id: int
     revision_id: int
@@ -212,6 +227,7 @@ class AcceptedFieldPopulation:
     statements: tuple[AcceptedStatement, ...] = ()
     coverage_blockers: tuple[str, ...] = ()
     withdrawn_subjects: tuple[tuple[str, int], ...] = ()
+    excluded_accepted_decisions: tuple[AcceptedDecisionExclusion, ...] = ()
 
     @property
     def open_records(self):
@@ -296,6 +312,7 @@ def _constraint_authority(session, baseline, rows, boundary, values):
     for row, *_ in metadata:
         by_revision_subject.setdefault((row.revision_id, row.subject_key), []).append(row)
     origins, aliases, owners, recognized, removals = {}, {}, {}, set(), {}
+    displaced = {}
     for row in rows:
         if row.excluded:
             continue
@@ -381,6 +398,7 @@ def _constraint_authority(session, baseline, rows, boundary, values):
                 prior = follow(prior, subject, act.revision_id - 1)
                 if prior.revision_id >= act.revision_id or prior.revision_id > (act.observed_accepted_revision_id or 0):
                     raise NativeReadingRefused("Resolve Delta does not bind the accepted canonical field predecessor")
+                displaced[prior.id] = (decision.id, act.id, subject)
             owners[slot] = decision
             recognized.add(decision.id)
         if act.effect_kind == "apparent_removal":
@@ -413,23 +431,53 @@ def _constraint_authority(session, baseline, rows, boundary, values):
     authority = {value.decision_id: (revisions[value.revision_id].human_principal or revisions[value.revision_id].released_policy,
                 revisions[value.revision_id].released_policy, decisions[value.decision_id].decided_at)
                 for fields in selected.values() for value in fields.values()}
-    return origins, selected, removed, authority, tuple(sorted(withdrawn.items()))
+    return origins, selected, removed, authority, tuple(sorted(withdrawn.items())), displaced
 
 
-def _refuse_unmapped_selected_authority(session, project_id, values):
-    # These are selected authority/registration identities, not the copied
-    # Dependency fields. Reading an unrelated source date cannot override them.
-    if session.scalar(select(ScheduleLinkReceipt.id).where(ScheduleLinkReceipt.project_id == project_id).limit(1)):
-        raise NativeReadingRefused("selected schedule-link authority requires an exact native subject adapter")
-    if session.scalar(select(ScheduleGoverningDerivation.id).where(
+def _refuse_unmapped_selected_authority(session, project_id, values, *, historical_boundary=None):
+    # These receipts predate the revision spine and have no revision foreign key.
+    # At a historical boundary, their immutable recorded times can establish
+    # before/after; an equal timestamp cannot establish their order and refuses.
+    # Current reads census every present receipt, including post-head imports.
+    checks = (
+        (ScheduleLinkReceipt, select(ScheduleLinkReceipt.id).where(
+            ScheduleLinkReceipt.project_id == project_id), "selected schedule-link authority"),
+        (ScheduleGoverningDerivation, select(ScheduleGoverningDerivation.id).where(
             ScheduleGoverningDerivation.project_id == project_id,
-            ScheduleGoverningDerivation.method.in_(("coded", "human_pick"))).limit(1)):
-        raise NativeReadingRefused("governing schedule authority requires an exact native subject adapter")
-    if session.scalar(select(MilestoneRegistration.id).join(Milestone, Milestone.id == MilestoneRegistration.milestone_id)
-                      .where(Milestone.project_id == project_id).limit(1)):
-        raise NativeReadingRefused("registered key-date authority requires an exact native subject adapter")
+            ScheduleGoverningDerivation.method.in_(("coded", "human_pick"))), "governing schedule authority"),
+        (MilestoneRegistration, select(MilestoneRegistration.id).join(
+            Milestone, Milestone.id == MilestoneRegistration.milestone_id).where(
+            Milestone.project_id == project_id), "registered key-date authority"),
+    )
+    for model, query, description in checks:
+        if historical_boundary is not None:
+            if session.scalar(query.where(model.created_at == historical_boundary.recorded_at).limit(1)):
+                raise NativeReadingRefused(f"{description} has no provable order relative to this Project Record revision")
+            query = query.where(model.created_at < historical_boundary.recorded_at)
+        if session.scalar(query.limit(1)):
+            raise NativeReadingRefused(f"{description} requires an exact native subject adapter")
     if any(value.fact_type == "supporting_documentation_in_use" for value in values):
         raise NativeReadingRefused("selected supporting-document authority requires an exact native subject adapter")
+
+
+def _accepted_decision_census(values, selected_values, statements, displaced):
+    """Every accepted decision is consumed or has an explicit authority exclusion."""
+    consumed = {value.decision_id for value in selected_values}
+    consumed.update(field.decision_id for statement in statements for field in statement.fields.values())
+    exclusions = []
+    for value in values:
+        if value.decision_id in consumed:
+            continue
+        replacement = displaced.get(value.decision_id)
+        if replacement is not None:
+            replacement_id, act_id, subject = replacement
+            exclusions.append(AcceptedDecisionExclusion(value.decision_id, value.fact_id,
+                value.fact_subject_key or value.subject_key, value.fact_type, value.revision_id,
+                replacement_id, act_id, subject))
+            continue
+        raise NativeReadingRefused(f"accepted decision {value.decision_id} ({value.subject_kind}/{value.fact_type}, "
+            f"Fact {value.fact_id}) has no native reader or declared authority exclusion")
+    return tuple(exclusions)
 
 
 def read_accepted_field_population(session: Session, project_id: int, *, revision_id: int | None = None):
@@ -460,10 +508,12 @@ def read_accepted_field_population(session: Session, project_id: int, *, revisio
     if session.scalar(text("select exists(select 1 from coordination_record_decisions where project_id=:project and revision_id<=:revision)"),
                       {"project": project_id, "revision": boundary}):
         raise NativeReadingRefused("native Coordination Decisions lack an explicit adopted-subject binding")
-    _refuse_unmapped_selected_authority(session, project_id, values)
+    _refuse_unmapped_selected_authority(session, project_id, values, historical_boundary=(
+        session.get(ProjectRecordRevision, boundary) if revision_id is not None else None))
     statements = read_native_statements(session, project_id, boundary, values=values)
-    origins, selected, removed, authority, withdrawn = _constraint_authority(session, baseline, rows, boundary, values)
+    origins, selected, removed, authority, withdrawn, displaced = _constraint_authority(session, baseline, rows, boundary, values)
     selected_values = tuple(value for fields in selected.values() for value in fields.values())
+    exclusions = _accepted_decision_census(values, selected_values, statements, displaced)
     grouped = {key: {} for key in origins}
     sources = _passages(session, selected_values)
     for subject, fields in selected.items():
@@ -507,6 +557,7 @@ def read_accepted_field_population(session: Session, project_id: int, *, revisio
         "assessments": list(plan.support_assessment_ids), "sources": list(plan.source_segment_ids)} for plan in plans]
     identity["follow_up_scope"] = plan_scope
     identity["withdrawn_subjects"] = withdrawn
+    identity["excluded_accepted_decisions"] = [item.__dict__ for item in exclusions]
     identity["statements"] = [{"subject": statement.subject_key,
         "fields": {name: {"decision": field.decision_id, "revision": field.revision_id,
             "sources": [(source.source_segment_id, source.locator_validation_status) for source in field.sources]}
@@ -519,7 +570,7 @@ def read_accepted_field_population(session: Session, project_id: int, *, revisio
                     for value in values if value.subject_kind == "statement_candidate" and value.subject_key not in anchored)
     fingerprint = sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return AcceptedFieldPopulation(project_id, boundary, baseline.revision_id, tuple(records),
-        tuple(identity["excluded"]), fingerprint, plans, plan_scope, statements, tuple(sorted(blockers)), withdrawn)
+        tuple(identity["excluded"]), fingerprint, plans, plan_scope, statements, tuple(sorted(blockers)), withdrawn, exclusions)
 
 
 def accepted_field_text(field: AcceptedField):
@@ -586,6 +637,7 @@ def native_reader_input_manifest(population: AcceptedFieldPopulation, *, documen
             for statement in visible_native_statements(population, document_only=document_only)],
         "follow_up_plans": serial(population.follow_up_plans),
         "follow_up_scope": population.follow_up_scope,
+        "excluded_accepted_decisions": serial(population.excluded_accepted_decisions),
         "withdrawn_subjects": [{"subject_key": subject, "decision_kind": "delta_review_packet_reversal", "decision_id": identity}
             for subject, identity in population.withdrawn_subjects],
         "excluded_source_rows": list(population.excluded_source_rows),
