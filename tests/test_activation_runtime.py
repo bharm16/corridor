@@ -168,3 +168,31 @@ def test_delivery_version_binding_is_exact_before_any_sql(deployed):
         config.source_channel, config.source_configuration, "unexpected-version", 7)
     with pytest.raises(RouteRefused, match="source selection"):
         require_source_delivery(NoSql(), binding)
+
+
+def test_pull_success_callback_cannot_substitute_for_database_context(deployed):
+    from corridor.activation_runtime import require_pull_delivery
+    ledger = SimpleNamespace(activation_context=SimpleNamespace(authorize=lambda **kwargs: None))
+    with pytest.raises(RouteRefused, match="delivery context"):
+        require_pull_delivery(ledger, customer="fixture-customer", project="fixture-project", channel="webhook")
+
+
+def test_pull_context_checks_real_session_and_database_binding(deployed, runtime_database):
+    from contextlib import nullcontext
+    from corridor.activation_runtime import DeliveryActivationContext, require_pull_delivery
+    config, _, _ = deployed
+    binding = DeliveryBinding(config.customer, config.project_id, "fixture-project", "push",
+        config.source_channel, config.source_configuration, "", 7)
+    fake = DeliveryActivationContext(lambda: nullcontext(NoSql()), binding)
+    with pytest.raises(RouteRefused, match="actual database session"):
+        require_pull_delivery(SimpleNamespace(activation_context=fake), customer=config.customer,
+            project="fixture-project", channel=config.source_channel)
+    context = DeliveryActivationContext(runtime_database.session_factory, binding)
+    with pytest.raises(RouteRefused, match="outside the activated environment"):
+        require_pull_delivery(SimpleNamespace(activation_context=context), customer=config.customer,
+            project="fixture-project", channel=config.source_channel)
+    with runtime_database.session_factory.begin() as owner:
+        owner.execute(text("insert into customer_environment_binding(singleton,customer_id,environment_id,deployment_id) values (true,:customer,:environment,:deployment)"),
+            {"customer": config.customer, "environment": config.environment, "deployment": config.deployment_id})
+    require_pull_delivery(SimpleNamespace(activation_context=context), customer=config.customer,
+        project="fixture-project", channel=config.source_channel)

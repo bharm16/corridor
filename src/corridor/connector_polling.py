@@ -143,18 +143,16 @@ class LedgerWriter:
     """
 
     def __init__(self, session_factory, binding: DeliveryBinding, run_identity: str):
+        from corridor.activation_runtime import DeliveryActivationContext
+        self.activation_context = DeliveryActivationContext(session_factory, binding)
         self._session_factory = session_factory
         self._binding = binding
         self._run_identity = run_identity
         self.dispositions: Counter[str] = Counter()
 
     def authorize_source(self, *, customer, project, channel):
-        """Prove the actual bound source before connector fetch or object storage."""
-        from corridor.activation_runtime import require_source_delivery
-        if (customer, project, channel) != (self._binding.customer, self._binding.project_slug, self._binding.channel):
-            raise ConnectorPollingRefusal("pull source differs from its server-owned delivery binding")
-        with self._session_factory() as reading:
-            require_source_delivery(reading, self._binding)
+        """Delegate the real session/binding proof to the low-level context."""
+        self.activation_context.authorize(customer=customer, project=project, channel=channel)
 
     def record(
         self,

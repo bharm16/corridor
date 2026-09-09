@@ -10,15 +10,19 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass, field
+from typing import Callable, Protocol
 import json
 import os
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.orm import Session
 
 from corridor.activation import ActivationConfiguration, EvidenceArtifact, processing_authorized, route_manifest_digest
 from corridor.config import settings
 from corridor.control_plane import RouteRefused
+from corridor.shadow_capabilities import verify_runtime
 
 _BOOTSTRAP = ContextVar("corridor_authorized_source_bootstrap", default=None)
 
@@ -86,7 +90,6 @@ def require_source_project(session, project_id):
     if _BOOTSTRAP.get() is session:
         return
     if data_class == "shadow":
-        from corridor.shadow_processing import verify_runtime
         verify_runtime(session, project_id=project_id, customer=settings.customer_id,
             environment=settings.customer_environment_id)
         return
@@ -135,16 +138,43 @@ def owner_source_bootstrap(session):
         _BOOTSTRAP.reset(token)
 
 
+class SourceDeliveryScope(Protocol):
+    """The existing delivery binding's neutral activation contract."""
+    customer: str
+    project_id: int
+    project_slug: str
+    channel: str
+    configuration_identity: str
+    configuration_version: str
+
+
+@dataclass(frozen=True)
+class DeliveryActivationContext:
+    """A real session factory and source scope, checked here rather than asserted.
+
+    Higher-level ledgers supply this context. No success callback, cached flag,
+    or ledger implementation identity substitutes for database proof.
+    """
+    session_factory: Callable[[], Session] = field(repr=False)
+    binding: SourceDeliveryScope
+
+    def authorize(self, *, customer, project, channel):
+        current_activation()
+        if (customer, project, channel) != (self.binding.customer, self.binding.project_slug, self.binding.channel):
+            raise RouteRefused("pull source differs from its server-owned delivery binding")
+        with self.session_factory() as session:
+            if not isinstance(session, Session):
+                raise RouteRefused("pull authorization requires an actual database session")
+            require_source_delivery(session, self.binding)
+
+
 def require_pull_delivery(ledger, *, customer, project, channel):
-    """Only the production ledger can authorize source access in deployed lanes."""
+    """Require the real session/binding contract before connector I/O."""
     if runtime_data_class() in {"local", "synthetic"}:
         return
-    # Refuse stale deployment evidence before invoking even the ledger's
-    # session factory, which may itself open a routed customer session.
+    # Refuse stale evidence before invoking any session factory.
     current_activation()
-    # The concrete ledger owns the real session factory and DeliveryBinding.
-    # An arbitrary caller-provided function claiming success proves neither.
-    from corridor.connector_polling import LedgerWriter
-    if not isinstance(ledger, LedgerWriter):
-        raise RouteRefused("customer pull requires the server-owned activated delivery ledger")
-    ledger.authorize_source(customer=customer, project=project, channel=channel)
+    context = getattr(ledger, "activation_context", None)
+    if not isinstance(context, DeliveryActivationContext):
+        raise RouteRefused("customer pull requires the server-owned activated delivery context")
+    context.authorize(customer=customer, project=project, channel=channel)
