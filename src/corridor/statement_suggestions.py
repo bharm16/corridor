@@ -181,7 +181,10 @@ def read_statement_suggestions(
             suggestions,
             key=lambda item: (
                 -int("explicit_constraint_reference" in item.signals),
-                -match_score(item.signals, item.term_hits),
+                -match_score(
+                    station_containment="station_overlap" in item.signals,
+                    term_hits=item.term_hits,
+                ),
                 item.ref_code,
                 item.dependency_id,
             ),
