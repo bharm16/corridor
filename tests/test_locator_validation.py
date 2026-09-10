@@ -25,13 +25,16 @@ from corridor.ingest import ingest_document
 from corridor.locator_validation import (
     INVALID,
     LOCATOR_VALIDATION_STATUSES,
+    LocatorValidation,
     NOT_CHECKED,
     NOT_RE_READABLE,
     VALID,
     cited_passage_locator_validation_status,
     evidence_link_locator_validation_status,
     evidence_link_verified,
+    recorded_verbal_statement_locator_validation,
     recorded_verbal_statement_locator_validation_status,
+    source_segment_locator_validation,
     source_segment_locator_validation_status,
 )
 from corridor.models import Document, SourceSegment
@@ -249,6 +252,62 @@ def test_a_retained_prose_citation_is_not_re_readable_and_never_invalid(
     # be opened to find, and it stays ``invalid``.
     segment.exact_text = "Equistar will submit something else."
     assert source_segment_locator_validation_status(document, segment, path) == INVALID
+
+
+def test_without_registered_bytes_the_check_still_answers_what_needs_none(
+    session, project, workbook, tmp_path
+):
+    """A reader that cannot stage the file passes ``None`` and gets the truth.
+
+    The accepted statement reader used to keep its own ladder for this case.
+    Now the one home answers: a cell it cannot open is ``not_checked`` with no
+    reason of its own (the caller knows why it had no bytes), a stored text
+    that disagrees with its digest is ``invalid`` without opening anything,
+    and a retired ``prose_span`` is ``not_re_readable`` whether or not the
+    file is here.
+    """
+
+    document = _ingest(session, project, workbook, tmp_path)
+    segment = _segments(session, document)[0]
+    retained_document, prose, _ = _retained_prose_citation(session, project, tmp_path)
+
+    assert source_segment_locator_validation(document, segment, None) == (
+        LocatorValidation(NOT_CHECKED, None)
+    )
+
+    retained = source_segment_locator_validation(retained_document, prose, None)
+    assert retained.status == NOT_RE_READABLE
+    assert "prose_span locator can only be re-read" in retained.reason
+
+    # In memory only: the rows themselves are append-only.
+    segment.exact_text = "different words"
+    tampered = source_segment_locator_validation(document, segment, None)
+    assert (tampered.status, tampered.reason) == (
+        INVALID, "stored segment digest does not match its text"
+    )
+
+
+def test_every_answer_carries_the_replay_own_reason(
+    session, project, workbook, tmp_path
+):
+    document = _ingest(session, project, workbook, tmp_path)
+    segment = _segments(session, document)[0]
+
+    assert source_segment_locator_validation(document, segment, workbook).reason is None
+
+    segment.cell_range = "Z99"
+    moved = source_segment_locator_validation(document, segment, workbook)
+    assert moved.status == INVALID
+    assert moved.reason == "spreadsheet locator does not exist: Utility Conflicts!Z99"
+
+    verbal = recorded_verbal_statement_segment(
+        project_id=1, recorded_verbal_origin_id=2, exact_text="They will pull the pole."
+    )
+    assert recorded_verbal_statement_locator_validation(verbal).reason is None
+    verbal.content_sha256 = sha256(b"other words").hexdigest()
+    assert recorded_verbal_statement_locator_validation(verbal).reason == (
+        "stored segment digest does not match its recorded words"
+    )
 
 
 def test_the_not_re_readable_state_is_labelled_without_claiming_a_check(

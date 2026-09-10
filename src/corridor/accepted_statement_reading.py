@@ -5,23 +5,31 @@ by a workbook row map. This reader uses their accepted statement_wording anchor
 and exact native decisions, retaining source timing and scope at the requested
 revision. Source replay and support assessment remain provenance, never
 acceptance authority; neither can manufacture a published date or readiness.
+The Source Passage Check on each source is ``locator_validation``'s answer,
+not a second ladder kept here; this reader adds only what it alone knows: the
+verbal segment's agreement with its recorder's attestation, and whether the
+registered bytes were available to it.
 """
 
 from dataclasses import dataclass
 from datetime import date, datetime
-from hashlib import sha256
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from types import MappingProxyType
 from typing import Any, Mapping
 
 from sqlalchemy import select
 
+from corridor.locator_validation import (
+    INVALID,
+    NOT_CHECKED,
+    VALID,
+    recorded_verbal_statement_locator_validation,
+    source_segment_locator_validation,
+)
 from corridor.models import Document, Fact, FactDecision, FactSource, ProjectRecordRevision, RecordedVerbalOrigin, SourceSegment
-from corridor.object_storage import DigestMismatch, StorageError, content_store
+from corridor.object_storage import DigestMismatch, StorageError
 from corridor.record_projection import CurrentStatementTiming, read_native_record_values, record_value_payload
-from corridor.source_segment_errors import FreshReadingUnavailable, SourceSegmentIntegrityError
-from corridor.source_segments import dereference_source_segment, replay_recorded_verbal_statement
+from corridor.source_segments import source_segment_locator_words
+from corridor.storage import stored_file
 from corridor.support_assessments import FactProposition, assessed_source_segments, support_assessment_history
 
 
@@ -143,70 +151,38 @@ class AcceptedStatement:
         return tuple(sorted({source.source_class for source in self.sources if source.source_class}))
 
 
-def _locator(segment):
-    if segment.kind == "recorded_verbal_statement":
-        return f"Recorded Verbal Statement origin {segment.recorded_verbal_origin_id}"
-    if segment.kind == "email_span":
-        location = segment.location_json or {}
-        part = ".".join(str(item) for item in location.get("part_path", [])) or "root"
-        return f"MIME part {part}, {location.get('section', 'unknown section')}, text {segment.start_offset}:{segment.end_offset}"
-    if segment.kind == "spreadsheet_cell":
-        return f"{segment.sheet_name}!{segment.cell_range}"
-    if segment.kind == "pdf_cell":
-        return f"page {segment.page_no}, table {segment.table_index}, row {segment.cell_row}, column {segment.cell_column}"
-    return f"page {segment.page_no}, text {segment.start_offset}:{segment.end_offset}"
-
-
-def _source(session, segment, role, project_id, paths, temporary):
+def _source(session, segment, role, project_id):
     if segment.project_id != project_id:
         raise AcceptedStatementReadingRefused("statement source belongs to another project")
     document = session.get(Document, segment.document_id) if segment.document_id else None
     origin = session.get(RecordedVerbalOrigin, segment.recorded_verbal_origin_id) if segment.recorded_verbal_origin_id else None
-    status, limitation = "not_checked", None
-    if sha256(segment.exact_text.encode("utf-8")).hexdigest() != segment.content_sha256:
-        status, limitation = "invalid", "stored source text differs from its retained digest"
-    elif segment.kind == "recorded_verbal_statement":
-        try:
-            replay_recorded_verbal_statement(segment)
-            if (origin is None or origin.project_id != project_id or origin.exact_text != segment.exact_text
-                    or origin.content_sha256 != segment.content_sha256):
-                raise AcceptedStatementReadingRefused("verbal segment differs from its native recorder attestation")
-            status = "valid"
-        except (SourceSegmentIntegrityError, AcceptedStatementReadingRefused) as error:
-            status, limitation = "invalid", str(error)
+    status, limitation = NOT_CHECKED, None
+    if segment.kind == "recorded_verbal_statement":
+        check = recorded_verbal_statement_locator_validation(segment)
+        status, limitation = check.status, check.reason
+        if status == VALID and (origin is None or origin.project_id != project_id or origin.exact_text != segment.exact_text
+                                or origin.content_sha256 != segment.content_sha256):
+            status, limitation = INVALID, "verbal segment differs from its native recorder attestation"
     elif document is None or document.project_id != project_id:
-        status, limitation = "invalid", "statement source has no matching native Document"
-    elif segment.kind == "prose_span":
-        status, limitation = "not_re_readable", "the retired prose reader cannot re-read this historical locator; exact text and digest remain retained"
+        status, limitation = INVALID, "statement source has no matching native Document"
     else:
         try:
-            if document.id not in paths:
-                store = content_store()
-                key = store.resolve(document.sha256)
-                if key is None:
-                    paths[document.id] = None
-                else:
-                    path = Path(temporary) / f"{document.id}{Path(document.filename).suffix}"
-                    store.stage(key, path, sha256=document.sha256)
-                    paths[document.id] = path
-            path = paths[document.id]
-            if path is None:
-                limitation = "registered source bytes are unavailable for the Source Passage Check"
-            else:
-                dereference_source_segment(document, segment, path)
-                status = "valid"
-        except FreshReadingUnavailable as error:
-            status, limitation = "not_re_readable", str(error)
-        except (SourceSegmentIntegrityError, DigestMismatch) as error:
-            status, limitation = "invalid", str(error)
+            path = stored_file(document)
+            check = source_segment_locator_validation(document, segment, path)
+        except DigestMismatch as error:
+            status, limitation = INVALID, str(error)
         except (OSError, ValueError, StorageError) as error:
-            status, limitation = "not_checked", f"Source Passage Check unavailable: {error}"
+            status, limitation = NOT_CHECKED, f"Source Passage Check unavailable: {error}"
+        else:
+            status, limitation = check.status, check.reason
+            if path is None and status == NOT_CHECKED:
+                limitation = "registered source bytes are unavailable for the Source Passage Check"
     location = {name: getattr(segment, name) for name in (
         "sheet_name", "cell_range", "page_no", "start_offset", "end_offset", "table_index", "cell_row", "cell_column",
         "row_span", "column_span", "span_stream", "rendition_sha256", "reading_sha256", "location_json")}
     return AcceptedStatementSource(segment.id, segment.kind, role, segment.document_id,
         document.sha256 if document else None, document.filename if document else None, segment.page_no,
-        _locator(segment), location, segment.exact_text, segment.content_sha256, status, limitation,
+        source_segment_locator_words(segment), location, segment.exact_text, segment.content_sha256, status, limitation,
         segment.recorded_verbal_origin_id, origin.recorded_by if origin else None,
         origin.recorded_at if origin else None, origin.conversation_date if origin else None,
         "recorded_verbal_statement" if origin else document.doc_type if document else None)
@@ -242,13 +218,12 @@ def read_native_statements(session, project_id: int, revision_id: int, *, values
         links = session.execute(select(FactSource, SourceSegment).join(SourceSegment, SourceSegment.id == FactSource.source_segment_id)
             .where(FactSource.project_id == project_id, FactSource.fact_id.in_(identities))
             .order_by(FactSource.fact_id, FactSource.role, FactSource.ordinal)).all()
-        sources, cache, paths = {}, {}, {}
-        with TemporaryDirectory(prefix="corridor-statement-reading-") as temporary:
-            for link, segment in links:
-                key = (segment.id, link.role)
-                if key not in cache:
-                    cache[key] = _source(session, segment, link.role, project_id, paths, temporary)
-                sources.setdefault(link.fact_id, []).append(cache[key])
+        sources, cache = {}, {}
+        for link, segment in links:
+            key = (segment.id, link.role)
+            if key not in cache:
+                cache[key] = _source(session, segment, link.role, project_id)
+            sources.setdefault(link.fact_id, []).append(cache[key])
         grouped, projected = {}, {}
         for value in selected:
             fact = facts[value.fact_id]

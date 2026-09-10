@@ -150,6 +150,7 @@ from corridor.issue_coverage import (
 from corridor.issue_profile import effective_issue_inventory
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
 from corridor.presentation import field_label, sentence_for
+from corridor.source_segments import source_segment_locator_words
 from corridor.statement_values import UNKNOWN_SCOPE_LABEL
 from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
@@ -359,19 +360,15 @@ class SourceReference:
     """Exactly where the incoming value was read, in words."""
 
     document_filename: str
-    sheet_name: str | None = None
-    cell_range: str | None = None
-    page_no: int | None = None
+    locator: str | None = None
     exact_text: str | None = None
 
     @property
     def location(self) -> str:
         """The locator as a coordinator reads it aloud."""
 
-        if self.sheet_name and self.cell_range:
-            return f"sheet {self.sheet_name}, cell {self.cell_range}"
-        if self.page_no is not None:
-            return f"page {self.page_no}"
+        if self.locator is not None:
+            return self.locator
         return "no cited location recorded"
 
 
@@ -1267,9 +1264,7 @@ def _source_reference(capture: IncomingCapture | None) -> SourceReference | None
     segment = capture.segment
     return SourceReference(
         document_filename=capture.document.filename,
-        sheet_name=segment.sheet_name if segment is not None else None,
-        cell_range=segment.cell_range if segment is not None else None,
-        page_no=segment.page_no if segment is not None else None,
+        locator=source_segment_locator_words(segment) if segment is not None else None,
         exact_text=segment.exact_text if segment is not None else None,
     )
 

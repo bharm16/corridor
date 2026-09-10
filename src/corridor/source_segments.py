@@ -319,6 +319,48 @@ def recorded_verbal_statement_segment(
     )
 
 
+def source_segment_locator_words(segment) -> str:
+    """Where one Source Segment sits, in the words every customer surface prints.
+
+    One caption per ``kind`` the ``ck_source_segments_kind`` CHECK admits, plus
+    the Recorded Verbal Statement, which has no place in a Document to name.
+    Record history, the review screen, the accepted statement reader and the
+    coverage collector each used to spell these by hand, and two of the four
+    copies were wrong: a copy that only knew cells and prose captioned every
+    other kind "recorded verbal statement", and the collector's corroboration
+    of displayed support held only because it rebuilt the same strings.  Both
+    ``pdf_span`` streams read as a page and character span: the stream names
+    the projection the offsets index, not a different place on the page.
+
+    ``segment`` is any object carrying the ``source_segments`` locator columns,
+    so a raw row reads exactly like the ORM row.
+    """
+
+    kind = segment.kind
+    if kind == "spreadsheet_cell":
+        return f"sheet {segment.sheet_name}, cell {segment.cell_range}"
+    if kind in {"prose_span", "pdf_span"}:
+        return (
+            f"page {segment.page_no}, "
+            f"characters {segment.start_offset}–{segment.end_offset}"
+        )
+    if kind == "pdf_cell":
+        return (
+            f"page {segment.page_no}, table {segment.table_index}, "
+            f"row {segment.cell_row}, column {segment.cell_column}"
+        )
+    if kind == "email_span":
+        location = segment.location_json or {}
+        part = ".".join(str(item) for item in location.get("part_path", [])) or "root"
+        return (
+            f"MIME part {part}, {location.get('section', 'unknown section')}, "
+            f"characters {segment.start_offset}–{segment.end_offset}"
+        )
+    if kind == "recorded_verbal_statement":
+        return "recorded verbal statement"
+    raise ValueError(f"unsupported source segment kind {kind!r}")
+
+
 def replay_recorded_verbal_statement(segment: SourceSegment) -> str:
     """Replay a recorded verbal statement from its own words.
 

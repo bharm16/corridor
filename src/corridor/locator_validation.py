@@ -24,10 +24,23 @@ any reader can prove the answer from the original bytes.
 ``locator_validation_status == valid``.  This module is the one place that
 reads that column; every presentation asks here for a status instead, and the
 column itself is removed under #458 with the legacy writer cut-over.
+
+The ladder from a replay's outcome to a status lives here once.  The accepted
+statement reader used to re-derive it beside its own byte staging, which is
+how a reader could disagree with this module about the same segment.  A
+reader that has the registered bytes passes their path; a reader that does
+not passes ``None`` and still gets every answer that needs no bytes -- a
+stored text that disagrees with its own digest is ``invalid`` and a retired
+``prose_span`` scheme is ``not_re_readable`` whether or not the file is here
+-- and ``not_checked`` otherwise.  Each answer carries the checker's own
+sentence for a status other than ``valid``, so a reader reports the reason
+without inventing one.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
 from typing import Protocol
 
@@ -75,6 +88,48 @@ class StoredLocatorCheck(Protocol):
     verified: bool
 
 
+@dataclass(frozen=True)
+class LocatorValidation:
+    """One Source Passage Check answer: the ADR-0082 status and its reason.
+
+    ``reason`` is the replay's own sentence for a status other than ``valid``,
+    and ``None`` for ``valid`` or for a check that did not run because the
+    caller had no registered bytes to offer -- the caller knows why it had
+    none, so it says so.
+    """
+
+    status: str
+    reason: str | None = None
+
+
+def source_segment_locator_validation(
+    document: Document, segment: SourceSegment, path: Path | str | None
+) -> LocatorValidation:
+    """The status of ``source_segment_locator_validation_status`` with its reason.
+
+    ``path`` is ``None`` when the registered bytes are not available to the
+    caller.  The checks that need no bytes still run and still decide: stored
+    text that disagrees with its own digest is ``invalid``, and a
+    ``prose_span`` is ``not_re_readable`` because the reader that wrote it is
+    gone regardless of the file.  Anything else is ``not_checked``: no
+    locator was followed, and this module makes no claim about the source.
+    """
+
+    if path is None:
+        if sha256(segment.exact_text.encode("utf-8")).hexdigest() != segment.content_sha256:
+            return LocatorValidation(INVALID, "stored segment digest does not match its text")
+        if segment.kind == "prose_span":
+            return LocatorValidation(NOT_RE_READABLE, str(FreshReadingUnavailable("prose_span", None)))
+        return LocatorValidation(NOT_CHECKED)
+    try:
+        dereference_source_segment(document, segment, path)
+    except FreshReadingUnavailable as error:
+        return LocatorValidation(NOT_RE_READABLE, str(error))
+    except SourceSegmentIntegrityError as error:
+        return LocatorValidation(INVALID, str(error))
+    return LocatorValidation(VALID)
+
+
 def source_segment_locator_validation_status(
     document: Document, segment: SourceSegment, path: Path | str
 ) -> str:
@@ -98,18 +153,12 @@ def source_segment_locator_validation_status(
     its registered bytes from their own digests.
     """
 
-    try:
-        dereference_source_segment(document, segment, path)
-    except FreshReadingUnavailable:
-        return NOT_RE_READABLE
-    except SourceSegmentIntegrityError:
-        return INVALID
-    return VALID
+    return source_segment_locator_validation(document, segment, path).status
 
 
-def recorded_verbal_statement_locator_validation_status(
+def recorded_verbal_statement_locator_validation(
     segment: SourceSegment,
-) -> str:
+) -> LocatorValidation:
     """Replay a Recorded Verbal Statement's words against their own digest.
 
     A verbal has no Document to dereference (ADR-0033), so its locator
@@ -119,9 +168,17 @@ def recorded_verbal_statement_locator_validation_status(
 
     try:
         replay_recorded_verbal_statement(segment)
-    except SourceSegmentIntegrityError:
-        return INVALID
-    return VALID
+    except SourceSegmentIntegrityError as error:
+        return LocatorValidation(INVALID, str(error))
+    return LocatorValidation(VALID)
+
+
+def recorded_verbal_statement_locator_validation_status(
+    segment: SourceSegment,
+) -> str:
+    """The status of ``recorded_verbal_statement_locator_validation`` alone."""
+
+    return recorded_verbal_statement_locator_validation(segment).status
 
 
 def cited_passage_locator_validation_status(

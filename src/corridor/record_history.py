@@ -102,7 +102,7 @@ from corridor.report_release import (
     ExternalReportReleaseHistory,
     external_report_release_history,
 )
-from corridor.prose_spans import is_prose_segment
+from corridor.source_segments import source_segment_locator_words
 
 
 # How many accepted values are shown with their full evidence at once. The
@@ -846,24 +846,11 @@ def _reference(
     return SourceReference(
         document_id=segment.document_id,
         filename=filename or "recorded verbal statement",
-        locator=_locator(segment),
+        locator=source_segment_locator_words(segment),
         exact_text=segment.exact_text,
         role=role,
         source_segment_id=segment.id,
     )
-
-
-def _locator(segment: SourceSegment) -> str:
-    """Where the passage is, spelled out rather than left as a typed shape."""
-
-    if segment.kind == "spreadsheet_cell":
-        return f"sheet {segment.sheet_name}, cell {segment.cell_range}"
-    if is_prose_segment(segment):
-        return (
-            f"page {segment.page_no}, "
-            f"characters {segment.start_offset}–{segment.end_offset}"
-        )
-    return "recorded verbal statement"
 
 
 # --- Proposed Delta and resolution history ---------------------------------

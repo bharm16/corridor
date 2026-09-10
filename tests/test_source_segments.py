@@ -24,6 +24,7 @@ from corridor.source_segments import (
     SourceSegmentDigestMismatch,
     SourceSegmentLocatorMismatch,
     dereference_source_segment,
+    source_segment_locator_words,
     spreadsheet_replay,
 )
 
@@ -523,3 +524,69 @@ def test_source_segments_have_no_update_or_delete_path(
 
     with pytest.raises(DBAPIError, match="source segments are append-only"):
         session.flush()
+
+
+# --- one caption per segment kind ------------------------------------------------
+
+_READING = dict(rendition_sha256="a" * 64, reading_sha256="b" * 64,
+                reader_identity={"reader": "test"}, location_json={"page": 1})
+
+# Every kind ``ck_source_segments_kind`` admits, with the words the customer
+# surfaces print for it. The first row that ever failed was ``email_span``:
+# record history captioned it "recorded verbal statement" because its own
+# copy only knew cells and prose.
+LOCATOR_WORDS = [
+    (dict(kind="spreadsheet_cell", sheet_name="Utility Conflicts", cell_range="C1"),
+     "sheet Utility Conflicts, cell C1"),
+    (dict(kind="prose_span", page_no=2, start_offset=10, end_offset=40),
+     "page 2, characters 10–40"),
+    (dict(kind="pdf_span", page_no=3, start_offset=0, end_offset=12, span_stream="page", **_READING),
+     "page 3, characters 0–12"),
+    (dict(kind="pdf_span", page_no=3, start_offset=0, end_offset=12, span_stream="clipped", **_READING),
+     "page 3, characters 0–12"),
+    (dict(kind="pdf_cell", page_no=4, table_index=0, cell_row=2, cell_column=5, row_span=1, column_span=1, **_READING),
+     "page 4, table 0, row 2, column 5"),
+    (dict(kind="email_span", start_offset=5, end_offset=9,
+          location_json={"scheme": "email-mime-v1", "part_path": [1, 2], "section": "body"}),
+     "MIME part 1.2, body, characters 5–9"),
+    (dict(kind="recorded_verbal_statement", recorded_verbal_origin_id=7),
+     "recorded verbal statement"),
+]
+
+
+@pytest.mark.parametrize("columns, words", LOCATOR_WORDS, ids=[
+    row[0]["kind"] + ("-" + row[0]["span_stream"] if "span_stream" in row[0] else "") for row in LOCATOR_WORDS])
+def test_every_segment_kind_has_one_caption(columns, words):
+    segment = SourceSegment(project_id=1, exact_text="words", content_sha256="c" * 64, ordinal=1, **columns)
+
+    assert source_segment_locator_words(segment) == words
+
+
+def test_the_caption_table_covers_every_kind_the_schema_admits():
+    """Read the kinds from the CHECK constraint, so a new kind fails here first."""
+
+    import re
+
+    constraint = next(c for c in SourceSegment.__table__.constraints
+                      if getattr(c, "name", None) == "ck_source_segments_kind")
+    admitted = set(re.findall(r"'([a-z_]+)'", str(constraint.sqltext)))
+
+    assert admitted == {row[0]["kind"] for row in LOCATOR_WORDS}
+    with pytest.raises(ValueError, match="unsupported source segment kind"):
+        source_segment_locator_words(SourceSegment(kind="invented_kind"))
+
+
+def test_no_reader_spells_a_locator_by_hand():
+    """The four surfaces that used to keep their own copy all ask the one function."""
+
+    import re
+
+    source = Path(__file__).resolve().parents[1] / "src" / "corridor"
+    readers = ("record_history.py", "accepted_statement_reading.py",
+               "native_reader_coverage.py", "packet_review.py")
+    hand_spelled = re.compile(r'f"(?:sheet|page) \{|characters \{|MIME part')
+    found = {name: [line.strip() for line in (source / name).read_text().splitlines() if hand_spelled.search(line)]
+             for name in readers}
+
+    assert found == {name: [] for name in readers}
+    assert all("source_segment_locator_words" in (source / name).read_text() for name in readers)
