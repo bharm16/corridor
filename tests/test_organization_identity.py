@@ -230,7 +230,9 @@ def test_confirmation_is_attributable_registry_history_and_durable_reconsiderati
     assert affected.state == "pending"
     replay = replay_human_identity_decisions(session, first.id)
     assert not replay.passed
-    assert replay.unexplained_candidate_ids == (selected.id,)
+    # The stack cannot reach this spelling from retained evidence, and for
+    # this family an unexplained abstention blocks (ADR-0050).
+    assert replay.abstentions == (selected.id,)
 
 
 def test_spoofed_contact_and_directive_text_are_inert_data(session):
@@ -592,7 +594,7 @@ def test_a_contrary_human_decision_fails_the_replay_and_keeps_the_tiers_inactive
 
     replay = replay_human_identity_decisions(session, p.id)
     assert not replay.passed
-    assert replay.contrary_candidate_ids == (historical.id,)
+    assert replay.contradictions == (historical.id,)
     assert attempt_activation(session, p.id) is None
     assert activation_status(session, p.id) == "inactive"
 

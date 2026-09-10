@@ -27,6 +27,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor import audit, notifications, presentation
 from corridor.presentation import (
     CoordinationPlan,
@@ -114,16 +115,22 @@ from corridor.work_decisions import (
 )
 
 
-class StatementCoordinationRefusal(ValueError):
+class StatementCoordinationRefusal(refusals.Refusal, ValueError):
     """The requested guided Save would not make an honest complete record."""
+
+    refusal_kind = refusals.MALFORMED_INPUT
 
 
 class StaleStatementCoordination(StatementCoordinationRefusal):
     """The screen's expected predecessors are no longer current."""
 
+    refusal_kind = refusals.STALE
+
 
 class StatementCoordinationUndoRefusal(StatementCoordinationRefusal):
     """Undo would reverse a result that later work now depends on."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 NOT_RELEVANT_REASONS = frozenset(

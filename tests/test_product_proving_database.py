@@ -246,8 +246,11 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # #513 adds three custody tables; native coordination adds seven tables,
     # using one UUID subject key and nine new sequences across both batches.
     # Native publication support adds two append-only lineage/receipt tables.
-    assert fingerprint.table_count == 223
-    assert fingerprint.sequence_count == 201
+    # ADR-0050's four per-family activation ledgers become one
+    # `policy_activations` relation, so four tables and four sequences leave and
+    # one of each arrives.
+    assert fingerprint.table_count == 220
+    assert fingerprint.sequence_count == 198
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

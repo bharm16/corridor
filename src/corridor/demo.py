@@ -18,7 +18,8 @@ from sqlalchemy.exc import DBAPIError
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
-from corridor.db import WorkerSession as Session
+from corridor.db import WorkerSession
+from corridor.db_roles import STATEMENT_RETIREMENT_ROLE
 from corridor.extraction_runs import declare_active_run
 from corridor.models import (
     Assertion,
@@ -45,7 +46,6 @@ from corridor.config import settings
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 DEMO_SLUG = "corridor-demo"
-STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 MEMBER = "nhhip-seg3c2-utilities-inventory-2-13-2026.pdf"
 LOCK = Path("corpus/manifest.lock.json")
 OUT = Path("out/report.html")
@@ -174,7 +174,7 @@ def main(limit: int | None = None) -> int:
         return 1
 
     started = time.time()
-    with Session() as session:
+    with WorkerSession() as session:
         project = session.scalars(
             select(Project).where(Project.slug == DEMO_SLUG)
         ).first()

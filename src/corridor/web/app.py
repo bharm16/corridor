@@ -21,6 +21,7 @@ import json
 import secrets
 from datetime import date, datetime, time, timezone
 from pathlib import Path
+from collections.abc import Iterable
 from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
@@ -50,6 +51,7 @@ from sqlalchemy.orm import Session
 from starlette.requests import Request
 
 from corridor import audit
+from corridor import refusals
 from corridor import email_intake
 from corridor import notifications
 from corridor import push_intake
@@ -76,8 +78,7 @@ from corridor.candidate_statement_facts import (
     CandidateStatementFacts,
     prepare_candidate_statement_facts,
 )
-from corridor.db import WebSession as SessionFactory
-from corridor.db import WorkerSession as MachineSessionFactory
+from corridor.db import WebSession, WorkerSession
 from corridor.web.customer_routing import (
     customer_session, set_customer_cookie, clear_customer_cookie,
     needs_customer_sign_in, clear_invalid_customer_cookies,
@@ -107,7 +108,6 @@ from corridor.exceptions import RULES, evaluate_project, format_exception_name
 from corridor.export import to_xlsx
 from corridor.report import build_report, render
 from corridor.lane import (
-    LaneRefusal,
     SiblingsNeedTheEventLane,
     check_sibling_request,
     check_sibling_set,
@@ -122,7 +122,6 @@ from corridor.ledger import (
     mark_satisfies,
 )
 from corridor.condition_tracking import (
-    ConditionResolutionRefusal,
     clear_condition,
     dismiss_condition,
     propose_condition_clears,
@@ -257,8 +256,6 @@ from corridor.frontend_request_receipts import (
     record_frontend_request,
 )
 from corridor.verbal import (
-    StaleVerbalCorrection,
-    VerbalRefusal,
     correct_verbal_scope,
     record_verbal_change,
     record_verbal_statement,
@@ -269,7 +266,6 @@ from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.source_intake import (
     ACCEPTED_DOC_TYPES,
     MAX_UPLOAD_BYTES,
-    IntakeConflict,
     IntakeRefused,
     confirm_intake,
     list_confirmed_uploads,
@@ -307,8 +303,6 @@ from corridor.presentation import (
 )
 from corridor.report_release import (
     NoSuchReleasedReport,
-    ReleaseRefusal,
-    ReleasedArtifactIntegrityError,
     external_report_release_history,
     render_and_prepare_external_report,
     review_prepared_external_report,
@@ -318,7 +312,6 @@ from corridor.report_release import (
 )
 from corridor.report_publication import project_publication_history
 from corridor.cohort import (
-    CohortScopeViolation,
     cohort_candidate_ids,
     event_cohort_candidate_ids,
     require_cohort_member,
@@ -341,8 +334,6 @@ from corridor.work_decisions import (
     NO_FOLLOW_UP_REASONS,
     FollowUpPlanDraft,
     FollowUpPlanPredecessors,
-    FollowUpPlanRefusal,
-    FollowUpPlanUndoRefusal,
     StaleFollowUpPlan,
     StaleNextAction,
     cancel_next_action,
@@ -530,8 +521,60 @@ configure_logging(role=ROLE_WEB)
 app.add_middleware(RequestCorrelationMiddleware)
 
 
+# --- What one refusal kind means over HTTP, in one place -------------------
+#
+# `corridor.refusals` gives every family one `refusal_kind`; this is the only
+# place that turns a kind into a status. It replaces the hand-picked status at
+# each catch site: 99 `try` blocks and 176 `raise HTTPException` had drifted
+# far enough apart that two sites for the same family disagreed by accident,
+# and five of them forwarded `str(exc)` from a bare `except ValueError`, so an
+# incidental parse error inside a domain call reached a browser as a 409
+# carrying an internal message.
+#
+# A handler now catches a refusal only when it has something extra to do with
+# it -- re-render the screen with the newer state (ADR-0039), bind the sentence
+# to the control that holds it, or keep the coordinator's typing. A refusal it
+# would only have restated as a status is left to travel here.
+REFUSAL_STATUS: dict[str, int] = {
+    # Three kinds are a conflict over the same resource, and all answer 409:
+    # what the screen showed has moved on, the control was never offered in
+    # this state, or the act contradicts the record. They stay distinct kinds
+    # because a screen that re-renders itself acts on the difference.
+    refusals.STALE: 409,
+    refusals.NOT_OFFERED: 409,
+    refusals.CONFLICT: 409,
+    refusals.MALFORMED_INPUT: 400,
+    refusals.NOT_AUTHORIZED: 403,
+}
+
+
+def refusal_status(refusal: refusals.Refusal) -> int:
+    """The one status this refusal's kind answers."""
+
+    return REFUSAL_STATUS[refusal.refusal_kind]
+
+
+def refusal_response(refusal: refusals.Refusal) -> JSONResponse:
+    """Answer a refusal with the sentence it wrote and the status its kind says.
+
+    The same body shape `HTTPException` produced, so a caller reading
+    ``{"detail": ...}`` is unaffected by which side answered.
+    """
+
+    return JSONResponse(
+        {"detail": refusal.customer_sentence}, status_code=refusal_status(refusal)
+    )
+
+
+@app.exception_handler(refusals.Refusal)
+async def _answer_a_refusal(request: Request, exc: refusals.Refusal) -> JSONResponse:
+    """Every declared refusal that reaches the adapter, mapped once."""
+
+    return refusal_response(exc)
+
+
 def get_session(request: Request):
-    with customer_session(request, SessionFactory) as session:
+    with customer_session(request, WebSession) as session:
         yield session
 
 
@@ -575,7 +618,7 @@ def get_session(request: Request):
 def get_machine_session(request: Request):
     """A session held by the operations capability, not the human web role."""
 
-    with customer_session(request, MachineSessionFactory, capability="worker") as session:
+    with customer_session(request, WorkerSession, capability="worker") as session:
         yield session
 
 
@@ -874,15 +917,12 @@ def _require_cohort_scope(
     """
     if cohort_receipt_id is None:
         return
-    try:
-        require_cohort_member(
-            session,
-            cohort_receipt_id,
-            candidate_id,
-            project_id=project.id if project else None,
-        )
-    except CohortScopeViolation as exc:
-        raise HTTPException(409, str(exc))
+    require_cohort_member(
+        session,
+        cohort_receipt_id,
+        candidate_id,
+        project_id=project.id if project else None,
+    )
 
 
 def _require_event_cohort_scope(
@@ -895,15 +935,12 @@ def _require_event_cohort_scope(
     """The event lane's boundary, held at the same place: the mutation."""
     if event_cohort_receipt_id is None:
         return
-    try:
-        require_event_cohort_member(
-            session,
-            event_cohort_receipt_id,
-            candidate_id,
-            project_id=project.id if project else None,
-        )
-    except CohortScopeViolation as exc:
-        raise HTTPException(409, str(exc))
+    require_event_cohort_member(
+        session,
+        event_cohort_receipt_id,
+        candidate_id,
+        project_id=project.id if project else None,
+    )
 
 
 def _project(
@@ -2315,7 +2352,7 @@ def _deliver_sign_in_link(
     try:
         # The originating request keeps the trusted customer route. A failed
         # delivery must retire its token in that same database (#656).
-        with customer_session(request, SessionFactory) as session:
+        with customer_session(request, WebSession) as session:
             retired = access.retire_undelivered_sign_in_token(session, raw_token)
             session.commit()
     except Exception:  # noqa: BLE001 - the response is already sent
@@ -2493,10 +2530,7 @@ def review_report(
 ):
     """Review one retained PDF and only its frozen context."""
     project = _project(session, slug, principal)
-    try:
-        review = review_prepared_external_report(session, project.id, artifact_id)
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    review = review_prepared_external_report(session, project.id, artifact_id)
     response = TEMPLATES.TemplateResponse(
         request,
         "report_review.html",
@@ -2528,12 +2562,9 @@ def download_prepared_report(
 ):
     """Download exactly the retained bytes awaiting a release decision."""
     project = _project(session, slug, principal)
-    try:
-        artifact = retrieve_prepared_external_report(
-            session, project.id, artifact_id
-        )
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    artifact = retrieve_prepared_external_report(
+        session, project.id, artifact_id
+    )
     response = _pdf_download(bytes(artifact.pdf_bytes), artifact.artifact_name)
     record_frontend_request(
         session,
@@ -2561,12 +2592,9 @@ def preview_prepared_report(
 ):
     """Display exactly the retained bytes awaiting a release decision."""
     project = _project(session, slug, principal)
-    try:
-        artifact = retrieve_prepared_external_report(
-            session, project.id, artifact_id
-        )
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    artifact = retrieve_prepared_external_report(
+        session, project.id, artifact_id
+    )
     response = _pdf_response(
         bytes(artifact.pdf_bytes), artifact.artifact_name, disposition="inline"
     )
@@ -2598,38 +2626,35 @@ def release_prepared_report(
 ):
     """Authorize the artifact bound to the review control, without rerendering."""
     project = _project(session, slug, principal, designation=access.EXTERNAL_RELEASE)
-    try:
-        with session.begin_nested():
-            receipt = release_external_report(
-                session,
+    with session.begin_nested():
+        receipt = release_external_report(
+            session,
+            project_id=project.id,
+            artifact_id=artifact_id,
+            principal=principal,
+        )
+        history = external_report_release_history(session, project.id)
+        released = next(item for item in history if item.release_id == receipt.id)
+        response = TEMPLATES.TemplateResponse(
+            request,
+            "report_release.html",
+            {"project": project, "history": history, "released": released},
+            status_code=201,
+        )
+        record_frontend_request(
+            session,
+            principal=principal,
+            route_name="release_prepared_report",
+            route_template="/reports/{slug}/prepared/{artifact_id}/release",
+            method="POST",
+            response=response,
+            subject=FrontendRequestSubject(
                 project_id=project.id,
                 artifact_id=artifact_id,
-                principal=principal,
-            )
-            history = external_report_release_history(session, project.id)
-            released = next(item for item in history if item.release_id == receipt.id)
-            response = TEMPLATES.TemplateResponse(
-                request,
-                "report_release.html",
-                {"project": project, "history": history, "released": released},
-                status_code=201,
-            )
-            record_frontend_request(
-                session,
-                principal=principal,
-                route_name="release_prepared_report",
-                route_template="/reports/{slug}/prepared/{artifact_id}/release",
-                method="POST",
-                response=response,
-                subject=FrontendRequestSubject(
-                    project_id=project.id,
-                    artifact_id=artifact_id,
-                    release_id=receipt.id,
-                ),
-                request_fields={},
-            )
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+                release_id=receipt.id,
+            ),
+            request_fields={},
+        )
     session.commit()
     return response
 
@@ -2649,8 +2674,6 @@ def download_released_report(
         )
     except NoSuchReleasedReport as exc:
         raise HTTPException(404, str(exc)) from exc
-    except ReleasedArtifactIntegrityError as exc:
-        raise HTTPException(409, str(exc)) from exc
     return _pdf_download(bytes(receipt.pdf_bytes), receipt.artifact_name)
 
 
@@ -2683,46 +2706,43 @@ def render_report(
 ):
     """Render and retain one fixed PDF; this does not release it externally."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    try:
-        with session.begin_nested():
-            _rendered, report_run, artifact = render_and_prepare_external_report(
-                session, project_id=project.id
+    with session.begin_nested():
+        _rendered, report_run, artifact = render_and_prepare_external_report(
+            session, project_id=project.id
+        )
+        if ordinary is not None:
+            review = review_prepared_external_report(
+                session, project.id, artifact.id
             )
-            if ordinary is not None:
-                review = review_prepared_external_report(
-                    session, project.id, artifact.id
-                )
-                response = TEMPLATES.TemplateResponse(
-                    request,
-                    "report_review.html",
-                    {"project": project, "review": review},
-                    status_code=201,
-                )
-            else:
-                response = JSONResponse(
-                    status_code=201,
-                    content={
-                        "artifact_id": artifact.id,
-                        "artifact_name": artifact.artifact_name,
-                        "pdf_sha256": artifact.pdf_sha256,
-                    },
-                )
-            record_frontend_request(
-                session,
-                principal=principal,
-                route_name="render_report",
-                route_template="/reports/{slug}/render",
-                method="POST",
-                response=response,
-                subject=FrontendRequestSubject(
-                    project_id=project.id,
-                    artifact_id=artifact.id,
-                    report_run_id=report_run.id,
-                ),
-                request_fields={"ordinary": ordinary},
+            response = TEMPLATES.TemplateResponse(
+                request,
+                "report_review.html",
+                {"project": project, "review": review},
+                status_code=201,
             )
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+        else:
+            response = JSONResponse(
+                status_code=201,
+                content={
+                    "artifact_id": artifact.id,
+                    "artifact_name": artifact.artifact_name,
+                    "pdf_sha256": artifact.pdf_sha256,
+                },
+            )
+        record_frontend_request(
+            session,
+            principal=principal,
+            route_name="render_report",
+            route_template="/reports/{slug}/render",
+            method="POST",
+            response=response,
+            subject=FrontendRequestSubject(
+                project_id=project.id,
+                artifact_id=artifact.id,
+                report_run_id=report_run.id,
+            ),
+            request_fields={"ordinary": ordinary},
+        )
     session.commit()
     return response
 
@@ -2736,15 +2756,12 @@ def release_report(
 ):
     """Human-authorize one previously rendered PDF without regenerating it."""
     project = _project(session, slug, principal, designation=access.EXTERNAL_RELEASE)
-    try:
-        release = release_external_report(
-            session,
-            project_id=project.id,
-            artifact_id=artifact_id,
-            principal=principal,
-        )
-    except ReleaseRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    release = release_external_report(
+        session,
+        project_id=project.id,
+        artifact_id=artifact_id,
+        principal=principal,
+    )
     response = JSONResponse(
         status_code=201,
         content={
@@ -3690,15 +3707,18 @@ async def declare_operations_active_run(
     form = await request.form()
     run_id = _required_positive_http_id(form, "extraction_run_id")
     offered_state = str(form.get("state_fingerprint") or "")
-    try:
-        lock_project(session, project.id)
-        if offered_state != competing_runs_state_token(session, document.id):
-            raise ValueError("the production-run choices changed; refresh first")
-        declaration = declare_active_run(
-            session, document.id, run_id, principal=principal
+    lock_project(session, project.id)
+    # The screen's own offer, checked against the live state before the command
+    # is called. Only this comparison is the adapter's to refuse; the command's
+    # own rules refuse with their own declared families, and anything else it
+    # raises is a defect rather than something to tell an operator to retry.
+    if offered_state != competing_runs_state_token(session, document.id):
+        raise refusals.StaleOffer(
+            "the production-run choices changed; refresh first"
         )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    declaration = declare_active_run(
+        session, document.id, run_id, principal=principal
+    )
     response = RedirectResponse(
         f"/operations/{project.slug}?notice=declared-{declaration.id}", status_code=303
     )
@@ -4090,21 +4110,18 @@ async def suspend_operations_unknown_scope(
     )
     form = await request.form()
     reason = str(form.get("reason") or "")
-    try:
-        lock_project(session, project.id)
-        status = read_event_admission_policy_status(session, project.id)
-        if "suspend" not in status.allowed_operations:
-            raise ValueError("unknown-scope Event Admission is not active")
-        if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
-            raise ValueError("the policy status changed; refresh first")
-        suspend_unknown_scope_admission(
-            session,
-            project_id=project.id,
-            reason=reason,
-            recorded_by=principal.subject,
-        )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    lock_project(session, project.id)
+    status = read_event_admission_policy_status(session, project.id)
+    if "suspend" not in status.allowed_operations:
+        raise refusals.NotOffered("unknown-scope Event Admission is not active")
+    if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
+        raise refusals.StaleOffer("the policy status changed; refresh first")
+    suspend_unknown_scope_admission(
+        session,
+        project_id=project.id,
+        reason=reason,
+        recorded_by=principal.subject,
+    )
     response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
     record_frontend_request(
         session,
@@ -4131,18 +4148,15 @@ async def lift_operations_unknown_scope(
         session, slug, principal, designation=access.TECHNICAL_OPERATIONS
     )
     form = await request.form()
-    try:
-        lock_project(session, project.id)
-        status = read_event_admission_policy_status(session, project.id)
-        if "lift" not in status.allowed_operations:
-            raise ValueError("unknown-scope Event Admission is not suspended")
-        if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
-            raise ValueError("the policy status changed; refresh first")
-        lift_unknown_scope_admission(
-            session, project_id=project.id, recorded_by=principal.subject
-        )
-    except ValueError as exc:
-        raise HTTPException(409, str(exc)) from exc
+    lock_project(session, project.id)
+    status = read_event_admission_policy_status(session, project.id)
+    if "lift" not in status.allowed_operations:
+        raise refusals.NotOffered("unknown-scope Event Admission is not suspended")
+    if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
+        raise refusals.StaleOffer("the policy status changed; refresh first")
+    lift_unknown_scope_admission(
+        session, project_id=project.id, recorded_by=principal.subject
+    )
     response = RedirectResponse(f"/operations/{project.slug}", status_code=303)
     record_frontend_request(
         session,
@@ -5075,6 +5089,70 @@ def open_review_source(
     return RedirectResponse(url, status_code=303)
 
 
+# --- What both review Save screens say when they refuse --------------------
+#
+# `save_source_changes` and `save_focused_answers` built nine
+# `{"heading", "detail", "rows"}` dicts between them, and three of the
+# sentences were written twice: an item that left the reading, a declared
+# `ReviewScreenRefused`, and a change that moved under the reading while the
+# coordinator was answering. Two copies of a sentence is two places to edit and
+# one of them gets missed, so the words live here once and each handler chooses
+# which refusal it is presenting.
+
+REVIEW_REFUSAL_HEADING = "Nothing was saved"
+
+
+def _review_refusal(
+    detail: str,
+    rows: Iterable[dict[str, str]] = (),
+    *,
+    heading: str = REVIEW_REFUSAL_HEADING,
+) -> dict:
+    """One refusal the review screen renders: a heading, a sentence, its rows."""
+
+    return {"heading": heading, "detail": detail, "rows": tuple(rows)}
+
+
+def _item_left_the_reading() -> dict:
+    """The opened item is gone: a newer source or an earlier decision closed it."""
+
+    return _review_refusal(
+        "A newer source or an earlier decision changed what is open, "
+        "so nothing was saved. Open the item again from the list below.",
+        heading="This item is no longer part of the reading",
+    )
+
+
+def _review_screen_refused(exc: ReviewScreenRefused) -> dict:
+    """The request builder refused. It wrote the sentence, so it is quoted whole."""
+
+    return _review_refusal(exc.customer_sentence)
+
+
+def _a_change_moved_under_the_reading(result, *, chosen: str) -> dict:
+    """The atomic packet refused: one change moved, so the whole Save refused.
+
+    `chosen` is how the calling screen names what the coordinator did -- a
+    change is *selected* on the source-revision screen and *answered* on the
+    focused one -- and is the only word the two sentences differ by.
+    """
+
+    return _review_refusal(
+        f"One of the changes you {chosen} moved under this reading, so the "
+        "whole save was refused and the project record is unchanged.",
+        (
+            {
+                "subject": (
+                    f"{refused.subject_identity or 'a proposed change'}"
+                    f" — {refused.field or 'the whole row'}"
+                ),
+                "detail": refused.detail,
+            }
+            for refused in result.refusals
+        ),
+    )
+
+
 @app.post("/review/{slug}", response_class=HTMLResponse)
 def save_source_changes(
     request: Request,
@@ -5103,14 +5181,7 @@ def save_source_changes(
             now=now,
             opened_key="",
             selected=selected,
-            refusal={
-                "heading": "This item is no longer part of the reading",
-                "detail": (
-                    "A newer source or an earlier decision changed what is open, "
-                    "so nothing was saved. Open the item again from the list below."
-                ),
-                "rows": (),
-            },
+            refusal=_item_left_the_reading(),
             status_code=409,
         )
 
@@ -5157,21 +5228,18 @@ def save_source_changes(
             now=now,
             opened_key=item_key,
             selected=selected,
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": (
-                    "Part of what you selected is no longer offered on this item, "
-                    "so the whole save was refused and the project record is "
-                    "unchanged."
-                ),
-                "rows": tuple(
+            refusal=_review_refusal(
+                "Part of what you selected is no longer offered on this item, "
+                "so the whole save was refused and the project record is "
+                "unchanged.",
+                (
                     {
                         "subject": f"Proposed change {value}",
                         "detail": reading.standing_sentence(value),
                     }
                     for value in missing
                 ),
-            },
+            ),
             status_code=409,
         )
 
@@ -5199,11 +5267,7 @@ def save_source_changes(
             now=now,
             opened_key=item_key,
             selected=selected,
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": str(exc),
-                "rows": (),
-            },
+            refusal=_review_screen_refused(exc),
             status_code=409,
         )
 
@@ -5217,24 +5281,7 @@ def save_source_changes(
             now=now,
             opened_key=item_key,
             selected=[row.delta_id for row in result.preserved_selections],
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": (
-                    "One of the changes you selected moved under this reading, so "
-                    "the whole save was refused and the project record is "
-                    "unchanged."
-                ),
-                "rows": tuple(
-                    {
-                        "subject": (
-                            f"{refused.subject_identity or 'a proposed change'}"
-                            f" — {refused.field or 'the whole row'}"
-                        ),
-                        "detail": refused.detail,
-                    }
-                    for refused in result.refusals
-                ),
-            },
+            refusal=_a_change_moved_under_the_reading(result, chosen="selected"),
             status_code=409,
         )
 
@@ -5311,14 +5358,10 @@ def save_focused_answers(
             principal=principal,
             now=now,
             opened_key=item_key,
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": (
-                    "The answers did not arrive as this screen sends them, so "
-                    "nothing was written. Open the item again and answer it."
-                ),
-                "rows": (),
-            },
+            refusal=_review_refusal(
+                "The answers did not arrive as this screen sends them, so "
+                "nothing was written. Open the item again and answer it."
+            ),
             status_code=400,
         )
 
@@ -5365,14 +5408,7 @@ def save_focused_answers(
             now=now,
             opened_key="",
             answers=typed,
-            refusal={
-                "heading": "This item is no longer part of the reading",
-                "detail": (
-                    "A newer source or an earlier decision changed what is open, "
-                    "so nothing was saved. Open the item again from the list below."
-                ),
-                "rows": (),
-            },
+            refusal=_item_left_the_reading(),
             status_code=409,
         )
 
@@ -5410,11 +5446,7 @@ def save_focused_answers(
             now=now,
             opened_key=item_key,
             answers=typed,
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": str(exc),
-                "rows": (),
-            },
+            refusal=_review_screen_refused(exc),
             status_code=409,
         )
 
@@ -5428,24 +5460,7 @@ def save_focused_answers(
             now=now,
             opened_key=item_key,
             answers=typed,
-            refusal={
-                "heading": "Nothing was saved",
-                "detail": (
-                    "One of the changes you answered moved under this reading, so "
-                    "the whole save was refused and the project record is "
-                    "unchanged."
-                ),
-                "rows": tuple(
-                    {
-                        "subject": (
-                            f"{refused.subject_identity or 'a proposed change'}"
-                            f" — {refused.field or 'the whole row'}"
-                        ),
-                        "detail": refused.detail,
-                    }
-                    for refused in result.refusals
-                ),
-            },
+            refusal=_a_change_moved_under_the_reading(result, chosen="answered"),
             status_code=409,
         )
 
@@ -5814,20 +5829,17 @@ def record_dependency_verbal(
         timing_precision, committed_date, committed_month, timing_text
     )
     scope = _verbal_scope_from_form(scope_mode, dependency, scope_dependency_ids)
-    try:
-        record_verbal_statement(
-            session,
-            project_id=project.id,
-            external_org_id=dependency.external_org_id,
-            stated_party=stated_party,
-            description=description,
-            conversation_date=conversation_date,
-            new_timing=new_timing,
-            scope=scope,
-            principal=principal,
-        )
-    except VerbalRefusal as exc:
-        raise HTTPException(400, str(exc)) from exc
+    record_verbal_statement(
+        session,
+        project_id=project.id,
+        external_org_id=dependency.external_org_id,
+        stated_party=stated_party,
+        description=description,
+        conversation_date=conversation_date,
+        new_timing=new_timing,
+        scope=scope,
+        principal=principal,
+    )
     session.commit()
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
@@ -5858,18 +5870,15 @@ def record_dependency_verbal_change(
     new_timing = _verbal_timing_from_form(
         timing_precision, committed_date, committed_month, timing_text
     )
-    try:
-        record_verbal_change(
-            session,
-            commitment_lineage_id=commitment_lineage_id,
-            stated_party=stated_party,
-            description=description,
-            conversation_date=conversation_date,
-            new_timing=new_timing,
-            principal=principal,
-        )
-    except VerbalRefusal as exc:
-        raise HTTPException(400, str(exc)) from exc
+    record_verbal_change(
+        session,
+        commitment_lineage_id=commitment_lineage_id,
+        stated_party=stated_party,
+        description=description,
+        conversation_date=conversation_date,
+        new_timing=new_timing,
+        principal=principal,
+    )
     session.commit()
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
@@ -5894,18 +5903,13 @@ def correct_dependency_verbal_scope(
     if event is None or event.project_id != project.id:
         raise HTTPException(404, "no such statement in this project")
     scope = _verbal_scope_from_form(scope_mode, dependency, scope_dependency_ids)
-    try:
-        correct_verbal_scope(
-            session,
-            event_id=statement_event_id,
-            scope=scope,
-            expected_scope_decision_id=expected_scope_decision_id,
-            principal=principal,
-        )
-    except StaleVerbalCorrection as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except VerbalRefusal as exc:
-        raise HTTPException(400, str(exc)) from exc
+    correct_verbal_scope(
+        session,
+        event_id=statement_event_id,
+        scope=scope,
+        expected_scope_decision_id=expected_scope_decision_id,
+        principal=principal,
+    )
     session.commit()
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
@@ -5944,7 +5948,10 @@ def settle(
     except (NoSuchDispute, DisputeMovedOn) as exc:
         raise HTTPException(409, str(exc))
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise refusals.MalformedSave(
+            "this Dispute answer does not match what the project record holds; "
+            "reload the Constraint and answer it again"
+        ) from exc
     session.commit()
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
@@ -5980,7 +5987,10 @@ def clarify_dispute(
     except NoSuchDispute as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise refusals.MalformedSave(
+            "this Dispute follow-up does not match what the project record "
+            "holds; reload the Constraint and record it again"
+        ) from exc
     response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
     record_frontend_request(
         session,
@@ -6070,8 +6080,6 @@ def save_dependency_follow_up_plan(
             plan_error=str(exc),
             status_code=409,
         )
-    except FollowUpPlanRefusal as exc:
-        raise HTTPException(400, str(exc))
     response = RedirectResponse(return_location, status_code=303)
     record_frontend_request(
         session,
@@ -6120,10 +6128,7 @@ def undo_dependency_follow_up_plan(
     receipt = session.get(FollowUpPlanReceipt, receipt_id)
     if receipt is None or receipt.dependency_id != dependency.id:
         raise HTTPException(404, "no such grouped plan Save for this constraint")
-    try:
-        undo_follow_up_plan(session, receipt_id, principal=principal)
-    except FollowUpPlanUndoRefusal as exc:
-        raise HTTPException(409, str(exc))
+    undo_follow_up_plan(session, receipt_id, principal=principal)
     session.commit()
     return RedirectResponse(return_location, status_code=303)
 
@@ -6212,7 +6217,10 @@ def close_next_action(
             plan_error=str(exc), status_code=409,
         )
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise refusals.MalformedSave(
+            "this decision does not match the Next Action this Constraint "
+            "currently holds; reload the Constraint and decide it again"
+        ) from exc
     session.commit()
     return RedirectResponse(return_location, status_code=303)
 
@@ -6260,7 +6268,10 @@ def defer_dependency_action(
             plan_error=str(exc), status_code=409,
         )
     except ValueError as exc:
-        raise HTTPException(400, str(exc))
+        raise refusals.MalformedSave(
+            "this decision does not match the Next Action this Constraint "
+            "currently holds; reload the Constraint and decide it again"
+        ) from exc
     session.commit()
     return RedirectResponse(return_location, status_code=303)
 
@@ -6295,7 +6306,10 @@ def mark_evidence_satisfies(
     except UnverifiedEvidence as exc:
         raise HTTPException(400, str(exc))
     except ValueError as exc:
-        raise HTTPException(409, str(exc))
+        raise refusals.ConflictingSave(
+            "readiness cannot move on this Constraint as the record now "
+            "stands; reload the Constraint and look again"
+        ) from exc
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -6386,7 +6400,10 @@ def clarify_documentation_review(
     except DocumentationClarificationRefusal as exc:
         raise HTTPException(409, str(exc)) from exc
     except ValueError as exc:
-        raise HTTPException(400, str(exc)) from exc
+        raise refusals.MalformedSave(
+            "this documentation follow-up does not match what the project "
+            "record holds; reload the Constraint and record it again"
+        ) from exc
     response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
     record_frontend_request(
         session,
@@ -6430,19 +6447,16 @@ def clear_documentation_condition(
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     dependency = _project_dependency(session, project, dependency_id)
     entries = read_checklist(session, dependency_id).conditions
-    try:
-        clear_condition(
-            session,
-            dependency,
-            evidence_link_id,
-            principal=principal,
-            entries=entries,
-            basis_evidence_link_id=basis_evidence_link_id,
-            basis_event_id=basis_event_id,
-            reason=reason or None,
-        )
-    except ConditionResolutionRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    clear_condition(
+        session,
+        dependency,
+        evidence_link_id,
+        principal=principal,
+        entries=entries,
+        basis_evidence_link_id=basis_evidence_link_id,
+        basis_event_id=basis_event_id,
+        reason=reason or None,
+    )
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -6465,17 +6479,14 @@ def dismiss_documentation_condition(
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     dependency = _project_dependency(session, project, dependency_id)
     entries = read_checklist(session, dependency_id).conditions
-    try:
-        dismiss_condition(
-            session,
-            dependency,
-            evidence_link_id,
-            principal=principal,
-            entries=entries,
-            reason=reason,
-        )
-    except ConditionResolutionRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    dismiss_condition(
+        session,
+        dependency,
+        evidence_link_id,
+        principal=principal,
+        entries=entries,
+        reason=reason,
+    )
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -6594,8 +6605,6 @@ def accept(
         )
     except SiblingsNeedTheEventLane as exc:
         raise HTTPException(400, str(exc))
-    except LaneRefusal as exc:
-        raise HTTPException(409, str(exc))
 
     siblings = []
     for sibling_id in merge_sibling_ids:
@@ -6607,10 +6616,7 @@ def accept(
                 session, project, sibling_id, historical_document_id=None
             )
         )
-    try:
-        check_sibling_set(candidate, siblings, schemes, aliases)
-    except LaneRefusal as exc:
-        raise HTTPException(409, str(exc))
+    check_sibling_set(candidate, siblings, schemes, aliases)
 
     dependency = _accept(
         session,
@@ -7362,20 +7368,15 @@ def source_confirm(
 ):
     """Bind the previewed source to the acting person and register it."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
-    try:
-        confirm_intake(
-            session,
-            project=project,
-            sha256=sha256,
-            filename=filename,
-            doc_type=doc_type,
-            binding_fingerprint=binding_fingerprint,
-            principal=principal,
-        )
-    except IntakeRefused as exc:
-        raise HTTPException(400, str(exc)) from exc
-    except IntakeConflict as exc:
-        raise HTTPException(409, str(exc)) from exc
+    confirm_intake(
+        session,
+        project=project,
+        sha256=sha256,
+        filename=filename,
+        doc_type=doc_type,
+        binding_fingerprint=binding_fingerprint,
+        principal=principal,
+    )
     session.commit()
     return RedirectResponse(f"/projects/{slug}/sources", status_code=303)
 

@@ -33,7 +33,7 @@ from typing import Callable
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor import audit, policy
+from corridor import audit, policy, replay_gate
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.dependency_events import (
     COMMITTED_EVENT_TYPES,
@@ -76,24 +76,10 @@ NARROWED_SET_REASON = "identifying_language_narrowed_set"
 
 
 @dataclass(frozen=True)
-class StatementScopeReplay:
-    """ADR-0050's comparison: the rule against recorded human scope choices."""
-
-    case_count: int
-    contradictions: tuple[int, ...]
-
-    @property
-    def passed(self) -> bool:
-        # Zero real cases never pass; a rule with no history waits for a
-        # person to do the small task by hand.
-        return self.case_count > 0 and not self.contradictions
-
-
-@dataclass(frozen=True)
 class StatementScopeRun:
     admitted_count: int
     run_id: int | None
-    replay: StatementScopeReplay
+    replay: replay_gate.ReplayOutcome
     # Candidates whose identifying language narrowed to several survivors.
     # They carry the narrowed-set abstention and must stay visibly pending:
     # the unknown-scope extension skips them instead of recording them with
@@ -208,14 +194,16 @@ def derived_statement_context(
 
 def replay_matches_human_scope_decisions(
     session: Session, project_id: int
-) -> StatementScopeReplay:
+) -> replay_gate.ReplayOutcome:
     """Compare the exact rule to actual human selected-scope history.
 
     The cases a person decided are the answer key.  A contradiction is the
     stack producing an exact answer *different* from the person's selection;
     the stack abstaining on a case a person decided is not a contradiction.
     Machine-selected scopes (any ``corridor:*`` actor) are the rule's own or
-    a sibling rule's answers, never the answer key.
+    a sibling rule's answers, never the answer key.  The comparison, the pass
+    rule and the ledger are ``corridor.replay_gate``'s (ADR-0050); this family
+    contributes the answer key and the recomputation.
     """
     decisions = session.execute(
         select(DependencyEventScopeDecision, DependencyEvent)
@@ -231,17 +219,21 @@ def replay_matches_human_scope_decisions(
     latest: dict[int, tuple[DependencyEventScopeDecision, DependencyEvent]] = {}
     for decision, event in decisions:
         latest[decision.event_id] = (decision, event)
-    contradictions: list[int] = []
-    for event_id, (decision, event) in sorted(latest.items()):
-        if event.affected_external_org_id is None:
-            continue
-        expected = frozenset(
+
+    def expected(event_id: int) -> frozenset[int]:
+        decision, _ = latest[event_id]
+        return frozenset(
             session.scalars(
                 select(DependencyEventScope.dependency_id).where(
                     DependencyEventScope.scope_decision_id == decision.id
                 )
             ).all()
         )
+
+    def recompute(event_id: int) -> object:
+        _, event = latest[event_id]
+        if event.affected_external_org_id is None:
+            return replay_gate.ABSTAINED
         quotes = session.scalars(
             select(EvidenceLink.quote)
             .join(
@@ -258,7 +250,7 @@ def replay_matches_human_scope_decisions(
                 Dependency.dismissed_at.is_(None),
             )
         ).all()
-        context, _ = derived_statement_context(
+        context, _unused = derived_statement_context(
             session, project_id, event.affected_external_org_id
         )
         match = match_statement_scope(
@@ -267,9 +259,17 @@ def replay_matches_human_scope_decisions(
             wording=" ".join((event.description or "", *quotes)),
             context=context,
         )
-        if match.kind == "exact" and frozenset(match.dependency_ids) != expected:
-            contradictions.append(event_id)
-    return StatementScopeReplay(len(latest), tuple(sorted(contradictions)))
+        if match.kind != "exact":
+            return replay_gate.ABSTAINED
+        return frozenset(match.dependency_ids)
+
+    return replay_gate.replay(
+        family=replay_gate.FAMILY_STATEMENT_SCOPE,
+        human_decisions=[
+            (event_id, expected(event_id)) for event_id in sorted(latest)
+        ],
+        recompute=recompute,
+    )
 
 
 # --------------------------------------------------------------------------- #

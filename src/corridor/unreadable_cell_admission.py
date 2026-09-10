@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor import policy
+from corridor import policy, replay_gate
 from corridor.models import (
     Document,
     DocPage,
@@ -345,71 +345,65 @@ def admit_corroborated_cell_values(
 
 
 # --------------------------------------------------------------------------- #
-# ADR-0050 regression replay + activation                                      #
+# ADR-0050 regression replay + activation (through the shared gate)            #
 # --------------------------------------------------------------------------- #
+#
+# ``corridor.replay_gate`` owns the comparison, the pass rule and the one
+# activation ledger. This family contributes only which cell values a person
+# decided, and what the admission rule would admit for one of them.
 
 
-@dataclass(frozen=True)
-class ReplayResult:
-    """The comparison that is the test: the rule against recorded human values."""
-
-    case_count: int
-    contradictions: tuple[tuple[int, int, str], ...]
-    passed: bool
+def _fingerprint() -> replay_gate.RuleFingerprint:
+    version, sha256 = policy_fingerprint()
+    return replay_gate.RuleFingerprint(version, sha256)
 
 
 def replay_matches_human_decisions(
     session: Session, project_id: int
-) -> ReplayResult:
+) -> replay_gate.ReplayOutcome:
     """Replay the admission rule against every recorded human cell-value decision.
 
-    ADR-0050: the cases a person decided are the answer key. For each cell a person
+    The cases a person decided are the answer key. For each cell a person
     decided, recompute what the current rule would admit from the saved harness
-    outputs (never re-reading the source scan). A contradiction is the rule
+    outputs — never re-reading the source scan. A contradiction is the rule
     admitting a *different* non-null value than the person recorded; the rule
-    abstaining is not a contradiction. Zero real cases never pass.
+    abstaining is not a contradiction.
     """
     human = _human_decisions(session, project_id)
     machine = _machine_latest(session, project_id)
-    contradictions: list[tuple[int, int, str]] = []
-    for cell, decision in human.items():
+
+    def recompute(key: tuple[int, int, str]) -> object:
+        cell = _Cell(*key)
         resolution = machine.get(cell)
         if resolution is None:
-            continue
+            return replay_gate.ABSTAINED
         admit_value = _rule_would_admit(session, project_id, cell, resolution)
         if admit_value is None:
-            continue
-        if (decision.value or None) != admit_value:
-            contradictions.append((cell.document_id, cell.page_no, cell.cell_key))
-    case_count = len(human)
-    return ReplayResult(
-        case_count=case_count,
-        contradictions=tuple(sorted(contradictions)),
-        passed=case_count >= 1 and not contradictions,
+            return replay_gate.ABSTAINED
+        return admit_value
+
+    return replay_gate.replay(
+        family=replay_gate.FAMILY_UNREADABLE_CELL_ADMISSION,
+        human_decisions=[
+            ((cell.document_id, cell.page_no, cell.cell_key), decision.value or None)
+            for cell, decision in human.items()
+        ],
+        recompute=recompute,
     )
 
 
 def activation_status(session: Session, project_id: int) -> str:
     """`inactive` | `active` | `suspended` for the current rule fingerprint."""
-    newest = session.scalars(
-        select(UnreadableCellAdmissionActivation)
-        .where(UnreadableCellAdmissionActivation.project_id == project_id)
-        .order_by(UnreadableCellAdmissionActivation.id.desc())
-        .limit(1)
-    ).first()
-    if newest is None:
-        return "inactive"
-    if newest.action == "suspend":
-        return "suspended"
-    version, sha256 = policy_fingerprint()
-    if newest.policy_version == version and newest.policy_sha256 == sha256:
-        return "active"
-    # The rule or its schema changed since this activation — the pass is void.
-    return "inactive"
+    return replay_gate.activation_status(
+        session,
+        family=replay_gate.FAMILY_UNREADABLE_CELL_ADMISSION,
+        project_id=project_id,
+        fingerprint=_fingerprint(),
+    )
 
 
 def is_corroborated_admission_active(session: Session, project_id: int) -> bool:
-    return activation_status(session, project_id) == "active"
+    return activation_status(session, project_id) == replay_gate.ACTIVE
 
 
 def attempt_activation(
@@ -420,26 +414,21 @@ def attempt_activation(
     A deliberate human suspension beats every passing test, so an already-suspended
     project stays suspended until a person lifts it (ADR-0050).
     """
-    status = activation_status(session, project_id)
-    if status in ("active", "suspended"):
+    if activation_status(session, project_id) != replay_gate.INACTIVE:
         return None
     replay = replay_matches_human_decisions(session, project_id)
     if not replay.passed:
         return None
     lock_project(session, project_id)
-    version, sha256 = policy_fingerprint()
-    activation = UnreadableCellAdmissionActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_UNREADABLE_CELL_ADMISSION,
         project_id=project_id,
-        action="activate",
-        policy_version=version,
-        policy_sha256=sha256,
+        fingerprint=_fingerprint(),
         replay_case_count=replay.case_count,
         reason="regression replay passed on recorded human cell-value decisions",
         recorded_by=ACTIVATION_ACTOR,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def suspend_corroborated_admission(
@@ -454,19 +443,14 @@ def suspend_corroborated_admission(
         raise ValueError("a suspension requires a reason")
     recorder = _human_actor(principal)
     lock_project(session, project_id)
-    version, sha256 = policy_fingerprint()
-    suspension = UnreadableCellAdmissionActivation(
+    return replay_gate.record_suspension(
+        session,
+        family=replay_gate.FAMILY_UNREADABLE_CELL_ADMISSION,
         project_id=project_id,
-        action="suspend",
-        policy_version=version,
-        policy_sha256=sha256,
-        replay_case_count=None,
-        reason=reason.strip(),
+        fingerprint=_fingerprint(),
+        reason=reason,
         recorded_by=recorder.subject,
     )
-    session.add(suspension)
-    session.flush([suspension])
-    return suspension
 
 
 def _human_actor(principal: object) -> HumanPrincipal:

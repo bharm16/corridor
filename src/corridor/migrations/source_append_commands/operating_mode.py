@@ -10,10 +10,11 @@ convention.
 
 from __future__ import annotations
 
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
+)
 
-
-OPERATING_MODE_ROLE = "corridor_fact_decision_writer"
 
 # The legacy tables whose rows are accepted values: the Constraint Record that
 # `run_dependency_admission` and the schedule update paths write, and the
@@ -352,18 +353,18 @@ def upgrade(op) -> None:
         "revoke insert, update, delete, truncate "
         f"on public.project_baseline_adoptions from {RUNTIME_LOGINS}"
     )
-    op.execute(f"grant usage on schema public to {OPERATING_MODE_ROLE}")
+    op.execute(f"grant usage on schema public to {RECORD_DECISION_ROLE}")
     op.execute(
         "grant select, insert on public.project_baseline_adoptions "
-        f"to {OPERATING_MODE_ROLE}"
+        f"to {RECORD_DECISION_ROLE}"
     )
     op.execute(
         "grant usage, select on sequence public.project_baseline_adoptions_id_seq "
-        f"to {OPERATING_MODE_ROLE}"
+        f"to {RECORD_DECISION_ROLE}"
     )
     op.execute(
         f"alter function public.adopt_project_baseline"
-        f"{ADOPT_PROJECT_BASELINE_SIGNATURE} owner to {OPERATING_MODE_ROLE}"
+        f"{ADOPT_PROJECT_BASELINE_SIGNATURE} owner to {RECORD_DECISION_ROLE}"
     )
     for function in (
         f"adopt_project_baseline{ADOPT_PROJECT_BASELINE_SIGNATURE}",

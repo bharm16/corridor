@@ -718,7 +718,7 @@ def test_bulk_ingest_skips_locks_opted_out_of_default_materialization(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        docs_module, "SessionFactory", sessionmaker(bind=session.get_bind())
+        docs_module, "WorkerSession", sessionmaker(bind=session.get_bind())
     )
 
     assert docs_module.main(["ingest"]) == 0
@@ -765,7 +765,7 @@ def test_explicit_slug_ingest_overrides_the_default_skip_policy(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(
-        docs_module, "SessionFactory", sessionmaker(bind=session.get_bind())
+        docs_module, "WorkerSession", sessionmaker(bind=session.get_bind())
     )
 
     assert docs_module.main(["ingest", "layout-evidence"]) == 0

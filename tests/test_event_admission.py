@@ -1445,8 +1445,9 @@ def _delete_committed_event_admission_project(
         cleanup.execute(text("set local session_replication_role = replica"))
         cleanup.execute(
             text(
-                "delete from event_admission_activations "
-                "where project_id = :project_id"
+                "delete from policy_activations "
+                "where project_id = :project_id "
+                "  and family = 'event_admission'"
             ),
             {"project_id": project_id},
         )

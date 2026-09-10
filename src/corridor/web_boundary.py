@@ -80,6 +80,7 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from enum import Enum
 
+from corridor.db_roles import WEB_CAPABILITY_LOGIN
 from corridor import access
 
 
@@ -627,7 +628,7 @@ def unprotected_route_relations() -> tuple[str, ...]:
 
 # The login the migration revoked. A deployment reading as this one has the
 # database half of the boundary applied to it whatever the flag says.
-LIVE_PILOT_WEB_CAPABILITY = "corridor_web"
+LIVE_PILOT_WEB_CAPABILITY = WEB_CAPABILITY_LOGIN
 
 # The stable internal reason, carried by both the refusal and the readiness
 # probe so an operator greps one string. It names no relation and no

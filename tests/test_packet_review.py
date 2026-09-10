@@ -18,6 +18,7 @@ Nothing here reads a clock. Every cutoff and decision instant is declared.
 
 from __future__ import annotations
 
+from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -42,6 +43,7 @@ from corridor.models import (
 )
 from corridor.packet_review import (
     ARTIFACT_IMPACT_RULE_VERSION,
+    ItemReading,
     BATCH_OUTCOMES,
     CUSTOMER_WORKBOOK,
     FOCUSED_OUTCOMES,
@@ -60,6 +62,10 @@ from corridor.principals import HumanPrincipal
 from corridor.project_workflow import FOLLOW_UP, read_project_workflow
 from corridor.review_packet_reading import (
     COORDINATION_QUESTION,
+    ActionableItem,
+    ReviewPacketReadingRefused,
+    bind_packet_request,
+    read_open_deltas,
     HELD_OUT_APPARENT_REMOVAL,
     HELD_OUT_OWNER_MISMATCH,
     HELD_OUT_POSSIBLE_NEW_CONFLICT,
@@ -71,6 +77,7 @@ from corridor.review_packets import (
     APPLY,
     DEFER,
     KEEP_CURRENT,
+    PacketChildRequest,
     NEEDS_COORDINATION,
     resolve_review_packet,
     reverse_review_packet,
@@ -316,13 +323,101 @@ def test_batch_eligibility_is_deterministic_and_versioned(
     assert [item.item_key for item in first.items] == [
         item.item_key for item in second.items
     ]
-    assert [item.actionable for item in first.items] == [
-        item.actionable for item in second.items
+    assert [item.offer_identity for item in first.items] == [
+        item.offer_identity for item in second.items
     ]
     assert {item.grouping_rule_version for item in first.items} == {
         PARTITION_RULE_VERSION
     }
     assert _batch_item(first).artifact_rule_version == ARTIFACT_IMPACT_RULE_VERSION
+
+
+def test_a_work_list_item_is_one_type_carrying_its_own_identity(
+    session: Session, project: Project
+):
+    """One item, one type: the partition's fields and the customer's words.
+
+    ADR-0085 gives the reading the partition and this module the project
+    language, and that boundary is a rule about *who decides*, not a reason for
+    two objects per item. A presentation object that forwarded ordinal, key,
+    band and Attention Reasons to a wrapped one told every caller, by its shape,
+    that the band belonged somewhere else — so callers reached through the
+    wrapper instead, and the seam bought nothing.
+    """
+
+    _burst(session, project, routine=3)
+
+    item = _batch_item(read_review_items(session, project_id=project.id, as_of=CUTOFF))
+
+    assert isinstance(item, ActionableItem)
+    assert not hasattr(item, "actionable")
+    assert {field.name for field in fields(ActionableItem)} <= {
+        field.name for field in fields(ItemReading)
+    }
+    assert item.item_key and item.band and item.grouping_rule_version
+
+    # And the partition still decided every one of them: the reading this was
+    # built from says exactly the same, because nothing here re-derives it.
+    partition = read_open_deltas(session, project_id=project.id, as_of=CUTOFF)
+    decided = next(row for row in partition.items if row.item_key == item.item_key)
+    assert tuple(getattr(item, field.name) for field in fields(ActionableItem)) == tuple(
+        getattr(decided, field.name) for field in fields(ActionableItem)
+    )
+
+
+def test_a_delta_this_item_does_not_offer_is_refused_by_one_check(
+    session: Session, project: Project
+):
+    """The exactly-once rule is one rule, so it refuses in one way (ADR-0085).
+
+    The screen refused it, the binding refused it again with a second exception
+    type, and #526 refuses it in SQL. The SQL half stays — it is the authority —
+    but the two Python halves were one rule spelled twice, and a route that
+    caught only the screen's name would have turned the binding's refusal into a
+    server error.
+    """
+
+    _burst(session, project, routine=3)
+    reading = read_review_items(session, project_id=project.id, as_of=CUTOFF)
+    item = _batch_item(reading)
+    outsider = next(
+        child.delta_id
+        for other in reading.items
+        if other.item_key != item.item_key
+        for child in other.children
+    )
+
+    assert issubclass(ReviewScreenRefused, ReviewPacketReadingRefused)
+
+    with pytest.raises(ReviewPacketReadingRefused) as by_the_screen:
+        packet_request(
+            reading,
+            item,
+            outcome=APPLY,
+            principal=ALICE,
+            decided_at=DECIDED_AT,
+            delta_ids=[item.children[0].delta_id, outsider],
+        )
+
+    # Reached directly, the binding refuses it in the same words and with the
+    # very name the review route catches.
+    with pytest.raises(ReviewScreenRefused) as by_the_binding:
+        bind_packet_request(
+            reading.reading,
+            item,
+            principal=ALICE,
+            idempotency_key="offered-check",
+            decided_at=DECIDED_AT,
+            children=(
+                PacketChildRequest(
+                    delta_id=outsider,
+                    outcome=KEEP_CURRENT,
+                    observed_source_revision="2026-09",
+                ),
+            ),
+        )
+    assert "not offered by this item" in str(by_the_screen.value)
+    assert isinstance(by_the_binding.value, ReviewPacketReadingRefused)
 
 
 def test_each_exception_is_its_own_focused_item(session: Session, project: Project):
@@ -411,7 +506,7 @@ def test_every_open_delta_is_offered_by_exactly_one_item(
     offered = [
         child.delta_id for item in reading.items for child in item.children
     ]
-    assert sorted(offered) == sorted(reading.actionable_delta_ids)
+    assert sorted(offered) == sorted(reading.reading.actionable_delta_ids)
     assert len(offered) == len(set(offered))
 
 
@@ -1382,7 +1477,7 @@ def test_undo_removes_the_plan_and_returns_the_change_to_review(
     )
     # The change is back on its own item, decidable again, with nothing accepted.
     again = read_review_items(session, project_id=project.id, as_of=CUTOFF)
-    assert child.delta_id in _held_out(again, reason).actionable.delta_ids
+    assert child.delta_id in _held_out(again, reason).delta_ids
     assert again.follow_up_plans == ()
     assert all(not value.follow_up_plans for current_item in again.items for value in current_item.children)
     assert live_delta_status(session, child.delta_id) == "open"

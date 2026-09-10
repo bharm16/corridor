@@ -41,7 +41,8 @@ def main(argv: list[str], *, session_factory=None) -> int:
     _, slug = argv
 
     if session_factory is None:
-        from corridor.db import WorkerSession as session_factory
+        from corridor.db import WorkerSession
+        session_factory = WorkerSession
 
     from corridor.admission import load_and_report
 

@@ -25,6 +25,14 @@ def reports_completion(text: str) -> bool:
         re.search(r"\b(?:not|never|incomplete|will|would|could|should|may|might|if|expect\w*|almost|nearly|partially|reportedly)\b|\b\w+n['’]t\b|\?", normalized, re.I))
 
 
+# What the screens show when Applies To is not yet known.  CONTEXT.md records
+# that this is current Project Record state rather than a confirmation question,
+# so the wording is load-bearing: several screens render it, and the detector
+# below is what decides a statement reports unknown scope.  They live together
+# so a screen cannot show a phrasing the detector no longer recognizes.
+UNKNOWN_SCOPE_LABEL = "Applies To: not yet known"
+
+
 def states_unknown_scope(text: str) -> bool:
     return bool(re.search(r"\b(?:scope|applies to)\s*(?::|is)?\s*(?:not yet known|unknown|TBD)\b", text, re.I))
 

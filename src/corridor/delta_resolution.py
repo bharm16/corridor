@@ -44,6 +44,15 @@ reason ADR-0083 gives: the guard must be in PostgreSQL, so
 role and the runtime capabilities hold no write on the decision tables at all.
 The Python here is the readable half of the same rules, not the authority.
 
+**Which half raises what is declared, not discovered.**  Both halves refuse in
+the same words because ``delta_refusals`` declares every code once, with its
+outcome status, its sole raiser, and the one customer sentence it carries.  A
+concurrency refusal — a key already bound to other content, two effective
+decisions for one field, a value that became effective between the read and the
+write — is the command's alone, so ``_refusal`` will not build one here; the
+readable half of a rule PostgreSQL also enforces is declared ``both``, which is
+ADR-0083's defense in depth rather than a duplicate to tidy away.
+
 Locator validity is never read in this module.  A passed Source Passage Check
 says a quotation is where it was cited, and it is never support (ADR-0082).
 """
@@ -53,7 +62,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import json
-import re
 from typing import Any, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
@@ -67,6 +75,19 @@ from corridor.analytics import (
     EventFamily,
     default_binding,
     emit_event,
+)
+from corridor.delta_refusals import (
+    CONSTRAINED_EDIT,
+    COORDINATION_NEEDED,
+    DATABASE_ONLY,
+    DEFERRED,
+    REFUSAL_CODES,
+    REFUSED,
+    RESOLVED,
+    STALE,
+    UNSUPPORTED,
+    RefusalCode,
+    database_refusal_code,
 )
 from corridor.fact_values import read_fact_value
 from corridor.models import (
@@ -136,24 +157,9 @@ EXTERNAL_FACT_FIELDS = frozenset(
     }
 )
 
-# Outcome statuses.  Every one of them is structured enough for the Work List
-# to refresh, or for #526 to open a Follow-up Plan form, without discarding a
-# coordinator's unsaved selections.
-RESOLVED = "resolved"
-DEFERRED = "deferred"
-STALE = "stale"
-UNSUPPORTED = "unsupported"
-CONSTRAINED_EDIT = "constrained_edit"
-COORDINATION_NEEDED = "coordination_needed"
-REFUSED = "refused"
-
-# The database raises every refusal with a stable leading token so the two
-# halves of the rule agree on what was refused.
-_REFUSAL_TOKEN = re.compile(r"resolve_delta:([a-z_]+)")
-_STATUS_BY_REASON = {
-    "stale_accepted_revision": STALE,
-    "missing_support": UNSUPPORTED,
-}
+# The outcome statuses, the refusal codes, their declared customer sentences,
+# and which half of the write boundary raises each one live in `delta_refusals`
+# and are imported above, so no raise site here writes a status of its own.
 
 
 class DeltaResolutionRefused(ValueError):
@@ -346,6 +352,36 @@ class Refusal:
     open_question: str | None = None
 
 
+def _refusal(code: str, *, detail: str | None = None, **context: Any) -> Refusal:
+    """Build one pre-check refusal from the declared vocabulary.
+
+    Every readable-half refusal is constructed here, so the status a screen
+    routes on is the declared one rather than a word retyped at each site, and
+    ``detail`` is passed only where the sentence names identifiers the reader
+    needs.  A code the pre-check may not raise — every concurrency refusal is
+    the command's own, decided by state Python cannot hold still — is refused
+    outright rather than guessed at (ADR-0083, `delta_refusals`).
+    """
+
+    declared = REFUSAL_CODES[code]
+    if declared.raiser == DATABASE_ONLY:
+        raise DeltaResolutionRefused(
+            f"{code!r} is the record-decision command's refusal to raise, not "
+            "this module's"
+        )
+    if detail is None and declared.sentence is None:
+        raise DeltaResolutionRefused(
+            f"{code!r} declares no fixed sentence because it is raised for "
+            "several reasons, so this refusal must say which"
+        )
+    return Refusal(
+        status=declared.status,
+        reason=declared.code,
+        detail=detail if detail is not None else declared.sentence,
+        **context,
+    )
+
+
 @dataclass(frozen=True)
 class ResolutionOutcome:
     """One resolution's result, whatever it was."""
@@ -504,9 +540,8 @@ def validate_child_decision(
     """
 
     if request.action not in SEMANTIC_ACTIONS:
-        return Refusal(
-            status=REFUSED,
-            reason="invalid_action",
+        return _refusal(
+            "invalid_action",
             detail=f"{request.action!r} is not a semantic delta disposition",
             delta_id=request.delta_id,
         )
@@ -520,9 +555,8 @@ def validate_child_decision(
 
     delta = session.get(ProposedDelta, request.delta_id)
     if delta is None or delta.project_id != request.project_id:
-        return Refusal(
-            status=REFUSED,
-            reason="cross_project_delta",
+        return _refusal(
+            "cross_project_delta",
             detail="the Proposed Delta is not this project's to resolve",
             delta_id=request.delta_id,
         )
@@ -546,9 +580,8 @@ def validate_child_decision(
         if not record_effects:
             record_effects = basis_effects
     elif request.edit_basis is not None:
-        return Refusal(
-            status=REFUSED,
-            reason="invalid_action",
+        return _refusal(
+            "invalid_action",
             detail="only an edit carries an edit basis",
             delta_id=delta.id,
         )
@@ -556,30 +589,23 @@ def validate_child_decision(
     organization_change_kind = request.organization_change_kind
     if effect_kind == ORGANIZATION:
         if organization_change_kind not in DELTA_ORGANIZATION_CHANGE_KINDS:
-            return Refusal(
-                status=REFUSED,
-                reason="organization_change_kind_required",
-                detail=(
-                    "an organization change says whether it corrects a wrong "
-                    "name or records that ownership moved"
-                ),
+            return _refusal(
+                "organization_change_kind_required",
                 delta_id=delta.id,
                 subject_identity=delta.target_subject_identity,
                 field=delta.target_field,
             )
     elif organization_change_kind is not None:
-        return Refusal(
-            status=REFUSED,
-            reason="invalid_action",
+        return _refusal(
+            "invalid_action",
             detail="only an organization change carries an organization change kind",
             delta_id=delta.id,
         )
 
     if request.action == REJECT:
         if record_effects:
-            return Refusal(
-                status=REFUSED,
-                reason="invalid_action",
+            return _refusal(
+                "invalid_action",
                 detail=(
                     "keeping the current accepted value changes no effective "
                     "decision"
@@ -587,13 +613,8 @@ def validate_child_decision(
                 delta_id=delta.id,
             )
     elif not record_effects:
-        return Refusal(
-            status=REFUSED,
-            reason="missing_record_effect",
-            detail=(
-                "an accepted or edited value names the Source Facts it makes "
-                "effective"
-            ),
+        return _refusal(
+            "missing_record_effect",
             delta_id=delta.id,
             subject_identity=delta.target_subject_identity,
             field=delta.target_field,
@@ -650,16 +671,8 @@ def refresh_context(session: Session, delta: ProposedDelta) -> dict[str, Any]:
 def _delta_state_refusal(
     session: Session, delta: ProposedDelta, status: str
 ) -> Refusal:
-    reason = "already_resolved" if status == "resolved" else "superseded_delta"
-    detail = (
-        "the Proposed Delta is already resolved; correct it with a later decision"
-        if status == "resolved"
-        else "a newer source version superseded this Proposed Delta"
-    )
-    return Refusal(
-        status=REFUSED,
-        reason=reason,
-        detail=detail,
+    return _refusal(
+        "already_resolved" if status == "resolved" else "superseded_delta",
         delta_id=delta.id,
         **refresh_context(session, delta),
     )
@@ -681,9 +694,8 @@ def _validate_scope_support_and_staleness(
             or assessment.project_id != request.project_id
             or assessment.superseded_by is not None
         ):
-            return Refusal(
-                status=UNSUPPORTED,
-                reason="missing_support",
+            return _refusal(
+                "missing_support",
                 detail=(
                     f"Support Assessment {assessment_id} is not an effective "
                     "assessment of this project"
@@ -693,9 +705,8 @@ def _validate_scope_support_and_staleness(
             )
 
     if request.action in (ACCEPT, EDIT) and not support_ids:
-        return Refusal(
-            status=UNSUPPORTED,
-            reason="missing_support",
+        return _refusal(
+            "missing_support",
             detail=(
                 "a semantic decision names the effective Support Assessments it "
                 "relied on; a passed Source Passage Check is not support"
@@ -707,17 +718,10 @@ def _validate_scope_support_and_staleness(
     for effect in record_effects:
         fact = session.get(Fact, effect.fact_id)
         if fact is None or fact.project_id != request.project_id:
-            return Refusal(
-                status=REFUSED,
-                reason="cross_project_fact",
-                detail="a Resolve Delta decides only Source Facts this project captured",
-                delta_id=delta.id,
-            )
+            return _refusal("cross_project_fact", delta_id=delta.id)
         if fact.subject_key != delta.target_subject_identity:
-            return Refusal(
-                status=REFUSED,
-                reason="subject_mismatch",
-                detail="a Resolve Delta decides the delta's exact subject",
+            return _refusal(
+                "subject_mismatch",
                 delta_id=delta.id,
                 subject_identity=delta.target_subject_identity,
             )
@@ -726,10 +730,8 @@ def _validate_scope_support_and_staleness(
             and effect.disposition == "include"
             and fact.fact_type != delta.target_field
         ):
-            return Refusal(
-                status=REFUSED,
-                reason="field_mismatch",
-                detail="a Resolve Delta decides the delta's exact field",
+            return _refusal(
+                "field_mismatch",
                 delta_id=delta.id,
                 subject_identity=delta.target_subject_identity,
                 field=delta.target_field,
@@ -737,9 +739,8 @@ def _validate_scope_support_and_staleness(
         if effect.disposition == "include" and not _has_named_value_support(
             session, request.project_id, fact.id, support_ids
         ):
-            return Refusal(
-                status=UNSUPPORTED,
-                reason="missing_support",
+            return _refusal(
+                "missing_support",
                 detail=(
                     f"Source Fact {fact.id} has no effective value support this "
                     "decision names"
@@ -756,9 +757,8 @@ def _validate_scope_support_and_staleness(
         )
         observed = request.observed_accepted_revision_id or 0
         if standing is not None and standing > observed:
-            return Refusal(
-                status=STALE,
-                reason="stale_accepted_revision",
+            return _refusal(
+                "stale_accepted_revision",
                 detail=(
                     f"the accepted record moved to revision {standing} after "
                     f"revision {observed} was read"
@@ -805,25 +805,14 @@ def _validate_edit_basis(
     field_name = delta.target_field
     if basis is None or isinstance(basis, FreeText):
         if field_name in EXTERNAL_FACT_FIELDS or delta.target_type == "proposed_subject":
-            return Refusal(
-                status=COORDINATION_NEEDED,
-                reason="external_fact_needs_coordination",
-                detail=(
-                    "an external fact cannot be settled by free text; the "
-                    "proposed value stays unaccepted and the delta stays open"
-                ),
+            return _refusal(
+                "external_fact_needs_coordination",
                 delta_id=delta.id,
                 open_question=_coordination_question(delta, basis),
                 **refresh_context(session, delta),
             )
-        return Refusal(
-            status=CONSTRAINED_EDIT,
-            reason="unsupported_free_text",
-            detail=(
-                "an edited value selects captured support, composes supported "
-                "Source Facts under a named transformation, proves a lossless "
-                "normalization, or cites a separate attributable source origin"
-            ),
+        return _refusal(
+            "unsupported_free_text",
             delta_id=delta.id,
             **refresh_context(session, delta),
         )
@@ -959,9 +948,8 @@ def _project_fact(
 def _edit_basis_refusal(
     session: Session, delta: ProposedDelta, detail: str
 ) -> Refusal:
-    return Refusal(
-        status=CONSTRAINED_EDIT,
-        reason="constrained_edit",
+    return _refusal(
+        "constrained_edit",
         detail=detail,
         delta_id=delta.id,
         **refresh_context(session, delta),
@@ -1138,9 +1126,8 @@ def defer_delta(
         )
     delta = session.get(ProposedDelta, request.delta_id)
     if delta is None or delta.project_id != request.project_id:
-        refusal = Refusal(
-            status=REFUSED,
-            reason="cross_project_delta",
+        refusal = _refusal(
+            "cross_project_delta",
             detail="the Proposed Delta is not this project's to defer",
             delta_id=request.delta_id,
         )
@@ -1207,14 +1194,19 @@ def _database_refusal(
 
 
 def _database_refusal_for(delta_id: int, exc: DBAPIError) -> Refusal:
-    """Map the command's own stable refusal token onto a structured result."""
+    """Map the command's own stable refusal token through the declared vocabulary.
+
+    The token is the agreement between the two halves, so the status a screen
+    routes on comes from the declaration rather than from a second table beside
+    the scraper.  The command's own message line is kept as the detail: it names
+    the identifiers the coordinator needs, which no declared sentence can.
+    """
 
     message = str(getattr(exc, "orig", exc))
-    match = _REFUSAL_TOKEN.search(message)
-    reason = match.group(1) if match else "refused"
+    declared: RefusalCode = database_refusal_code(message)
     return Refusal(
-        status=_STATUS_BY_REASON.get(reason, REFUSED),
-        reason=reason,
+        status=declared.status,
+        reason=declared.code,
         detail=message.strip().splitlines()[0],
         delta_id=delta_id,
     )

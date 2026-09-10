@@ -23,7 +23,7 @@ import re
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from corridor import policy
+from corridor import policy, replay_gate
 from corridor.models import (
     Candidate,
     Dependency,
@@ -67,21 +67,6 @@ class IdentityResolution:
     @property
     def resolved(self) -> bool:
         return self.external_org_id is not None
-
-
-@dataclass(frozen=True)
-class IdentityReplay:
-    case_count: int
-    contrary_candidate_ids: tuple[int, ...]
-    unexplained_candidate_ids: tuple[int, ...]
-
-    @property
-    def passed(self) -> bool:
-        return (
-            self.case_count > 0
-            and not self.contrary_candidate_ids
-            and not self.unexplained_candidate_ids
-        )
 
 
 def normalize_organization(value: object) -> str:
@@ -337,8 +322,22 @@ def policy_fingerprint() -> tuple[str, str]:
     )
 
 
-def replay_human_identity_decisions(session: Session, project_id: int) -> IdentityReplay:
-    """Compare the advanced deterministic stack against recorded human choices."""
+def _fingerprint() -> replay_gate.RuleFingerprint:
+    version, sha256 = policy_fingerprint()
+    return replay_gate.RuleFingerprint(version, sha256)
+
+
+def replay_human_identity_decisions(
+    session: Session, project_id: int
+) -> replay_gate.ReplayOutcome:
+    """Compare the advanced deterministic stack against recorded human choices.
+
+    This family blocks on an abstention as well as on a contrary answer, and
+    deliberately so: the advanced tiers claim to be able to reach every identity
+    a person reached from retained evidence, so a case they cannot answer is an
+    unexplained difference rather than a permitted silence (ADR-0050's
+    "unexplained differences block").
+    """
 
     receipts = session.scalars(
         select(OrganizationIdentityReceipt)
@@ -348,67 +347,58 @@ def replay_human_identity_decisions(session: Session, project_id: int) -> Identi
         )
         .order_by(OrganizationIdentityReceipt.id)
     ).all()
-    contrary: list[int] = []
-    unexplained: list[int] = []
-    for receipt in receipts:
-        candidate = session.get(Candidate, receipt.candidate_id)
+
+    def recompute(candidate_id: int) -> object:
+        candidate = session.get(Candidate, candidate_id)
         if candidate is None:
-            unexplained.append(receipt.candidate_id)
-            continue
+            return replay_gate.ABSTAINED
         # A confirmation adds its spelling as a future registry alias.  Letting
         # that new alias answer its own replay would prove only that the write
         # happened, not that facility/contact/revision/stated-alias evidence
         # could have made the same decision.  ADR-0050 requires the latter.
-        replay = resolve_candidate_identity(
+        replayed = resolve_candidate_identity(
             session, candidate, permit_advanced=True, permit_exact=False
         )
-        if not replay.resolved:
-            unexplained.append(candidate.id)
-        elif replay.external_org_id != receipt.external_org_id:
-            contrary.append(candidate.id)
-    return IdentityReplay(
-        case_count=len(receipts),
-        contrary_candidate_ids=tuple(sorted(set(contrary))),
-        unexplained_candidate_ids=tuple(sorted(set(unexplained))),
+        if not replayed.resolved:
+            return replay_gate.ABSTAINED
+        return replayed.external_org_id
+
+    return replay_gate.replay(
+        family=replay_gate.FAMILY_ORGANIZATION_IDENTITY,
+        human_decisions=[
+            (receipt.candidate_id, receipt.external_org_id) for receipt in receipts
+        ],
+        recompute=recompute,
+        abstention_blocks=True,
     )
 
 
 def activation_status(session: Session, project_id: int) -> str:
-    newest = session.scalars(
-        select(OrganizationIdentityActivation)
-        .where(OrganizationIdentityActivation.project_id == project_id)
-        .order_by(OrganizationIdentityActivation.id.desc())
-        .limit(1)
-    ).first()
-    if newest is None:
-        return "inactive"
-    if newest.action == "suspend":
-        return "suspended"
-    version, sha256 = policy_fingerprint()
-    return "active" if (newest.policy_version, newest.policy_sha256) == (version, sha256) else "inactive"
+    return replay_gate.activation_status(
+        session,
+        family=replay_gate.FAMILY_ORGANIZATION_IDENTITY,
+        project_id=project_id,
+        fingerprint=_fingerprint(),
+    )
 
 
 def attempt_activation(session: Session, project_id: int) -> OrganizationIdentityActivation | None:
     """Append an activation only after an ADR-0050 replay genuinely passes."""
 
-    if activation_status(session, project_id) != "inactive":
+    if activation_status(session, project_id) != replay_gate.INACTIVE:
         return None
     replay = replay_human_identity_decisions(session, project_id)
     if not replay.passed:
         return None
-    version, sha256 = policy_fingerprint()
-    activation = OrganizationIdentityActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_ORGANIZATION_IDENTITY,
         project_id=project_id,
-        action="activate",
-        policy_version=version,
-        policy_sha256=sha256,
+        fingerprint=_fingerprint(),
         replay_case_count=replay.case_count,
         reason="regression replay passed on recorded human identity decisions",
         recorded_by=ACTIVATION_ACTOR,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def _append_alias(org: ExternalOrg, wording: str) -> None:

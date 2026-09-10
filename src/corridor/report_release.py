@@ -23,6 +23,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.changes import record_run as record_report_run
 from corridor.changes import snapshot as report_snapshot
 from corridor.export import to_pdf_bytes
@@ -64,8 +65,10 @@ _PARTY_STATEMENT_REPORT_FIELDS = (
 )
 
 
-class ReleaseRefusal(ValueError):
+class ReleaseRefusal(refusals.Refusal, ValueError):
     """The supplied artifact or its frozen Report context is not releasable."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 class NoSuchReleasedReport(LookupError):

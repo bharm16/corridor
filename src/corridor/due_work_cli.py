@@ -298,7 +298,8 @@ def main(
     except SystemExit as exc:
         return int(exc.code)
     if session_factory is None:
-        from corridor.db import WorkerSession as session_factory
+        from corridor.db import WorkerSession
+        session_factory = WorkerSession
     clock = clock or SystemClock()
 
     if args.command == "health":

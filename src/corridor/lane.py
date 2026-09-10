@@ -20,12 +20,15 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 
+from corridor import refusals
 from corridor.identity import candidate_identity
 from corridor.models import Candidate
 
 
-class LaneRefusal(Exception):
+class LaneRefusal(refusals.Refusal):
     """The lane refuses the gesture. Nothing has been written."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 class SiblingsNeedTheEventLane(LaneRefusal):

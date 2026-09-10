@@ -770,7 +770,7 @@ def main(argv: list[str]) -> int:
     """`make milestones ARGS="<slug> <schedule.csv|schedule.xer> [milestone-code-to-link]"`"""
     import sys
 
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
     from corridor.models import Project
 
     if len(argv) < 2:
@@ -787,7 +787,7 @@ def main(argv: list[str]) -> int:
     slug, schedule_path = argv[0], argv[1]
     link_code = argv[2] if len(argv) > 2 else None
 
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)

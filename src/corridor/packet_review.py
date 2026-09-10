@@ -113,6 +113,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.analytics import (
     AnalyticsBinding,
     AnalyticsEvent,
@@ -149,6 +150,7 @@ from corridor.issue_coverage import (
 from corridor.issue_profile import effective_issue_inventory
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
 from corridor.presentation import field_label, sentence_for
+from corridor.statement_values import UNKNOWN_SCOPE_LABEL
 from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import (
@@ -171,8 +173,11 @@ from corridor.review_packet_reading import (
     SOURCE_REVISION,
     ActionableItem,
     DeltaReading,
+    DeltaStanding,
+    ReviewPacketReadingRefused,
     bind_packet_request,
     read_open_deltas,
+    require_offered,
     standing_accepted_revisions,
 )
 from corridor.review_packets import (
@@ -300,25 +305,12 @@ _LINKABLE_SCHEMES = frozenset({"http", "https"})
 NOT_CITED = "no cited location recorded"
 
 
-class ReviewScreenRefused(ValueError):
-    """The caller cannot build or act on this coordinator reading.
-
-    A refusal about one child's own answer carries which child and which
-    control, so the screen can link the message to the input that holds it
-    without deciding anything a second time.  The rule lives here; the screen
-    only renders what it said.
-    """
-
-    def __init__(
-        self,
-        message: str,
-        *,
-        delta_id: int | None = None,
-        control: str | None = None,
-    ) -> None:
-        super().__init__(message)
-        self.delta_id = delta_id
-        self.control = control
+# The screen's refusal and the reading's refusal are one class, under the name
+# each half's callers already use.  ADR-0085's exactly-once rule is refused in
+# one place (`require_offered`), and a review route that catches this name
+# therefore catches it wherever it was noticed; two classes meant the binding's
+# copy of the same refusal reached a route prepared only for the screen's.
+ReviewScreenRefused = ReviewPacketReadingRefused
 
 
 # The per-child controls a focused answer can be refused against.
@@ -534,11 +526,21 @@ class ChildReading:
 # --- what one item shows ---------------------------------------------------
 
 
-@dataclass(frozen=True, slots=True)
-class ItemReading:
-    """One bounded Work List item, in project language."""
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ItemReading(ActionableItem):
+    """One bounded Work List item, in project language.
 
-    actionable: ActionableItem
+    The partition's own fields — the ordinal, the key and its kind, the rule
+    version, the band, the Attention Reasons, the delta identities and the
+    hold-out reason — are inherited, not wrapped: this *is* the item
+    ``read_open_deltas`` decided, with the customer's words added to it.  A
+    wrapper that forwarded eight of them as properties said, by its shape, that
+    the band belonged to something else, so callers reached through the wrapper
+    and the seam bought nothing.  What the boundary actually forbids is deciding
+    grouping here, and that is unchanged: every inherited value is copied from
+    the reading (``ActionableItem.as_fields``) and none is computed.
+    """
+
     headline: str
     source_family: str
     source_revision: str
@@ -568,38 +570,6 @@ class ItemReading:
 
         level = self.consequence
         return LEVEL_HEADINGS[level] if level is not None else None
-
-    @property
-    def ordinal(self) -> int:
-        return self.actionable.ordinal
-
-    @property
-    def item_key(self) -> str:
-        return self.actionable.item_key
-
-    @property
-    def grouping_key_kind(self) -> str:
-        return self.actionable.grouping_key_kind
-
-    @property
-    def grouping_key(self) -> str:
-        return self.actionable.grouping_key
-
-    @property
-    def grouping_rule_version(self) -> str:
-        return self.actionable.grouping_rule_version
-
-    @property
-    def band(self) -> str:
-        return self.actionable.band
-
-    @property
-    def attention_reasons(self) -> tuple[str, ...]:
-        return self.actionable.attention_reasons
-
-    @property
-    def held_out_reason(self) -> str | None:
-        return self.actionable.held_out_reason
 
     @property
     def child_count(self) -> int:
@@ -682,10 +652,6 @@ class ItemReading:
         """Whether the sources disagree about which utility this row is."""
 
         return self.key_reason == KEY_CONTRADICTED_IDENTITY
-
-    @property
-    def key_reason(self) -> str:
-        return self.actionable.key_reason
 
     @property
     def key_words(self) -> str:
@@ -936,10 +902,6 @@ class ReviewReading:
                  for plan in child.follow_up_plans}
         return tuple(plans[identity] for identity in sorted(plans))
 
-    @property
-    def actionable_delta_ids(self) -> tuple[int, ...]:
-        return self.reading.actionable_delta_ids
-
 
 # --- the reading -----------------------------------------------------------
 
@@ -990,7 +952,7 @@ def read_review_items(
                                                 current=True, as_of=as_of):
             if plan.delta_id in active_ids:
                 follow_up[plan.delta_id].append(plan)
-    standing = standing_accepted_revisions(session, project_id=project_id)
+    accepted_revisions = standing_accepted_revisions(session, project_id=project_id)
     documents = _lineage_documents(session, project_id)
     incoming = _incoming_facts(session, project_id, deltas.values(), documents)
     support = _value_support(session, project_id, incoming.values())
@@ -1013,15 +975,11 @@ def read_review_items(
         delta_ids=reading.actionable_delta_ids,
         declaration=latest_declaration(session, project_id=project_id, cutoff=as_of),
     )
-    reasons = {
-        standing_row.delta_id: standing_row.attention_reasons
-        for standing_row in reading.standings
-    }
-    bands = {
-        standing_row.delta_id: standing_row.band
-        for standing_row in reading.standings
-    }
-    unchanged = _unchanged_counts(session, project_id, standing, documents)
+    # The reading's own row for each delta. The band and the Attention Reasons
+    # it decided are read from that row, not copied into two more dictionaries
+    # keyed by the same identity.
+    standing_of = {row.delta_id: row for row in reading.standings}
+    unchanged = _unchanged_counts(session, project_id, accepted_revisions, documents)
 
     by_lineage: dict[str, list[ActionableItem]] = defaultdict(list)
     for item in reading.items:
@@ -1039,30 +997,44 @@ def read_review_items(
     readings = {
         delta_id: _child(
             deltas[delta_id],
-            standing=standing,
+            standing=standing_of[delta_id],
+            accepted=accepted_revisions,
             incoming=incoming,
             support=support,
             rows=rows,
             artifacts=artifacts,
-            band=bands[delta_id],
-            attention_reasons=reasons.get(delta_id, ()),
             issue_content=issue_content,
             outside_boundary=outside_boundary,
         )
         for delta_id in reading.actionable_delta_ids
     }
 
-    readings = {identifier: replace(child, impacts=tuple(impacts.get(identifier, ())),
-                                    follow_up_plans=tuple(follow_up.get(identifier, ())))
-                for identifier, child in readings.items()}
-
     from corridor.minutes_reading import read_minutes_work
 
-    source_questions, minutes_context = read_minutes_work(session, project_id=project_id, as_of=as_of)
-    readings = {identifier: replace(child,
-        subject_name=minutes_context[identifier]["subject_name"],
-        source_attention_reasons=minutes_context[identifier]["scope_attention"])
-        if identifier in minutes_context else child for identifier, child in readings.items()}
+    source_questions, minutes_context = read_minutes_work(
+        session, project_id=project_id, as_of=as_of
+    )
+    # Everything else read per delta, attached in one pass: an impact
+    # derivation, a live Follow-up Plan, and — where the minutes reading knows
+    # this subject — the words and scope attention it settled.
+    readings = {
+        identifier: replace(
+            child,
+            impacts=tuple(impacts.get(identifier, ())),
+            follow_up_plans=tuple(follow_up.get(identifier, ())),
+            **(
+                {
+                    "subject_name": minutes_context[identifier]["subject_name"],
+                    "source_attention_reasons": minutes_context[identifier][
+                        "scope_attention"
+                    ],
+                }
+                if identifier in minutes_context
+                else {}
+            ),
+        )
+        for identifier, child in readings.items()
+    }
     items: list[ItemReading] = []
     for item in reading.items:
         children = tuple(readings[delta_id] for delta_id in item.delta_ids)
@@ -1111,7 +1083,7 @@ def read_review_items(
         family, _, revision = item.grouping_key.partition("@")
         items.append(
             ItemReading(
-                actionable=item,
+                **item.as_fields(),
                 headline=_headline(item, children),
                 source_family=family,
                 source_revision=revision,
@@ -1170,16 +1142,17 @@ def _headline(item: ActionableItem, children: Sequence[ChildReading]) -> str:
 def _child(
     delta: ProposedDelta,
     *,
-    standing: Mapping[tuple[str, str], int],
+    standing: DeltaStanding,
+    accepted: Mapping[tuple[str, str], int],
     incoming: Mapping[int, IncomingCapture],
     support: Mapping[int, tuple[int, ...]],
     rows: Mapping[str, BaselineSourceRow],
     artifacts: Mapping[str, str | None],
-    band: str,
-    attention_reasons: tuple[str, ...],
     issue_content: EffectiveIssueContent,
     outside_boundary: frozenset[int],
 ) -> ChildReading:
+    """One change in project language. Its band and reasons come from #494."""
+
     capture = incoming.get(delta.id)
     fact_ids = tuple(fact.id for fact in capture.facts) if capture is not None else ()
     support_ids = tuple(sorted({identifier for fact_id in fact_ids for identifier in support.get(fact_id, ())}))
@@ -1203,14 +1176,14 @@ def _child(
         ),
         change_type=delta.change_type,
         accepted_value=_value_text(delta.accepted_value, rows=rows),
-        accepted_revision_id=standing.get(
+        accepted_revision_id=accepted.get(
             (delta.target_subject_identity, delta.target_field or "")
         ),
         incoming_value=_value_text(delta.proposed_value, rows=rows),
         source_family=delta.source_family,
         source_revision=delta.source_revision,
-        band=band,
-        attention_reasons=attention_reasons,
+        band=standing.band,
+        attention_reasons=standing.attention_reasons,
         customer_artifacts=_artifacts_for(delta.target_field, artifacts),
         source=_source_reference(capture),
         external_links=_external_links(row),
@@ -1228,7 +1201,7 @@ def _child(
             ChangeFacts(
                 field=delta.target_field,
                 change_type=delta.change_type,
-                attention_reasons=attention_reasons,
+                attention_reasons=standing.attention_reasons,
             ),
             decision_settled=False,
             # ADR-0085's cutoff limb, answered by `issue_coverage` against the
@@ -1276,7 +1249,7 @@ def _value_text(value: Any, *, rows=None) -> str | None:
         if value.get("closure_kind") == "completion_reported":
             return "Completion Reported"
         if value.get("mode") == "unknown":
-            return "Applies To: not yet known"
+            return UNKNOWN_SCOPE_LABEL
         if value.get("mode") == "selected" and "subject_keys" in value:
             return "Applies To: " + ", ".join(_subject_name(key, (rows or {}).get(key)) for key in value["subject_keys"])
         if "statement_wording" in value:
@@ -1590,13 +1563,10 @@ def packet_request(
         )
     if not item.batched:
         raise ReviewScreenRefused(NOT_A_BATCH)
+    # The one implementation of ADR-0085's exactly-once rule, called here so a
+    # delta this item does not offer is refused before its child is looked up.
+    require_offered(reading.reading, item, delta_ids)
     offered = {child.delta_id: child for child in item.children}
-    outside = [value for value in delta_ids if value not in offered]
-    if outside:
-        raise ReviewScreenRefused(
-            f"deltas {sorted(outside)} are not offered by this item; a delta is "
-            "actionable in exactly one item"
-        )
     selected = [offered[value] for value in delta_ids]
     if not selected:
         raise ReviewScreenRefused("select at least one change before saving")
@@ -1626,7 +1596,7 @@ def packet_request(
     )
     return bind_packet_request(
         reading.reading,
-        item.actionable,
+        item,
         principal=principal,
         idempotency_key=idempotency_key(
             item,
@@ -1695,6 +1665,7 @@ def focused_request(
     answered = [answer for answer in answers if answer.outcome != LEAVE_OPEN]
     if not answered:
         raise ReviewScreenRefused("answer at least one of these before saving")
+    require_offered(reading.reading, item, [answer.delta_id for answer in answered])
     seen: set[int] = set()
     for answer in answered:
         if answer.outcome not in FOCUSED_OUTCOMES:
@@ -1702,11 +1673,6 @@ def focused_request(
                 f"{answer.outcome!r} is not one of this screen's decisions",
                 delta_id=answer.delta_id,
                 control=CONTROL_OUTCOME,
-            )
-        if answer.delta_id not in offered:
-            raise ReviewScreenRefused(
-                f"proposed change {answer.delta_id} is not offered by this item; "
-                "a change is actionable in exactly one item"
             )
         if answer.delta_id in seen:
             raise ReviewScreenRefused(
@@ -1721,7 +1687,7 @@ def focused_request(
     )
     return bind_packet_request(
         reading.reading,
-        item.actionable,
+        item,
         principal=principal,
         idempotency_key=focused_idempotency_key(
             item,

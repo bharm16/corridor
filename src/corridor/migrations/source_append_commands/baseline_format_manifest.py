@@ -36,10 +36,10 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from corridor.migrations.source_append_commands.operating_mode import (
-    OPERATING_MODE_ROLE,
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
 )
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
 
 
 BASELINE_FORMAT_MANIFEST_TABLES = ("project_baseline_format_manifests",)
@@ -223,12 +223,12 @@ def upgrade(op) -> None:
             f"revoke insert, update, delete, truncate on public.{table} "
             f"from {RUNTIME_LOGINS}"
         )
-        op.execute(f"grant select, insert on public.{table} to {OPERATING_MODE_ROLE}")
+        op.execute(f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}")
     op.execute(ATTACH_BASELINE_FORMAT_MANIFEST)
     op.execute(
         f"alter function public.attach_baseline_format_manifest"
         f"{ATTACH_BASELINE_FORMAT_MANIFEST_SIGNATURE} owner to "
-        f"{OPERATING_MODE_ROLE}"
+        f"{RECORD_DECISION_ROLE}"
     )
     op.execute(
         f"revoke all on function public.attach_baseline_format_manifest"

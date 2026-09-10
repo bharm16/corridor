@@ -55,13 +55,13 @@ import sqlalchemy as sa
 from corridor.migrations.source_append_commands.issue_profile import (
     _CONFIGURED_ARTIFACT_TYPES_SQL,
 )
-from corridor.migrations.source_append_commands.operating_mode import (
-    OPERATING_MODE_ROLE,
-)
 from corridor.migrations.source_append_commands.project_partition import (
     _UNPARTITIONED_ROLES_SQL,
 )
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
+)
 
 
 RELEASE_PACKAGE_TABLES = ("release_packages", "release_package_artifacts")
@@ -591,11 +591,11 @@ def upgrade(op) -> None:
     )
     for table in RELEASE_PACKAGE_TABLES:
         op.execute(
-            f"grant select, insert on public.{table} to {OPERATING_MODE_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {OPERATING_MODE_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     # Everything the command reads to prove what it is about to seal: the
     # roster entry carrying #531's designation, the candidate and its artifact
@@ -607,11 +607,11 @@ def upgrade(op) -> None:
         "project_record_revisions",
     ):
         op.execute(
-            f"grant select on public.{readable} to {OPERATING_MODE_ROLE}"
+            f"grant select on public.{readable} to {RECORD_DECISION_ROLE}"
         )
     op.execute(
         f"alter function public.authorize_release_package"
-        f"{AUTHORIZE_RELEASE_PACKAGE_SIGNATURE} owner to {OPERATING_MODE_ROLE}"
+        f"{AUTHORIZE_RELEASE_PACKAGE_SIGNATURE} owner to {RECORD_DECISION_ROLE}"
     )
     op.execute(
         f"revoke all on function public.authorize_release_package"

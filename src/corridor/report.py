@@ -1742,7 +1742,7 @@ def main(argv: list[str]) -> int:
     from pathlib import Path
 
     from corridor.changes import record_run
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
     from corridor.export import to_pdf, to_xlsx
 
     arguments = list(argv)
@@ -1753,7 +1753,7 @@ def main(argv: list[str]) -> int:
         return 2
     slug = arguments[0] if arguments else "nhhip-3c2"
     out = Path("out/report-document-only.html" if document_only else "out/report.html")
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)

@@ -23,6 +23,7 @@ from sqlalchemy.orm import Session, aliased
 
 from sqlalchemy.exc import IntegrityError
 
+from corridor import refusals
 from corridor import audit, notifications
 from corridor.coordination_history import (
     compatibility_coordination_tail, compatibility_statement_tails, coordination_operation, mirror_coordination_decision,
@@ -92,7 +93,7 @@ DEFERRAL_REASONS = frozenset(
 )
 
 
-class CoordinationDecisionRefusal(ValueError):
+class CoordinationDecisionRefusal(refusals.Refusal, ValueError):
     """A subject-bound close or deferral refused; nothing was written.
 
     Subclasses ``ValueError`` so existing callers that already treat a bad
@@ -100,6 +101,8 @@ class CoordinationDecisionRefusal(ValueError):
     concurrency conflict from a malformed request catches the stale subclass
     first.
     """
+
+    refusal_kind = refusals.MALFORMED_INPUT
 
 
 class StaleNextAction(CoordinationDecisionRefusal):
@@ -110,6 +113,8 @@ class StaleNextAction(CoordinationDecisionRefusal):
     replaced, or the request targeted a different or cross-project subject —
     the command refuses without closing a different action.
     """
+
+    refusal_kind = refusals.STALE
 
 
 @dataclass(frozen=True)
@@ -961,16 +966,22 @@ FOLLOW_UP_NEXT_ACTION_CHOICES = (
 )
 
 
-class FollowUpPlanRefusal(ValueError):
+class FollowUpPlanRefusal(refusals.Refusal, ValueError):
     """The grouped Save or Undo refused; nothing was written."""
+
+    refusal_kind = refusals.MALFORMED_INPUT
 
 
 class StaleFollowUpPlan(FollowUpPlanRefusal):
     """A predecessor the screen showed is no longer current."""
 
+    refusal_kind = refusals.STALE
+
 
 class FollowUpPlanUndoRefusal(FollowUpPlanRefusal):
     """The grouped Undo refused; the original decisions stand."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 @dataclass(frozen=True)

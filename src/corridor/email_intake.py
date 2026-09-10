@@ -44,7 +44,7 @@ superseded and is now the only place that ordering lives.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from email import policy
 from email.parser import BytesParser
 from email.utils import getaddresses, parsedate_to_datetime
@@ -688,7 +688,7 @@ def resolve_route_triage(
     triage.state = "resolved"
     triage.resolved_project_id = project_id
     triage.resolved_by = principal.subject
-    triage.resolved_at = datetime.now().astimezone()
+    triage.resolved_at = datetime.now(timezone.utc)
     session.flush()
     # The answered thread now has a project, so its retained messages register
     # their content the same way an automatically routed message does.

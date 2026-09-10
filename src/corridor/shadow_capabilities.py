@@ -6,6 +6,8 @@ Provisioning remains an explicit higher-level owner operation.
 """
 from sqlalchemy import text
 
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
+
 
 class ShadowRefused(ValueError):
     """A source, credential or environment has not met the shadow boundary."""
@@ -20,7 +22,7 @@ def verify_runtime(session, *, project_id, customer, environment):
     INHERIT chains, including inheritance across a SET FALSE membership.
     """
     role = session.execute(text("select current_user, session_user, current_database()")).one()
-    if role[0] != "corridor_worker" or role[1] != "corridor_worker":
+    if role[0] != WORKER_CAPABILITY_LOGIN or role[1] != WORKER_CAPABILITY_LOGIN:
         raise ShadowRefused("shadow capture requires the actual corridor_worker login")
     unsafe = session.scalar(text("""
         with reachable as (

@@ -1259,3 +1259,71 @@ def test_only_the_opened_item_carries_answer_controls(
     for other in others:
         for child in other.children:
             assert f'value="{child.delta_id}"' not in body.split("</form>")[0]
+
+
+# ── The same one refusal presentation the source-revision screen uses ───────
+
+
+def test_the_focused_screens_left_the_reading_refusal_is_the_shared_sentence(
+    session: Session, project: Project, client
+) -> None:
+    """Both Save handlers say this in the same words, written once (#794)."""
+
+    from corridor.web.app import _item_left_the_reading
+
+    _three_sources(session, project)
+    _, item = _question(session, project)
+
+    response = client.post(
+        f"/review/{project.slug}/answers",
+        data={
+            "item_key": "coordination_question:nothing-here",
+            "answer_delta": [str(row.delta_id) for row in item.children],
+            "answer_outcome": [LEAVE_OPEN] * item.child_count,
+            "answer_source": [""] * item.child_count,
+            "answer_question": [""] * item.child_count,
+            "answer_person": [""] * item.child_count,
+            "answer_organization": [""] * item.child_count,
+            "answer_return": [""] * item.child_count,
+        },
+    )
+
+    shared = _item_left_the_reading()
+    assert response.status_code == 409
+    assert shared["heading"] in response.text
+    assert shared["detail"] in response.text
+
+
+def test_a_declared_review_refusal_is_presented_through_the_shared_shape(
+    session: Session, project: Project, client
+) -> None:
+    """`ReviewScreenRefused` wrote the sentence, so the screen quotes it whole."""
+
+    from corridor.web.app import REVIEW_REFUSAL_HEADING, _review_screen_refused
+
+    presented = _review_screen_refused(
+        ReviewScreenRefused("this item is answered on its own, not as a batch")
+    )
+    assert presented == {
+        "heading": REVIEW_REFUSAL_HEADING,
+        "detail": "this item is answered on its own, not as a batch",
+        "rows": (),
+    }
+
+    _three_sources(session, project)
+    _, item = _question(session, project)
+    response = client.post(
+        f"/review/{project.slug}/answers",
+        data={
+            "item_key": item.item_key,
+            "answer_delta": [],
+            "answer_outcome": [],
+            "answer_source": [],
+            "answer_question": [],
+            "answer_person": [],
+            "answer_organization": [],
+            "answer_return": [],
+        },
+    )
+    assert response.status_code == 409
+    assert REVIEW_REFUSAL_HEADING in response.text

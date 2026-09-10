@@ -47,7 +47,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor import audit, merge, policy
+from corridor import audit, merge, policy, replay_gate
 from corridor.milestones import link_dependency
 from corridor.models import (
     AuditLog,
@@ -408,30 +408,30 @@ def policy_fingerprint() -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------- #
-# Regression replay + activation (ADR-0050)                                   #
+# Regression replay + activation (ADR-0050, through the shared gate)          #
 # --------------------------------------------------------------------------- #
+#
+# The comparison, the pass rule and the activation ledger live in
+# ``corridor.replay_gate``. This family contributes only its own two answers:
+# which link decisions a person actually made, and what the exact rule would do
+# for one of them.
 
 
-@dataclass(frozen=True)
-class ReplayResult:
-    """The comparison that is the test: the rule against recorded human choices."""
-
-    case_count: int
-    contradictions: tuple[int, ...]
-    passed: bool
+def _fingerprint() -> replay_gate.RuleFingerprint:
+    version, sha256 = policy_fingerprint()
+    return replay_gate.RuleFingerprint(version, sha256)
 
 
 def replay_matches_human_decisions(
     session: Session, project_id: int
-) -> ReplayResult:
+) -> replay_gate.ReplayOutcome:
     """Replay the exact rule against every recorded human link decision.
 
-    ADR-0050: the cases a person decided are the answer key. For each Constraint
-    a person linked by hand, recompute the exact rule from the saved records
-    (never re-reading source files). A contradiction is the rule producing an
-    exact link to a *different* activity than the person chose; the rule
-    abstaining (a tie or no coverage now) is not a contradiction. Zero real
-    cases never pass.
+    The cases a person decided are the answer key. For each Constraint a person
+    linked by hand, recompute the exact rule from the saved records — never
+    re-reading a source file. A contradiction is the rule producing an exact
+    link to a *different* activity than the person chose; the rule abstaining (a
+    tie, no coverage now, or a Constraint that no longer exists) is not one.
     """
     receipts = session.scalars(
         select(ScheduleLinkReceipt)
@@ -445,43 +445,35 @@ def replay_matches_human_decisions(
     for receipt in receipts:
         latest_choice[receipt.dependency_id] = receipt.milestone_id
     coverages = governing_coverages(session, project_id)
-    contradictions: list[int] = []
-    for dependency_id, chosen_milestone_id in latest_choice.items():
+
+    def recompute(dependency_id: int) -> object:
         dependency = session.get(Dependency, dependency_id)
         if dependency is None:
-            continue
+            return replay_gate.ABSTAINED
         match = match_constraint(dependency, coverages)
-        if match.kind == "exact" and match.candidates[0].milestone_id != chosen_milestone_id:
-            contradictions.append(dependency_id)
-    case_count = len(latest_choice)
-    return ReplayResult(
-        case_count=case_count,
-        contradictions=tuple(sorted(contradictions)),
-        passed=case_count >= 1 and not contradictions,
+        if match.kind != "exact":
+            return replay_gate.ABSTAINED
+        return match.candidates[0].milestone_id
+
+    return replay_gate.replay(
+        family=replay_gate.FAMILY_SCHEDULE_LINK,
+        human_decisions=sorted(latest_choice.items()),
+        recompute=recompute,
     )
 
 
 def activation_status(session: Session, project_id: int) -> str:
     """`inactive` | `active` | `suspended` for the current rule fingerprint."""
-    newest = session.scalars(
-        select(ScheduleLinkActivation)
-        .where(ScheduleLinkActivation.project_id == project_id)
-        .order_by(ScheduleLinkActivation.id.desc())
-        .limit(1)
-    ).first()
-    if newest is None:
-        return "inactive"
-    if newest.action == "suspend":
-        return "suspended"
-    version, sha256 = policy_fingerprint()
-    if newest.policy_version == version and newest.policy_sha256 == sha256:
-        return "active"
-    # The rule or its schema changed since this activation — the pass is void.
-    return "inactive"
+    return replay_gate.activation_status(
+        session,
+        family=replay_gate.FAMILY_SCHEDULE_LINK,
+        project_id=project_id,
+        fingerprint=_fingerprint(),
+    )
 
 
 def is_auto_link_active(session: Session, project_id: int) -> bool:
-    return activation_status(session, project_id) == "active"
+    return activation_status(session, project_id) == replay_gate.ACTIVE
 
 
 def attempt_activation(
@@ -493,25 +485,20 @@ def attempt_activation(
     every passing test, so an already-suspended project is left suspended until a
     person lifts it (ADR-0050).
     """
-    status = activation_status(session, project_id)
-    if status in ("active", "suspended"):
+    if activation_status(session, project_id) != replay_gate.INACTIVE:
         return None
     replay = replay_matches_human_decisions(session, project_id)
     if not replay.passed:
         return None
-    version, sha256 = policy_fingerprint()
-    activation = ScheduleLinkActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_SCHEDULE_LINK,
         project_id=project_id,
-        action="activate",
-        policy_version=version,
-        policy_sha256=sha256,
+        fingerprint=_fingerprint(),
         replay_case_count=replay.case_count,
         reason="regression replay passed on recorded human link decisions",
         recorded_by=ACTIVATION_ACTOR,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def suspend_auto_link(
@@ -525,19 +512,14 @@ def suspend_auto_link(
     principal = require_human_principal(principal)
     if not reason or not reason.strip():
         raise ScheduleLinkRefusal("a suspension must state a reason")
-    version, sha256 = policy_fingerprint()
-    activation = ScheduleLinkActivation(
+    return replay_gate.record_suspension(
+        session,
+        family=replay_gate.FAMILY_SCHEDULE_LINK,
         project_id=project_id,
-        action="suspend",
-        policy_version=version,
-        policy_sha256=sha256,
-        replay_case_count=None,
-        reason=reason.strip(),
+        fingerprint=_fingerprint(),
+        reason=reason,
         recorded_by=principal.subject,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def lift_suspension(
@@ -550,19 +532,15 @@ def lift_suspension(
         raise ScheduleLinkRefusal(
             "cannot lift the suspension: the regression replay does not pass"
         )
-    version, sha256 = policy_fingerprint()
-    activation = ScheduleLinkActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_SCHEDULE_LINK,
         project_id=project_id,
-        action="activate",
-        policy_version=version,
-        policy_sha256=sha256,
+        fingerprint=_fingerprint(),
         replay_case_count=replay.case_count,
         reason="human lifted the suspension after a passing replay",
         recorded_by=principal.subject,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 # --------------------------------------------------------------------------- #

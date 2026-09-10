@@ -77,6 +77,7 @@ from pathlib import Path, PurePosixPath
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor import audit
 from corridor.analytics import (
     default_binding,
@@ -129,7 +130,7 @@ ACCEPTED_DOC_TYPES = frozenset(DOC_TYPES)
 # gate owns the rule now; ``_upload_sentence`` owns the words a person reads.
 
 
-class IntakeRefused(ValueError):
+class IntakeRefused(refusals.Refusal, ValueError):
     """A bounded, actionable refusal raised before any registration.
 
     ``reason`` is a stable machine code so an adapter can branch on it, and
@@ -142,18 +143,22 @@ class IntakeRefused(ValueError):
     a refusal reads the same here as it does on the push and pull channels.
     """
 
+    refusal_kind = refusals.MALFORMED_INPUT
+
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)
         self.reason = reason
 
 
-class IntakeConflict(ValueError):
+class IntakeConflict(refusals.Refusal, ValueError):
     """A confirm that no longer matches the source or registry it previewed.
 
     Raised for a stale, tampered, concurrent, or cross-project confirmation before
     any authoritative write. ``reason`` is one of ``binding_mismatch``,
     ``bytes_missing``, ``bytes_tampered``, ``type_conflict``.
     """
+
+    refusal_kind = refusals.CONFLICT
 
     def __init__(self, reason: str, message: str) -> None:
         super().__init__(message)

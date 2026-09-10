@@ -99,7 +99,8 @@ def main(argv: list[str] | None = None, *, session_factory=None) -> int:
         return int(exc.code)
 
     if session_factory is None:
-        from corridor.db import WorkerSession as session_factory
+        from corridor.db import WorkerSession
+        session_factory = WorkerSession
 
     try:
         with session_factory() as session:

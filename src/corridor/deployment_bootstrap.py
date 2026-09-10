@@ -26,7 +26,12 @@ from sqlalchemy.engine import Engine, make_url
 from sqlalchemy.exc import SQLAlchemyError
 
 from corridor.control_plane import ControlPlane, EnvironmentRegistration, RouteRefused
-from corridor.control_plane_schema import initialize_control_plane
+from corridor.control_plane_schema import (
+    OPERATIONS_ROLE,
+    RESOLVER_ROLE,
+    initialize_control_plane,
+)
+from corridor.db_roles import WEB_CAPABILITY_LOGIN, WORKER_CAPABILITY_LOGIN
 from corridor.customer_routing import (
     CustomerIdentity, CustomerRouter, bind_customer_environment, database_address,
 )
@@ -122,9 +127,9 @@ class DeploymentConfiguration:
             control_resolver_url=required("CONTROL_PLANE_RESOLVER_DATABASE_URL"),
             # Only the bounded owner task builds these from its supplied parts;
             # neither runtime process receives DATABASE_URL or the other login.
-            web_url=owner.set(username="corridor_web", password=required("CORRIDOR_WEB_DB_PASSWORD"))
+            web_url=owner.set(username=WEB_CAPABILITY_LOGIN, password=required("CORRIDOR_WEB_DB_PASSWORD"))
                 .render_as_string(hide_password=False),
-            worker_url=owner.set(username="corridor_worker", password=required("CORRIDOR_WORKER_DB_PASSWORD"))
+            worker_url=owner.set(username=WORKER_CAPABILITY_LOGIN, password=required("CORRIDOR_WORKER_DB_PASSWORD"))
                 .render_as_string(hide_password=False),
             object_namespace_ref=f"s3:{bucket}" + (f"/{prefix}" if prefix else ""),
             data_class=required("CORRIDOR_DEPLOYMENT_DATA_CLASS"),
@@ -141,8 +146,8 @@ def provision_control_logins(owner: Engine, *, operations_url: str, resolver_url
     """
 
     capabilities = (
-        (make_url(operations_url), "corridor_control_operations"),
-        (make_url(resolver_url), "corridor_control_resolver"),
+        (make_url(operations_url), OPERATIONS_ROLE),
+        (make_url(resolver_url), RESOLVER_ROLE),
     )
     with owner.begin() as connection:
         for url, capability in capabilities:
@@ -150,7 +155,7 @@ def provision_control_logins(owner: Engine, *, operations_url: str, resolver_url
             if not re.fullmatch(r"[a-z][a-z0-9_]{0,62}", login) or not url.password:
                 raise DeploymentRefused("bounded control-plane login inputs are required")
             if database_address(url) != database_address(owner.url) or login in {
-                owner.url.username, "corridor_control_operations", "corridor_control_resolver",
+                owner.url.username, OPERATIONS_ROLE, RESOLVER_ROLE,
             }:
                 raise DeploymentRefused("control-plane login must be distinct from its owner and capability")
             role = connection.execute(text(

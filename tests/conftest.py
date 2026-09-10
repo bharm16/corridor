@@ -339,8 +339,10 @@ def pytest_unconfigure(config) -> None:
         if state.cleanup_needed:
             corridor_db = sys.modules.get("corridor.db")
             if corridor_db is not None:
-                for name in ("engine", "web_engine", "worker_engine"):
-                    getattr(corridor_db, name).dispose()
+                # Only the capability engines a test actually asked for exist;
+                # reaching for the other names here would build a pool solely
+                # in order to dispose of it.
+                corridor_db.dispose_engines()
             _drop_databases(state.admin_url, (state.database_name,))
         return
 

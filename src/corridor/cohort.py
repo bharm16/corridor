@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from corridor import refusals
 from corridor import digests
 
 from sqlalchemy import select
@@ -87,8 +88,10 @@ CLASSIFICATION_ORDER: dict[str, int] = {
 _CONFLICT_FLAG = "potential_conflict"
 
 
-class CohortDerivationError(ValueError):
+class CohortDerivationError(refusals.Refusal, ValueError):
     """The cohort could not be derived from exactly declared inputs."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 def derive_cohort_receipt(
@@ -416,8 +419,10 @@ def _event_cohort_digest(
     return digests.sha256_bytes(canonical)
 
 
-class CohortScopeViolation(ValueError):
+class CohortScopeViolation(refusals.Refusal, ValueError):
     """A mutation named the rehearsal cohort and a Candidate outside it."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 def cohort_candidate_ids(

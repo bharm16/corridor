@@ -27,7 +27,7 @@ from sqlalchemy import create_engine, func, select
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from corridor import audit, identity, policy
+from corridor import audit, identity, policy, replay_gate
 from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     EventAdmissionPolicyStatus,
@@ -142,11 +142,11 @@ class EventAdmissionAcceptanceResult:
 def _latest_activation(
     session: Session, project_id: int
 ) -> EventAdmissionActivation | None:
-    return session.scalar(
-        select(EventAdmissionActivation)
-        .where(EventAdmissionActivation.project_id == project_id)
-        .order_by(EventAdmissionActivation.id.desc())
-        .limit(1)
+    """The newest entry in this family's slice of the one activation ledger."""
+    return replay_gate.latest_ledger_entry(
+        session,
+        family=replay_gate.FAMILY_EVENT_ADMISSION,
+        project_id=project_id,
     )
 
 
@@ -403,17 +403,18 @@ def activate_passing_acceptance(
         and latest.acceptance_receipt_id == receipt.id
     ):
         return latest
-    activation = EventAdmissionActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_EVENT_ADMISSION,
         project_id=receipt.project_id,
-        acceptance_receipt_id=receipt.id,
-        action="activate",
-        policy_version=receipt.policy_version,
+        fingerprint=replay_gate.RuleFingerprint(receipt.policy_version),
+        # The immutable acceptance receipt carries the replayed population and
+        # its digest; the ledger row names the receipt rather than a count.
+        replay_case_count=None,
         reason="all declared real-state promotion gates passed",
         recorded_by=ACTIVATION_ACTOR,
+        acceptance_receipt_id=receipt.id,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def suspend_unknown_scope_admission(
@@ -431,17 +432,15 @@ def suspend_unknown_scope_admission(
     latest = _latest_activation(session, project_id)
     if latest is None or latest.action != "activate":
         raise ValueError("unknown-scope Event Admission is not active")
-    suspension = EventAdmissionActivation(
+    return replay_gate.record_suspension(
+        session,
+        family=replay_gate.FAMILY_EVENT_ADMISSION,
         project_id=project_id,
-        acceptance_receipt_id=latest.acceptance_receipt_id,
-        action="suspend",
-        policy_version=latest.policy_version,
-        reason=reason.strip(),
+        fingerprint=replay_gate.RuleFingerprint(latest.policy_version),
+        reason=reason,
         recorded_by=recorder.subject,
+        acceptance_receipt_id=latest.acceptance_receipt_id,
     )
-    session.add(suspension)
-    session.flush([suspension])
-    return suspension
 
 
 def lift_unknown_scope_admission(
@@ -460,17 +459,16 @@ def lift_unknown_scope_admission(
     status = read_event_admission_policy_status(session, project_id)
     if status.proof_status != "passed_current" or status.latest_receipt_id is None:
         raise ValueError("a current passing proof is required before suspension can lift")
-    activation = EventAdmissionActivation(
+    return replay_gate.record_activation(
+        session,
+        family=replay_gate.FAMILY_EVENT_ADMISSION,
         project_id=project_id,
-        acceptance_receipt_id=status.latest_receipt_id,
-        action="activate",
-        policy_version=UNKNOWN_SCOPE_POLICY_VERSION,
+        fingerprint=replay_gate.RuleFingerprint(UNKNOWN_SCOPE_POLICY_VERSION),
+        replay_case_count=None,
         reason="human lift after current passing proof",
         recorded_by=recorder.subject,
+        acceptance_receipt_id=status.latest_receipt_id,
     )
-    session.add(activation)
-    session.flush([activation])
-    return activation
 
 
 def _run_policy_clone(

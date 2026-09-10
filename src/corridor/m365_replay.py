@@ -159,8 +159,8 @@ def main() -> None:
         versions[key] = body
     connector = Microsoft365PullConnector(location,
         RecordedGraphTransport(pages=data["pages"], versions=versions))
-    from corridor.db import WorkerSession as DatabaseSession
-    with DatabaseSession() as session, session.begin():
+    from corridor.db import WorkerSession
+    with WorkerSession() as session, session.begin():
         result = replay_graph(session, project=session.get_one(Project, args.project_id),
             customer=args.customer, connector=connector, run_identity=args.run_identity,
             cursor=args.cursor, doc_types=data.get("doc_types"),

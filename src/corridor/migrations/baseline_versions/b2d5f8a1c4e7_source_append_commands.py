@@ -200,6 +200,7 @@ from corridor.migrations.source_append_commands.public_privileges import (
     PUBLIC_RELATION_PRIVILEGES_AT_THIS_REVISION,
     _text_array_sql,
 )
+from corridor.migrations.source_append_commands import replay_gate
 from corridor.migrations.source_append_commands.web_capability import (
     WEB_DENIED_RELATIONS,
     WEB_PARTITIONED_TABLES,
@@ -1442,6 +1443,12 @@ def upgrade() -> None:
     # --- #675 The confirmed coverage declaration, and the preparation it asks
     coverage_preparation.upgrade(op)
 
+    # --- One activation ledger for every ADR-0050 replay gate -------------
+    # Before the web-capability block, because that block revokes by name on
+    # the relations that exist when it runs: this family's one relation is what
+    # it denies, and the four it replaces are gone by then.
+    replay_gate.upgrade(op)
+
     # --- #680 The live-pilot web capability boundary -------------------
     web_capability.upgrade(op)
 
@@ -1533,6 +1540,11 @@ def downgrade() -> None:
 
     # --- #680 The live-pilot web capability boundary -------------------
     web_capability.downgrade(op)
+
+    # --- One activation ledger for every ADR-0050 replay gate -------------
+    # After the web-capability restore, which hands the privilege back on the
+    # one relation before this family takes it apart into four again.
+    replay_gate.downgrade(op)
 
     # --- #675 The confirmed coverage declaration, and the preparation it asks
     coverage_preparation.downgrade(op)
