@@ -27,12 +27,19 @@ holds a credential; a refusal arrives as a Processing Failure with zero outbound
 requests and is recorded with the engine, the configuration and the page scope.
 
 **Three cases stay distinguishable.** Geometry is Textract's. Values come from
-re-mapped native glyphs wherever the region has a usable native layer that gives
-a cell a valid assignment and a locator — those take the ordinary
-source-verification path — and from Textract's own words otherwise, which is an
-Unconfirmed reading carrying both source and processing provenance. A readable
-corroborating source verifies through that source's citation and keeps its
-relation to the original unconfirmed reading; that upgrade is
+the reader's native word tokens wherever the region has a usable native layer
+that puts a token's centre inside the cell box — those take the ordinary
+source-verification path, with the union of the tokens' boxes as the locator —
+and from Textract's own words otherwise, which is an Unconfirmed reading
+carrying both source and processing provenance. That assignment is this
+module's own rule, applied after the adapter returns a Textract-words reading.
+It is not the lane A re-map ADR-0094 measured (`remap_page`: glyph ink-box
+centre inside the Textract polygon, `ordered_text` over the assigned glyphs,
+hidden runs kept as clipped evidence), which the adapter runs only for
+`analyze_page(native_glyphs=)` under the `native-table-geometry-assistance`
+purpose and which this route, requesting `scanned-page-reading`, does not ask
+for. A readable corroborating source verifies through that source's citation
+and keeps its relation to the original unconfirmed reading; that upgrade is
 `corridor.unreadable_cell_admission`'s and is untouched here.
 
 There is no review screen. Nothing in this module offers a person a transcription
@@ -307,11 +314,11 @@ def classify_region_values(
 
     Geometry is Textract's throughout — the rows, columns and cell boxes are
     the ones it returned. What differs per cell is where the characters come
-    from. Where the region has a usable native layer and that layer puts glyphs
-    inside the cell, the value is the document's own text and the cell carries
-    a locator back into the native reading, which is the ordinary
-    source-verification path. Where it does not, the value is Textract's, and
-    it is an Unconfirmed reading.
+    from. Where the region has a usable native layer and that layer puts a
+    word token's centre inside the cell box, the value is the document's own
+    text and the cell carries a locator back into the native reading, which is
+    the ordinary source-verification path. Where it does not, the value is
+    Textract's, and it is an Unconfirmed reading.
 
     A cell outside every routed region is not read here at all: on a mixed
     page the native regions keep their native values by the ordinary route, and
@@ -408,10 +415,15 @@ def _native_text_in(
 ) -> tuple[str, PdfRect] | None:
     """The document's own text inside one Textract cell, with its locator.
 
-    A glyph belongs to the cell when its centre is inside the cell box, which
-    is the measured lane A assignment. The locator is the union of the assigned
-    tokens' own boxes — the region of the page the value is actually printed
-    in, not the cell Textract drew around it.
+    A reader word token belongs to the cell when its centre is inside the cell
+    bounding box, and the value is those tokens' raw text joined by spaces in
+    token order. This is not the measured lane A assignment: `remap_page`
+    places each glyph by its own ink-box centre inside the cell polygon and
+    orders the assigned glyphs with `ordered_text`, so a word printed across a
+    cell border is split there and kept whole here
+    (`tests/test_scanned_reading.py` pins one such cell). The locator is the
+    union of the assigned tokens' own boxes — the region of the page the value
+    is actually printed in, not the cell Textract drew around it.
     """
 
     inside = [
