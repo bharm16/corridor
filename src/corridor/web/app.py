@@ -2800,13 +2800,21 @@ def reports(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
-    """Ordinary project-person entry point for fixed PDF release."""
+    """Ordinary project-person entry point for fixed PDF release.
+
+    An adopted project reaches its retained legacy receipts here and nothing
+    else: ADR-0086 makes the authorized release package its one external issue
+    act, so ``report_release`` refuses both human acts for it and this page
+    offers neither control. Showing a Prepare button that can only refuse would
+    be a second release act in the interface even though the module has one.
+    """
     project = _project(session, slug, principal)
     response = TEMPLATES.TemplateResponse(
         request,
         "report_release.html",
         {
             "project": project,
+            "issues_packages": is_adopted_baseline(session, project.id),
             "history": external_report_release_history(session, project.id),
             "publications": project_publication_history(session, project.id),
         },
@@ -2953,7 +2961,12 @@ def release_prepared_report(
             response = TEMPLATES.TemplateResponse(
                 request,
                 "report_release.html",
-                {"project": project, "history": history, "released": released},
+                {
+                    "project": project,
+                    "issues_packages": False,
+                    "history": history,
+                    "released": released,
+                },
                 status_code=201,
             )
             record_frontend_request(

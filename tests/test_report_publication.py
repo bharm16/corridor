@@ -5,9 +5,9 @@ supervised runtime claiming a weekly occurrence, and the retained reading it
 produces.  Rendering is a deterministic adapter — no model spend, no real
 send — and the committed-transaction paths use the harness-owned
 ``runtime_database`` fixture.  Together they cover the stable predecessor
-(the last released report), converging repeated and restarted occurrences,
-a missed week, configuration refusal, cross-project access, a rendering
-failure, reviewed-byte preservation, and human-only release.
+(the last authorized release package), converging repeated and restarted
+occurrences, a missed week, configuration refusal, cross-project access, a
+rendering failure, reviewed-byte preservation, and human-only release.
 """
 
 from __future__ import annotations
@@ -23,7 +23,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
 from access_support import seed_membership
-from corridor.changes import last_released_report
+from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.due_work import (
     DueWorkRefusal,
@@ -44,11 +44,17 @@ from corridor.models import (
     ExternalReportRelease,
     Project,
     ProjectRecordRevision,
+    ReleasePackage,
     ReportRun,
     ScheduledReportPublication,
 )
+from corridor.object_storage import LocalFilesystemStore
 from corridor.principals import HumanPrincipal
+from corridor.release_authorization import authorize_release_package
+from corridor.release_candidate import latest_authorized_package
 from corridor.report_publication import (
+    ComparisonWindow,
+    comparison_window,
     execute_report_publication,
     project_publication_history,
 )
@@ -57,6 +63,19 @@ from corridor.report_release import (
     retrieve_prepared_external_report,
 )
 from corridor.web.app import app, get_human_principal, get_session
+from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
+# #533's own candidate fixtures, for the same reason #536's tests import them:
+# a predecessor assertion is only honest if the package it names was built by
+# the act that authorizes one.
+from test_release_authorization import (
+    BINDING,
+    COORDINATOR as PACKAGE_COORDINATOR,
+    RELEASED_AT,
+    RELEASER as PACKAGE_RELEASER,
+    Adopted,
+    configure as configure_issued_set,
+    prepare as prepare_candidate,
+)
 
 
 RELEASER = HumanPrincipal("local:publication-releaser")
@@ -197,6 +216,116 @@ def _run(factory, now, **registry_kwargs):
     )
 
 
+@pytest.fixture
+def rollback_session():
+    """A rollback-scoped session for the predicate seam, which commits nothing."""
+
+    connection = engine.connect()
+    transaction = connection.begin()
+    scoped = Session(bind=connection)
+    yield scoped
+    scoped.close()
+    if transaction.is_active:
+        transaction.rollback()
+    connection.close()
+
+
+@pytest.fixture
+def store(tmp_path, monkeypatch):
+    """The content-addressed store a prepared candidate's bytes are retained in."""
+
+    monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+    return LocalFilesystemStore(tmp_path / "artifacts")
+
+
+def _authorized_package(session, tmp_path, store):
+    """One adopted project holding exactly one authorized release package."""
+
+    project = Project(
+        slug=f"pkg-{uuid4().hex[:10]}", name="Package", is_synthetic=True
+    )
+    session.add(project)
+    session.flush()
+    seed_membership(session, project, PACKAGE_COORDINATOR)
+    seed_membership(session, project, PACKAGE_RELEASER)
+    body = workbook_bytes(tmp_path / f"{project.slug}.xlsx", BASELINE_ROWS)
+    revision_id, _ = adopt(session, project, body, tmp_path)
+    adopted = Adopted(project, revision_id, body)
+    configure_issued_set(session, adopted)
+    _, _, candidate = prepare_candidate(session, adopted, store)
+    authorization = authorize_release_package(
+        session,
+        project_id=project.id,
+        candidate_id=candidate.id,
+        releaser=PACKAGE_RELEASER,
+        authorized_at=RELEASED_AT,
+        store=store,
+        binding=BINDING,
+    )
+    return project, session.get(ReleasePackage, authorization.package_id)
+
+
+# ------------------------------------------------------- the comparison baseline
+
+
+def test_the_weekly_predecessor_is_the_last_authorized_package(
+    rollback_session, tmp_path, store
+):
+    """One baseline predicate: the package chain, never the release clock.
+
+    The window opens at the predecessor package's source cutoff — the point past
+    which that issue excluded later-arriving sources — so the weekly report and
+    the change summary in the same package cannot disagree about when the week
+    closed.  A legacy ``ExternalReportRelease`` recorded *after* the package is
+    seeded here deliberately: it is the newest external thing by wall clock, and
+    under ADR-0086 it is not the marker.
+    """
+
+    session = rollback_session
+    project, package = _authorized_package(session, tmp_path, store)
+    _seed_release(
+        session,
+        project.id,
+        evaluated_on=date(2026, 9, 30),
+        provenance_mode="all-supported-sources",
+    )
+    session.flush()
+
+    window = comparison_window(session, project.id, as_of=date(2026, 3, 9))
+
+    assert window.predecessor_package_id == package.id
+    assert window.window_start == package.source_cutoff.date()
+    assert window.days == 7
+    # Not the released PDF's own evaluation date, which is the value the retired
+    # predicate would have produced here.
+    assert window.window_start != date(2026, 9, 30)
+
+
+def test_a_project_with_no_authorized_package_has_no_comparison_predecessor(
+    rollback_session
+):
+    """Before a first package the reading stands on current accepted state."""
+
+    session = rollback_session
+    project = Project(
+        slug=f"nopkg-{uuid4().hex[:10]}", name="No package", is_synthetic=True
+    )
+    session.add(project)
+    session.flush()
+    _seed_release(
+        session,
+        project.id,
+        evaluated_on=date(2026, 8, 24),
+        provenance_mode="all-supported-sources",
+    )
+    session.flush()
+
+    window = comparison_window(session, project.id, as_of=date(2026, 8, 31))
+
+    assert window == ComparisonWindow(None, None, None)
+
+
 # ---------------------------------------------------------------- runtime seams
 
 
@@ -246,9 +375,19 @@ def test_scheduled_occurrence_retains_a_reading_prepares_a_pdf_and_creates_no_ru
         assert status["receipts"][0]["handler"] == HANDLER_REPORT_PUBLICATION
 
 
-def test_predecessor_is_the_last_released_report_with_an_honest_window(
+def test_a_released_legacy_pdf_is_never_the_comparison_predecessor(
     runtime_database,
 ):
+    """A sealed legacy PDF, however recent, does not open a comparison window.
+
+    ``changes.last_released_report`` used to select exactly this row by
+    ``released_at desc``, so this project would have reported "changes in the
+    last 7 days" measured from a receipt that binds no accepted Project Record
+    revision (#635).  ADR-0086 moved the marker to the last approved package;
+    this project has none, so the honest answer is current state only and no
+    invented prior issue occurrence.
+    """
+
     factory = runtime_database.session_factory
     now = datetime(2026, 8, 31, 7, 5, tzinfo=timezone.utc)
     project_id, _ = _scheduled_project(
@@ -263,12 +402,16 @@ def test_predecessor_is_the_last_released_report_with_an_honest_window(
                 ScheduledReportPublication.project_id == project_id
             )
         ).one()
-        release = last_released_report(
-            verify, project_id, provenance_mode="all-supported-sources"
-        )
-        assert publication.predecessor_release_id == release.id
-        assert publication.window_start == date(2026, 8, 24)
-        assert publication.comparison_window_days == 7
+        # The release exists, is the newest thing by wall clock, and gets no vote.
+        assert verify.scalar(
+            select(func.count()).select_from(ExternalReportRelease).where(
+                ExternalReportRelease.project_id == project_id
+            )
+        ) == 1
+        assert latest_authorized_package(verify, project_id) is None
+        assert publication.predecessor_release_id is None
+        assert publication.window_start is None
+        assert publication.comparison_window_days is None
         assert publication.evaluated_on == date(2026, 8, 31)
 
 
@@ -328,7 +471,7 @@ def test_repeated_triggers_and_restarted_occurrences_converge_on_one_reading(
         )
 
 
-def test_missed_week_records_the_actual_observation_and_widens_the_window(
+def test_missed_week_records_the_actual_observation_and_invents_no_window(
     runtime_database,
 ):
     factory = runtime_database.session_factory
@@ -357,10 +500,12 @@ def test_missed_week_records_the_actual_observation_and_widens_the_window(
             )
         ).one()
         # The reading is the actual execution date, never backdated to the
-        # historical slot, and the window widens honestly to the last release.
+        # historical slot.  No false report occurrence is created for the missed
+        # week either, and with no approved package there is no window to widen
+        # (ADR-0053's honest-window rule, under ADR-0086's marker).
         assert publication.evaluated_on == date(2026, 9, 14)
-        assert publication.window_start == date(2026, 8, 24)
-        assert publication.comparison_window_days == 21
+        assert publication.window_start is None
+        assert publication.comparison_window_days is None
 
 
 def test_a_later_release_never_advances_a_retained_occurrence_predecessor(

@@ -3,6 +3,13 @@
 The XLSX is the ledger in the shape a project can actually use — and it
 carries the citation columns rather than dropping them, because a
 spreadsheet that loses the provenance is just the matrix they already had.
+
+``to_pdf``/``to_pdf_bytes`` render ``report``'s HTML, so they inherit its
+boundary: this is the internal and legacy-project artifact. An adopted project's
+customer-issued Coordination Report is rendered by
+``issue_rendering.render_weekly_report`` into one authorized release package, and
+its updated workbook by ``workbook_render`` into the customer's own approved
+template — not by this module (ADR-0086, ADR-0091).
 """
 
 from __future__ import annotations

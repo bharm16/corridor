@@ -1483,3 +1483,79 @@ def test_ordinary_artifact_routes_refuse_another_project(client, session, projec
         ).status_code
         == 404
     )
+
+
+def _adopted_project(session, tmp_path, slug: str) -> Project:
+    """A project whose accepted record came from its own adopted workbook.
+
+    Its own project, not the shared fixture's: Adopt Baseline refuses to write
+    over an existing legacy accepted record, which is the ADR-0081 boundary
+    working rather than a fixture detail to route around.
+    """
+
+    from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
+
+    project = Project(slug=slug, name="Adopted Release", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    seed_membership(session, project, TEST_PRINCIPAL, display_name="Coordinator")
+    body = workbook_bytes(tmp_path / f"{slug}.xlsx", BASELINE_ROWS)
+    adopt(session, project, body, tmp_path)
+    return project
+
+
+def test_an_adopted_project_has_no_separate_report_release_act(session, tmp_path):
+    """One release act per project: the authorized package, not a second PDF.
+
+    ADR-0086 makes one authorized release package the external issue unit, and
+    ADR-0091 makes its membership configuration. The PDF this module seals is
+    rendered from the legacy ledger and binds no accepted Project Record
+    revision, so for an adopted project it would be a second external release,
+    in a second byte format, able to disagree with the package about what the
+    record said. The rule lives in the module both acts pass through rather
+    than on the routes, so neither door is left open.
+    """
+
+    project = _adopted_project(session, tmp_path, "adopted-release-act")
+
+    with pytest.raises(ReleaseRefusal, match="authorized release package"):
+        render_and_prepare_external_report(session, project_id=project.id)
+
+    # An artifact the legacy path already retained is refused by the release act
+    # too, not only by the act that would prepare a new one.
+    artifact = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="pre-adoption.pdf",
+        format="pdf",
+        pdf_bytes=PDF_A,
+        pdf_sha256=sha256(PDF_A).hexdigest(),
+        evaluated_on=date(2026, 3, 1),
+        ruleset_version="v0.4",
+        evaluation_context_json={},
+        provenance_mode="all-supported-sources",
+        record_context_json={"dependencies": [], "party_statements": []},
+    )
+    session.add(artifact)
+    session.flush()
+    with pytest.raises(ReleaseRefusal, match="authorized release package"):
+        release_external_report(
+            session,
+            project_id=project.id,
+            artifact_id=artifact.id,
+            principal=TEST_PRINCIPAL,
+        )
+
+
+def test_the_release_page_offers_the_issue_instead_for_an_adopted_project(
+    session, client, tmp_path
+):
+    """The page keeps retained history and drops both controls (ADR-0086)."""
+
+    project = _adopted_project(session, tmp_path, "adopted-release-page")
+
+    page = client.get(f"/reports/{project.slug}")
+
+    assert page.status_code == 200
+    assert f"/reports/{project.slug}/render" not in page.text
+    assert f"/work/{project.slug}" in page.text
+    assert "approved for sharing as part of one" in page.text

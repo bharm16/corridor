@@ -7,15 +7,22 @@ project person may later authorize.  Both supplement the working view; neither
 becomes a ``ReportRun`` and neither advances the comparison baseline, which
 ADR-0053 fixes to the last Report Approved for Release and nothing else.
 
-The comparison predecessor is selected once, per occurrence, from that one
-predicate (``changes.last_released_report``) and bound durably with the reading,
-so refreshing the working view, preparing another provenance mode, or retrying
-the same occurrence cannot silently re-point the predecessor or erase the
-weekly window.  The external PDF reuses the established render-and-retain
-boundary (``report_release.prepare_external_report``), so its exact bytes,
-digest, Evaluation, provenance mode, and covered identities are bound the same
-way a manual preparation binds them — and only a separate designated-human act
-can release it (ADR-0040).
+The comparison predecessor is selected once, per occurrence, from one
+predicate and bound durably with the reading, so refreshing the working view,
+preparing another provenance mode, or retrying the same occurrence cannot
+silently re-point the predecessor or erase the weekly window.  That predicate is
+``release_candidate.latest_authorized_package`` and nothing else: ADR-0086
+moved ADR-0053's marker from the newest released report run to the **last
+approved package**, so a wall clock over ``external_report_releases`` — the
+relation that binds no accepted Project Record revision (#635) — no longer
+selects anything.  A project with no authorized package therefore has no
+comparison predecessor and its reading stands on current state alone, which is
+what ADR-0086 requires rather than an invented prior issue occurrence.  The
+external PDF reuses the established render-and-retain boundary
+(``report_release.prepare_external_report``), so its exact bytes, digest,
+Evaluation, provenance mode, and covered identities are bound the same way a
+manual preparation binds them — and only a separate designated-human act can
+release it (ADR-0040).
 
 Each retained reading also names the accepted Project Record revision it was
 taken against (#602).  That reference is the authority for every value the
@@ -47,7 +54,7 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from corridor.changes import accepted_revision_id, last_released_report, snapshot
+from corridor.changes import accepted_revision_id, snapshot
 from corridor.export import to_pdf_bytes
 from corridor.models import (
     DueWorkOccurrence,
@@ -57,6 +64,7 @@ from corridor.models import (
     Project,
     ScheduledReportPublication,
 )
+from corridor.release_candidate import latest_authorized_package
 from corridor.report import build_report, render
 from corridor.report_release import RenderedExternalReport, prepare_external_report
 
@@ -95,6 +103,48 @@ class RetainedPublication:
     prepared_artifact_sha256: str | None
     state: str  # snapshot_only | prepared | released
     release_id: int | None
+
+
+@dataclass(frozen=True)
+class ComparisonWindow:
+    """The one comparison baseline a retained reading is measured from.
+
+    ``predecessor_package_id`` is the ``ReleasePackage`` this occurrence
+    compared against, and it is stored in the retained row's
+    ``predecessor_release_id`` column: ADR-0086 widened "the last Report
+    Approved for Release" from one sealed PDF to one authorized package, so the
+    column's meaning is unchanged and only the append-only store it references
+    moved.  ``None`` in all three fields is the honest answer before a project's
+    first authorized package — the reading renders current accepted state and
+    invents no prior issue occurrence.
+    """
+
+    predecessor_package_id: int | None
+    window_start: date | None
+    days: int | None
+
+
+def comparison_window(
+    session: Session, project_id: int, *, as_of: date
+) -> ComparisonWindow:
+    """Read the last approved package and measure the week from it.
+
+    One predicate, one derivation, one caller.  The predecessor is
+    ``release_candidate.latest_authorized_package``, which reads the package
+    chain head; nothing here orders anything by a clock, and nothing here reads
+    ``external_report_releases``.  The window opens at the predecessor's source
+    cutoff — the point past which that issue excluded later-arriving sources —
+    because that is the boundary the customer's last approved issue actually
+    closed its week at.
+    """
+
+    package = latest_authorized_package(session, project_id)
+    if package is None:
+        return ComparisonWindow(None, None, None)
+    window_start = package.source_cutoff.date()
+    return ComparisonWindow(
+        int(package.id), window_start, max(0, (as_of - window_start).days)
+    )
 
 
 @dataclass(frozen=True)
@@ -184,16 +234,8 @@ def execute_report_publication(
                     committed_dates=report.committed_dates,
                 )
 
-                predecessor = last_released_report(
-                    writing, project_id, provenance_mode=provenance_mode
-                )
-                window_start = (
-                    predecessor.evaluated_on if predecessor is not None else None
-                )
-                comparison_window_days = (
-                    max(0, (observation_date - window_start).days)
-                    if window_start is not None
-                    else None
+                window = comparison_window(
+                    writing, project_id, as_of=observation_date
                 )
 
                 prepared_artifact_id = None
@@ -231,13 +273,11 @@ def execute_report_publication(
                     revision_id=accepted_revision_id(writing, project_id),
                     configuration_version=configuration_version,
                     provenance_mode=provenance_mode,
-                    predecessor_release_id=(
-                        predecessor.id if predecessor is not None else None
-                    ),
+                    predecessor_release_id=window.predecessor_package_id,
                     prepared_artifact_id=prepared_artifact_id,
                     evaluated_on=observation_date,
-                    window_start=window_start,
-                    comparison_window_days=comparison_window_days,
+                    window_start=window.window_start,
+                    comparison_window_days=window.days,
                     ruleset_version=report.ruleset_version,
                     thresholds_json=reading_snapshot["thresholds"],
                     snapshot_json=reading_snapshot,
