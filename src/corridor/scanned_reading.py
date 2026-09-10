@@ -27,20 +27,28 @@ holds a credential; a refusal arrives as a Processing Failure with zero outbound
 requests and is recorded with the engine, the configuration and the page scope.
 
 **Three cases stay distinguishable.** Geometry is Textract's. Values come from
-the reader's native word tokens wherever the region has a usable native layer
-that puts a token's centre inside the cell box — those take the ordinary
-source-verification path, with the union of the tokens' boxes as the locator —
-and from Textract's own words otherwise, which is an Unconfirmed reading
-carrying both source and processing provenance. That assignment is this
-module's own rule, applied after the adapter returns a Textract-words reading.
-It is not the lane A re-map ADR-0094 measured (`remap_page`: glyph ink-box
-centre inside the Textract polygon, `ordered_text` over the assigned glyphs,
-hidden runs kept as clipped evidence), which the adapter runs only for
-`analyze_page(native_glyphs=)` under the `native-table-geometry-assistance`
-purpose and which this route, requesting `scanned-page-reading`, does not ask
-for. A readable corroborating source verifies through that source's citation
-and keeps its relation to the original unconfirmed reading; that upgrade is
-`corridor.unreadable_cell_admission`'s and is untouched here.
+the document's own glyphs wherever the region has a usable native layer and
+the measured lane A assignment puts a glyph in the cell — those take the
+ordinary source-verification path, with the union of the assigned glyphs'
+boxes as the locator — and from Textract's own words otherwise, which is an
+Unconfirmed reading carrying both source and processing provenance. The
+assignment is the one ADR-0094 measured, kept whole
+(`textract_adapter.assignment`, #810): glyph ink-box centre inside the
+Textract polygon, `ordered_text` over the assigned glyphs, hidden runs kept
+as clipped evidence, and the text and the locator of a cell come from the same
+assigned glyphs, never from a second reconstruction. Until #810 this module
+assigned the reader's *word tokens* by their centres instead, so a word
+printed across a cell border was kept whole here and split by the measured
+rule; that rule is gone. Composition is per region: an image-only cell on a
+mixed page has no glyph to take and stays an Unconfirmed reading beside its
+native neighbours. The derivation is a second logical purpose over the same
+retained response — `native-table-geometry-assistance` — and runs only when
+the authorization that covered the read explicitly names it too
+(`records.derivation_mismatches`); it never spends a second request, and both
+purposes are recorded on the reading. A readable corroborating source verifies
+through that source's citation and keeps its relation to the original
+unconfirmed reading; that upgrade is `corridor.unreadable_cell_admission`'s
+and is untouched here.
 
 There is no review screen. Nothing in this module offers a person a transcription
 to confirm, and `tests/test_no_transcription_review_surface.py` holds that shut.
@@ -74,13 +82,24 @@ from corridor.verify import normalize
 # from production code: `tests/test_textract_adapter.py` allows this module the
 # adapter and nothing below it, which is why the raster below is a protocol
 # declared here rather than the rung's own dataclass imported by name.
+from corridor_pdf_reader.textract_adapter.assignment import (
+    NativeGlyphAssignment,
+    assign_native_glyphs,
+)
 from corridor_pdf_reader.textract_adapter.boundary import (
     AuthorizedTextract,
     TextractProcessingFailure,
     open_boundary,
 )
-from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
-from corridor_pdf_reader.textract_adapter.records import PROVIDER_POSTURE, RequestBoundary
+from corridor_pdf_reader.textract_adapter.identity import NativeGlyphs, RequestConfiguration
+from corridor_pdf_reader.textract_adapter.records import (
+    NATIVE_GEOMETRY_PURPOSE,
+    PROVIDER_POSTURE,
+    AuthorizationRecord,
+    ProviderPosture,
+    RequestBoundary,
+    derivation_mismatches,
+)
 from corridor_pdf_reader.textract_adapter.rendering import rasterize_page
 
 
@@ -231,6 +250,7 @@ def read_scanned_page(
     rendition_sha256: str,
     source_sha256: str,
     native_layer: TokenLayer | None = None,
+    reader_page: dict[str, Any] | None = None,
     render_profile_id: str | None = None,
 ) -> ScannedPageReading:
     """Read one routed page through the adapter, and classify what came back.
@@ -241,6 +261,13 @@ def read_scanned_page(
     module hands it the raster and it either returns a reading or raises a
     Processing Failure, which `processing_failure` puts in the shape ingest
     records.
+
+    `reader_page` is the reader's own page — the same read `native_layer` was
+    built from, with its glyphs and hidden runs — and is what the native-glyph
+    assignment is derived over when the layer is usable and the authorization
+    names the derivation (`derive_native_assignment`). It is read from the
+    retained response the adapter just returned, so it is never a second
+    request.
     """
 
     regions = routed_textract_regions(routing)
@@ -262,10 +289,21 @@ def read_scanned_page(
         configuration=adapter.configuration.as_dict(),
         render_profile_id=render_profile_id,
     )
+    derivation = derive_native_assignment(
+        reading.page,
+        native_layer=native_layer,
+        reader_page=reader_page,
+        record=adapter.record,
+        posture=adapter.posture,
+    )
+    provenance["purposes"] = [adapter.request.purpose] + (
+        [NATIVE_GEOMETRY_PURPOSE] if derivation.assignment is not None else []
+    )
+    provenance["native_geometry"] = derivation.record
     values = classify_region_values(
         reading.page,
         regions=regions,
-        native_layer=native_layer,
+        assignment=derivation.assignment,
         provenance=provenance,
     )
     return ScannedPageReading(
@@ -305,22 +343,91 @@ def processing_failure(
 # --- the three cases -----------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class NativeDerivation:
+    """Whether the native-glyph assignment was derived for one page, and the record of why.
+
+    `assignment` is None when it was not, and `record` says which of the two
+    reasons applied — the page has no usable native layer, or the
+    authorization that covered the read does not name the derivation — so a
+    reading whose cells are all unconfirmed can be told apart from one whose
+    native values were never on offer.
+    """
+
+    assignment: NativeGlyphAssignment | None
+    record: dict[str, Any]
+
+
+def derive_native_assignment(
+    reading: dict[str, Any],
+    *,
+    native_layer: TokenLayer | None,
+    reader_page: dict[str, Any] | None,
+    record: AuthorizationRecord,
+    posture: ProviderPosture = PROVIDER_POSTURE,
+) -> NativeDerivation:
+    """The measured assignment over this page's retained reading, where it is allowed.
+
+    Two gates, in order. The region has to support native values: the layer
+    the reader built from this page must be the reader's own
+    (`_usable_native_tokens`, the frame rule) and the page must hold visible
+    glyphs, or there is nothing to assign — the scanned case. Then the
+    authorization that covered the read has to name the second purpose
+    (`derivation_mismatches`): the derivation reuses the retained response
+    and spends no request, so ADR-0098's transmission approval is not asked
+    again, but a record that does not say `native-table-geometry-assistance`
+    does not get it, whatever the posture document lists.
+    """
+
+    glyphs = _usable_native_glyphs(native_layer, reader_page)
+    if glyphs is None:
+        return NativeDerivation(
+            None,
+            {"purpose": NATIVE_GEOMETRY_PURPOSE, "derived": False, "reason": "no-usable-native-layer"},
+        )
+    refused = derivation_mismatches(record, NATIVE_GEOMETRY_PURPOSE, posture)
+    if refused:
+        return NativeDerivation(
+            None,
+            {
+                "purpose": NATIVE_GEOMETRY_PURPOSE,
+                "derived": False,
+                "reason": "authorization-does-not-name-the-purpose",
+                "mismatches": list(refused),
+            },
+        )
+    assignment = assign_native_glyphs(reading, glyphs)
+    return NativeDerivation(
+        assignment,
+        {
+            "purpose": NATIVE_GEOMETRY_PURPOSE,
+            "derived": True,
+            "text_source": assignment.text_source,
+            "assigned_cells": len(assignment.assigned_cells),
+            "empty_cells": len(assignment.cells) - len(assignment.assigned_cells),
+            "unassigned_glyphs": len(assignment.unassigned),
+            "clipped_runs": len(assignment.clipped),
+        },
+    )
+
+
 def classify_region_values(
     reading: dict[str, Any],
     *,
     regions: tuple[RoutedRegion, ...],
-    native_layer: TokenLayer | None,
+    assignment: NativeGlyphAssignment | None,
     provenance: dict[str, Any],
 ) -> tuple[ScannedCellValue, ...]:
     """Every routed region's cells, each as the case its evidence makes it.
 
     Geometry is Textract's throughout — the rows, columns and cell boxes are
     the ones it returned. What differs per cell is where the characters come
-    from. Where the region has a usable native layer and that layer puts a
-    word token's centre inside the cell box, the value is the document's own
-    text and the cell carries a locator back into the native reading, which is
-    the ordinary source-verification path. Where it does not, the value is
-    Textract's, and it is an Unconfirmed reading.
+    from. Where the assignment put the document's own glyphs in the cell, the
+    value is their text and the cell carries a locator that is the union of
+    those same glyphs' boxes — the ordinary source-verification path. Where it
+    did not, because the page has no assignment or this cell took no glyph,
+    the value is Textract's, and it is an Unconfirmed reading. On a mixed page
+    both cases sit in one table, each with its own evidence.
 
     A cell outside every routed region is not read here at all: on a mixed
     page the native regions keep their native values by the ordinary route, and
@@ -328,7 +435,6 @@ def classify_region_values(
     for.
     """
 
-    usable = _usable_native_tokens(native_layer)
     values: list[ScannedCellValue] = []
     for table_no, table in enumerate(reading.get("tables") or ()):
         for cell in table.get("cells") or ():
@@ -336,9 +442,12 @@ def classify_region_values(
             region = _containing_region(box, regions)
             if region is None:
                 continue
-            native = _native_text_in(box, usable)
-            if native is not None:
-                text, locator = native
+            assigned = (
+                assignment.cell(table_no, int(cell["row"]), int(cell["column"]))
+                if assignment is not None
+                else None
+            )
+            if assigned is not None and not assigned.empty and assigned.text.strip():
                 values.append(
                     ScannedCellValue(
                         region_id=region.region_id,
@@ -346,11 +455,11 @@ def classify_region_values(
                         row=int(cell["row"]),
                         column=int(cell["column"]),
                         box=box,
-                        value=text,
+                        value=assigned.text,
                         value_source="native_glyphs",
                         state="source_verified",
                         confidence=None,
-                        locator=locator,
+                        locator=_fixed(assigned.locator),
                         provenance=_cell_provenance(
                             provenance, region, source="native_glyphs"
                         ),
@@ -381,12 +490,13 @@ def classify_region_values(
 
 
 def _usable_native_tokens(layer: TokenLayer | None) -> tuple[Token, ...]:
-    """The native tokens a Textract cell box may be re-mapped over, if any.
+    """The native tokens whose page a Textract reading may be re-mapped over, if any.
 
     Only the reader-backed native layer qualifies, and the reason is
-    arithmetic rather than preference: its boxes are in the reader's displayed
-    crop, top-left origin, which is the frame the adapter puts a Textract box
-    in. The incumbent engine reports word boxes in its own page space, which
+    arithmetic rather than preference: its boxes, and the glyph boxes of the
+    reader page it was built from, are in the reader's displayed crop,
+    top-left origin, which is the frame the adapter puts a Textract box in.
+    The incumbent engine reports word boxes in its own page space, which
     differs on a rotated page, so re-mapping over it would silently mix two
     frames. A page with no usable layer has no native values, which is exactly
     the scanned case.
@@ -397,6 +507,22 @@ def _usable_native_tokens(layer: TokenLayer | None) -> tuple[Token, ...]:
     if layer.identity.engine != READER_ENGINE:
         return ()
     return layer.tokens
+
+
+def _usable_native_glyphs(
+    layer: TokenLayer | None, reader_page: dict[str, Any] | None
+) -> NativeGlyphs | None:
+    """The reader page's glyphs and hidden runs, when its layer passes the frame rule and it holds visible text."""
+
+    if not _usable_native_tokens(layer) or reader_page is None:
+        return None
+    characters = list((reader_page.get("characters") or {}).get("value") or ())
+    if not any(str(char.get("text") or "").strip() for char in characters):
+        return None
+    return NativeGlyphs(
+        characters=characters,
+        clipped=list((reader_page.get("clipped") or {}).get("value") or ()),
+    )
 
 
 def _containing_region(
@@ -410,39 +536,6 @@ def _containing_region(
         ):
             return region
     return None
-
-
-def _native_text_in(
-    box: PdfRect, tokens: tuple[Token, ...]
-) -> tuple[str, PdfRect] | None:
-    """The document's own text inside one Textract cell, with its locator.
-
-    A reader word token belongs to the cell when its centre is inside the cell
-    bounding box, and the value is those tokens' raw text joined by spaces in
-    token order. This is not the measured lane A assignment: `remap_page`
-    places each glyph by its own ink-box centre inside the cell polygon and
-    orders the assigned glyphs with `ordered_text`, so a word printed across a
-    cell border is split there and kept whole here
-    (`tests/test_scanned_reading.py` pins one such cell). The locator is the
-    union of the assigned tokens' own boxes — the region of the page the value
-    is actually printed in, not the cell Textract drew around it.
-    """
-
-    inside = [
-        token
-        for token in tokens
-        if box.x0 <= (token.polygon_pdf.x0 + token.polygon_pdf.x1) / 2 <= box.x1
-        and box.y0 <= (token.polygon_pdf.y0 + token.polygon_pdf.y1) / 2 <= box.y1
-    ]
-    text = " ".join(token.raw_text for token in inside if token.raw_text.strip())
-    if not text.strip():
-        return None
-    return text, PdfRect(
-        x0=min(token.polygon_pdf.x0 for token in inside),
-        y0=min(token.polygon_pdf.y0 for token in inside),
-        x1=max(token.polygon_pdf.x1 for token in inside),
-        y1=max(token.polygon_pdf.y1 for token in inside),
-    )
 
 
 def _cell_provenance(
@@ -468,6 +561,7 @@ def _cell_provenance(
         "processing": {
             "engine": TEXTRACT_ENGINE,
             "value_source": source,
+            "purposes": list(provenance.get("purposes") or ()),
             "extraction_run": provenance.get("extraction_run"),
             "authorization_record_id": provenance.get("record_id"),
             "scope_digest": provenance.get("scope_digest"),
@@ -936,6 +1030,7 @@ def read_routed_page(
     rendition_sha256: str,
     source_sha256: str,
     native_layer: TokenLayer | None = None,
+    reader_page: dict[str, Any] | None = None,
     render_profile_id: str | None = None,
 ) -> ScannedPageOutcome | None:
     """Read one routed page through the reader's boundary, or record why not.
@@ -974,6 +1069,7 @@ def read_routed_page(
             rendition_sha256=rendition_sha256,
             source_sha256=source_sha256,
             native_layer=native_layer,
+            reader_page=reader_page,
             render_profile_id=render_profile_id,
         )
     except TextractProcessingFailure as raised:

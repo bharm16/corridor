@@ -30,6 +30,7 @@ from corridor.scanned_reading import (
     ScannedRoutingRefused,
     check_transcription_against_reading,
     classify_region_values,
+    derive_native_assignment,
     processing_failure,
     read_scanned_page,
     record_unconfirmed_readings,
@@ -56,6 +57,7 @@ from corridor.unreadable_cells import (
 )
 from sqlalchemy import select
 from corridor_pdf_reader.textract.tests.helpers import Page, minimal_pdf
+from corridor_pdf_reader.textract_adapter.assignment import assign_native_glyphs
 from corridor_pdf_reader.textract_adapter.boundary import (
     TextractProcessingFailure,
     open_boundary,
@@ -66,7 +68,9 @@ from corridor_pdf_reader.textract_adapter.identity import (
     normalize,
 )
 from corridor_pdf_reader.textract_adapter.records import (
+    NATIVE_GEOMETRY_PURPOSE,
     PROVIDER_POSTURE,
+    CustomerAuthorization,
     ExperimentScope,
     RequestBoundary,
 )
@@ -276,6 +280,60 @@ def experiment_request(**overrides: Any) -> RequestBoundary:
     return RequestBoundary(**fields)
 
 
+def customer_authorization(**overrides: Any) -> CustomerAuthorization:
+    """A synthetic customer record; by default it names the read and the derivation both."""
+    fields: dict[str, Any] = dict(
+        record_id="auth-0810",
+        customer="a synthetic customer",
+        projects=frozenset({"project-1"}),
+        source_classes=frozenset({"scanned-pdf"}),
+        purposes=frozenset({"scanned-page-reading", NATIVE_GEOMETRY_PURPOSE}),
+        stages=frozenset({"shadow"}),
+        region="us-east-2",
+        posture_identity=PROVIDER_POSTURE.identity,
+        posture_digest=PROVIDER_POSTURE.digest,
+        signed_by="a named person",
+        signed_on="2026-09-10",
+    )
+    fields.update(overrides)
+    return CustomerAuthorization(**fields)
+
+
+def customer_request(**overrides: Any) -> RequestBoundary:
+    fields: dict[str, Any] = dict(
+        project="project-1",
+        source_class="scanned-pdf",
+        purpose="scanned-page-reading",
+        region="us-east-2",
+        posture_identity=PROVIDER_POSTURE.identity,
+        stage="shadow",
+    )
+    fields.update(overrides)
+    return RequestBoundary(**fields)
+
+
+def glyphs_of(text: str, x0: float, y0: float = 100.0, *, width: float = 12.0, height: float = 12.0, object_id: int = 7) -> list[dict[str, Any]]:
+    """The reader's glyphs for one printed word, `width` points each from `x0`."""
+    return [
+        {"text": char, "display_box": [x0 + width * index, y0, x0 + width * (index + 1), y0 + height], "object_id": object_id, "source_index": index}
+        for index, char in enumerate(text)
+    ]
+
+
+def reader_page_of(glyphs: list[dict[str, Any]], text: str) -> dict[str, Any]:
+    return {
+        "number": 1,
+        "geometry": {"rotation": 0},
+        "text": {"value": text},
+        "characters": {"value": glyphs},
+        "clipped": {"value": []},
+    }
+
+
+def reader_layer_of(page: dict[str, Any]) -> TokenLayer:
+    return reader_native_token_layer(page, identity=native_layer().identity, source_sha256=SOURCE_SHA)
+
+
 def opened(tmp_path: Path, service: Any, record: Any = ..., **options: Any):
     return open_boundary(
         experiment_scope() if record is ... else record,
@@ -477,10 +535,11 @@ def test_a_cell_with_re_mapped_native_glyphs_takes_the_source_verification_path(
     }
     routed = routed_textract_regions(reader_decision())
 
+    assignment = assign_native_glyphs(reading, NativeGlyphs(characters=glyphs_of("PLACEHOLDER", 100.0, width=7.0)))
     values = classify_region_values(
         reading,
         regions=routed,
-        native_layer=native_layer(("PLACEHOLDER", (100, 100, 180, 112))),
+        assignment=assignment,
         provenance={"rendition_sha256": RENDITION_SHA, "page_number": 1},
     )
 
@@ -490,30 +549,29 @@ def test_a_cell_with_re_mapped_native_glyphs_takes_the_source_verification_path(
         "native_glyphs",
         "source_verified",
     )
-    assert first.locator == PdfRect(x0=100_000, y0=100_000, x1=180_000, y1=112_000)
+    # The locator is the union of the eleven assigned glyphs' own boxes, and
+    # the same assignment supplied the text: no second reconstruction.
+    assert first.locator == PdfRect(x0=100_000, y0=100_000, x1=177_000, y1=112_000)
+    assert assignment.cells[0].locator == (100.0, 100.0, 177.0, 112.0)
     assert first.confidence is None
     # The cell Textract read 'PLACEH0LDER' out of is the same cell; only the
     # characters differ, and the document's own win.
     assert (second.value, second.state) == ("42", "unconfirmed")
 
 
-def test_the_routes_word_token_assignment_is_not_the_measured_lane_a_re_map():
-    """One document, two rules, one cell whose text differs between them.
+def test_the_route_takes_the_measured_lane_a_assignment_cell_for_cell():
+    """One document, one rule: the cell that used to differ now agrees.
 
     ADR-0094 measured lane A with `remap_page`: each glyph goes to the Textract
     polygon holding its own ink-box centre and the cell's text is `ordered_text`
-    over those glyphs. The adapter runs that rule only for
-    `analyze_page(native_glyphs=)`, and a customer request must name the
-    `native-table-geometry-assistance` purpose to receive it. The route
-    requests `scanned-page-reading`, receives Textract's words, and assigns
-    the reader's *word tokens* by their centres itself, so a word printed
-    across a cell border is split by the measured rule and kept whole by the
-    route's. This pins that difference with exact values on both sides. Moving
-    the route onto the measured rule needs a second request boundary under the
-    geometry purpose (the check refuses glyphs under any other) and a per-cell
-    locator the re-mapped reading does not carry (its cells hold a glyph count,
-    not the glyph boxes), so it is not a change to this module alone; when it
-    lands, this test fails and is replaced by one asserting the split.
+    over those glyphs, so a word printed across a cell border is split there.
+    Before #810 the route assigned the reader's *word tokens* by their centres
+    and kept that word whole; this test's predecessor pinned TOTAL against
+    TOT / AL. The route now composes from the shared assignment
+    (`textract_adapter.assignment`), so both cells carry the split the
+    measured rule makes, each with a locator that is the union of its own
+    assigned glyphs' boxes — the evidence `remap_page`'s glyph count could not
+    supply.
     """
     # Textract drew two cells split at x=200 and read the word, with a zero
     # for the O, wholly into the left one.
@@ -526,37 +584,31 @@ def test_the_routes_word_token_assignment_is_not_the_measured_lane_a_re_map():
     response = page.response()
     # The document's own glyphs: TOTAL at 12 points per glyph from x=165, so
     # T, O, T have their centres left of the border and A, L right of it.
-    glyphs = [
-        {"text": char, "display_box": [165.0 + 12.0 * index, 100.0, 177.0 + 12.0 * index, 112.0], "object_id": 7, "source_index": index}
-        for index, char in enumerate("TOTAL")
-    ]
-    reader_page = {
-        "number": 1,
-        "geometry": {"rotation": 0},
-        "text": {"value": "TOTAL"},
-        "characters": {"value": glyphs},
-        "clipped": {"value": []},
-    }
-    layer = reader_native_token_layer(
-        reader_page,
-        identity=native_layer().identity,
-        source_sha256=SOURCE_SHA,
-    )
+    glyphs = glyphs_of("TOTAL", 165.0)
+    layer = reader_layer_of(reader_page_of(glyphs, "TOTAL"))
     assert [token.raw_text for token in layer.tokens] == ["TOTAL"], "the reader assembles one word across the border"
 
     measured = normalize(response, number=1, size=(612.0, 792.0), rotation=0, glyphs=NativeGlyphs(characters=glyphs))
     words = normalize(response, number=1, size=(612.0, 792.0), rotation=0)
+    assignment = assign_native_glyphs(words, NativeGlyphs(characters=glyphs))
     routed = classify_region_values(
         words,
         regions=routed_textract_regions(reader_decision()),
-        native_layer=layer,
+        assignment=assignment,
         provenance={},
     )
 
     assert measured["text_source"] == "pdfium-glyphs"
     assert [(cell["text"], cell["glyphs"]) for cell in measured["tables"][0]["cells"]] == [("TOT", 3), ("AL", 2)]
-    assert [(value.column, value.value, value.value_source) for value in routed] == [(0, "TOTAL", "native_glyphs")]
-    assert routed[0].locator == PdfRect(x0=165_000, y0=100_000, x1=225_000, y1=112_000)
+    assert [(cell.text, len(cell.glyphs)) for cell in assignment.cells] == [("TOT", 3), ("AL", 2)]
+    assert [(value.column, value.value, value.value_source) for value in routed] == [(0, "TOT", "native_glyphs"), (1, "AL", "native_glyphs")]
+    assert [value.locator for value in routed] == [
+        PdfRect(x0=165_000, y0=100_000, x1=201_000, y1=112_000),
+        PdfRect(x0=201_000, y0=100_000, x1=225_000, y1=112_000),
+    ]
+    # The observation keeps its own words beside the assignment.
+    assert words["tables"][0]["cells"][0]["text"] == "T0TAL" and words["tables"][0]["cells"][0]["word_ids"]
+    assert (assignment.cells[0].ocr_text, assignment.cells[1].ocr_text) == ("T0TAL", "")
 
 
 def test_the_incumbent_native_layer_is_not_a_usable_native_layer():
@@ -569,14 +621,24 @@ def test_the_incumbent_native_layer_is_not_a_usable_native_layer():
     incumbent = incumbent.model_copy(
         update={"identity": incumbent.identity.model_copy(update={"engine": "pymupdf"})}
     )
+    glyphs = glyphs_of("PLACEHOLDER", 100.0, width=7.0)
 
+    derivation = derive_native_assignment(
+        reading,
+        native_layer=incumbent,
+        reader_page=reader_page_of(glyphs, "PLACEHOLDER"),
+        record=customer_authorization(),
+        posture=ACCEPTED_POSTURE,
+    )
     (value,) = classify_region_values(
         reading,
         regions=routed_textract_regions(reader_decision()),
-        native_layer=incumbent,
+        assignment=derivation.assignment,
         provenance={},
     )
 
+    assert derivation.assignment is None
+    assert derivation.record == {"purpose": NATIVE_GEOMETRY_PURPOSE, "derived": False, "reason": "no-usable-native-layer"}
     assert (value.value_source, value.state) == ("textract_words", "unconfirmed")
 
 
@@ -610,11 +672,125 @@ def test_a_cell_outside_every_routed_region_is_not_read_here():
     values = classify_region_values(
         reading,
         regions=routed_textract_regions(decision),
-        native_layer=None,
+        assignment=None,
         provenance={},
     )
 
     assert [value.value for value in values] == ["in"]
+
+
+# --- per-region composition over one retained response --------------------------
+
+
+def mixed_response() -> dict[str, Any]:
+    """One row of two cells: the left over printed text, the right over an image.
+
+    Textract reads both. The document's glyphs cover only the left one, so the
+    left cell can take its native value and the right cell cannot.
+    """
+    page = Page()
+    printed = page.word("T0TAL", (100, 100, 160, 112))
+    pictured = page.word("42", (220, 100, 240, 112))
+    page.line([printed, pictured])
+    left = page.cell(1, 1, (90, 95, 200, 118), [printed])
+    right = page.cell(1, 2, (200, 95, 260, 118), [pictured])
+    page.table((90, 95, 260, 118), [left, right])
+    return page.response()
+
+
+def mixed_decision() -> PageRoutingDecision:
+    return reader_decision(
+        page_mode="both",
+        reason="mixed_native_and_image_regions",
+        regions=(
+            RoutingRegion(region_id="page", box=box(), mode="both", reason="native_decode_requires_ocr_comparison"),
+        ),
+    )
+
+
+def _mixed_page_read(tmp_path, record: Any, boundary: RequestBoundary):
+    service = RecordedService(mixed_response())
+    adapter = opened(tmp_path, service, record, boundary=boundary)
+    glyphs = glyphs_of("TOTAL", 100.0)
+    reader_page = reader_page_of(glyphs, "TOTAL")
+    reading = read_scanned_page(
+        adapter,
+        raster_of(tmp_path),
+        routing=mixed_decision(),
+        page_no=1,
+        rendition_sha256=RENDITION_SHA,
+        source_sha256=SOURCE_SHA,
+        native_layer=reader_layer_of(reader_page),
+        reader_page=reader_page,
+    )
+    return reading, service, adapter
+
+
+def test_a_mixed_page_composes_native_and_unconfirmed_cells_from_one_retained_response(tmp_path):
+    """Native where the glyphs are, Unconfirmed where they are not, one request, both purposes recorded."""
+    reading, service, adapter = _mixed_page_read(tmp_path, customer_authorization(), customer_request())
+
+    native, unconfirmed = reading.values
+    assert (native.value, native.value_source, native.state) == ("TOTAL", "native_glyphs", "source_verified")
+    assert native.locator == PdfRect(x0=100_000, y0=100_000, x1=160_000, y1=112_000)
+    assert (unconfirmed.value, unconfirmed.value_source, unconfirmed.state) == ("42", "textract_words", "unconfirmed")
+    assert unconfirmed.locator is None and unconfirmed.confidence == pytest.approx(0.99)
+    assert reading.unconfirmed_readings == (unconfirmed,)
+    # The derivation ran over the response the read returned: one request,
+    # one observation, and both purposes on the reading and on every cell.
+    assert service.calls == 1 and adapter.receipt.calls == 1
+    assert reading.provenance["purposes"] == ["scanned-page-reading", NATIVE_GEOMETRY_PURPOSE]
+    assert reading.provenance["native_geometry"] == {
+        "purpose": NATIVE_GEOMETRY_PURPOSE,
+        "derived": True,
+        "text_source": "pdfium-glyphs",
+        "assigned_cells": 1,
+        "empty_cells": 1,
+        "unassigned_glyphs": 0,
+        "clipped_runs": 0,
+    }
+    for value in reading.values:
+        assert value.provenance["processing"]["purposes"] == reading.provenance["purposes"]
+        assert value.provenance["processing"]["raw_response_digest"] == reading.provenance["raw_response_digest"]
+        assert value.provenance["processing"]["normalized_reading_digest"] == reading.provenance["normalized_reading_digest"]
+    # The observation itself still holds Textract's words for the native cell.
+    assert reading.reading["tables"][0]["cells"][0]["text"] == "T0TAL"
+    assert reading.reading["tables"][0]["cells"][0]["word_ids"]
+
+
+@pytest.mark.parametrize(
+    ("record", "boundary", "expected"),
+    [
+        pytest.param(
+            customer_authorization(purposes=frozenset({"scanned-page-reading"})),
+            customer_request(),
+            f"purpose: {NATIVE_GEOMETRY_PURPOSE!r} is not named by record 'auth-0810' (scanned-page-reading)",
+            id="customer-record-names-only-the-read",
+        ),
+        pytest.param(
+            experiment_scope(),
+            experiment_request(),
+            f"purpose: {NATIVE_GEOMETRY_PURPOSE!r} is not the purpose of experiment scope 'exp-0001' ('extraction-measurement')",
+            id="experiment-scope-names-another-purpose",
+        ),
+    ],
+)
+def test_an_authorization_that_does_not_name_the_derivation_gets_no_native_values(tmp_path, record, boundary, expected):
+    """The posture listing the purpose does not extend a record; the cells stay Textract's, unconfirmed."""
+    reading, service, _ = _mixed_page_read(tmp_path, record, boundary)
+
+    assert [(value.value, value.value_source, value.state) for value in reading.values] == [
+        ("T0TAL", "textract_words", "unconfirmed"),
+        ("42", "textract_words", "unconfirmed"),
+    ]
+    assert service.calls == 1
+    assert reading.provenance["purposes"] == [boundary.purpose]
+    assert reading.provenance["native_geometry"] == {
+        "purpose": NATIVE_GEOMETRY_PURPOSE,
+        "derived": False,
+        "reason": "authorization-does-not-name-the-purpose",
+        "mismatches": [expected],
+    }
 
 
 # --- Tier 2 disagreement --------------------------------------------------------
@@ -738,6 +914,28 @@ def test_a_textract_only_value_is_recorded_as_an_unconfirmed_reading(session, pr
     assert observation.provider_model_version == binding["model_version"]
     assert observation.provider_request_id == binding["request_identity"]["request_id"]
     assert observation.observed_at.isoformat(timespec="seconds") == binding["recorded_at"]
+
+
+def test_on_a_mixed_page_only_the_image_cell_is_recorded_and_it_binds_to_the_shared_observation(session, project, tmp_path):
+    """The native cell took its value from the same response, but it is on the source-verification path, not in this class."""
+    document = _document(session, project, filename="matrix/mixed.pdf", text="TOTAL", text_source="ocr")
+    reading, _, _ = _mixed_page_read(tmp_path, customer_authorization(), customer_request())
+
+    appended = record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=reading
+    )
+
+    [row] = appended
+    assert (row.value, row.state, row.source_region_id) == ("42", "unconfirmed", "page")
+    assert row.cell_key == "scan:p1:t0:r0:c1"
+    [observation] = session.scalars(select(ScannedPageObservation)).all()
+    assert row.observation_id == observation.id
+    assert observation.authorization_record_id == "auth-0810"
+    assert observation.raw_response_sha256 == reading.provenance["raw_response_digest"]
+    assert observation.reading_sha256 == reading.provenance["normalized_reading_digest"]
+    native = reading.values[0]
+    assert native.state == "source_verified"
+    assert native.provenance["processing"]["raw_response_digest"] == observation.raw_response_sha256
 
 
 def test_an_unconfirmed_reading_displays_flagged(session, project, tmp_path):

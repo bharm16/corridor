@@ -56,6 +56,7 @@ import json
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -770,6 +771,12 @@ def _extract_pages(
     reader_layers = {
         layer.page_no: layer for layer in native_reading.token_layers
     }
+    # The reader's own pages, glyphs included: what the scanned route's
+    # native-glyph assignment is derived over (#810), from the read already
+    # made rather than a second decode.
+    reader_pages = {
+        int(page["number"]): page for page in paired_read.facts["pages"]
+    }
     # Native text and inventory are projections of one authenticated reading;
     # the page-facts command adds inventory geometry without decoding again.
     reader_inventories = reader_page_inventories(paired_read.facts)
@@ -812,6 +819,7 @@ def _extract_pages(
             source_sha256=source_sha256,
             routing=routing,
             native_layer=reader_layer,
+            reader_page=reader_pages.get(page_no),
             render_profile_id=ocr_derivative.profile_id,
         )
         ocr_text.extend(outcome.text)
@@ -882,6 +890,7 @@ def _read_scanned_page(
     source_sha256: str,
     routing: PageRoutingDecision,
     native_layer: TokenLayer | None,
+    reader_page: dict[str, Any] | None,
     render_profile_id: str,
 ) -> _ScannedPageOutcome:
     """One page through the authorized adapter, as the page loop records it.
@@ -903,6 +912,7 @@ def _read_scanned_page(
         rendition_sha256=source_sha256,
         source_sha256=source_sha256,
         native_layer=native_layer,
+        reader_page=reader_page,
         render_profile_id=render_profile_id,
     )
     if outcome is None:

@@ -35,6 +35,7 @@ from corridor_pdf_reader import provenance
 from corridor_pdf_reader.textract import remap as imported_remap
 from corridor_pdf_reader.textract.blocks import METHOD
 from corridor_pdf_reader.textract.tests.helpers import Page, minimal_pdf
+from corridor_pdf_reader.textract_adapter.assignment import assign_native_glyphs
 from corridor_pdf_reader.textract_adapter.boundary import (
     AuthorizedTextract,
     TextractProcessingFailure,
@@ -583,6 +584,62 @@ def test_native_glyphs_fill_textract_geometry_and_textract_words_are_never_store
     assert len(service.calls) == 1, "one response, two readings, one charge"
 
 
+def test_the_shared_assignment_is_the_measured_re_map_with_its_result_kept(tmp_path):
+    """Cell for cell the text `remap_page` writes, plus everything it discards (#810).
+
+    The route composes from this assignment, so this is the equality that
+    makes "the route takes the measured rule" a true sentence without editing
+    the frozen module: same glyph placement, same `ordered_text`, and beside it
+    the assigned glyphs with their boxes, the observation's own words and word
+    ids, and the empty cell stated as empty.
+    """
+    pdf = minimal_pdf(tmp_path / "total.pdf", text="Total")
+    glyphs = native_glyphs(pdf, 1)
+    response = response_around_total()
+    words = normalize(response, number=1, size=(612.0, 792.0), rotation=0)
+    measured = normalize(response, number=1, size=(612.0, 792.0), rotation=0, glyphs=glyphs)
+
+    assignment = assign_native_glyphs(words, glyphs)
+
+    assert [cell.text for cell in assignment.cells] == [cell["text"] for cell in measured["tables"][0]["cells"]] == ["Total", ""]
+    assert [len(cell.glyphs) for cell in assignment.cells] == [cell["glyphs"] for cell in measured["tables"][0]["cells"]] == [5, 0]
+    assert assignment.text_source == measured["text_source"] == "pdfium-glyphs"
+    assert [g.text for g in assignment.unassigned] == [] and measured["outside"] == []
+    filled, empty = assignment.cells
+    assert [glyph.text for glyph in filled.glyphs] == list("Total")
+    # The union of the assigned glyphs' own boxes, at the two decimals the frozen `union_box` keeps.
+    assert filled.locator == pytest.approx(
+        (min(g.box[0] for g in filled.glyphs), min(g.box[1] for g in filled.glyphs), max(g.box[2] for g in filled.glyphs), max(g.box[3] for g in filled.glyphs)),
+        abs=0.005,
+    )
+    assert all(glyph.source_index is not None and glyph.object_id is not None for glyph in filled.glyphs)
+    assert (filled.ocr_text, filled.ocr_confidence) == ("TOTAL", 99.0) and len(filled.ocr_word_ids) == 1
+    assert (empty.empty, empty.text, empty.locator, empty.ocr_text, empty.ocr_word_ids) == (True, "", None, "", ())
+    # The observation is kept, not rewritten: the same object, words and ids intact.
+    assert assignment.observation is words
+    assert words["tables"][0]["cells"][0]["text"] == "TOTAL" and words["tables"][0]["cells"][0]["word_ids"]
+    assert "glyphs" not in words["tables"][0]["cells"][0] and "text_source" not in words
+
+
+def test_the_shared_assignment_states_unassigned_whitespace_and_clipped_content():
+    page = Page()
+    word = page.word("AB", (100, 100, 124, 112))
+    page.line([word])
+    page.table((90, 95, 130, 118), [page.cell(1, 1, (90, 95, 130, 118), [word])])
+    words = normalize(page.response(), number=1, size=(612.0, 792.0), rotation=0)
+    inside = [{"text": "A", "display_box": [100.0, 100.0, 112.0, 112.0], "object_id": 1, "source_index": 0}]
+    space = [{"text": " ", "display_box": [112.0, 100.0, 116.0, 112.0], "object_id": 1, "source_index": 1}]
+    outside = [{"text": "Z", "display_box": [400.0, 100.0, 412.0, 112.0], "object_id": 2, "source_index": 2}]
+    hidden = [{"text": "H", "display_box": [10.0, 10.0, 22.0, 22.0], "object_id": 3, "source_index": 3}]
+
+    assignment = assign_native_glyphs(words, NativeGlyphs(characters=inside + space + outside, clipped=hidden))
+
+    (cell,) = assignment.cells
+    assert (cell.text, [g.text for g in cell.glyphs], cell.locator) == ("A", ["A"], (100.0, 100.0, 112.0, 112.0))
+    assert [(g.text, g.box) for g in assignment.unassigned] == [("Z", (400.0, 100.0, 412.0, 112.0))]
+    assert [(g.text, g.object_id) for g in assignment.clipped] == [("H", 3)]
+
+
 @pytest.mark.parametrize("purpose", ["scanned-page-reading", "image-region-reading"])
 @pytest.mark.parametrize("record_names_native", [False, True])
 @pytest.mark.parametrize("cached", [False, True])
@@ -910,6 +967,7 @@ def test_the_named_caller_reaches_the_adapter_and_not_the_rung():
                 imported.add(node.module)
 
     assert imported == {
+        "corridor_pdf_reader.textract_adapter.assignment",
         "corridor_pdf_reader.textract_adapter.boundary",
         "corridor_pdf_reader.textract_adapter.identity",
         "corridor_pdf_reader.textract_adapter.records",
