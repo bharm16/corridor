@@ -79,7 +79,7 @@ def test_public_capture_and_normal_dispatch_share_delivery_identity(session):
     session.expire_all()
     captured = capture_minutes(session, document, client=MinutesClient())
     assert captured.source_family == delivery.envelope.external_identity
-    assert extract_any(session, document, client=MinutesClient()) == []
+    assert list(extract_any(session, document, client=MinutesClient())) == []
     assert session.scalars(select(MinutesCapture).where(MinutesCapture.document_id == document.id)).all() == [captured]
 
 

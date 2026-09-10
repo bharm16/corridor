@@ -265,8 +265,18 @@ def native_matrix_candidates(
     return tuple(candidates)
 
 
-def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
-    """Whether this extraction output belongs at the scoped Fact command."""
+def rows_carry_source_facts(candidates: tuple[Candidate, ...]) -> bool:
+    """Whether these rows are ones the scoped Fact command would materialize.
+
+    A question about rows, and only that. It was the answer to "which command
+    records this reading", which is a question about the reader that produced
+    them: a reading of no rows returns False here whatever read it, so a native
+    spreadsheet reading of the published empty template chose the legacy command
+    purely for having found no conflicts. A routed reading declares its output
+    class instead (`pipeline.ROUTE_OUTPUTS`) and this predicate checks it
+    (`require_source_fact_class`). The unrouted page batch in `extract_batch`
+    still decides from its rows.
+    """
 
     carries_structured_cells = any(
         candidate.payload_json.get("tier") == "native"
@@ -280,6 +290,27 @@ def carries_source_facts(candidates: tuple[Candidate, ...]) -> bool:
     return carries_structured_cells or any(
         _is_statement_wording_candidate(candidate) for candidate in candidates
     )
+
+
+def require_source_fact_class(
+    candidates: tuple[Candidate, ...], *, declares_source_facts: bool
+) -> None:
+    """Refuse rows that contradict the output class their route declared.
+
+    The declaration is what chooses the command, so this is the consistency
+    check on it rather than the decision. It is one-directional on purpose. Rows
+    that materialize into Facts on a route that declared legacy Extracted
+    Proposals are a defect: the Facts would simply never be appended, silently.
+    A `source_facts` route with no such rows is not a defect at all -- it is a
+    reading with nothing in it, which still owns its segments, its receipt and
+    its lineage.
+    """
+
+    if rows_carry_source_facts(candidates) and not declares_source_facts:
+        raise ValueError(
+            "extraction rows materialize source Facts on a route that declared "
+            "legacy Extracted Proposals"
+        )
 
 
 def append_structured_cell_facts(

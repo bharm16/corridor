@@ -257,6 +257,11 @@ def test_sue_table_pipeline_records_exact_zero_model_usage(
         def complete(self, **_):
             raise AssertionError("native SUE extraction must not call a model")
 
+    # One file format, two readings: a probe table has no controlled Fact type
+    # for any of its columns, so the route declares the legacy class and the
+    # reading is recorded by the ordinary run command.
+    assert pipeline.extraction_route(document).output == pipeline.EXTRACTED_PROPOSALS
+
     [proposal] = pipeline.extract_any(
         session,
         document,
