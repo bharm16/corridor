@@ -35,7 +35,6 @@ from corridor.models import (
     DocPage,
     Document,
     DocumentNotification,
-    DocumentNotificationAttempt,
     DocumentNotificationDispatch,
     EvidenceLink,
     PersonIdentity,
@@ -339,39 +338,6 @@ def test_unresolved_contact_never_invents_a_recipient(runtime_database):
     assert dispatch.delivery_state == "failed"
     assert dispatch.delivery_limitation == notifications.LIMITATION_UNRESOLVED_CONTACT
     assert "dana@example.com" not in {r.recipient_contact for r in adapter.sent}
-
-
-def test_failure_retries_then_terminal_failure(runtime_database):
-    factory = runtime_database.session_factory
-    ctx = _committed_loss(factory, index=5, reviewer_member=False)
-    adapter = RecordingDeliveryAdapter(
-        DeliveryOutcome(status="failed", error_code="smtp_550", retryable=True)
-    )
-    start = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
-
-    first = _sweep(factory, ctx["project_id"], adapter, now=start)
-    assert first["retry_due"] == 1
-    assert _dispatch_for(factory, ctx["project_id"], ctx["assignee"]).delivery_state == "retry_due"
-
-    _sweep(factory, ctx["project_id"], adapter, now=start + timedelta(seconds=120))
-    third = _sweep(factory, ctx["project_id"], adapter, now=start + timedelta(seconds=600))
-    assert third["failed"] == 1
-    dispatch = _dispatch_for(factory, ctx["project_id"], ctx["assignee"])
-    assert dispatch.delivery_state == "failed"
-    attempts = _attempts_for(factory, dispatch.id)
-    assert len(attempts) == 3
-    assert all(a.outcome == "failed" for a in attempts)
-
-
-def _attempts_for(factory, dispatch_id):
-    with factory() as s:
-        return list(
-            s.scalars(
-                select(DocumentNotificationAttempt)
-                .where(DocumentNotificationAttempt.dispatch_id == dispatch_id)
-                .order_by(DocumentNotificationAttempt.attempt_number)
-            ).all()
-        )
 
 
 def test_crash_after_commit_preserves_the_notification(runtime_database):

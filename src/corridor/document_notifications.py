@@ -6,10 +6,14 @@ Documentation Review's applicable current support, and an authentic registered
 source transition that affects a current Commitment or a
 relocation/removal/abandonment Constraint.  A second delivery queue was rejected:
 it would duplicate the leases, retries, clock, and crash recovery the one
-supervised Due Work runtime (#332) already owns.  So this module reuses the
-delivery *adapter seam* and the *runtime* from :mod:`corridor.notifications`, and
-adds only what those two categories genuinely need that the assignment occurrence
-cannot carry:
+supervised Due Work runtime (#332) already owns.  Reusing the delivery *adapter
+seam* and the *runtime* was the intent, but the state machine around them was
+private to :mod:`corridor.notifications` and this module copied it — the queue,
+the retry arithmetic, the attempt receipts, and the pass receipt, which then
+drifted from their originals.  That machine is
+:mod:`corridor.outgoing_dispatch` now and this module registers a category with
+it, so what remains here is only what those two categories genuinely need that
+the assignment occurrence cannot carry:
 
 - **Discovery** — ``register_project_document_notifications`` reads *committed*
   state and registers one immutable occurrence per (event, recipient), bound to
@@ -26,12 +30,11 @@ cannot carry:
   source relationship.
 
 - **Delivery** — ``deliver_project_document_notifications`` is what the runtime's
-  handler calls.  It re-checks, before every send, that the underlying condition is
+  handler calls.  The shared machine owns the pass; this module contributes the
+  currency re-check that runs before every send — that the underlying condition is
   still current, that the recipient is still a project member, and that a typed
-  verified contact exists; it does its provider I/O holding no project mutation
-  lock, and retains the provider result, bounded retry state, and an explicit
-  uncertain outcome.  An ambiguous correspondence is delivered honestly as
-  uncertain and never as a proved change.
+  verified contact exists — and the message content.  An ambiguous correspondence
+  is delivered honestly as uncertain and never as a proved change.
 
 This module deliberately imports no runtime and no web layer; the runtime depends
 on it for the one handler key.
@@ -39,16 +42,15 @@ on it for the one handler key.
 
 from __future__ import annotations
 
-from corridor import digests
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from corridor import access, support_update_routing
+from corridor import digests, outgoing_dispatch, support_update_routing
 from corridor.documentation_checklist import APPROVAL_INTERPRETATION, read_checklist
 from corridor.models import (
     CommitmentLineage,
@@ -58,21 +60,13 @@ from corridor.models import (
     DocumentNotificationAttempt,
     DocumentNotificationDispatch,
     DocumentationFieldConfirmation,
-    DueWorkSchedule,
     EvidenceLink,
     ExternalPartyStatement,
     FollowUpPlanReceipt,
-    PersonIdentity,
     ProjectRosterEntry,
     StatementCoordinationReceipt,
 )
-from corridor.notifications import (
-    DeliveryAdapter,
-    DeliveryOutcome,
-    DeliveryRequest,
-    LIMITATION_REVOKED_MEMBERSHIP,
-    LIMITATION_UNRESOLVED_CONTACT,
-)
+from corridor.outgoing_dispatch import Currency, DeliveryAdapter
 from corridor.statement_lifecycle import current_lineage_statement
 from corridor.work_decisions import (
     CoordinationSubject,
@@ -565,8 +559,10 @@ def _register_occurrence(
         )
     )
     if existing is None:
-        contact, limitation = _resolve_contact(session, recipient.principal_subject)
-        idempotency_key = _sha256(
+        contact, limitation = outgoing_dispatch.resolve_contact(
+            session, recipient.principal_subject
+        )
+        idempotency_key = digests.canonical_sha256(
             {"occurrence_key": occurrence_key, "channel": CHANNEL_EMAIL}
         )
         session.execute(
@@ -589,7 +585,7 @@ def _register_occurrence(
 
 
 def _occurrence_key(event: _Event, recipient_principal: str) -> str:
-    return _sha256(
+    return digests.canonical_sha256(
         {
             "category": event.category,
             "subject_kind": event.subject_kind,
@@ -639,26 +635,21 @@ def _current_assignee_subject(
     return entry.principal_subject, "resolved"
 
 
-def _resolve_contact(
-    session: Session, recipient_principal: str
-) -> tuple[str | None, str | None]:
-    """The verified contact for a principal, or a visible delivery limitation.
+# --- Delivery sweep: the category's contribution to the shared machine ----
 
-    Contact resolves only through the typed verified-contact record; an
-    unresolved mapping is a limitation, never a guessed or name-inferred address.
-    """
 
-    identity = session.scalar(
-        select(PersonIdentity).where(
-            PersonIdentity.principal_subject == recipient_principal
-        )
+def _document_category() -> outgoing_dispatch.DispatchCategory:
+    """What the document-interruption family contributes to the shared machine."""
+    return outgoing_dispatch.DispatchCategory(
+        name="document",
+        handler_key=DOCUMENT_NOTIFICATION_HANDLER,
+        notification_model=DocumentNotification,
+        dispatch_model=DocumentNotificationDispatch,
+        attempt_model=DocumentNotificationAttempt,
+        result_schema_version=_RESULT_SCHEMA_VERSION,
+        currency=_occurrence_currency,
+        subject_summary=_subject_summary,
     )
-    if identity is None:
-        return None, LIMITATION_UNRESOLVED_CONTACT
-    return identity.email_normalized, None
-
-
-# --- Delivery sweep -------------------------------------------------------
 
 
 def deliver_project_document_notifications(
@@ -676,193 +667,59 @@ def deliver_project_document_notifications(
 ) -> dict[str, Any]:
     """Deliver this project's due document notifications through the adapter.
 
-    Each dispatch is processed in its own short transactions and the provider
-    call holds no transaction at all, so provider I/O never spans a project
-    mutation lock. Before every send the underlying condition, the recipient's
-    membership, and the typed contact are re-checked; a resolved condition is a
-    benign skip and an obsolete recipient a visible limitation. Bounded by
-    ``budget``.
+    The shared dispatch machine owns the pass: each dispatch is processed in its
+    own short transactions, the provider call holds no transaction at all, and the
+    pass is bounded by ``budget``. What this category adds is
+    ``_occurrence_currency`` — before every send the underlying loss or change,
+    the recipient's membership, and the typed contact are re-checked, so a
+    resolved condition is a benign skip and an obsolete recipient a visible
+    limitation.
     """
 
-    now = _aware_utc(clock.now())
-    with session_factory() as reading:
-        dispatch_ids = list(
-            reading.scalars(
-                select(DocumentNotificationDispatch.id)
-                .where(
-                    DocumentNotificationDispatch.project_id == project_id,
-                    DocumentNotificationDispatch.channel == channel,
-                    or_(
-                        DocumentNotificationDispatch.delivery_state == "queued",
-                        (
-                            (DocumentNotificationDispatch.delivery_state == "retry_due")
-                            & (DocumentNotificationDispatch.next_attempt_at <= now)
-                        ),
-                    ),
-                )
-                .order_by(DocumentNotificationDispatch.id)
-                .limit(budget)
-            ).all()
-        )
-
-    counts = {
-        "considered": 0,
-        "completed": 0,
-        "retry_due": 0,
-        "failed": 0,
-        "uncertain": 0,
-        "skipped": 0,
-    }
-    for dispatch_id in dispatch_ids:
-        counts["considered"] += 1
-        contact: str | None = None
-        summary: dict[str, Any] = {}
-        idempotency_key = ""
-        attempt_from = 0
-        status = "current"
-        with session_factory() as checking:
-            with checking.begin():
-                dispatch = checking.get(
-                    DocumentNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.channel != channel:
-                    continue
-                if not _is_deliverable(dispatch, now=now):
-                    continue
-                notification = checking.get(
-                    DocumentNotification, dispatch.notification_id
-                )
-                status, contact, limitation = _occurrence_currency(checking, notification)
-                summary = _subject_summary(checking, notification)
-                idempotency_key = dispatch.idempotency_key
-                attempt_from = dispatch.attempt_count
-                if status != "current":
-                    _finalize_limitation(
-                        checking,
-                        dispatch,
-                        limitation=limitation,
-                        owner=owner,
-                        now=_aware_utc(clock.now()),
-                    )
-                    # A resolved condition is a benign skip: the interruption is
-                    # no longer current and needs no send. A revoked membership or
-                    # an unresolved contact is a limitation the operator should see.
-                    if status == "resolved":
-                        counts["skipped"] += 1
-                    else:
-                        counts["failed"] += 1
-                    continue
-
-        if status != "current":
-            continue
-
-        try:
-            outcome = adapter.deliver(
-                DeliveryRequest(
-                    channel=channel,
-                    recipient_contact=contact,
-                    idempotency_key=idempotency_key,
-                    subject_summary=summary,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - one dispatch must not abort the pass
-            outcome = DeliveryOutcome(
-                status="failed",
-                error_code="delivery_provider_error",
-                retryable=True,
-                provider_result={"delivered": False, "error": str(exc)[:200]},
-            )
-
-        with session_factory() as recording:
-            with recording.begin():
-                dispatch = recording.get(
-                    DocumentNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.attempt_count != attempt_from:
-                    continue  # another worker already finalized this attempt
-                new_state = _record_outcome(
-                    recording,
-                    dispatch,
-                    contact=contact,
-                    outcome=outcome,
-                    max_attempts=max_attempts,
-                    backoff_seconds=backoff_seconds,
-                    owner=owner,
-                    now=_aware_utc(clock.now()),
-                )
-        counts[new_state] = counts.get(new_state, 0) + 1
-
-    return summarize_delivery_pass(
-        counts,
+    return outgoing_dispatch.deliver_pass(
+        session_factory,
+        _document_category(),
         project_id=project_id,
         configuration_version=configuration_version,
-        delivery_enabled=_delivery_enabled(session_factory, project_id),
-        observed_at=_aware_utc(clock.now()),
-    )
-
-
-def summarize_delivery_pass(
-    counts: dict[str, int],
-    *,
-    project_id: int,
-    configuration_version: str,
-    delivery_enabled: bool,
-    observed_at: datetime,
-) -> dict[str, Any]:
-    """One bounded, credential-free receipt body for a delivery pass."""
-
-    attention = counts.get("failed", 0) > 0 or counts.get("uncertain", 0) > 0
-    return {
-        "schema_version": _RESULT_SCHEMA_VERSION,
-        "project_id": project_id,
-        "configuration_version": configuration_version,
-        "observed_at": _iso(observed_at),
-        "health": "delivery_attention_required" if attention else "healthy",
-        "delivery_enabled": bool(delivery_enabled),
-        "considered": int(counts.get("considered", 0)),
-        "completed": int(counts.get("completed", 0)),
-        "retry_due": int(counts.get("retry_due", 0)),
-        "failed": int(counts.get("failed", 0)),
-        "uncertain": int(counts.get("uncertain", 0)),
-        "skipped": int(counts.get("skipped", 0)),
-    }
-
-
-def _is_deliverable(dispatch: DocumentNotificationDispatch, *, now: datetime) -> bool:
-    if dispatch.delivery_state == "queued":
-        return True
-    return (
-        dispatch.delivery_state == "retry_due"
-        and dispatch.next_attempt_at is not None
-        and _aware_utc(dispatch.next_attempt_at) <= now
+        channel=channel,
+        adapter=adapter,
+        clock=clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        owner=owner,
     )
 
 
 def _occurrence_currency(
     session: Session, notification: DocumentNotification
-) -> tuple[str, str | None, str | None]:
+) -> Currency:
     """Re-check the interruption before dispatch; never present a stale one.
 
-    Returns ``(status, contact, limitation)`` where status is ``current``,
-    ``resolved`` (the loss or change is no longer current), ``revoked`` (the
-    recipient is no longer a project member), or ``unresolved`` (no verified
-    contact). The recipient re-check applies to a reviewer as much as an
-    assignee, so a person who left the project is never mailed.
+    A loss or change that is no longer current is withheld as a benign skip: the
+    interruption needs no send. A recipient who is no longer a project member, or
+    who has no verified contact, is a limitation the operator should see — and the
+    recipient re-check applies to a reviewer as much as an assignee, so a person
+    who left the project is never mailed.
     """
 
     if not _condition_still_current(session, notification):
-        return "resolved", None, LIMITATION_CONDITION_RESOLVED
-    membership = access.resolve_membership(
-        session, notification.recipient_principal_subject, notification.project_id
+        return Currency.withheld(
+            "resolved", LIMITATION_CONDITION_RESOLVED, benign=True
+        )
+    withheld = outgoing_dispatch.withheld_recipient(
+        session,
+        project_id=notification.project_id,
+        principal_subject=notification.recipient_principal_subject,
     )
-    if membership is None:
-        return "revoked", None, LIMITATION_REVOKED_MEMBERSHIP
-    contact, limitation = _resolve_contact(
+    if withheld is not None:
+        return withheld
+    contact, unreachable = outgoing_dispatch.contact_currency(
         session, notification.recipient_principal_subject
     )
-    if contact is None:
-        return "unresolved", None, limitation
-    return "current", contact, None
+    if unreachable is not None:
+        return unreachable
+    return Currency.current(contact)
 
 
 def _condition_still_current(
@@ -918,147 +775,6 @@ def _commitment_change_still_current(
         return False
     statement = current_lineage_statement(session, lineage.id)
     return statement is not None and statement.id == notification.statement_event_id
-
-
-def _record_outcome(
-    session: Session,
-    dispatch: DocumentNotificationDispatch,
-    *,
-    contact: str,
-    outcome: DeliveryOutcome,
-    max_attempts: int,
-    backoff_seconds: int,
-    owner: str,
-    now: datetime,
-) -> str:
-    attempt_number = dispatch.attempt_count + 1
-    dispatch.attempt_count = attempt_number
-    dispatch.recipient_contact = contact
-    dispatch.delivery_limitation = None
-    dispatch.provider_message_id = outcome.provider_message_id
-    dispatch.provider_result_json = outcome.provider_result
-
-    if outcome.status == "completed":
-        dispatch.delivery_state = "completed"
-        dispatch.last_error_code = None
-        dispatch.next_attempt_at = None
-        attempt_outcome = "completed"
-    else:
-        error_code = outcome.error_code or (
-            "acknowledgment_unavailable"
-            if outcome.status == "uncertain"
-            else "delivery_failed"
-        )
-        dispatch.last_error_code = error_code
-        attempt_outcome = "uncertain" if outcome.status == "uncertain" else "failed"
-        if outcome.retryable and attempt_number < max_attempts:
-            dispatch.delivery_state = "retry_due"
-            dispatch.next_attempt_at = now + timedelta(
-                seconds=backoff_seconds * (2 ** (attempt_number - 1))
-            )
-        else:
-            dispatch.delivery_state = (
-                "uncertain" if outcome.status == "uncertain" else "failed"
-            )
-            dispatch.next_attempt_at = None
-    session.flush([dispatch])
-    _append_attempt(
-        session,
-        dispatch,
-        attempt_number=attempt_number,
-        outcome=attempt_outcome,
-        recipient_contact=contact,
-        limitation=None,
-        provider_message_id=outcome.provider_message_id,
-        provider_result=outcome.provider_result,
-        error_code=dispatch.last_error_code,
-        owner=owner,
-        now=now,
-    )
-    return dispatch.delivery_state
-
-
-def _finalize_limitation(
-    session: Session,
-    dispatch: DocumentNotificationDispatch,
-    *,
-    limitation: str | None,
-    owner: str,
-    now: datetime,
-) -> None:
-    """Terminally record why a re-checked interruption was not delivered.
-
-    The terminal state is ``failed`` with an explanatory limitation for every
-    case, including a benign resolved condition: nothing was sent, so the
-    delivery is never marked completed. The pass count distinguishes a benign
-    skip from a visible limitation.
-    """
-
-    attempt_number = dispatch.attempt_count + 1
-    dispatch.attempt_count = attempt_number
-    dispatch.delivery_state = "failed"
-    dispatch.delivery_limitation = limitation
-    dispatch.last_error_code = limitation
-    dispatch.next_attempt_at = None
-    session.flush([dispatch])
-    _append_attempt(
-        session,
-        dispatch,
-        attempt_number=attempt_number,
-        outcome="skipped",
-        recipient_contact=None,
-        limitation=limitation,
-        provider_message_id=None,
-        provider_result=None,
-        error_code=limitation,
-        owner=owner,
-        now=now,
-    )
-
-
-def _append_attempt(
-    session: Session,
-    dispatch: DocumentNotificationDispatch,
-    *,
-    attempt_number: int,
-    outcome: str,
-    recipient_contact: str | None,
-    limitation: str | None,
-    provider_message_id: str | None,
-    provider_result: dict[str, Any] | None,
-    error_code: str | None,
-    owner: str,
-    now: datetime,
-) -> DocumentNotificationAttempt:
-    attempt = DocumentNotificationAttempt(
-        public_id=f"document-attempt:{_sha256({'dispatch': dispatch.id, 'n': attempt_number})[:24]}",
-        dispatch_id=dispatch.id,
-        project_id=dispatch.project_id,
-        attempt_number=attempt_number,
-        outcome=outcome,
-        recipient_contact=recipient_contact,
-        delivery_limitation=limitation,
-        provider_message_id=provider_message_id,
-        provider_result_json=provider_result,
-        error_code=error_code,
-        runtime_owner=owner,
-        observed_at=now,
-    )
-    session.add(attempt)
-    session.flush([attempt])
-    return attempt
-
-
-def _delivery_enabled(session_factory, project_id: int) -> bool:
-    with session_factory() as reading:
-        schedule = reading.scalar(
-            select(DueWorkSchedule.id).where(
-                DueWorkSchedule.project_id == project_id,
-                DueWorkSchedule.handler_key == DOCUMENT_NOTIFICATION_HANDLER,
-                DueWorkSchedule.disabled_at.is_(None),
-            )
-        )
-    return schedule is not None
 
 
 # --- Message content ------------------------------------------------------
@@ -1150,18 +866,13 @@ def recipient_document_inbox(
     sources, review history, or artifacts are exposed.
     """
 
-    rows = session.execute(
-        select(DocumentNotification, DocumentNotificationDispatch)
-        .join(
-            DocumentNotificationDispatch,
-            DocumentNotificationDispatch.notification_id == DocumentNotification.id,
-        )
-        .where(
-            DocumentNotification.project_id == project_id,
-            DocumentNotification.recipient_principal_subject == principal_subject,
-        )
-        .order_by(DocumentNotification.id.desc())
-    ).all()
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        DocumentNotification,
+        DocumentNotificationDispatch,
+        project_id=project_id,
+        principal_subject=principal_subject,
+    )
     return [
         {
             "notification_id": notification.id,
@@ -1188,61 +899,27 @@ def operations_document_notifications_view(
     configuration. Scoped to one project.
     """
 
-    rows = session.execute(
-        select(DocumentNotification, DocumentNotificationDispatch)
-        .join(
-            DocumentNotificationDispatch,
-            DocumentNotificationDispatch.notification_id == DocumentNotification.id,
-        )
-        .where(DocumentNotification.project_id == project_id)
-        .order_by(DocumentNotification.id.desc())
-    ).all()
-    counts = {
-        state: 0
-        for state in ("queued", "completed", "retry_due", "failed", "uncertain")
-    }
-    deliveries = []
-    for notification, dispatch in rows:
-        counts[dispatch.delivery_state] = counts.get(dispatch.delivery_state, 0) + 1
-        deliveries.append(
-            {
-                "notification_id": notification.id,
-                "category": notification.category,
-                "subject_label": _subject_label(session, notification),
-                "recipient": notification.recipient_principal_subject,
-                "recipient_role": notification.recipient_role,
-                "delivery_state": dispatch.delivery_state,
-                "delivery_limitation": dispatch.delivery_limitation,
-                "attempt_count": dispatch.attempt_count,
-                "last_error_code": dispatch.last_error_code,
-            }
-        )
-    enabled = (
-        session.scalar(
-            select(DueWorkSchedule.id).where(
-                DueWorkSchedule.project_id == project_id,
-                DueWorkSchedule.handler_key == DOCUMENT_NOTIFICATION_HANDLER,
-                DueWorkSchedule.disabled_at.is_(None),
-            )
-        )
-        is not None
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        DocumentNotification,
+        DocumentNotificationDispatch,
+        project_id=project_id,
     )
-    return {"delivery_enabled": enabled, "counts": counts, "deliveries": deliveries}
-
-
-# --- Small shared helpers -------------------------------------------------
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if not isinstance(value, datetime) or value.tzinfo is None:
-        raise DocumentNotificationRefusal(
-            "a notification clock must supply an aware datetime"
-        )
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime) -> str:
-    return _aware_utc(value).isoformat()
-
-
-_sha256 = digests.canonical_sha256
+    enabled = outgoing_dispatch.enabled_schedule(
+        session, project_id=project_id, handler_key=DOCUMENT_NOTIFICATION_HANDLER
+    )
+    return outgoing_dispatch.operations_projection(
+        rows,
+        delivery_enabled=enabled is not None,
+        row=lambda notification, dispatch: {
+            "notification_id": notification.id,
+            "category": notification.category,
+            "subject_label": _subject_label(session, notification),
+            "recipient": notification.recipient_principal_subject,
+            "recipient_role": notification.recipient_role,
+            "delivery_state": dispatch.delivery_state,
+            "delivery_limitation": dispatch.delivery_limitation,
+            "attempt_count": dispatch.attempt_count,
+            "last_error_code": dispatch.last_error_code,
+        },
+    )

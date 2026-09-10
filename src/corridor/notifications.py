@@ -19,31 +19,33 @@ and nothing else:
   assignment.
 
 - **Delivery** — ``deliver_project_assignment_notifications`` is what the shared
-  runtime's server-owned handler calls.  It rechecks that the assignment is
-  still current (reassignment, revoked membership, changed contact) before every
-  send, does its provider I/O holding no project mutation lock, and retains the
-  provider result, bounded retry state, and an explicit uncertain outcome.  It
-  uses a stable per-dispatch idempotency key but never claims exactly-once.
+  runtime's server-owned handler calls.  The queue, the budget, the retry
+  arithmetic, the attempt receipts, and the pass receipt are
+  :mod:`corridor.outgoing_dispatch`'s, because they were the same in all three
+  notification families and drifted while they were copied; what stays here is
+  what only an assignment can answer — whether the assignment is *still* current
+  (reassignment, revoked membership, changed contact) before every send, and
+  what the message says about its subject.
 
 This module deliberately does not import the assignment writers (they import it),
 the runtime, or the web layer; it reaches the current-assignment fact through the
-same ``WorkDecision`` tail the writers project from.
+same ``WorkDecision`` tail the writers project from.  The provider seam
+(``DeliveryAdapter`` and the adapter registry) is re-exported from the dispatch
+module so the runtime and the other families keep one import site.
 """
 
 from __future__ import annotations
 
-from corridor import digests
-from collections.abc import Callable
 from dataclasses import dataclass
-from datetime import date, datetime, timedelta, timezone
-from typing import Any, Protocol, runtime_checkable
+from datetime import date, datetime
+from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, aliased
 
-from corridor import access, audit
+from corridor import access, audit, digests, outgoing_dispatch
 from corridor.models import (
     AssignmentNotification,
     AssignmentNotificationAttempt,
@@ -55,9 +57,21 @@ from corridor.models import (
     DueActionNotificationAttempt,
     DueActionNotificationDispatch,
     DueWorkSchedule,
-    PersonIdentity,
     ProjectRosterEntry,
     WorkDecision,
+)
+from corridor.outgoing_dispatch import (
+    Currency,
+    DeliveryAdapter,
+    DeliveryOutcome,
+    DeliveryRequest,
+    DisabledDeliveryAdapter,
+    RecordingDeliveryAdapter,
+    clear_delivery_adapters,
+    register_delivery_adapter,
+    resolve_delivery_adapter,
+    LIMITATION_REVOKED_MEMBERSHIP,
+    LIMITATION_UNRESOLVED_CONTACT,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.statement_lifecycle import current_work_decision_filter
@@ -80,10 +94,10 @@ CHANNEL_EMAIL = "email"
 # without cycling the assignment writer back through its own notifier.
 _INTERNAL_OWNER_FIELD = "internal_owner"
 
-# Visible delivery limitations. Each keeps the assignment intact and only
-# explains why a message could not be delivered as current.
-LIMITATION_UNRESOLVED_CONTACT = "unresolved_contact"
-LIMITATION_REVOKED_MEMBERSHIP = "revoked_membership"
+# The visible delivery limitation this category owns. It keeps the assignment
+# intact and only explains why a message could not be delivered as current; the
+# recipient-side limitations every family shares live with the dispatch machine
+# and are re-exported above.
 LIMITATION_REASSIGNED = "reassigned_superseded"
 
 _RESULT_SCHEMA_VERSION = "assignment-notification-result-v1"
@@ -174,8 +188,10 @@ def register_new_assignment_notification(
         )
     )
     if existing is None:
-        contact, limitation = _resolve_contact(session, recipient_principal)
-        idempotency_key = _sha256(
+        contact, limitation = outgoing_dispatch.resolve_contact(
+            session, recipient_principal
+        )
+        idempotency_key = digests.canonical_sha256(
             {"occurrence_key": occurrence_key, "channel": CHANNEL_EMAIL}
         )
         session.execute(
@@ -197,33 +213,13 @@ def register_new_assignment_notification(
     return notification
 
 
-def _resolve_contact(
-    session: Session, recipient_principal: str
-) -> tuple[str | None, str | None]:
-    """The verified contact for a principal, or a typed delivery limitation.
-
-    Contact resolves only through the verified-contact record for the roster
-    identity's principal. There is no display-name match, no free-text assignee
-    inference, and no guessed address: an unresolved mapping is a visible
-    limitation, never a fabricated recipient.
-    """
-    identity = session.scalar(
-        select(PersonIdentity).where(
-            PersonIdentity.principal_subject == recipient_principal
-        )
-    )
-    if identity is None:
-        return None, LIMITATION_UNRESOLVED_CONTACT
-    return identity.email_normalized, None
-
-
 def _occurrence_key(
     *,
     subject_identity: tuple[str, int],
     assignment_decision_id: int,
     recipient_principal: str,
 ) -> str:
-    return _sha256(
+    return digests.canonical_sha256(
         {
             "category": CATEGORY_NEW_ASSIGNMENT,
             "subject_kind": subject_identity[0],
@@ -234,107 +230,21 @@ def _occurrence_key(
     )
 
 
-# --- Delivery adapter seam ------------------------------------------------
-
-
-@dataclass(frozen=True)
-class DeliveryRequest:
-    """What a delivery adapter is handed; carries no cross-project secret."""
-
-    channel: str
-    recipient_contact: str
-    idempotency_key: str
-    subject_summary: dict[str, Any]
-
-
-@dataclass(frozen=True)
-class DeliveryOutcome:
-    """A provider's typed result for one delivery attempt.
-
-    ``status`` is ``completed`` only with provider acknowledgment, ``uncertain``
-    when acknowledgment is unavailable, and ``failed`` on a definite rejection.
-    """
-
-    status: str
-    provider_message_id: str | None = None
-    provider_result: dict[str, Any] | None = None
-    error_code: str | None = None
-    retryable: bool = True
-
-
-@runtime_checkable
-class DeliveryAdapter(Protocol):
-    """The replaceable provider seam; tests inject a non-sending capture."""
-
-    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome: ...
-
-
-class DisabledDeliveryAdapter:
-    """The default: it never sends, so completing the code enables no delivery.
-
-    Real activation is a deployment concern — a human wires a real adapter after
-    recording the gate-7 configuration. Until then every attempt fails visibly
-    rather than silently mailing, so credentials or a schedule alone deliver
-    nothing.
-    """
-
-    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
-        return DeliveryOutcome(
-            status="failed",
-            error_code="delivery_adapter_not_configured",
-            retryable=False,
-            provider_result={"delivered": False, "reason": "adapter_not_configured"},
-        )
-
-
-class RecordingDeliveryAdapter:
-    """In-memory capture for tests; holds requests without ever sending them."""
-
-    def __init__(
-        self,
-        outcome: Callable[[DeliveryRequest], DeliveryOutcome] | DeliveryOutcome | None = None,
-    ) -> None:
-        self.sent: list[DeliveryRequest] = []
-        self._outcome = outcome
-
-    def deliver(self, request: DeliveryRequest) -> DeliveryOutcome:
-        self.sent.append(request)
-        if callable(self._outcome):
-            return self._outcome(request)
-        if isinstance(self._outcome, DeliveryOutcome):
-            return self._outcome
-        return DeliveryOutcome(
-            status="completed",
-            provider_message_id=f"fake-{request.idempotency_key[:16]}",
-            provider_result={"delivered": True},
-        )
-
-    def deliveries_for(self, idempotency_key: str) -> list[DeliveryRequest]:
-        return [item for item in self.sent if item.idempotency_key == idempotency_key]
-
-
-_DELIVERY_ADAPTERS: dict[str, DeliveryAdapter] = {}
-
-
-def register_delivery_adapter(channel: str, adapter: DeliveryAdapter) -> None:
-    """Wire a real (or, in tests, a recording) adapter for one channel."""
-
-    _DELIVERY_ADAPTERS[channel] = adapter
-
-
-def clear_delivery_adapters() -> None:
-    """Reset the wired adapters; tests call this on teardown."""
-
-    _DELIVERY_ADAPTERS.clear()
-
-
-def resolve_delivery_adapter(channel: str) -> DeliveryAdapter:
-    """The wired adapter for a channel, or the non-sending default."""
-
-    return _DELIVERY_ADAPTERS.get(channel, DisabledDeliveryAdapter())
-
-
 # --- Delivery sweep -------------------------------------------------------
+
+
+def _assignment_category() -> outgoing_dispatch.DispatchCategory:
+    """What the new-assignment family contributes to the shared machine."""
+    return outgoing_dispatch.DispatchCategory(
+        name="assignment",
+        handler_key=ASSIGNMENT_NOTIFICATION_HANDLER,
+        notification_model=AssignmentNotification,
+        dispatch_model=AssignmentNotificationDispatch,
+        attempt_model=AssignmentNotificationAttempt,
+        result_schema_version=_RESULT_SCHEMA_VERSION,
+        currency=_assignment_currency,
+        subject_summary=_subject_summary,
+    )
 
 
 def deliver_project_assignment_notifications(
@@ -352,176 +262,35 @@ def deliver_project_assignment_notifications(
 ) -> dict[str, Any]:
     """Deliver this project's due assignment notifications through the adapter.
 
-    Each dispatch is processed in its own short transactions and the provider
-    call holds no transaction at all, so provider I/O never spans a project
-    mutation lock. Before every send the assignment is re-checked for currency;
-    an obsolete assignment is never presented as current. Bounded by ``budget``.
+    The shared dispatch machine owns the pass: each dispatch is processed in its
+    own short transactions, the provider call holds no transaction at all, and
+    the pass is bounded by ``budget``. What this category adds is
+    ``_assignment_currency`` — before every send the assignment is re-checked, so
+    an obsolete assignment is never presented as current.
     """
-    now = _aware_utc(clock.now())
-    with session_factory() as reading:
-        dispatch_ids = list(
-            reading.scalars(
-                select(AssignmentNotificationDispatch.id)
-                .where(
-                    AssignmentNotificationDispatch.project_id == project_id,
-                    AssignmentNotificationDispatch.channel == channel,
-                    or_(
-                        AssignmentNotificationDispatch.delivery_state == "queued",
-                        (
-                            (AssignmentNotificationDispatch.delivery_state == "retry_due")
-                            & (
-                                AssignmentNotificationDispatch.next_attempt_at
-                                <= now
-                            )
-                        ),
-                    ),
-                )
-                .order_by(AssignmentNotificationDispatch.id)
-                .limit(budget)
-            ).all()
-        )
-
-    counts = {
-        "considered": 0,
-        "completed": 0,
-        "retry_due": 0,
-        "failed": 0,
-        "uncertain": 0,
-        "skipped": 0,
-    }
-    for dispatch_id in dispatch_ids:
-        counts["considered"] += 1
-        with session_factory() as checking:
-            with checking.begin():
-                dispatch = checking.get(
-                    AssignmentNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.channel != channel:
-                    continue
-                if not _is_deliverable(dispatch, now=now):
-                    continue
-                notification = checking.get(
-                    AssignmentNotification, dispatch.notification_id
-                )
-                status, contact, limitation = _assignment_currency(checking, notification)
-                summary = _subject_summary(checking, notification)
-                idempotency_key = dispatch.idempotency_key
-                attempt_from = dispatch.attempt_count
-                if status != "current":
-                    _finalize_limitation(
-                        checking,
-                        dispatch,
-                        limitation=limitation,
-                        owner=owner,
-                        now=_aware_utc(clock.now()),
-                    )
-                    # A superseded assignment is a benign skip: its replacement
-                    # carries its own occurrence. A revoked membership or an
-                    # unresolved contact is a limitation the operator should see.
-                    if status == "superseded":
-                        counts["skipped"] += 1
-                    else:
-                        counts["failed"] += 1
-                    continue
-
-        if status != "current":
-            continue
-
-        try:
-            outcome = adapter.deliver(
-                DeliveryRequest(
-                    channel=channel,
-                    recipient_contact=contact,
-                    idempotency_key=idempotency_key,
-                    subject_summary=summary,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - one dispatch must not abort the pass
-            # A provider error is a retryable delivery failure for this one
-            # dispatch, retained like any other; it never blocks the others and
-            # never claims a send happened.
-            outcome = DeliveryOutcome(
-                status="failed",
-                error_code="delivery_provider_error",
-                retryable=True,
-                provider_result={"delivered": False, "error": str(exc)[:200]},
-            )
-
-        with session_factory() as recording:
-            with recording.begin():
-                dispatch = recording.get(
-                    AssignmentNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.attempt_count != attempt_from:
-                    # Another recovery worker already finalized this attempt.
-                    continue
-                new_state = _record_outcome(
-                    recording,
-                    dispatch,
-                    contact=contact,
-                    outcome=outcome,
-                    max_attempts=max_attempts,
-                    backoff_seconds=backoff_seconds,
-                    owner=owner,
-                    now=_aware_utc(clock.now()),
-                )
-        counts[new_state] = counts.get(new_state, 0) + 1
-
-    delivery_enabled = _delivery_enabled(session_factory, project_id)
-    return summarize_delivery_pass(
-        counts,
+    return outgoing_dispatch.deliver_pass(
+        session_factory,
+        _assignment_category(),
         project_id=project_id,
         configuration_version=configuration_version,
-        delivery_enabled=delivery_enabled,
-        observed_at=_aware_utc(clock.now()),
-    )
-
-
-def summarize_delivery_pass(
-    counts: dict[str, int],
-    *,
-    project_id: int,
-    configuration_version: str,
-    delivery_enabled: bool,
-    observed_at: datetime,
-) -> dict[str, Any]:
-    """One bounded, credential-free receipt body for a delivery pass."""
-
-    attention = counts.get("failed", 0) > 0 or counts.get("uncertain", 0) > 0
-    return {
-        "schema_version": _RESULT_SCHEMA_VERSION,
-        "project_id": project_id,
-        "configuration_version": configuration_version,
-        "observed_at": _iso(observed_at),
-        "health": "delivery_attention_required" if attention else "healthy",
-        "delivery_enabled": bool(delivery_enabled),
-        "considered": int(counts.get("considered", 0)),
-        "completed": int(counts.get("completed", 0)),
-        "retry_due": int(counts.get("retry_due", 0)),
-        "failed": int(counts.get("failed", 0)),
-        "uncertain": int(counts.get("uncertain", 0)),
-        "skipped": int(counts.get("skipped", 0)),
-    }
-
-
-def _is_deliverable(dispatch: AssignmentNotificationDispatch, *, now: datetime) -> bool:
-    if dispatch.delivery_state == "queued":
-        return True
-    return (
-        dispatch.delivery_state == "retry_due"
-        and dispatch.next_attempt_at is not None
-        and _aware_utc(dispatch.next_attempt_at) <= now
+        channel=channel,
+        adapter=adapter,
+        clock=clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        owner=owner,
     )
 
 
 def _assignment_currency(
     session: Session, notification: AssignmentNotification
-) -> tuple[str, str | None, str | None]:
+) -> Currency:
     """Re-check the assignment before dispatch; never present an obsolete one.
 
-    Returns ``(status, contact, limitation)`` where status is ``current``,
-    ``superseded`` (reassigned or undone), ``revoked`` (membership withdrawn), or
-    ``unresolved`` (no verified contact).
+    A reassigned or undone assignment is withheld as a benign skip, because its
+    replacement carries its own occurrence. A revoked membership or an unresolved
+    contact is a limitation the operator should see.
     """
     successor = aliased(WorkDecision)
     live = session.scalar(
@@ -537,178 +306,20 @@ def _assignment_currency(
         )
     )
     if live is None:
-        return "superseded", None, LIMITATION_REASSIGNED
-    membership = access.resolve_membership(
-        session, notification.recipient_principal_subject, notification.project_id
+        return Currency.withheld("superseded", LIMITATION_REASSIGNED, benign=True)
+    withheld = outgoing_dispatch.withheld_recipient(
+        session,
+        project_id=notification.project_id,
+        principal_subject=notification.recipient_principal_subject,
     )
-    if membership is None:
-        return "revoked", None, LIMITATION_REVOKED_MEMBERSHIP
-    contact, limitation = _resolve_contact(
+    if withheld is not None:
+        return withheld
+    contact, unreachable = outgoing_dispatch.contact_currency(
         session, notification.recipient_principal_subject
     )
-    if contact is None:
-        return "unresolved", None, limitation
-    return "current", contact, None
-
-
-def _record_outcome(
-    session: Session,
-    dispatch: Any,
-    *,
-    contact: str,
-    outcome: DeliveryOutcome,
-    max_attempts: int,
-    backoff_seconds: int,
-    owner: str,
-    now: datetime,
-    attempt_model: type = AssignmentNotificationAttempt,
-    public_prefix: str = "assignment-attempt",
-) -> str:
-    attempt_number = dispatch.attempt_count + 1
-    dispatch.attempt_count = attempt_number
-    dispatch.recipient_contact = contact
-    dispatch.delivery_limitation = None
-    dispatch.provider_message_id = outcome.provider_message_id
-    dispatch.provider_result_json = outcome.provider_result
-
-    if outcome.status == "completed":
-        dispatch.delivery_state = "completed"
-        dispatch.last_error_code = None
-        dispatch.next_attempt_at = None
-        attempt_outcome = "completed"
-    else:
-        error_code = outcome.error_code or (
-            "acknowledgment_unavailable"
-            if outcome.status == "uncertain"
-            else "delivery_failed"
-        )
-        dispatch.last_error_code = error_code
-        attempt_outcome = "uncertain" if outcome.status == "uncertain" else "failed"
-        if outcome.retryable and attempt_number < max_attempts:
-            dispatch.delivery_state = "retry_due"
-            dispatch.next_attempt_at = now + timedelta(
-                seconds=backoff_seconds * (2 ** (attempt_number - 1))
-            )
-        else:
-            dispatch.delivery_state = (
-                "uncertain" if outcome.status == "uncertain" else "failed"
-            )
-            dispatch.next_attempt_at = None
-    session.flush([dispatch])
-    _append_attempt(
-        session,
-        dispatch,
-        attempt_number=attempt_number,
-        outcome=attempt_outcome,
-        recipient_contact=contact,
-        limitation=None,
-        provider_message_id=outcome.provider_message_id,
-        provider_result=outcome.provider_result,
-        error_code=dispatch.last_error_code,
-        owner=owner,
-        now=now,
-        attempt_model=attempt_model,
-        public_prefix=public_prefix,
-    )
-    return dispatch.delivery_state
-
-
-def _finalize_limitation(
-    session: Session,
-    dispatch: Any,
-    *,
-    limitation: str | None,
-    owner: str,
-    now: datetime,
-    attempt_model: type = AssignmentNotificationAttempt,
-    public_prefix: str = "assignment-attempt",
-) -> None:
-    """Terminally record why a re-checked occurrence was not delivered.
-
-    The dispatch reaches a terminal ``failed`` state carrying the typed
-    limitation, and the append-only attempt records a ``skipped`` outcome; the
-    delivery pass decides from the limitation whether this is a benign withheld
-    reminder (a superseded plan, a reassignment, a resolved condition) counted as
-    skipped, or an operator-visible problem. The earlier delivery history is
-    never deleted (ADR-0032).
-    """
-
-    attempt_number = dispatch.attempt_count + 1
-    dispatch.attempt_count = attempt_number
-    dispatch.delivery_state = "failed"
-    dispatch.delivery_limitation = limitation
-    dispatch.last_error_code = limitation
-    dispatch.next_attempt_at = None
-    session.flush([dispatch])
-    _append_attempt(
-        session,
-        dispatch,
-        attempt_number=attempt_number,
-        outcome="skipped",
-        recipient_contact=None,
-        limitation=limitation,
-        provider_message_id=None,
-        provider_result=None,
-        error_code=limitation,
-        owner=owner,
-        now=now,
-        attempt_model=attempt_model,
-        public_prefix=public_prefix,
-    )
-
-
-def _append_attempt(
-    session: Session,
-    dispatch: Any,
-    *,
-    attempt_number: int,
-    outcome: str,
-    recipient_contact: str | None,
-    limitation: str | None,
-    provider_message_id: str | None,
-    provider_result: dict[str, Any] | None,
-    error_code: str | None,
-    owner: str,
-    now: datetime,
-    attempt_model: type = AssignmentNotificationAttempt,
-    public_prefix: str = "assignment-attempt",
-) -> Any:
-    """Append one immutable per-attempt receipt.
-
-    The attempt model and its ``public_id`` prefix are parameters so the #352
-    due-action delivery reuses this exact append-only state machine over its own
-    attempt table without duplicating the transition logic (#351 remains the
-    default and is unchanged in behavior).
-    """
-    attempt = attempt_model(
-        public_id=f"{public_prefix}:{uuid4().hex[:24]}",
-        dispatch_id=dispatch.id,
-        project_id=dispatch.project_id,
-        attempt_number=attempt_number,
-        outcome=outcome,
-        recipient_contact=recipient_contact,
-        delivery_limitation=limitation,
-        provider_message_id=provider_message_id,
-        provider_result_json=provider_result,
-        error_code=error_code,
-        runtime_owner=owner,
-        observed_at=now,
-    )
-    session.add(attempt)
-    session.flush([attempt])
-    return attempt
-
-
-def _delivery_enabled(session_factory, project_id: int) -> bool:
-    with session_factory() as reading:
-        schedule = reading.scalar(
-            select(DueWorkSchedule.id).where(
-                DueWorkSchedule.project_id == project_id,
-                DueWorkSchedule.handler_key == ASSIGNMENT_NOTIFICATION_HANDLER,
-                DueWorkSchedule.disabled_at.is_(None),
-            )
-        )
-    return schedule is not None
+    if unreachable is not None:
+        return unreachable
+    return Currency.current(contact)
 
 
 # --- Reads: recipient inbox and operations delivery view ------------------
@@ -722,19 +333,13 @@ def recipient_inbox(
     Scoped to the signed-in member and the one project, so no other project's
     records or another person's assignments are exposed.
     """
-    rows = session.execute(
-        select(AssignmentNotification, AssignmentNotificationDispatch)
-        .join(
-            AssignmentNotificationDispatch,
-            AssignmentNotificationDispatch.notification_id
-            == AssignmentNotification.id,
-        )
-        .where(
-            AssignmentNotification.project_id == project_id,
-            AssignmentNotification.recipient_principal_subject == principal_subject,
-        )
-        .order_by(AssignmentNotification.id.desc())
-    ).all()
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        AssignmentNotification,
+        AssignmentNotificationDispatch,
+        project_id=project_id,
+        principal_subject=principal_subject,
+    )
     flagged = _flagged_notification_ids(
         session, project_id=project_id, flagged_by=principal_subject
     )
@@ -753,36 +358,22 @@ def operations_delivery_view(
     with subject context and any delivery limitation, and whether real delivery
     is enabled by a recorded gate-7 configuration. Scoped to one project.
     """
-    rows = session.execute(
-        select(AssignmentNotification, AssignmentNotificationDispatch)
-        .join(
-            AssignmentNotificationDispatch,
-            AssignmentNotificationDispatch.notification_id
-            == AssignmentNotification.id,
-        )
-        .where(AssignmentNotification.project_id == project_id)
-        .order_by(AssignmentNotification.id.desc())
-    ).all()
-    counts = {state: 0 for state in ("queued", "completed", "retry_due", "failed", "uncertain")}
-    deliveries = []
-    for notification, dispatch in rows:
-        counts[dispatch.delivery_state] = counts.get(dispatch.delivery_state, 0) + 1
-        deliveries.append(_operations_row(session, notification, dispatch))
-    enabled = (
-        session.scalar(
-            select(DueWorkSchedule.id).where(
-                DueWorkSchedule.project_id == project_id,
-                DueWorkSchedule.handler_key == ASSIGNMENT_NOTIFICATION_HANDLER,
-                DueWorkSchedule.disabled_at.is_(None),
-            )
-        )
-        is not None
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        AssignmentNotification,
+        AssignmentNotificationDispatch,
+        project_id=project_id,
     )
-    return {
-        "delivery_enabled": enabled,
-        "counts": counts,
-        "deliveries": deliveries,
-    }
+    enabled = outgoing_dispatch.enabled_schedule(
+        session, project_id=project_id, handler_key=ASSIGNMENT_NOTIFICATION_HANDLER
+    )
+    return outgoing_dispatch.operations_projection(
+        rows,
+        delivery_enabled=enabled is not None,
+        row=lambda notification, dispatch: _operations_row(
+            session, notification, dispatch
+        ),
+    )
 
 
 def _inbox_row(
@@ -825,23 +416,10 @@ def _operations_row(
 
 
 def _human_delivery_status(dispatch: AssignmentNotificationDispatch) -> str:
-    if dispatch.delivery_state == "queued":
-        if dispatch.delivery_limitation == LIMITATION_UNRESOLVED_CONTACT:
-            return "queued (no verified contact yet)"
-        return "queued for delivery"
-    if dispatch.delivery_state == "completed":
-        return "delivered"
-    if dispatch.delivery_state == "retry_due":
-        return "retry scheduled"
-    if dispatch.delivery_state == "uncertain":
-        return "delivery not acknowledged"
-    if dispatch.delivery_limitation == LIMITATION_REASSIGNED:
-        return "assignment changed before delivery"
-    if dispatch.delivery_limitation == LIMITATION_REVOKED_MEMBERSHIP:
-        return "recipient is no longer a project member"
-    if dispatch.delivery_limitation == LIMITATION_UNRESOLVED_CONTACT:
-        return "no verified contact for the recipient"
-    return "delivery failed"
+    return outgoing_dispatch.human_delivery_status(
+        dispatch,
+        {LIMITATION_REASSIGNED: "assignment changed before delivery"},
+    )
 
 
 def _subject_summary(
@@ -940,22 +518,6 @@ def _flagged_notification_ids(
             )
         ).all()
     )
-
-
-# --- Small shared helpers -------------------------------------------------
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if not isinstance(value, datetime) or value.tzinfo is None:
-        raise NotificationRefusal("a notification clock must supply an aware datetime")
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime) -> str:
-    return _aware_utc(value).isoformat()
-
-
-_sha256 = digests.canonical_sha256
 
 
 # ==========================================================================
@@ -1434,7 +996,7 @@ def register_due_action_notifications(
             if reminder.subject_kind == "constraint"
             else ("statement", reminder.commitment_lineage_id)
         )
-        occurrence_key = _sha256(
+        occurrence_key = digests.canonical_sha256(
             {
                 "category": CATEGORY_NEXT_ACTION_DUE,
                 "subject_kind": subject_identity[0],
@@ -1476,7 +1038,7 @@ def register_due_action_notifications(
             if escalation.subject_kind == "constraint"
             else ("statement", escalation.commitment_lineage_id)
         )
-        occurrence_key = _sha256(
+        occurrence_key = digests.canonical_sha256(
             {
                 "category": CATEGORY_NEXT_ACTION_ESCALATION,
                 "subject_kind": subject_identity[0],
@@ -1520,7 +1082,7 @@ def register_due_action_notifications(
             window_start=summary_window_start,
             window_end=summary_window_end,
         ):
-            occurrence_key = _sha256(
+            occurrence_key = digests.canonical_sha256(
                 {
                     "category": CATEGORY_DAILY_SUMMARY,
                     "recipient_principal": summary.recipient.principal_subject,
@@ -1685,10 +1247,10 @@ def _upsert_due_action_occurrence(
         )
     )
     if existing is None:
-        contact, limitation = _resolve_contact(
+        contact, limitation = outgoing_dispatch.resolve_contact(
             session, notification.recipient_principal_subject
         )
-        idempotency_key = _sha256(
+        idempotency_key = digests.canonical_sha256(
             {"occurrence_key": occurrence_key, "channel": channel}
         )
         session.execute(
@@ -1710,7 +1272,20 @@ def _upsert_due_action_occurrence(
     return notification
 
 
-# --- Delivery sweep, reusing the shared dispatch state machine -------------
+# --- Delivery sweep: the category's contribution to the shared machine ------
+
+# A benignly stale condition — a withdrawn or superseded plan, a reassignment, a
+# deferral, a cleared finding, or an escalation contact that now coincides with
+# the assignee — is a withheld reminder the operator need not act on.
+_DUE_ACTION_BENIGN_LIMITATIONS = frozenset(
+    {
+        LIMITATION_PLAN_SUPERSEDED,
+        LIMITATION_ACTION_REASSIGNED,
+        LIMITATION_DEFERRED,
+        LIMITATION_CONDITION_CLEARED,
+        LIMITATION_ESCALATION_DEDUPLICATED,
+    }
+)
 
 
 def deliver_project_due_action_notifications(
@@ -1730,150 +1305,64 @@ def deliver_project_due_action_notifications(
 ) -> dict[str, Any]:
     """Deliver this project's due-action notifications through the adapter.
 
-    Each dispatch is processed in its own short transactions and the provider
-    call holds no transaction, so provider I/O never spans a project mutation
-    lock.  Before every send the derived condition is re-read for currency —
-    completion, cancellation, a successor action, deferral, reassignment, an
-    external closure, or a coincident escalation contact all withhold a now-stale
-    reminder without deleting its delivery history.  Bounded by ``budget``.
+    The shared dispatch machine owns the pass; this category contributes the
+    currency re-check that makes a *derived* condition safe to send. Before every
+    send the derived condition is re-read — completion, cancellation, a successor
+    action, deferral, reassignment, an external closure, or a coincident
+    escalation contact all withhold a now-stale reminder without deleting its
+    delivery history. The re-check is bound to this pass's date and escalation
+    configuration, because those are what the condition is derived against.
     """
-    now = _aware_utc(clock.now())
-    today = now.date()
-    with session_factory() as reading:
-        dispatch_ids = list(
-            reading.scalars(
-                select(DueActionNotificationDispatch.id)
-                .where(
-                    DueActionNotificationDispatch.project_id == project_id,
-                    DueActionNotificationDispatch.channel == channel,
-                    or_(
-                        DueActionNotificationDispatch.delivery_state == "queued",
-                        (
-                            (DueActionNotificationDispatch.delivery_state == "retry_due")
-                            & (DueActionNotificationDispatch.next_attempt_at <= now)
-                        ),
-                    ),
-                )
-                .order_by(DueActionNotificationDispatch.id)
-                .limit(budget)
-            ).all()
+    today = outgoing_dispatch.aware_utc(clock.now()).date()
+
+    def currency(session: Session, notification: DueActionNotification) -> Currency:
+        return _due_action_currency(
+            session,
+            notification,
+            today=today,
+            urgent_overdue_days=urgent_overdue_days,
+            escalation_roster_entry_id=escalation_roster_entry_id,
         )
 
-    counts = {
-        "considered": 0,
-        "completed": 0,
-        "retry_due": 0,
-        "failed": 0,
-        "uncertain": 0,
-        "skipped": 0,
-    }
-    for dispatch_id in dispatch_ids:
-        counts["considered"] += 1
-        with session_factory() as checking:
-            with checking.begin():
-                dispatch = checking.get(
-                    DueActionNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.channel != channel:
-                    continue
-                if not _is_deliverable(dispatch, now=now):
-                    continue
-                notification = checking.get(
-                    DueActionNotification, dispatch.notification_id
-                )
-                status, contact, summary, limitation = _due_action_currency(
-                    checking,
-                    notification,
-                    today=today,
-                    urgent_overdue_days=urgent_overdue_days,
-                    escalation_roster_entry_id=escalation_roster_entry_id,
-                )
-                idempotency_key = dispatch.idempotency_key
-                attempt_from = dispatch.attempt_count
-                if status != "current":
-                    _finalize_limitation(
-                        checking,
-                        dispatch,
-                        limitation=limitation,
-                        owner=owner,
-                        now=_aware_utc(clock.now()),
-                        attempt_model=DueActionNotificationAttempt,
-                        public_prefix="due-action-attempt",
-                    )
-                    # A benignly stale condition (a withdrawn or superseded plan,
-                    # a reassignment, a deferral, a cleared finding, or an
-                    # escalation contact that now coincides with the assignee) is
-                    # a skip; a revoked membership or an unresolved contact is an
-                    # operator-visible delivery limitation.
-                    if limitation in _DUE_ACTION_BENIGN_LIMITATIONS:
-                        counts["skipped"] += 1
-                    else:
-                        counts["failed"] += 1
-                    continue
-
-        if status != "current":
-            continue
-
-        try:
-            outcome = adapter.deliver(
-                DeliveryRequest(
-                    channel=channel,
-                    recipient_contact=contact,
-                    idempotency_key=idempotency_key,
-                    subject_summary=summary,
-                )
-            )
-        except Exception as exc:  # noqa: BLE001 - one dispatch must not abort the pass
-            outcome = DeliveryOutcome(
-                status="failed",
-                error_code="delivery_provider_error",
-                retryable=True,
-                provider_result={"delivered": False, "error": str(exc)[:200]},
-            )
-
-        with session_factory() as recording:
-            with recording.begin():
-                dispatch = recording.get(
-                    DueActionNotificationDispatch, dispatch_id, with_for_update=True
-                )
-                if dispatch is None or dispatch.attempt_count != attempt_from:
-                    # Another recovery worker already finalized this attempt.
-                    continue
-                new_state = _record_outcome(
-                    recording,
-                    dispatch,
-                    contact=contact,
-                    outcome=outcome,
-                    max_attempts=max_attempts,
-                    backoff_seconds=backoff_seconds,
-                    owner=owner,
-                    now=_aware_utc(clock.now()),
-                    attempt_model=DueActionNotificationAttempt,
-                    public_prefix="due-action-attempt",
-                )
-        counts[new_state] = counts.get(new_state, 0) + 1
-
-    delivery_enabled = _due_action_delivery_enabled(session_factory, project_id)
-    result = summarize_delivery_pass(
-        counts,
+    category = outgoing_dispatch.DispatchCategory(
+        name="due-action",
+        handler_key=DUE_ACTION_NOTIFICATION_HANDLER,
+        notification_model=DueActionNotification,
+        dispatch_model=DueActionNotificationDispatch,
+        attempt_model=DueActionNotificationAttempt,
+        result_schema_version=_DUE_ACTION_RESULT_SCHEMA_VERSION,
+        currency=currency,
+        subject_summary=_due_action_delivery_summary,
+    )
+    return outgoing_dispatch.deliver_pass(
+        session_factory,
+        category,
         project_id=project_id,
         configuration_version=configuration_version,
-        delivery_enabled=delivery_enabled,
-        observed_at=_aware_utc(clock.now()),
+        channel=channel,
+        adapter=adapter,
+        clock=clock,
+        max_attempts=max_attempts,
+        backoff_seconds=backoff_seconds,
+        budget=budget,
+        owner=owner,
     )
-    result["schema_version"] = _DUE_ACTION_RESULT_SCHEMA_VERSION
-    return result
 
 
-_DUE_ACTION_BENIGN_LIMITATIONS = frozenset(
-    {
-        LIMITATION_PLAN_SUPERSEDED,
-        LIMITATION_ACTION_REASSIGNED,
-        LIMITATION_DEFERRED,
-        LIMITATION_CONDITION_CLEARED,
-        LIMITATION_ESCALATION_DEDUPLICATED,
-    }
-)
+def _due_action_delivery_summary(
+    session: Session, notification: DueActionNotification
+) -> dict[str, Any]:
+    """What the recipient is told: a frozen digest, or one subject's reminder."""
+    if notification.category == CATEGORY_DAILY_SUMMARY:
+        return _due_action_summary_payload(notification)
+    return _due_action_subject_summary(session, notification)
+
+
+def _withheld_due_action(status: str, limitation: str) -> Currency:
+    """One withheld outcome, classified benign from the limitation itself."""
+    return Currency.withheld(
+        status, limitation, benign=limitation in _DUE_ACTION_BENIGN_LIMITATIONS
+    )
 
 
 def _due_action_currency(
@@ -1883,32 +1372,56 @@ def _due_action_currency(
     today: date,
     urgent_overdue_days: int,
     escalation_roster_entry_id: int | None,
-) -> tuple[str, str | None, dict[str, Any] | None, str | None]:
+) -> Currency:
     """Re-read the derived condition before dispatch; never present a stale one.
 
-    Returns ``(status, contact, subject_summary, limitation)``.  ``status`` is
-    ``current`` only when the condition still holds for the bound recipient;
-    otherwise it is a withheld/limitation outcome that never sends.
+    The occurrence is ``current`` only when the condition still holds for the
+    bound recipient; every other answer withholds the message and keeps the typed
+    limitation that explains it.
     """
-    membership = access.resolve_membership(
-        session, notification.recipient_principal_subject, notification.project_id
+    withheld = outgoing_dispatch.withheld_recipient(
+        session,
+        project_id=notification.project_id,
+        principal_subject=notification.recipient_principal_subject,
     )
-    if membership is None:
-        return "revoked", None, None, LIMITATION_REVOKED_MEMBERSHIP
+    if withheld is not None:
+        return withheld
 
-    if notification.category == CATEGORY_DAILY_SUMMARY:
-        # A daily summary is not subject-bound; its frozen digest stays current
+    if notification.category != CATEGORY_DAILY_SUMMARY:
+        # A daily summary is not subject-bound: its frozen digest stays current
         # as long as the recipient is still a member with a resolvable contact.
-        contact, limitation = _resolve_contact(
-            session, notification.recipient_principal_subject
+        stale = _stale_due_action_condition(
+            session,
+            notification,
+            today=today,
+            urgent_overdue_days=urgent_overdue_days,
+            escalation_roster_entry_id=escalation_roster_entry_id,
         )
-        if contact is None:
-            return "unresolved", None, None, limitation
-        return "current", contact, _due_action_summary_payload(notification), None
+        if stale is not None:
+            return stale
 
-    # Reminder or escalation: the bound plan decision must still be the current
-    # Next Action tail — completion, cancellation, or a successor action all
-    # replace it, and a due-date change appends a new decision with a new id.
+    contact, unreachable = outgoing_dispatch.contact_currency(
+        session, notification.recipient_principal_subject
+    )
+    if unreachable is not None:
+        return unreachable
+    return Currency.current(contact)
+
+
+def _stale_due_action_condition(
+    session: Session,
+    notification: DueActionNotification,
+    *,
+    today: date,
+    urgent_overdue_days: int,
+    escalation_roster_entry_id: int | None,
+) -> Currency | None:
+    """Why this reminder or escalation is no longer current, or ``None``.
+
+    The bound plan decision must still be the current Next Action tail —
+    completion, cancellation, or a successor action all replace it, and a due-date
+    change appends a new decision with a new id.
+    """
     plan_tail = _current_plan_decision(
         session,
         dependency_id=notification.dependency_id,
@@ -1919,19 +1432,19 @@ def _due_action_currency(
         or plan_tail.after_value is None
         or plan_tail.id != notification.plan_decision_id
     ):
-        return "superseded", None, None, LIMITATION_PLAN_SUPERSEDED
+        return _withheld_due_action("superseded", LIMITATION_PLAN_SUPERSEDED)
 
     projection = _due_action_subject_projection(session, notification)
     if projection is None:
-        return "superseded", None, None, LIMITATION_PLAN_SUPERSEDED
+        return _withheld_due_action("superseded", LIMITATION_PLAN_SUPERSEDED)
     if _has_live_deferral(projection, today):
-        return "deferred", None, None, LIMITATION_DEFERRED
+        return _withheld_due_action("deferred", LIMITATION_DEFERRED)
     if notification.subject_kind == "statement" and not _statement_still_live(
         session, notification.commitment_lineage_id
     ):
-        return "superseded", None, None, LIMITATION_CONDITION_CLEARED
+        return _withheld_due_action("superseded", LIMITATION_CONDITION_CLEARED)
     if projection.action_due_date is None:
-        return "cleared", None, None, LIMITATION_CONDITION_CLEARED
+        return _withheld_due_action("cleared", LIMITATION_CONDITION_CLEARED)
 
     band, days = _urgency_band(projection.action_due_date, today)
     current_assignee = _current_assignee(
@@ -1940,7 +1453,7 @@ def _due_action_currency(
         commitment_lineage_id=notification.commitment_lineage_id,
     )
     if current_assignee is None:
-        return "superseded", None, None, LIMITATION_PLAN_SUPERSEDED
+        return _withheld_due_action("superseded", LIMITATION_PLAN_SUPERSEDED)
 
     if notification.category == CATEGORY_NEXT_ACTION_ESCALATION:
         # The escalation must still be urgent, still routed to the configured
@@ -1954,25 +1467,22 @@ def _due_action_currency(
             escalation is None
             or escalation.principal_subject != notification.recipient_principal_subject
         ):
-            return "cleared", None, None, LIMITATION_CONDITION_CLEARED
+            return _withheld_due_action("cleared", LIMITATION_CONDITION_CLEARED)
         if band != URGENCY_OVERDUE or days < urgent_overdue_days:
-            return "cleared", None, None, LIMITATION_CONDITION_CLEARED
+            return _withheld_due_action("cleared", LIMITATION_CONDITION_CLEARED)
         if escalation.principal_subject == current_assignee.principal_subject:
-            return "deduplicated", None, None, LIMITATION_ESCALATION_DEDUPLICATED
-    else:
-        # An ordinary reminder must still be routed to the current assignee and
-        # match the urgency band it was raised for.
-        if current_assignee.principal_subject != notification.recipient_principal_subject:
-            return "reassigned", None, None, LIMITATION_ACTION_REASSIGNED
-        if band != notification.urgency:
-            return "cleared", None, None, LIMITATION_CONDITION_CLEARED
+            return _withheld_due_action(
+                "deduplicated", LIMITATION_ESCALATION_DEDUPLICATED
+            )
+        return None
 
-    contact, limitation = _resolve_contact(
-        session, notification.recipient_principal_subject
-    )
-    if contact is None:
-        return "unresolved", None, None, limitation
-    return "current", contact, _due_action_subject_summary(session, notification), None
+    # An ordinary reminder must still be routed to the current assignee and match
+    # the urgency band it was raised for.
+    if current_assignee.principal_subject != notification.recipient_principal_subject:
+        return _withheld_due_action("reassigned", LIMITATION_ACTION_REASSIGNED)
+    if band != notification.urgency:
+        return _withheld_due_action("cleared", LIMITATION_CONDITION_CLEARED)
+    return None
 
 
 def _urgency_band(action_due_date: date, today: date) -> tuple[str | None, int]:
@@ -2008,18 +1518,6 @@ def _statement_still_live(session: Session, commitment_lineage_id: int | None) -
     return commitment_lineage_id not in closed
 
 
-def _due_action_delivery_enabled(session_factory, project_id: int) -> bool:
-    with session_factory() as reading:
-        schedule = reading.scalar(
-            select(DueWorkSchedule.id).where(
-                DueWorkSchedule.project_id == project_id,
-                DueWorkSchedule.handler_key == DUE_ACTION_NOTIFICATION_HANDLER,
-                DueWorkSchedule.disabled_at.is_(None),
-            )
-        )
-    return schedule is not None
-
-
 # --- Reads: recipient inbox and operations delivery view -------------------
 
 
@@ -2031,18 +1529,13 @@ def due_action_inbox(
     Scoped to the signed-in member and the one project, so no other project's
     records or another person's reminders are exposed.
     """
-    rows = session.execute(
-        select(DueActionNotification, DueActionNotificationDispatch)
-        .join(
-            DueActionNotificationDispatch,
-            DueActionNotificationDispatch.notification_id == DueActionNotification.id,
-        )
-        .where(
-            DueActionNotification.project_id == project_id,
-            DueActionNotification.recipient_principal_subject == principal_subject,
-        )
-        .order_by(DueActionNotification.id.desc())
-    ).all()
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        DueActionNotification,
+        DueActionNotificationDispatch,
+        project_id=project_id,
+        principal_subject=principal_subject,
+    )
     return [
         {
             "notification_id": notification.id,
@@ -2077,54 +1570,37 @@ def due_action_operations_view(
     and makes the escalation configuration visible — including, when it is
     missing, the reason escalation is disabled (ADR-0034 decision 48).
     """
-    rows = session.execute(
-        select(DueActionNotification, DueActionNotificationDispatch)
-        .join(
-            DueActionNotificationDispatch,
-            DueActionNotificationDispatch.notification_id == DueActionNotification.id,
-        )
-        .where(DueActionNotification.project_id == project_id)
-        .order_by(DueActionNotification.id.desc())
-    ).all()
-    counts = {
-        state: 0
-        for state in ("queued", "completed", "retry_due", "failed", "uncertain")
-    }
-    deliveries = []
-    for notification, dispatch in rows:
-        counts[dispatch.delivery_state] = counts.get(dispatch.delivery_state, 0) + 1
-        deliveries.append(
-            {
-                "notification_id": notification.id,
-                "public_id": notification.public_id,
-                "category": notification.category,
-                "urgency": notification.urgency,
-                "recipient_role": notification.recipient_role,
-                "recipient": notification.recipient_principal_subject,
-                "subject_label": _due_action_subject_summary(session, notification)[
-                    "subject_label"
-                ],
-                "delivery_state": dispatch.delivery_state,
-                "delivery_status": _human_due_action_status(dispatch),
-                "delivery_limitation": dispatch.delivery_limitation,
-                "attempt_count": dispatch.attempt_count,
-                "last_error_code": dispatch.last_error_code,
-            }
-        )
-    schedule = session.scalar(
-        select(DueWorkSchedule).where(
-            DueWorkSchedule.project_id == project_id,
-            DueWorkSchedule.handler_key == DUE_ACTION_NOTIFICATION_HANDLER,
-            DueWorkSchedule.disabled_at.is_(None),
-        )
+    rows = outgoing_dispatch.paired_rows(
+        session,
+        DueActionNotification,
+        DueActionNotificationDispatch,
+        project_id=project_id,
     )
-    escalation = _escalation_configuration(session, schedule)
-    return {
-        "delivery_enabled": schedule is not None,
-        "escalation": escalation,
-        "counts": counts,
-        "deliveries": deliveries,
-    }
+    schedule = outgoing_dispatch.enabled_schedule(
+        session, project_id=project_id, handler_key=DUE_ACTION_NOTIFICATION_HANDLER
+    )
+    view = outgoing_dispatch.operations_projection(
+        rows,
+        delivery_enabled=schedule is not None,
+        row=lambda notification, dispatch: {
+            "notification_id": notification.id,
+            "public_id": notification.public_id,
+            "category": notification.category,
+            "urgency": notification.urgency,
+            "recipient_role": notification.recipient_role,
+            "recipient": notification.recipient_principal_subject,
+            "subject_label": _due_action_subject_summary(session, notification)[
+                "subject_label"
+            ],
+            "delivery_state": dispatch.delivery_state,
+            "delivery_status": _human_due_action_status(dispatch),
+            "delivery_limitation": dispatch.delivery_limitation,
+            "attempt_count": dispatch.attempt_count,
+            "last_error_code": dispatch.last_error_code,
+        },
+    )
+    view["escalation"] = _escalation_configuration(session, schedule)
+    return view
 
 
 def _escalation_configuration(
@@ -2165,31 +1641,18 @@ def _observation_window(notification: DueActionNotification) -> dict[str, str | 
 
 
 def _human_due_action_status(dispatch: DueActionNotificationDispatch) -> str:
-    if dispatch.delivery_state == "queued":
-        if dispatch.delivery_limitation == LIMITATION_UNRESOLVED_CONTACT:
-            return "queued (no verified contact yet)"
-        return "queued for delivery"
-    if dispatch.delivery_state == "completed":
-        return "delivered"
-    if dispatch.delivery_state == "retry_due":
-        return "retry scheduled"
-    if dispatch.delivery_state == "uncertain":
-        return "delivery not acknowledged"
-    if dispatch.delivery_limitation == LIMITATION_PLAN_SUPERSEDED:
-        return "the plan changed before delivery"
-    if dispatch.delivery_limitation == LIMITATION_ACTION_REASSIGNED:
-        return "the action was reassigned before delivery"
-    if dispatch.delivery_limitation == LIMITATION_DEFERRED:
-        return "the item was deferred before delivery"
-    if dispatch.delivery_limitation == LIMITATION_CONDITION_CLEARED:
-        return "the condition cleared before delivery"
-    if dispatch.delivery_limitation == LIMITATION_ESCALATION_DEDUPLICATED:
-        return "the escalation contact already holds the action"
-    if dispatch.delivery_limitation == LIMITATION_REVOKED_MEMBERSHIP:
-        return "recipient is no longer a project member"
-    if dispatch.delivery_limitation == LIMITATION_UNRESOLVED_CONTACT:
-        return "no verified contact for the recipient"
-    return "delivery failed"
+    return outgoing_dispatch.human_delivery_status(
+        dispatch,
+        {
+            LIMITATION_PLAN_SUPERSEDED: "the plan changed before delivery",
+            LIMITATION_ACTION_REASSIGNED: "the action was reassigned before delivery",
+            LIMITATION_DEFERRED: "the item was deferred before delivery",
+            LIMITATION_CONDITION_CLEARED: "the condition cleared before delivery",
+            LIMITATION_ESCALATION_DEDUPLICATED: (
+                "the escalation contact already holds the action"
+            ),
+        },
+    )
 
 
 def _due_action_summary_payload(

@@ -34,7 +34,6 @@ from corridor.external_statements import (
 )
 from corridor.models import (
     DueActionNotification,
-    DueActionNotificationAttempt,
     DueActionNotificationDispatch,
     Dependency,
     ExternalOrg,
@@ -471,48 +470,6 @@ def _all_occurrences(factory, project_id):
 
 
 # --- Provider uncertainty and bounded retry --------------------------------
-
-
-def test_uncertain_outcome_is_retained_explicitly(runtime_database):
-    factory = runtime_database.session_factory
-    ctx = _committed_constraint(factory, due_date=date(2026, 9, 2))
-    now = datetime(2026, 8, 30, 7, 5, tzinfo=timezone.utc)
-    _register(factory, ctx["project_id"], now=now)
-    adapter = RecordingDeliveryAdapter(
-        DeliveryOutcome(status="uncertain", provider_result={"ack": False}, retryable=False)
-    )
-    summary = _sweep(factory, ctx["project_id"], adapter, now=now)
-
-    assert summary["uncertain"] == 1
-    assert summary["health"] == "delivery_attention_required"
-    dispatch = _only_dispatch(factory, ctx["project_id"])
-    assert dispatch.delivery_state == "uncertain"
-    assert dispatch.last_error_code == "acknowledgment_unavailable"
-
-
-def test_failure_retries_then_terminal(runtime_database):
-    factory = runtime_database.session_factory
-    ctx = _committed_constraint(factory, due_date=date(2026, 9, 2))
-    start = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
-    _register(factory, ctx["project_id"], now=start)
-    adapter = RecordingDeliveryAdapter(
-        DeliveryOutcome(status="failed", error_code="smtp_550", retryable=True)
-    )
-
-    assert _sweep(factory, ctx["project_id"], adapter, now=start)["retry_due"] == 1
-    assert _only_dispatch(factory, ctx["project_id"]).delivery_state == "retry_due"
-    _sweep(factory, ctx["project_id"], adapter, now=start + timedelta(seconds=120))
-    third = _sweep(factory, ctx["project_id"], adapter, now=start + timedelta(seconds=600))
-    assert third["failed"] == 1
-    dispatch = _only_dispatch(factory, ctx["project_id"])
-    assert dispatch.delivery_state == "failed"
-    with factory() as s:
-        attempts = s.scalars(
-            select(DueActionNotificationAttempt).where(
-                DueActionNotificationAttempt.dispatch_id == dispatch.id
-            )
-        ).all()
-    assert len(attempts) == 3
 
 
 # --- Durability, competing workers, and the supervised runtime -------------
