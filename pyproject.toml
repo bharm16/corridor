@@ -53,6 +53,9 @@ packages = ["src/corridor", "src/corridor_pdf_reader"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# `scripts/` is a regular package; the pytest console script (`make check`, the
+# engine-absent harness) does not add the working directory to sys.path.
+pythonpath = ["."]
 markers = [
     "slow: exhaustive acceptance, migration, or real-corpus rehearsal",
     "migration: database upgrade tests selected only for schema-sensitive changes",

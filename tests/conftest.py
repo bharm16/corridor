@@ -19,7 +19,6 @@ import fcntl
 import os
 from pathlib import Path
 import re
-import runpy
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock, get_ident
@@ -90,12 +89,13 @@ def _require_local_broad_reason(config) -> None:
         # #766 explicitly requires the complete suite after proving both
         # engines absent. This dedicated acceptance is not a routine broad
         # run: the flag alone cannot waive the default-environment guard.
-        proof = runpy.run_path(str(Path(__file__).resolve().parents[1] / "scripts/engine_absent_suite.py"))
-        root = proof["REPO_ROOT"]
-        if Path(sys.prefix).resolve() != (root / proof["ENVIRONMENT_NAME"]).resolve():
+        from scripts.engine_absent_suite import (
+            ENVIRONMENT_NAME, REPO_ROOT, assert_absent, probe_absence,
+        )
+        if Path(sys.prefix).resolve() != (REPO_ROOT / ENVIRONMENT_NAME).resolve():
             raise pytest.UsageError("engine-absent proof requires its prepared isolated environment")
-        for project in (root, root / "workers/render"):
-            proof["assert_absent"](proof["probe_absence"](dict(os.environ), project), str(project))
+        for project in (REPO_ROOT, REPO_ROOT / "workers/render"):
+            assert_absent(probe_absence(dict(os.environ), project), str(project))
         return
     if getattr(options, "collectonly", False) or os.environ.get("GITHUB_ACTIONS") == "true":
         return

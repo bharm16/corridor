@@ -1,6 +1,5 @@
 """Small child processes prove local test completion without nested pytest."""
 
-import importlib.util
 import json
 import os
 from pathlib import Path
@@ -11,13 +10,10 @@ import time
 
 import pytest
 
+from scripts import run_local_tests as runner
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "corridor_local_test_runner", ROOT / "scripts" / "run_local_tests.py"
-)
-runner = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(runner)
 
 
 def _run(tmp_path, source, timeout=2):
