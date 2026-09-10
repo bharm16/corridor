@@ -118,15 +118,13 @@ from corridor.models import (
     DeltaDisposition,
     DeltaRecordDecision,
     DeltaSupersession,
-    Document,
     FactDecision,
     FactSource,
     ProjectRecordRevision,
     ProposedDelta,
     SourceSegment,
-    SupportAssessment,
-    SupportAssessmentSource,
 )
+from corridor.accepted_field_reading import SupportInUse, accepted_support_in_use
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.presentation import accepted_record_exception_name, field_label
@@ -1501,105 +1499,22 @@ def _value_lines(
     return lines
 
 
-@dataclass(frozen=True, slots=True)
-class _SupportInUse:
-    """What one accepted value's Supporting Documentation in Use rests on.
-
-    ``stands_on_current`` is true as soon as one segment in use sits in a
-    Document Revision that has not been replaced.  A Recorded Verbal
-    Statement is not a Document Revision at all, so it can never be
-    superseded and counts here.  ``replaced_on`` is the authority's own
-    replacement date for the earliest superseded revision in use, and is
-    ``None`` when none is in use — or, for a pre-constraint row, when the
-    registry never recorded one; a document, retrieval, or ingestion date is
-    never substituted for it (ADR-0016).
-    """
-
-    assessment_ids: tuple[int, ...]
-    stands_on_current: bool
-    replaced_on: date | None
-
-    @property
-    def depends_on_superseded(self) -> bool:
-        return not self.stands_on_current
-
-
 def _support_in_use(
     session: Session, reading: BoundIssueReading
-) -> dict[int, _SupportInUse]:
+) -> dict[int, SupportInUse]:
     """The Supporting Documentation in Use for every accepted value, once.
 
-    ADR-0017 requires one resolver for "what does this record stand on", and
-    both support checks below read this and nothing else.  Support is the
-    Support Assessment relation: an effective assessment whose outcome is
-    supported or partially supported.  A passed Source Passage Check is never
-    consulted, because a passage being where it was cited says nothing about
-    whether it supports the value beside it (ADR-0082).
-
-    An accepted value with no entry here has no Supporting Documentation in
-    use at all, which is the ported ``MISSING_EVIDENCE``.  That is why the
-    absence is expressed by the key being missing rather than by an empty
-    record: the two checks below then cannot both fire on one value.
-
-    ``stands_on_current`` is a real question even though today's database
-    answers it one way.  ``append_support_assessment`` requires every named
-    segment to sit in the proposition's own rendition, so one accepted value's
-    support cannot currently span a replaced revision and its successor at
-    once, and the record moves onto the successor by accepting that revision's
-    own statement instead.  The predicate is written as ADR-0090 states it —
-    a superseded revision in use **and** no current support beside it —
-    rather than as "this value's document was replaced", because the second
-    would become the wrong rule the moment a proposition may name more than
-    one rendition.
+    The resolver itself is ``accepted_field_reading.accepted_support_in_use``:
+    ADR-0017 requires one answer to "what does this record stand on", and the
+    alert engine's accepted-record adapter needs the same one. This module used
+    to hold a second copy of that query, which is a second definition of the two
+    rules ADR-0090 ports onto it.
     """
-
-    fact_ids = tuple({value.fact_id for value in reading.accepted_values})
-    if not fact_ids:
-        return {}
-    rows = session.execute(
-        select(
-            SupportAssessment.fact_id,
-            SupportAssessment.id,
-            Document.superseded_by,
-            Document.superseded_on,
-        )
-        .join(
-            SupportAssessmentSource,
-            SupportAssessmentSource.support_assessment_id == SupportAssessment.id,
-        )
-        .join(
-            SourceSegment,
-            SourceSegment.id == SupportAssessmentSource.source_segment_id,
-        )
-        .outerjoin(Document, Document.id == SourceSegment.document_id)
-        .where(
-            SupportAssessment.project_id == reading.project_id,
-            SupportAssessment.proposition_kind == "source_fact",
-            SupportAssessment.fact_id.in_(fact_ids),
-            SupportAssessment.superseded_by.is_(None),
-            SupportAssessment.assessment.in_(SUPPORTING_OUTCOMES),
-        )
-    ).all()
-
-    assessments: dict[int, set[int]] = {}
-    current: set[int] = set()
-    replaced: dict[int, date] = {}
-    for fact_id, assessment_id, superseded_by, superseded_on in rows:
-        assessments.setdefault(fact_id, set()).add(assessment_id)
-        if superseded_by is None:
-            current.add(fact_id)
-        elif superseded_on is not None:
-            held = replaced.get(fact_id)
-            if held is None or superseded_on < held:
-                replaced[fact_id] = superseded_on
-    return {
-        fact_id: _SupportInUse(
-            assessment_ids=tuple(sorted(found)),
-            stands_on_current=fact_id in current,
-            replaced_on=replaced.get(fact_id),
-        )
-        for fact_id, found in assessments.items()
-    }
+    return accepted_support_in_use(
+        session,
+        project_id=reading.project_id,
+        fact_ids={value.fact_id for value in reading.accepted_values},
+    )
 
 
 def _alert_lines(session: Session, reading: BoundIssueReading) -> list[ReportLine]:

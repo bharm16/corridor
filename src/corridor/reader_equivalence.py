@@ -215,13 +215,21 @@ def native_constraint_log_surface(reading: FrozenProjectReading) -> SurfaceReadi
     population = reading.native_population
     if population is None:
         raise NativeReadingRefused("legacy overlays cannot supply native surface provenance")
+    reading_of = {row.reading.id: row.reading for row in reading.rows}
     rows = []
     for record in population.open_records:
         fields = {
             "identity": {"record_subject_key": record.subject_key, "source_row_key": record.source_row_key},
             "accepted_values": {name: accepted_field_text(field) for name, field in sorted(record.fields.items())},
             "source_support": tuple(source.reference for source in record.source_passages),
-            "coordination": {"internal_owner": None, "next_action": None, "action_due_date": None},
+            # Declared, not invented: the accepted record establishes no
+            # Coordination Decision, so the surface carries the reading's own
+            # markers rather than three Nones that read as empty fields.
+            "coordination": {
+                "internal_owner": str(reading_of[record.id].internal_owner),
+                "next_action": str(reading_of[record.id].next_action),
+                "action_due_date": str(reading_of[record.id].action_due_date),
+            },
             "check_results": tuple((item.rule, item.detail, item.quantity_days) for item in reading.evaluation.for_dependency(record.id)),
         }
         origins = {name: f"revision:{population.revision_id}" for name in fields}

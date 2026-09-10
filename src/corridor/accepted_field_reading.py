@@ -27,6 +27,7 @@ from corridor.models import (
     BaselineSource, BaselineSourceRow, Document, FactSource, Project,
     ProjectRecordRevision, SourceSegment, ProposedDelta, DeltaRecordDecision,
     Fact, FactDecision, DeltaReviewPacketChild, DeltaReviewPacketReversal,
+    SupportAssessment, SupportAssessmentSource,
     ScheduleLinkReceipt, ScheduleGoverningDerivation, Milestone, MilestoneRegistration,
 )
 from corridor.record_projection import read_native_record_values, record_value_payload
@@ -113,10 +114,6 @@ class AcceptedConstraint:
         return field.value if field else None
 
     @property
-    def source_ref(self):
-        return self.value("utility_id")
-
-    @property
     def external_org_id(self):
         field = self.fields.get("external_org")
         return field.external_org_value_id if field else None
@@ -126,40 +123,12 @@ class AcceptedConstraint:
         return self.value("external_org")
 
     @property
-    def title(self):
-        # The existing matrix materialization policy: utility type and party,
-        # never conflict_description reinterpreted as a title.
-        utility = self.value("utility_type") or "Utility"
-        return f"{utility} — {self.org_name}" if self.org_name else utility
-
-    @property
-    def dep_type(self):
-        return "utility_relocation"
-
-    @property
-    def location_desc(self):
-        return " / ".join(value for name in ("alignment", "location_start", "location_end")
-                          if (value := self.value(name))) or None
-
-    @property
     def station_from(self):
         return self.value("station_from")
 
     @property
     def station_to(self):
         return self.value("station_to")
-
-    @property
-    def external_contact(self):
-        return self.value("external_org_contact")
-
-    @property
-    def notes(self):
-        return self.value("notes")
-
-    @property
-    def committed_date(self):
-        return self.value("committed_date")
 
     @property
     def need_date(self):
@@ -181,22 +150,24 @@ class AcceptedConstraint:
 
     @property
     def checked_source_passages(self):
+        """The passages whose Source Passage Check passed.
+
+        This is a mechanical, replayable fact about citations and it is
+        published as one. It is **not** whether the record stands on anything:
+        ADR-0082 separated the two, and ADR-0090 re-based MISSING_EVIDENCE off
+        this onto the Support Assessment relation
+        (``accepted_support_in_use``). Nothing may read this as support.
+        """
         return tuple(source for source in self.source_passages if source.locator_validation_status == "valid")
 
-    # Selected coordination/schedule/support authority is explicitly checked
-    # below and refused until its exact native subject adapter exists. A source's
-    # action_due_date is never substituted for an internal Coordination Decision.
-    internal_owner = None
-    next_action = None
-    action_due_date = None
-    action_due_date_reason = None
-    deferral_reason = None
-    deferral_return_date = None
-    milestone_id = None
-    milestone_registration_id = None
-    cost_responsibility = None
-    evidence_required = None
-    dismissed_at = None
+    # No coordination, schedule-link, deferral or legacy support value is
+    # hard-coded here any more. Eleven class attributes fixed to ``None`` used to
+    # let a legacy reader duck-type this record, and every one of them turned
+    # "this record has no such value" into "this value is empty" — which fired
+    # MISSING_OWNER, MISSING_ACTION and ORPHAN on every accepted record until
+    # each rule was patched separately. ``constraint_reading.ConstraintReading``
+    # carries those fields as declared ``NotAvailable`` markers instead, so a
+    # reader that wants one learns why it is absent (ADR-0084 §3, ADR-0090).
 
 
 @dataclass(frozen=True)
@@ -571,6 +542,109 @@ def read_accepted_field_population(session: Session, project_id: int, *, revisio
     fingerprint = sha256(json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
     return AcceptedFieldPopulation(project_id, boundary, baseline.revision_id, tuple(records),
         tuple(identity["excluded"]), fingerprint, plans, plan_scope, statements, tuple(sorted(blockers)), withdrawn, exclusions)
+
+
+# The Support Assessment outcomes that make a Source Segment Supporting
+# Documentation. "Contradicted", "unclear" and "not assessed" are readings too,
+# and none of them is support (ADR-0082).
+SUPPORTING_OUTCOMES = ("supported", "partially_supported")
+
+
+@dataclass(frozen=True)
+class SupportInUse:
+    """What one accepted value's Supporting Documentation in Use rests on.
+
+    ``stands_on_current`` is true as soon as one segment in use sits in a
+    Document Revision that has not been replaced. A Recorded Verbal Statement is
+    not a Document Revision at all, so it can never be superseded and counts
+    here. ``replaced_on`` is the authority's own replacement date for the
+    earliest superseded revision in use, and is ``None`` when none is in use —
+    or, for a pre-constraint row, when the registry never recorded one; a
+    document, retrieval, or ingestion date is never substituted for it
+    (ADR-0016).
+    """
+
+    assessment_ids: tuple[int, ...]
+    stands_on_current: bool
+    replaced_on: date | None
+
+    @property
+    def depends_on_superseded(self) -> bool:
+        return not self.stands_on_current
+
+
+def accepted_support_in_use(session: Session, *, project_id: int, fact_ids) -> dict[int, SupportInUse]:
+    """The Supporting Documentation in Use for a set of accepted values, once.
+
+    ADR-0017 requires **one** resolver for "what does this record stand on", and
+    it lives here because two readers need it: the issued Coordination Report's
+    alert lines and the alert engine's accepted-record adapter. They used to be
+    two copies of one query, and ADR-0090 ports two rules onto it — a second
+    copy is a second definition of whether the accepted record stands on
+    anything.
+
+    Support is the Support Assessment relation: an effective assessment whose
+    outcome is supported or partially supported. A passed Source Passage Check is
+    never consulted, because a passage being where it was cited says nothing
+    about whether it supports the value beside it (ADR-0082).
+
+    A Fact with no entry in the result has no Supporting Documentation in use at
+    all. The absence is expressed by the key being missing rather than by an
+    empty record, so a caller cannot read "stands on nothing" and "stands on a
+    replaced revision" off one value at once.
+    """
+    wanted = tuple({int(fact_id) for fact_id in fact_ids})
+    if not wanted:
+        return {}
+    rows = session.execute(
+        select(
+            SupportAssessment.fact_id,
+            SupportAssessment.id,
+            Document.superseded_by,
+            Document.superseded_on,
+        )
+        .join(
+            SupportAssessmentSource,
+            SupportAssessmentSource.support_assessment_id == SupportAssessment.id,
+        )
+        .join(SourceSegment, SourceSegment.id == SupportAssessmentSource.source_segment_id)
+        .outerjoin(Document, Document.id == SourceSegment.document_id)
+        .where(
+            SupportAssessment.project_id == project_id,
+            SupportAssessment.proposition_kind == "source_fact",
+            SupportAssessment.fact_id.in_(wanted),
+            SupportAssessment.superseded_by.is_(None),
+            SupportAssessment.assessment.in_(SUPPORTING_OUTCOMES),
+        )
+    ).all()
+    assessments: dict[int, set[int]] = {}
+    current: set[int] = set()
+    replaced: dict[int, date] = {}
+    for fact_id, assessment_id, superseded_by, superseded_on in rows:
+        assessments.setdefault(fact_id, set()).add(assessment_id)
+        if superseded_by is None:
+            current.add(fact_id)
+        elif superseded_on is not None:
+            held = replaced.get(fact_id)
+            if held is None or superseded_on < held:
+                replaced[fact_id] = superseded_on
+    return {
+        fact_id: SupportInUse(
+            assessment_ids=tuple(sorted(found)),
+            stands_on_current=fact_id in current,
+            replaced_on=replaced.get(fact_id),
+        )
+        for fact_id, found in assessments.items()
+    }
+
+
+def accepted_population_support(session: Session, population: AcceptedFieldPopulation) -> dict[int, SupportInUse]:
+    """The same resolver over every accepted value one population published."""
+    return accepted_support_in_use(
+        session,
+        project_id=population.project_id,
+        fact_ids=(field.fact_id for record in population.records for field in record.fields.values()),
+    )
 
 
 def accepted_field_text(field: AcceptedField):

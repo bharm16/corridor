@@ -126,7 +126,7 @@ def to_xlsx(
     if reading.native_population is not None:
         return native_population_workbook(reading, path, internal_working_copy=internal_working_copy)
     evidence_by_dependency = primary_evidence(
-        session, [row.dependency.id for row in rows]
+        session, [row.reading.id for row in rows]
     )
 
     workbook = Workbook()
@@ -139,7 +139,7 @@ def to_xlsx(
         cell.alignment = Alignment(vertical="top")
 
     for row in rows:
-        dependency = row.dependency
+        dependency = row.reading
         evidence = evidence_by_dependency.get(dependency.id)
         statement = statement_publication.by_dependency[dependency.id]
         sheet.append(
@@ -239,22 +239,26 @@ def native_population_workbook(reading: FrozenProjectReading, path, *, internal_
         cell.font = Font(bold=True)
     sources = book.create_sheet("Accepted value sources")
     sources.append(["Record subject", "Source row", "Field", "Accepted value", "Fact", "Decision", "Revision", "Source Segment", "Supporting document", "Source location", "Cited passage"])
+    # Every published field comes from the one Constraint reading, so this
+    # workbook cannot name a value the report reads differently.
+    readings = {row.reading.id: row.reading for row in reading.rows}
     for record in population.open_records:
+        held = readings[record.id]
         field = record.fields.get("committed_date")
         timing_source = field.sources[0] if field and field.sources else None
         source = record.source_passages[0] if record.source_passages else None
-        sheet.append([record.ref_code, record.source_ref, record.org_name, record.dep_type,
-            record.title, record.station_from, record.station_to,
+        sheet.append([held.ref_code, held.source_ref, held.org_name, held.dep_type,
+            held.title, held.station_from, held.station_to,
             record.value("resolution_strategy"), reading.statement_publication.committed_dates[record.id],
             None,
-            record.need_date, documentation_review_label(False), "Not specified",
+            held.need_date, documentation_review_label(False), "Not specified",
             ", ".join(format_exception_label(item) for item in reading.evaluation.for_dependency(record.id)),
             source.filename if source else None, source.locator if source else None, source.quote if source else None])
-        for name, held in sorted(record.fields.items()):
-            printed = accepted_field_text(held)
-            for passage in held.sources or (None,):
-                sources.append([record.subject_key, record.source_row_key, field_label(name), printed, held.fact_id,
-                    held.decision_id, held.revision_id, passage.source_segment_id if passage else None,
+        for name, value in sorted(record.fields.items()):
+            printed = accepted_field_text(value)
+            for passage in value.sources or (None,):
+                sources.append([record.subject_key, record.source_row_key, field_label(name), printed, value.fact_id,
+                    value.decision_id, value.revision_id, passage.source_segment_id if passage else None,
                     passage.filename if passage else None, passage.locator if passage else None, passage.quote if passage else None])
     statements = book.create_sheet("Accepted statements")
     statements.append(["Statement", "Field", "Accepted value", "Fact", "Record Decision", "Revision", "Decided by", "Source traceability"])

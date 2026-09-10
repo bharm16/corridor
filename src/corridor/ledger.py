@@ -14,11 +14,17 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
-from sqlalchemy import false as sa_false, func, select
-from sqlalchemy.orm import Session
+from sqlalchemy import func, select
+from sqlalchemy.orm import Session, undefer
 
 from corridor import audit
 from corridor.accepted_field_reading import AcceptedConstraint, NativeReadingRefused
+from corridor.constraint_reading import (
+    ACCEPTED_RECORD,
+    ConstraintReading,
+    available,
+    legacy_constraint_reading,
+)
 from corridor.check_configuration import effective_thresholds
 from corridor.dependency_events import (
     CurrentDependencyStatement,
@@ -29,10 +35,10 @@ from corridor.dependency_events import (
 )
 from corridor.exceptions import (
     Evaluation,
+    accepted_record_readings,
     evaluate_dependency,
 )
 from corridor.models import (
-    CRITICAL_STRATEGIES,
     is_claim,
     is_critical,
     RESOLUTION_STRATEGIES,
@@ -166,6 +172,12 @@ class LedgerRow:
     # ADR-0060 open conditions keeping this row not Ready, shown verbatim with
     # the letter one tap away (#373).
     open_conditions: tuple = ()
+    # The one reading behind this row, for both populations. `dependency` stays
+    # the population's own subject — a legacy row, or the accepted record with
+    # its deciding revisions — so a renderer that needs that provenance has it;
+    # every *field* a reader publishes comes from here, where an unavailable one
+    # is a declared marker instead of a hard-coded None.
+    reading: ConstraintReading | None = None
 
     @property
     def committed_date(self) -> date | None:
@@ -205,19 +217,86 @@ def browse(
     a second clock and no error — which is how `make demo` came to publish
     an HTML report, an XLSX and a snapshot from three readings of one
     Ledger. A caller with no evaluation now has to say so.
+
+    **The six filters are written once.** They used to exist twice — as SQL
+    predicates for a legacy project and as a Python loop over the accepted
+    record in ``browse_native_population`` — so "unassigned" meant one thing in
+    one branch and another in the other, and a seventh filter would have had to
+    be written twice to be true. Both populations become
+    ``ConstraintReading``s first, and the filters then apply to the reading. A
+    filter whose fact the reading does not have (an accepted record has no
+    internal owner and no documentation review outcome) matches nothing and says
+    so through the reading's marker, rather than matching everything because a
+    hard-coded ``None`` looked like an empty field.
     """
     if evaluation.project_id != project_id:
         raise ValueError("the evaluation belongs to another project")
+    publication = evaluation.statement_publication
+    if publication is None:
+        raise ValueError("the evaluation has no frozen statement publication")
+    if publication.project_id != project_id:
+        raise ValueError("the statement publication belongs to another project")
+
     if evaluation.native_population is not None:
-        return browse_native_population(evaluation, org_id=org_id, resolution_strategy=resolution_strategy,
-                                        ready=ready, rule=rule, owner=owner, limit=limit)
-    # A dismissed record is off the working list and stays in history
-    # (ADR-0032). Filtered here rather than by every caller, because the
-    # list is what "the working list" means.
-    query = select(Dependency).where(
-        Dependency.project_id == project_id,
-        Dependency.dismissed_at.is_(None),
-    )
+        readings, subjects, org_names = _accepted_readings(session, evaluation)
+    else:
+        readings, subjects, org_names = _legacy_readings(session, project_id, evaluation)
+
+    if set(publication.by_dependency) != set(readings):
+        raise ValueError("the statement publication has a different Ledger population")
+
+    # Exceptions are computed, never stored (ADR-0002's reasoning), so they
+    # are read off the evaluation the caller published rather than joined.
+    by_dependency = evaluation.by_dependency()
+
+    selected = [
+        reading
+        for reading in readings.values()
+        if _matches(
+            reading,
+            org_id=org_id,
+            resolution_strategy=resolution_strategy,
+            ready=ready,
+            owner=owner,
+            rule=rule,
+            exceptions=by_dependency.get(reading.id, []),
+        )
+    ][:limit]
+
+    counts = _backing_counts(session, evaluation, [reading.id for reading in selected])
+    return [
+        LedgerRow(
+            dependency=subjects[reading.id],
+            org_name=org_names.get(reading.id, reading.org_name),
+            is_ready=reading.is_ready is True,
+            evidence_count=counts.evidence.get(reading.id, reading.source_count),
+            verified_evidence_count=reading.checked_source_count,
+            assertion_count=counts.assertions.get(reading.id, len(reading.subject.fields)
+                if reading.mode == ACCEPTED_RECORD else 0),
+            contradicted=bool(available(reading.contradicted_fields)
+                and reading.contradicted_fields),
+            committed_statement=publication.by_dependency[reading.id],
+            exceptions=by_dependency.get(reading.id, []),
+            open_conditions=counts.open_conditions.get(reading.id, ()),
+            reading=reading,
+        )
+        for reading in selected
+    ]
+
+
+def _matches(
+    reading: ConstraintReading,
+    *,
+    org_id: int | None,
+    resolution_strategy: str | None,
+    ready: bool | None,
+    owner: str | None,
+    rule: str | None,
+    exceptions: list,
+) -> bool:
+    """The six Constraint Log filters, once, over the reading."""
+    if org_id is not None and reading.external_org_id != org_id:
+        return False
     if owner:
         # `unassigned` is the question a coordinator actually asks first —
         # what has nobody — so it is a value of this filter rather than a
@@ -225,40 +304,53 @@ def browse(
         # exactly: an Internal Owner is established by a Work Decision
         # naming someone, and fuzzy-matching people is how a list quietly
         # attributes work to the wrong one.
+        if not available(reading.internal_owner):
+            # The accepted record establishes no internal owner at all, so
+            # neither "unassigned" nor a named person is a question about it.
+            return False
         if owner == "unassigned":
-            query = query.where(Dependency.internal_owner.is_(None))
-        else:
-            query = query.where(Dependency.internal_owner == owner)
-    if org_id:
-        query = query.where(Dependency.external_org_id == org_id)
+            if reading.internal_owner is not None:
+                return False
+        elif reading.internal_owner != owner:
+            return False
     if resolution_strategy:
         # `critical` is not a strategy — it is the reading of one, and it
         # stays filterable because that is the question a reviewer actually
         # asks. `v0-build-spec.md` names the ledger as browsable by
         # criticality; without this it would take three separate queries.
         #
-        # An unknown value matches nothing rather than raising. The column's
-        # Enum sets `validate_strings=True`, so comparing it against a
-        # string outside the vocabulary raises LookupError at bind time and
-        # a hand-edited query string would 500 the page.
+        # An unknown value matches nothing rather than raising.
         if resolution_strategy == "critical":
-            query = query.where(
-                Dependency.resolution_strategy.in_(sorted(CRITICAL_STRATEGIES))
-            )
-        elif resolution_strategy in RESOLUTION_STRATEGIES:
-            query = query.where(
-                Dependency.resolution_strategy == resolution_strategy
-            )
-        else:
-            query = query.where(sa_false())
+            if not reading.critical:
+                return False
+        elif resolution_strategy not in RESOLUTION_STRATEGIES:
+            return False
+        elif reading.resolution_strategy != resolution_strategy:
+            return False
+    if ready is not None and (reading.is_ready is True) is not ready:
+        return False
+    if rule and not any(exception.rule == rule for exception in exceptions):
+        return False
+    return True
 
-    dependencies = session.scalars(query.order_by(Dependency.ref_code)).all()
-    ids = [d.id for d in dependencies] or [0]
 
-    orgs = {
-        o.id: o.name
-        for o in session.scalars(select(ExternalOrg))
-    }
+@dataclass(frozen=True)
+class _Backing:
+    """The per-row counts the Constraint Log's Backing column publishes."""
+
+    evidence: dict = field(default_factory=dict)
+    assertions: dict = field(default_factory=dict)
+    open_conditions: dict = field(default_factory=dict)
+
+
+def _backing_counts(session: Session, evaluation: Evaluation, ids: list) -> _Backing:
+    """Count backing for the rows that survived the filters, in one pass each.
+
+    An accepted record's backing is its own accepted source passages, already
+    counted on the reading, so nothing here queries a legacy table for it.
+    """
+    if evaluation.native_population is not None or not ids:
+        return _Backing()
     # Both counts in one pass, so they cannot describe different
     # populations — which is the whole failure being fixed: a report cell
     # labelled "With verified evidence" was counting every link.
@@ -269,9 +361,7 @@ def browse(
             .group_by(EvidenceLink.dependency_id)
         ).all()
     )
-    event_evidence_counts = current_statement_evidence_memberships(
-        session, ids
-    ).counts
+    event_evidence_counts = current_statement_evidence_memberships(session, ids).counts
     assertion_counts = dict(
         session.execute(
             select(Assertion.dependency_id, func.count())
@@ -279,83 +369,81 @@ def browse(
             .group_by(Assertion.dependency_id)
         ).all()
     )
-    contradicted = _contradicted_ids(session, ids)
-    support_by_dependency = resolve_operative_support(
-        session, (dependency.id for dependency in dependencies)
+    support = resolve_operative_support(session, ids)
+    return _Backing(
+        evidence={
+            dependency_id: evidence_counts.get(dependency_id, 0)
+            + event_evidence_counts.get(dependency_id, 0)
+            for dependency_id in ids
+        },
+        assertions=assertion_counts,
+        open_conditions={
+            dependency_id: support[dependency_id].open_conditions
+            for dependency_id in ids
+        },
     )
-    publication = evaluation.statement_publication
-    if publication is None:
-        raise ValueError("the evaluation has no frozen statement publication")
-    if publication.project_id != project_id:
-        raise ValueError("the statement publication belongs to another project")
-    publication_population = set(
-        session.scalars(
-            select(Dependency.id).where(
-                Dependency.project_id == project_id,
-                Dependency.dismissed_at.is_(None),
-            )
+
+
+def _legacy_readings(session: Session, project_id: int, evaluation: Evaluation):
+    """Read the legacy `dependencies` population as Constraint readings."""
+    # A dismissed record is off the working list and stays in history
+    # (ADR-0032). Filtered here rather than by every caller, because the
+    # list is what "the working list" means.
+    dependencies = session.scalars(
+        select(Dependency)
+        .options(undefer(Dependency.milestone_registration_id))
+        .where(Dependency.project_id == project_id, Dependency.dismissed_at.is_(None))
+        .order_by(Dependency.ref_code)
+    ).all()
+    ids = [dependency.id for dependency in dependencies] or [0]
+    orgs = {org.id: org.name for org in session.scalars(select(ExternalOrg))}
+    support = resolve_operative_support(session, [d.id for d in dependencies])
+    contradicted = contradicted_fields(session, [d.id for d in dependencies])
+    evidence_counts = dict(
+        session.execute(
+            select(EvidenceLink.dependency_id, func.count())
+            .where(EvidenceLink.dependency_id.in_(ids))
+            .group_by(EvidenceLink.dependency_id)
         ).all()
     )
-    if set(publication.by_dependency) != publication_population:
-        raise ValueError("the statement publication has a different Ledger population")
-
-    # Exceptions are computed, never stored (ADR-0002's reasoning), so they
-    # are read off the evaluation the caller published rather than joined.
-    by_dependency = evaluation.by_dependency()
-
-    rows = [
-        LedgerRow(
-            dependency=d,
-            org_name=orgs.get(d.external_org_id),
-            is_ready=support_by_dependency[d.id].is_ready,
-            evidence_count=(
-                evidence_counts.get(d.id, 0) + event_evidence_counts.get(d.id, 0)
-            ),
-            verified_evidence_count=(
-                support_by_dependency[d.id].verified_evidence_count
-            ),
-            assertion_count=assertion_counts.get(d.id, 0),
-            contradicted=d.id in contradicted,
-            committed_statement=publication.by_dependency[d.id],
-            exceptions=by_dependency.get(d.id, []),
-            open_conditions=support_by_dependency[d.id].open_conditions,
+    event_evidence_counts = current_statement_evidence_memberships(session, ids).counts
+    publication = evaluation.statement_publication
+    readings = {}
+    for dependency in dependencies:
+        statement = publication.by_dependency.get(dependency.id)
+        readings[dependency.id] = legacy_constraint_reading(
+            dependency,
+            support=support[dependency.id],
+            contradicted_fields=tuple(contradicted.get(dependency.id, [])),
+            has_closure=bool(statement.is_closed) if statement else False,
+            committed_date=evaluation.committed_dates.get(dependency.id),
+            org_name=orgs.get(dependency.external_org_id),
+            source_count=evidence_counts.get(dependency.id, 0)
+            + event_evidence_counts.get(dependency.id, 0),
         )
-        for d in dependencies
-    ]
-    if ready is not None:
-        rows = [r for r in rows if r.is_ready is ready]
-    if rule:
-        rows = [r for r in rows if any(e.rule == rule for e in r.exceptions)]
-    return rows[:limit]
+    subjects = {dependency.id: dependency for dependency in dependencies}
+    return readings, subjects, {}
 
 
-def browse_native_population(evaluation: Evaluation, *, org_id=None, resolution_strategy=None,
-                             ready=None, rule=None, owner=None, limit=200):
-    """Filter accepted native rows without querying legacy current-value columns."""
+def _accepted_readings(session: Session, evaluation: Evaluation):
+    """Read the accepted Project Record population as Constraint readings."""
     population = evaluation.native_population
     if population is None:
         raise NativeReadingRefused("native Constraint Log requires a native evaluation")
-    rows = []
-    for record in population.open_records:
-        if org_id is not None and record.external_org_id != org_id:
-            continue
-        if owner and ((owner == "unassigned" and record.internal_owner) or
-                      (owner != "unassigned" and record.internal_owner != owner)):
-            continue
-        if resolution_strategy and not (
-            (resolution_strategy == "critical" and is_critical(record.resolution_strategy))
-            or resolution_strategy == record.resolution_strategy):
-            continue
-        passages = record.source_passages
-        found = evaluation.for_dependency(record.id)
-        row = LedgerRow(record, record.org_name, False, len(passages), len(record.checked_source_passages),
-            len(record.fields), False, evaluation.statement_publication.by_dependency[record.id], found)
-        if ready is not None and row.is_ready is not ready:
-            continue
-        if rule and not any(item.rule == rule for item in found):
-            continue
-        rows.append(row)
-    return rows[:limit]
+    readings = accepted_record_readings(session, population)
+    subjects = {record.id: record for record in population.open_records}
+    return readings, subjects, {}
+
+
+def browse_native_population(session: Session, evaluation: Evaluation, **filters):
+    """The retained accepted-record entry point, now one delegation.
+
+    It was a second copy of `browse`'s six filters. Nothing here selects a
+    legacy current-value column; nothing here selects anything at all.
+    """
+    if evaluation.native_population is None:
+        raise NativeReadingRefused("native Constraint Log requires a native evaluation")
+    return browse(session, evaluation.project_id, evaluation=evaluation, **filters)
 
 
 @dataclass(frozen=True)

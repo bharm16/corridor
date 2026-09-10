@@ -29,6 +29,8 @@ version: the proposing path is a deliberate later ticket.
 from __future__ import annotations
 
 from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
+from corridor.constraint_reading import legacy_constraint_reading
+from corridor.operative_support import resolve_operative_support
 from corridor.presentation import field_label
 
 from dataclasses import dataclass, field
@@ -160,9 +162,18 @@ def brief(
     publication = published_dependency_statements(
         session, (dependency_id,), project_id=dependency.project_id
     )
+    statement = publication.by_dependency[dependency_id]
+    support = resolve_operative_support(session, (dependency_id,))[dependency_id]
     return _brief(
         session,
-        [dependency],
+        [
+            legacy_constraint_reading(
+                dependency,
+                support=support,
+                has_closure=statement.is_closed,
+                committed_date=statement.committed_date,
+            )
+        ],
         ref_code=dependency.ref_code,
         client=client,
         evaluation=evaluate_dependency(
@@ -195,7 +206,10 @@ def brief_project(
     reading = frozen_reading or freeze_project_reading(
         session, project_id, today=today
     )
-    dependencies = [row.dependency for row in reading.rows]
+    # The one Constraint reading, for both populations: an accepted record has
+    # no Dependency columns to compose a title or a strategy from, and the
+    # briefing must not read a hard-coded absence as a value.
+    dependencies = [row.reading for row in reading.rows]
     publication = reading.statement_publication
     return _brief(
         session,

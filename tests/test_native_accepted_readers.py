@@ -15,7 +15,8 @@ from corridor.baseline_adoption import adopt_baseline, preview_baseline_adoption
 from corridor.briefing import brief_project
 from corridor.config import settings
 from corridor.db import Session, engine
-from corridor.exceptions import evaluate_project
+from corridor.constraint_reading import NotAvailable
+from corridor.exceptions import ACCEPTED_RECORD_RULES, evaluate_project
 from corridor.export import to_xlsx
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.field_mapping_manifest import MappingDeclaration
@@ -103,13 +104,19 @@ def test_actual_readers_never_select_legacy_populations_or_values(session, adopt
         reading = freeze_project_reading(session, project.id, today=TODAY)
         assert reading.native_population.revision_id == result.revision_id
         assert len(reading.rows) == 2
-        assert {row.dependency.source_ref for row in reading.rows} == {"UC-1"}
-        assert len({row.dependency.id for row in reading.rows}) == 2
-        assert all(isinstance(row.dependency.id, str) for row in reading.rows)
-        assert {row.dependency.station_from for row in reading.rows} == {"100+00", "200+00"}
-        assert all(row.dependency.action_due_date is None for row in reading.rows)
-        assert not any(finding.rule.startswith("ACTION_") for finding in reading.evaluation.found)
-        assert len(browse(session, project.id, evaluation=reading.evaluation, owner="unassigned")) == 2
+        assert {row.reading.source_ref for row in reading.rows} == {"UC-1"}
+        assert len({row.reading.id for row in reading.rows}) == 2
+        assert all(isinstance(row.reading.id, str) for row in reading.rows)
+        assert {row.reading.station_from for row in reading.rows} == {"100+00", "200+00"}
+        # Not None — a declared marker. A hard-coded None here read as "this
+        # action has no due date", which is how the retired rules used to fire.
+        assert all(isinstance(row.reading.action_due_date, NotAvailable) for row in reading.rows)
+        assert reading.evaluation.rules_fired <= ACCEPTED_RECORD_RULES
+        # "Unassigned" is a question about a Work Decision, and this project's
+        # accepted record establishes none, so the filter selects nothing rather
+        # than answering "nobody is assigned to any of these".
+        assert browse(session, project.id, evaluation=reading.evaluation, owner="unassigned") == []
+        assert len(browse(session, project.id, evaluation=reading.evaluation)) == 2
         report = build_report(session, project.id, today=TODAY, frozen_reading=reading)
         body = render(report)
         assert "100+00" in body and "200+00" in body and "p.None" not in body
@@ -252,9 +259,10 @@ def test_native_follow_up_plan_preserves_question_evidence_without_accepting_its
     assert plan.support_assessment_ids == (assessment_id,)
     assert plan.source_segment_ids == source_ids
     assert plan.responsible_principal == "local:utility-coordinator"
-    assert all(record.internal_owner is None and record.next_action is None for record in reading.native_population.records)
+    assert all(isinstance(row.reading.internal_owner, NotAvailable)
+               and isinstance(row.reading.next_action, NotAvailable) for row in reading.rows)
     assert all(value is None for value in reading.statement_publication.committed_dates.values())
-    assert "2026-11-01" not in {str(record.committed_date) for record in reading.native_population.records}
+    assert "2026-11-01" not in {str(record.value("committed_date")) for record in reading.native_population.records}
     assert session.scalar(select(DeltaDisposition.id).where(DeltaDisposition.delta_id == delta.id)) is None
     report = build_report(session, project.id, frozen_reading=reading)
     body = render(report)
@@ -330,7 +338,7 @@ def test_report_command_persists_the_exact_rendered_native_reading(runtime_datab
             for record in population.records:
                 entry = records[record.ref_code]
                 assert entry["published_promised_for"] is None
-                assert entry["accepted_field_values"]["committed_date"] == record.committed_date.isoformat()
+                assert entry["accepted_field_values"]["committed_date"] == record.value("committed_date").isoformat()
                 assert entry["accepted_field_decisions"]["station_from"]["decision_id"] == record.fields["station_from"].decision_id
 
 

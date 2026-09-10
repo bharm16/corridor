@@ -29,6 +29,11 @@ never become an adopted project's external artifact.
 from __future__ import annotations
 
 from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
+from corridor.constraint_reading import (
+    NO_DOCUMENTATION_REVIEW,
+    accepted_record_title,
+    available,
+)
 from corridor.presentation import field_label
 
 import html
@@ -313,6 +318,36 @@ def _derived(
     )
 
 
+# What a section says when the accepted Project Record cannot populate it. The
+# rule is the one ``issue_rendering`` already applies to the alert set: state the
+# coverage, in the customer's own words, rather than publishing an emptiness as a
+# finding. The adopted-baseline report used to emit "No key dates are linked to
+# these Constraints" for every project, which is a claim about the project when
+# the fact is a claim about the reader (ADR-0084 §3).
+NOT_POPULATED_IN_THIS_MODE = {
+    "milestone_readiness": (
+        "Key dates are not linked to constraints for this project, so nothing "
+        "here is measured against one. This is a statement about what the "
+        "accepted record holds, not a finding that no key dates exist."
+    ),
+    "coordination": (
+        "This project's accepted record carries no internal owner, next action "
+        "or action due date, so none is listed here. What the project is "
+        "waiting on, and who owes the answer, is in the follow-up section."
+    ),
+    "external_party_commitments": (
+        "A date on this project's accepted record is the customer's own "
+        "recorded value, not an external party's statement of its own, so no "
+        "party commitment is published here."
+    ),
+}
+
+
+def _declared_absence(title: str, reason: str) -> Section:
+    """A section that says what it could not read, instead of reporting none."""
+    return Section(title, note=reason, empty_message=reason)
+
+
 def build_report(
     session: Session,
     project_id: int,
@@ -321,12 +356,28 @@ def build_report(
     document_only: bool = False,
     frozen_reading: FrozenProjectReading | None = None,
 ) -> Report:
+    """One report over one reading, for both populations.
+
+    There were two builders. The legacy one called eight section builders; the
+    accepted-record one called two of them and wrote its own summary, its own
+    coverage note and a structurally empty key-dates section whose message
+    asserted that no key dates were linked. Everything that could be shared was
+    written twice and everything that could not be read was reported as an
+    absence.
+
+    Now the summary and the section list are declared once. A section the
+    accepted record can supply goes through the same builder as the legacy path;
+    a section it cannot supply declares that in the customer's words
+    (``NOT_POPULATED_IN_THIS_MODE``); the two tables that genuinely differ — the
+    appendix and the follow-up section — dispatch on the population, because they
+    are different tables rather than one table written twice.
+    """
     today = today or datetime.now(timezone.utc).date()
     reading = frozen_reading or freeze_project_reading(
         session, project_id, today=today, document_only=document_only
     )
-    if reading.native_population is not None:
-        return build_native_report(session, reading, document_only=document_only)
+    population = reading.native_population
+    adopted = population is not None
     publication = reading.statement_publication
     committed_dates = publication.committed_dates
     committed_events = publication.committed_events
@@ -338,17 +389,17 @@ def build_report(
     evaluation = reading.evaluation
     project = reading.project
     rows = list(reading.rows)
-    by_id = {r.dependency.id: r for r in rows}
-    ids = tuple(by_id)
+    ids = tuple(row.reading.id for row in rows)
 
     # Only links whose Source Passage Check passed, because that is what the
     # cell beside it says. Counting every link published "With checked source
     # passages 2 · 100.0%" in the same document as "MISSING_EVIDENCE — no
     # supporting document on this record passed the source passage check"
     # about one of those two.
-    with_evidence = {r.dependency.id for r in rows if r.verified_evidence_count}
-    ready = {r.dependency.id for r in rows if r.is_ready}
+    with_evidence = tuple(row.reading.id for row in rows if row.verified_evidence_count)
     pct = (100 * len(with_evidence) / len(ids)) if ids else 0.0
+    review_available = all(available(row.reading.is_ready) for row in rows) and bool(rows)
+    ready = tuple(row.reading.id for row in rows if row.reading.is_ready is True)
 
     report = Report(
         project_name=project.name if project else f"project {project_id}",
@@ -359,9 +410,12 @@ def build_report(
             # are not, and the empty Ledger itself where there is no
             # population either (ADR-0003).
             _derived(label("constraints"), str(len(ids)), ids, scope=EMPTY_LEDGER),
+            # An accepted record records no documentation review outcome, so the
+            # tile says so rather than publishing "0", which reads as "none of
+            # your constraints is reviewed".
             _derived(
                 documentation_review_label(True),
-                str(len(ready)),
+                str(len(ready)) if review_available else str(NO_DOCUMENTATION_REVIEW),
                 ready or ids,
                 scope=EMPTY_LEDGER,
             ),
@@ -375,62 +429,78 @@ def build_report(
                 "% with checked source passages", f"{pct:.1f}%", ids, scope=EMPTY_LEDGER
             ),
         ],
-        diff=diff_since_last(
-            session,
-            project_id,
-            evaluation=evaluation,
-            committed_dates=committed_dates,
-            document_only=document_only,
-        ),
-        coverage_note=_coverage_note(session, project_id, len(ids)),
+        coverage_note=_coverage_note(session, project_id, len(ids), population=population),
         document_only=document_only,
-        committed_dates=committed_dates,
+        committed_dates=dict(committed_dates),
         evaluation=evaluation,
         statement_publication=publication,
-        covered_records=tuple(
-            (row.dependency.id, row.dependency.ref_code) for row in rows
-        ),
+        covered_records=tuple((row.reading.id, row.reading.ref_code) for row in rows),
+    )
+    report.diff = diff_since_last(
+        session,
+        evaluation.project_id,
+        evaluation=evaluation,
+        committed_dates=committed_dates,
+        document_only=document_only,
     )
 
-    if not document_only:
-        dated_rows = [r for r in rows if committed_dates.get(r.dependency.id)]
+    if not document_only and not adopted:
+        dated_rows = [r for r in rows if committed_dates.get(r.reading.id)]
         verbal_rows = [
             r
             for r in dated_rows
-            if committed_events.get(r.dependency.id) is not None
-            and committed_events[r.dependency.id].source_kind == "verbal"
+            if committed_events.get(r.reading.id) is not None
+            and committed_events[r.reading.id].source_kind == "verbal"
         ]
         report.summary.append(
             _derived(
                 "Dates from recorded verbal statements",
                 f"{len(verbal_rows)} of {len(dated_rows)} dates",
-                [r.dependency.id for r in verbal_rows]
-                or [r.dependency.id for r in dated_rows],
+                [r.reading.id for r in verbal_rows]
+                or [r.reading.id for r in dated_rows],
                 scope=EMPTY_LEDGER,
             )
         )
 
-    report.sections = [
-        _milestone_rollup(session, project_id, rows),
+    sections = [
+        _declared_absence(
+            label("milestone_readiness"), NOT_POPULATED_IN_THIS_MODE["milestone_readiness"]
+        )
+        if adopted
+        else _milestone_rollup(session, project_id, rows),
         _critical_items(
             session,
             rows,
             statement_publication=publication,
             document_only=document_only,
         ),
-        _coordination(session, rows),
-        _external_party_commitments(
-            publication,
-            evaluated_on=evaluation.today,
-        ),
-        _exceptions_summary(evaluation),
-        _changes_since_last(report.diff, committed_events=committed_events),
-        _aging(
-            rows,
-            statement_publication=publication,
-        ),
-        _appendix(rows),
+        _accepted_follow_up(population, evaluation)
+        if adopted
+        else _coordination(session, rows),
+        _declared_absence(
+            label("organization_commitments"),
+            NOT_POPULATED_IN_THIS_MODE["external_party_commitments"],
+        )
+        if adopted
+        else _external_party_commitments(publication, evaluated_on=evaluation.today),
     ]
+    if adopted:
+        sections.append(_accepted_statements(population, document_only=document_only))
+    sections.extend(
+        [
+            _exceptions_summary(evaluation),
+            _changes_since_last(report.diff, committed_events=committed_events),
+            _aging(rows, statement_publication=publication),
+            _native_appendix(population, evaluation) if adopted else _appendix(rows),
+        ]
+    )
+    if adopted:
+        sections.append(_accepted_values(population, evaluation))
+        if population.coverage_blockers:
+            report.coverage_note += " " + "; ".join(population.coverage_blockers)
+    report.sections = sections
+    if adopted:
+        assert_no_bare_cells(report)
     return report
 
 
@@ -442,62 +512,71 @@ def native_source_assertion(source):
 
 
 def build_native_report(session, reading: FrozenProjectReading, *, document_only=False):
-    """Render the complete supported UCM cohort from its frozen accepted values."""
-    population = reading.native_population
-    if population is None:
+    """The retained accepted-record entry point, now one delegation."""
+    if reading.native_population is None:
         raise ValueError("native report requires an accepted population")
-    evaluation = reading.evaluation
-    records = population.open_records
-    ids = population.record_ids
-    report = Report(project_name=reading.project.name, generated_at=datetime.now(timezone.utc),
-        document_only=document_only, committed_dates=dict(evaluation.committed_dates), evaluation=evaluation,
-        statement_publication=reading.statement_publication,
-        covered_records=tuple((record.id, record.ref_code) for record in records),
-        coverage_note=f"Project Record revision {population.revision_id}; {len(population.excluded_source_rows)} source row(s) explicitly excluded at adoption.")
-    supported = tuple(record.id for record in records if record.checked_source_passages)
-    report.summary = [
-        _derived(label("constraints"), str(len(records)), ids, scope=EMPTY_LEDGER),
-        _derived(documentation_review_label(True), "0", ids, scope=EMPTY_LEDGER),
-        _derived("With checked source passages", str(len(supported)), supported or ids, scope=EMPTY_LEDGER),
-        _derived("% with checked source passages", f"{100 * len(supported) / len(records):.1f}%" if records else "0.0%", ids, scope=EMPTY_LEDGER),
-    ]
-    appendix = Section("Appendix — constraint log", columns=["Ref", "Source ID", label("organization"), "Title",
-        "Station from", "Station to", label("resolution_strategy"), label("promised_for"), label("required_by")])
-    accepted = Section("Accepted Project Record values", columns=["Ref", "Field", "Accepted value"],
-        note="Each value names its deciding revision and exact source passage.")
-    def field_cell(record, field_name, display_name):
-        field = record.fields.get(field_name)
-        if field is None:
-            return _derived(display_name, "—", (record.id,), input_refs=(f"revision:{population.revision_id}",))
-        value = accepted_field_text(field)
-        provenance = (native_source_assertion(field.sources[0]) if field.sources else
-            Derivation(evaluation.ruleset_version, (record.id,), input_refs=(f"revision:{field.revision_id}", field.origin)))
-        return Cell(display_name, value, provenance)
-    for record in records:
-        appendix.rows.append([
+    return build_report(session, reading.project.id, frozen_reading=reading,
+                        document_only=document_only)
+
+
+def _accepted_field_cell(population, evaluation, record, field_name, display_name):
+    field = record.fields.get(field_name)
+    if field is None:
+        return _derived(display_name, "—", (record.id,), input_refs=(f"revision:{population.revision_id}",))
+    value = accepted_field_text(field)
+    provenance = (native_source_assertion(field.sources[0]) if field.sources else
+        Derivation(evaluation.ruleset_version, (record.id,), input_refs=(f"revision:{field.revision_id}", field.origin)))
+    return Cell(display_name, value, provenance)
+
+
+def _native_appendix(population, evaluation) -> Section:
+    """The accepted record's own constraint log, cell by deciding revision."""
+    section = Section("Appendix — constraint log", columns=["Ref", "Source ID", label("organization"), "Title",
+        "Station from", "Station to", label("resolution_strategy"), label("promised_for"), label("required_by")],
+        empty_message="The constraint log is empty.")
+    for record in population.open_records:
+        cell = lambda name, display: _accepted_field_cell(population, evaluation, record, name, display)
+        section.rows.append([
             _derived("Ref", record.ref_code, (record.id,), input_refs=(f"revision:{record.identity_revision_id}",)),
-            field_cell(record, "utility_id", "Source ID"), field_cell(record, "external_org", label("organization")),
-            _derived("Title", record.title, (record.id,), input_refs=tuple(field.origin for name in ("utility_type", "external_org") if (field := record.fields.get(name)))),
-            field_cell(record, "station_from", "Station from"), field_cell(record, "station_to", "Station to"),
-            field_cell(record, "resolution_strategy", label("resolution_strategy")),
+            cell("utility_id", "Source ID"), cell("external_org", label("organization")),
+            _derived("Title", accepted_record_title(record), (record.id,),
+                input_refs=tuple(field.origin for name in ("utility_type", "external_org") if (field := record.fields.get(name)))),
+            cell("station_from", "Station from"), cell("station_to", "Station to"),
+            cell("resolution_strategy", label("resolution_strategy")),
             _derived(label("promised_for"), "—", (record.id,), input_refs=(f"revision:{population.revision_id}",)),
-            field_cell(record, "need_date", label("required_by")),
+            cell("need_date", label("required_by")),
         ])
+    return section
+
+
+def _accepted_values(population, evaluation) -> Section:
+    section = Section("Accepted Project Record values", columns=["Ref", "Field", "Accepted value"],
+        note="Each value names its deciding revision and exact source passage.")
+    for record in population.open_records:
         for name in sorted(record.fields):
-            accepted.rows.append([_derived("Ref", record.ref_code, (record.id,)),
-                _derived("Field", field_label(name), (record.id,)), field_cell(record, name, "Accepted value")])
-    follow_up = Section(label("follow_up_plan"), columns=["Proposed Delta", "Open question", label("assigned_to"), "Return date"],
+            section.rows.append([_derived("Ref", record.ref_code, (record.id,)),
+                _derived("Field", field_label(name), (record.id,)),
+                _accepted_field_cell(population, evaluation, record, name, "Accepted value")])
+    return section
+
+
+def _accepted_follow_up(population, evaluation) -> Section:
+    section = Section(label("follow_up_plan"), columns=["Proposed Delta", "Open question", label("assigned_to"), "Return date"],
         empty_message="No Follow-up Plans are recorded for open Proposed Deltas.",
         note=("These questions leave the proposed values unaccepted."
               if population.follow_up_scope == "current_open_deltas" else
               "Plans recorded through this Project Record revision; source-workflow status is not inferred from the current reading."))
     for plan in population.follow_up_plans:
         authority = WorkDecision((plan.plan_id,), plan.recorded_by, plan.recorded_at.date(), "delta_follow_up_plan")
-        follow_up.rows.append([Cell("Proposed Delta", str(plan.delta_id), authority),
+        section.rows.append([Cell("Proposed Delta", str(plan.delta_id), authority),
             Cell("Open question", plan.open_question, authority),
             Cell(label("assigned_to"), plan.responsible or "—", authority),
             Cell("Return date", plan.return_date.date().isoformat() if plan.return_date else "—", authority)])
-    statement_section = Section("Accepted statements", columns=["Statement", "Accepted wording", "Recorded timing", label("applies_to"), "Source traceability"],
+    return section
+
+
+def _accepted_statements(population, *, document_only: bool) -> Section:
+    section = Section("Accepted statements", columns=["Statement", "Accepted wording", "Recorded timing", label("applies_to"), "Source traceability"],
         note="Statement fields retain their own Record Decisions. Timing is not converted into a Constraint date without its released projection policy.")
     for statement in visible_native_statements(population, document_only=document_only):
         word = statement.fields["statement_wording"]
@@ -514,7 +593,7 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
             scope_text += ("; " if scope_text else "") + "retained Constraint references " + ", ".join(map(str, statement.applies_to_dependency_ids))
         sources = "; ".join(f"{source.filename or source.source_class or 'Recorded source'} · {source.locator} · {source.locator_validation_status}"
                             for source in statement.sources if not document_only or source.document_id is not None)
-        statement_section.rows.append([
+        section.rows.append([
             Cell("Statement", statement.subject_key, wording), Cell("Accepted wording", str(statement.wording), wording),
             (Cell("Recorded timing", "; ".join(item.text for item in statement.timings) or "not recorded", decided(timing))
              if timing_visible else _derived("Recorded timing", "withheld in this source mode" if timing else "not recorded",
@@ -524,20 +603,10 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
                  (statement.subject_key,), input_refs=(f"revision:{population.revision_id}",))),
             Cell("Source traceability", sources or "Source reference unavailable", wording),
         ])
-    if population.coverage_blockers:
-        report.coverage_note += " " + "; ".join(population.coverage_blockers)
-    report.diff = diff_since_last(session, population.project_id, evaluation=evaluation,
-                                  committed_dates=report.committed_dates, document_only=document_only)
-    report.sections = [
-        Section(label("milestone_readiness"), empty_message="No key dates are linked to these Constraints."),
-        follow_up, statement_section,
-        _exceptions_summary(evaluation), _changes_since_last(report.diff, committed_events={}), appendix, accepted,
-    ]
-    assert_no_bare_cells(report)
-    return report
+    return section
 
 
-def _coverage_note(session: Session, project_id: int, in_ledger: int) -> str:
+def _coverage_note(session: Session, project_id: int, in_ledger: int, *, population=None) -> str:
     """State what the report does *not* cover.
 
     The ledger holds only adjudicated records, which is correct — nothing
@@ -545,6 +614,15 @@ def _coverage_note(session: Session, project_id: int, in_ledger: int) -> str:
     candidates is a report about almost nothing, and saying so is the
     difference between an honest document and a misleading one.
     """
+    if population is not None:
+        # An adopted-baseline project has no Extracted Proposal queue behind this
+        # report; what it does have is the source rows the customer excluded when
+        # they adopted their own baseline, and the revision the values come from.
+        return (
+            f"Project Record revision {population.revision_id}; "
+            f"{len(population.excluded_source_rows)} source row(s) explicitly "
+            "excluded at adoption."
+        )
     from corridor.models import Candidate
 
     pending = session.scalar(
@@ -583,14 +661,14 @@ def _milestone_rollup(
         (
             m.name,
             m.need_date.isoformat() if m.need_date else "—",
-            [r for r in rows if r.dependency.milestone_id == m.id],
+            [r for r in rows if r.reading.milestone_id == m.id],
             (f"Milestone Registration MR{m.current_registration_id}",)
             if m.current_registration_id is not None
             else (),
         )
         for m in milestones
     ]
-    unlinked = [r for r in rows if r.dependency.milestone_id is None]
+    unlinked = [r for r in rows if r.reading.milestone_id is None]
     if unlinked:
         groups.append(("Not linked to a key date", "—", unlinked, ()))
 
@@ -610,10 +688,10 @@ def _milestone_rollup(
         )
 
     for name, need_date, group, input_refs in groups:
-        ids = [r.dependency.id for r in group]
-        ready = [r.dependency.id for r in group if r.is_ready]
+        ids = [r.reading.id for r in group]
+        ready = [r.reading.id for r in group if r.is_ready]
         at_risk = [
-            r.dependency.id
+            r.reading.id
             for r in group
             if not r.is_ready
             and any(
@@ -622,7 +700,7 @@ def _milestone_rollup(
         ]
         # A passed Source Passage Check, as in the summary tile: "% evidenced"
         # is a claim about evidence that holds, not about links that exist.
-        evidenced = [r.dependency.id for r in group if r.verified_evidence_count]
+        evidenced = [r.reading.id for r in group if r.verified_evidence_count]
         pct = (100 * len(evidenced) / len(ids)) if ids else 0.0
         section.rows.append(
             [
@@ -659,22 +737,18 @@ def _critical_items(
     the common case, not the edge.
     """
     critical_rows = sorted(
-        (
-            r
-            for r in rows
-            if not r.is_ready and is_critical(r.dependency.resolution_strategy)
-        ),
+        (r for r in rows if not r.is_ready and r.reading.critical),
         key=lambda r: (
             # Undated records sort after dated ones on the first key, so
             # the second only ever orders dated against dated; `date.min`
             # is the placeholder that never discriminates.
-            r.dependency.need_date is None,
-            r.dependency.need_date or date.min,
-            r.dependency.ref_code,
+            r.reading.need_date is None,
+            r.reading.need_date or date.min,
+            r.reading.ref_code,
         ),
     )
     ranked = critical_rows[:CRITICAL_ITEM_COUNT]
-    dated = sum(1 for r in ranked if r.dependency.need_date)
+    dated = sum(1 for r in ranked if r.reading.need_date)
 
     note = (
         "Constraints without documents marked sufficient whose source's resolution "
@@ -701,9 +775,16 @@ def _critical_items(
             "resolution method of relocation, removal, or abandonment."
         ),
     )
-    resolved = resolve_operative_support(session, [r.dependency.id for r in ranked])
+    # An accepted record has no legacy support registry to designate a
+    # field-exact quote; every cell then falls back to a Derivation over the
+    # record's own identity rather than borrowing a citation (#178).
+    resolved = (
+        resolve_operative_support(session, [r.reading.id for r in ranked])
+        if all(available(r.reading.superseded_scopes) for r in ranked)
+        else {}
+    )
     for row in ranked:
-        dependency_id = row.dependency.id
+        dependency_id = row.reading.id
         support = resolved.get(dependency_id)
         statement = statement_publication.by_dependency[dependency_id]
         committed_event = statement.event
@@ -772,7 +853,7 @@ def _critical_items(
             [
                 # The record's identity, backed by its designated record
                 # publication support: the quote that names the row.
-                Cell("Ref", row.dependency.ref_code, cited_field(None)),
+                Cell("Ref", row.reading.ref_code, cited_field(None)),
                 Cell(
                     label("organization"),
                     row.org_name or "—",
@@ -784,14 +865,15 @@ def _critical_items(
                 # claim (CONTEXT.md) — so no quote may ever back it.
                 _derived(
                     label("required_by"),
-                    row.dependency.need_date.isoformat()
-                    if row.dependency.need_date
+                    row.reading.need_date.isoformat()
+                    if row.reading.need_date
                     else "—",
                     (dependency_id,),
                     input_refs=(
-                        f"Milestone Registration MR{row.dependency.milestone_registration_id}",
+                        f"Milestone Registration MR{row.reading.milestone_registration_id}",
                     )
-                    if row.dependency.milestone_registration_id is not None
+                    if available(row.reading.milestone_registration_id)
+                    and row.reading.milestone_registration_id is not None
                     else (),
                 ),
                 _derived(
@@ -968,16 +1050,16 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
         empty_message="No coordination decisions recorded.",
     )
     for row in rows:
-        dependency = row.dependency
+        plan = row.reading
         # Nothing decided yet is nothing to publish; the same reading the
         # alerts and the Work List use decides that, not a second expression.
         if read_coordination_residue(
-            CoordinationPlan(dependency.internal_owner, dependency.next_action),
+            CoordinationPlan(plan.internal_owner, plan.next_action),
             live=True,
         ).nothing_recorded:
             continue
-        owner_tail = current_internal_owner_decision(session, dependency.id)
-        action_tail = current_next_action_decision(session, dependency.id)
+        owner_tail = current_internal_owner_decision(session, plan.id)
+        action_tail = current_next_action_decision(session, plan.id)
 
         def decided(label, value, tail):
             if value and tail is not None:
@@ -990,17 +1072,17 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
                         tail.recorded_at.date(),
                     ),
                 )
-            return _derived(label, "—", (dependency.id,))
+            return _derived(label, "—", (plan.id,))
 
         section.rows.append(
             [
-                _derived("Ref", dependency.ref_code, (dependency.id,)),
-                decided(label("assigned_to"), dependency.internal_owner, owner_tail),
-                decided("Next action", dependency.next_action, action_tail),
+                _derived("Ref", plan.ref_code, (plan.id,)),
+                decided(label("assigned_to"), plan.internal_owner, owner_tail),
+                decided("Next action", plan.next_action, action_tail),
                 decided(
                     label("action_due_date"),
-                    dependency.action_due_date.isoformat()
-                    if dependency.action_due_date
+                    plan.action_due_date.isoformat()
+                    if plan.action_due_date
                     else None,
                     action_tail,
                 ),
@@ -1301,16 +1383,16 @@ def _aging(
     used to be recomputed here from the report's `today`, which the engine
     never saw — two numbers for one fact whenever the two clocks differed.
     """
+    # The date is the one the alert was computed against — the reading's own —
+    # not a second lookup. An accepted record's Promised For is its accepted
+    # value while the *published* statement projection stays absent (ADR-0092),
+    # so reading the publication here published "Nothing is overdue" beside an
+    # OVERDUE alert on the same record.
     overdue = [
-        (
-            r,
-            e,
-            statement_publication.by_dependency[r.dependency.id].committed_date,
-        )
+        (r, e, r.reading.committed_date)
         for r in rows
         for e in r.exceptions
-        if e.rule == "OVERDUE"
-        and statement_publication.by_dependency[r.dependency.id].committed_date
+        if e.rule == "OVERDUE" and r.reading.committed_date
     ]
     overdue.sort(key=lambda pair: pair[2])
 
@@ -1320,23 +1402,23 @@ def _aging(
         empty_message="Nothing is overdue.",
     )
     for row, overdue_fact, committed_date in overdue:
-        statement = statement_publication.by_dependency[row.dependency.id]
+        statement = statement_publication.by_dependency[row.reading.id]
         provenance = _statement_provenance(statement)
         if statement.event is None:
-            provenance = Derivation(RULESET_VERSION, (row.dependency.id,))
+            provenance = Derivation(RULESET_VERSION, (row.reading.id,))
         if provenance is None:
-            provenance = Derivation(RULESET_VERSION, (row.dependency.id,))
+            provenance = Derivation(RULESET_VERSION, (row.reading.id,))
         days = overdue_fact.quantity_days
         section.rows.append(
             [
-                _derived("Ref", row.dependency.ref_code, (row.dependency.id,)),
-                _derived(label("organization"), row.org_name or "—", (row.dependency.id,)),
+                _derived("Ref", row.reading.ref_code, (row.reading.id,)),
+                _derived(label("organization"), row.org_name or "—", (row.reading.id,)),
                 Cell(
                     label("promised_for"),
                     committed_date.isoformat(),
                     provenance,
                 ),
-                _derived("Days overdue", str(days), (row.dependency.id,)),
+                _derived("Days overdue", str(days), (row.reading.id,)),
             ]
         )
     return section
@@ -1357,14 +1439,14 @@ def _appendix(rows: list[LedgerRow]) -> Section:
         empty_message="The constraint log is empty.",
     )
     for row in rows:
-        ids = (row.dependency.id,)
-        station = row.dependency.station_from or "—"
-        if row.dependency.station_to:
-            station += f" → {row.dependency.station_to}"
+        ids = (row.reading.id,)
+        station = row.reading.station_from or "—"
+        if row.reading.station_to:
+            station += f" → {row.reading.station_to}"
         section.rows.append(
             [
-                _derived("Ref", row.dependency.ref_code, ids),
-                _derived("Source ID", row.dependency.source_ref or "—", ids),
+                _derived("Ref", row.reading.ref_code, ids),
+                _derived("Source ID", row.reading.source_ref or "—", ids),
                 _derived(label("organization"), row.org_name or "—", ids),
                 _derived("Station", station, ids),
                 _derived(
@@ -1374,7 +1456,7 @@ def _appendix(rows: list[LedgerRow]) -> Section:
                 ),
                 _derived(
                     label("required_documents"),
-                    row.dependency.evidence_required or "Not specified",
+                    row.reading.evidence_required or "Not specified",
                     ids,
                 ),
                 _derived(

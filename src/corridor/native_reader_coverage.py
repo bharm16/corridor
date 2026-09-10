@@ -276,7 +276,7 @@ def _workbook_field_rows(surface, cells, authority):
         record = expected_records.get(row[0])
         if record is None:
             continue
-        for index, expected in ((1, record.source_ref), (2, record.org_name),
+        for index, expected in ((1, record.value("utility_id")), (2, record.org_name),
             (5, record.station_from), (6, record.station_to),
             (7, record.value("resolution_strategy")), (10, record.need_date)):
             actual = row[index] if index < len(row) else None
