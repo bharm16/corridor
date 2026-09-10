@@ -35,6 +35,7 @@ from sqlalchemy import func, select, text
 from sqlalchemy.orm import Session
 
 from corridor.fact_types import SINGLE_VALUED_FACT_TYPES
+from corridor.fact_values import scalar_column_value, scalar_fact_value
 from corridor.models import (
     Document,
     DueWorkOccurrence,
@@ -161,7 +162,7 @@ def execute_delta_generation(
                         )
                         continue
                     for fact in subject_facts:
-                        proposed_value = fact_value(fact)
+                        proposed_value = scalar_fact_value(fact)
                         key = (subject_key, fact.fact_type)
                         if key in accepted:
                             if accepted[key] == proposed_value:
@@ -243,8 +244,15 @@ def accepted_values(session: Session, project_id: int) -> dict[tuple[str, str], 
     """The accepted record as one comparable scalar per subject and field.
 
     The projection is read through ``current_project_record``, the view
-    ``current_record`` proves; only the scalar the comparison needs is taken,
-    so this pass does not pull the report and export stack behind it.
+    ``current_record`` proves, and the value is read by ``fact_values`` so the
+    accepted side and the source side of every comparison share one shape.
+
+    Only the scalar columns are selected, deliberately: this pass compares
+    ``COMPARABLE_FACT_TYPES`` and a satellite field's key stays in the mapping
+    with a ``None`` value, so an already-appended delta's ``accepted_value``
+    keeps meaning what it meant.  Reading the satellites here would change
+    every open delta on a satellite field, which is a comparison change and
+    belongs with widening ``COMPARABLE_FACT_TYPES``, not with a reader split.
     """
 
     rows = session.execute(
@@ -256,8 +264,8 @@ def accepted_values(session: Session, project_id: int) -> dict[tuple[str, str], 
         {"project_id": project_id},
     ).all()
     return {
-        (subject_key, fact_type): _typed_value(
-            text_value, date_value, external_org_value_id, document_value_id
+        (subject_key, fact_type): scalar_column_value(
+            fact_type, text_value, date_value, external_org_value_id, document_value_id
         )
         for (
             subject_key,
@@ -299,7 +307,7 @@ def _proposed_subject(
         target=ProposedSubjectTarget(
             subject_identity=subject_key, proposed_fields=fields
         ),
-        proposed_value={fact.fact_type: fact_value(fact) for fact in facts},
+        proposed_value={fact.fact_type: scalar_fact_value(fact) for fact in facts},
         comparison_rule_version=COMPARISON_RULE_VERSION,
         accepted_baseline_revision=revision_label(baseline_revision),
     )
@@ -317,29 +325,6 @@ def _by_subject(facts: list[Fact]) -> list[tuple[str, list[Fact]]]:
     for fact in facts:
         grouped.setdefault(fact.subject_key, []).append(fact)
     return sorted(grouped.items())
-
-
-def fact_value(fact: Fact) -> Any:
-    return _typed_value(
-        fact.text_value,
-        fact.date_value,
-        fact.external_org_value_id,
-        fact.document_value_id,
-    )
-
-
-def _typed_value(
-    text_value, date_value, external_org_value_id, document_value_id
-) -> Any:
-    if text_value is not None:
-        return text_value
-    if date_value is not None:
-        return date_value.isoformat()
-    if external_org_value_id is not None:
-        return {"external_org_id": int(external_org_value_id)}
-    if document_value_id is not None:
-        return {"document_id": int(document_value_id)}
-    return None
 
 
 def revision_label(revision_id: int | None) -> str | None:

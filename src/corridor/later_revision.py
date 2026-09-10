@@ -116,10 +116,10 @@ from corridor.connectors.pull_connector import SourceEnvelope
 from corridor.delta_generation import (
     COMPARABLE_FACT_TYPES,
     accepted_values,
-    fact_value,
     revision_label,
 )
 from corridor.extraction_runs import record_extraction_run
+from corridor.fact_values import scalar_fact_value
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
 from corridor.field_mapping_manifest import FieldMappingManifest, conformance_refusals
 from corridor.materializer import materialize_segment_value
@@ -1098,7 +1098,7 @@ def _proposals(
     unchanged: set[str] = set()
     for item in plan.rows:
         stated = {
-            field_name: fact_value(fact)
+            field_name: scalar_fact_value(fact)
             for field_name, fact in captured.get(item.subject_identity, {}).items()
         }
         if item.disposition == COMPARED:

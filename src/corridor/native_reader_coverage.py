@@ -194,6 +194,8 @@ def _fact_payload(inventory, fact):
     if fact["fact_type"] == "closure_result":
         return {"closure_kind": next((row["closure_kind"] for row in inventory["fact_closure_results"]
                                        if row["fact_id"] == fact["id"]), None)}
+    if fact["document_value_id"] is not None:
+        return {"document_id": fact["document_value_id"]}
     return fact["date_value"] or fact["text_value"]
 
 
