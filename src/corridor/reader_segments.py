@@ -8,6 +8,14 @@ once and binds every projection to its exact result and configuration. That
 reader is now the only one in the product (ADR-0094, ADR-0095, #741); neither
 a new configuration nor a replay can update an existing Source Segment.
 
+The projection itself -- one reading into exact ``pdf_cell`` and ``pdf_span``
+values, and a cell's address -- lives in ``native_segment_projection``, whose
+bytes ``token_layers.native_integration_digest`` pins. What stays here reads that
+projection: appending a reading's segments, and replaying a retained locator
+against it. Those bytes are deliberately not part of the assembly digest, so
+correcting a refusal message in this module cannot make a retained citation
+unreplayable.
+
 Historical ``prose_span`` locators remain in source_segments.py. These
 ``pdf_span`` and ``pdf_cell`` locators replay only with the recorded reader and
 only inside the recorded reading. An unavailable reader configuration and a
@@ -31,8 +39,12 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import Document, SourceSegment
+from corridor.native_segment_projection import (
+    canonical,
+    native_segment_values,
+    pdf_cell_id,
+)
 from corridor.source_append import SegmentValues, append_source_segments
-from corridor.prose_spans import page_prose_ranges
 from corridor.source_segment_errors import (
     NativeReaderUnavailable,
     RecordedReadingNotReproduced,
@@ -40,162 +52,12 @@ from corridor.source_segment_errors import (
     SourceSegmentLocatorMismatch,
 )
 from corridor.token_layers import (
-    TokenLayer,
     NativePdfReading,
     PDF_SEGMENT_SCHEME,
     read_native_pdf,
-    page_text_projection,
-    reader_native_token_layer,
 )
 
 NATIVE_KINDS = frozenset({"pdf_span", "pdf_cell"})
-
-
-def _canonical(value: object) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
-
-
-def _digest(value: str) -> str:
-    return sha256(value.encode("utf-8")).hexdigest()
-
-
-def pdf_cell_id(
-    document: Document,
-    reading_sha256: str,
-    page_no: int,
-    table_index: int,
-    row: int,
-    column: int,
-) -> str:
-    """A cell address binds its rendition/configuration/result before positions."""
-
-    return (
-        f"{PDF_SEGMENT_SCHEME}:project{document.project_id}:document{document.id}:"
-        f"{reading_sha256}:p{page_no}:t{table_index}:r{row}:c{column}"
-    )
-
-
-def native_segment_values(reading: NativePdfReading) -> tuple[SegmentValues, ...]:
-    """Project exact source segments; preserve glyph ownership without guessing."""
-
-    values: list[SegmentValues] = []
-    counts: Counter[str] = Counter()
-    shared = {
-        "rendition_sha256": reading.rendition_sha256,
-        "reading_sha256": reading.reading_sha256,
-        "reader_identity": reading.identity,
-    }
-    layers = {layer.page_no: layer for layer in reading.token_layers}
-    for page in reading.pages:
-        page_no = page["number"]
-        ownership = Counter(
-            index
-            for table in page["tables"]["value"]
-            for cell in table["structured_cells"]
-            for index in cell["source_indices"]
-        )
-        characters = {c["source_index"]: c for c in page["characters"]["value"]}
-        for table_index, table in enumerate(page["tables"]["value"]):
-            for cell in table["structured_cells"]:
-                if not cell["text"]:
-                    continue  # empty cells remain in the reading, never an invented value
-                indices = cell["source_indices"]
-                # A glyph claimed by several cells remains in the page span;
-                # it is never promoted into an arbitrary winner's value.
-                if not indices or any(
-                    ownership[index] != 1 or index not in characters
-                    for index in indices
-                ):
-                    continue
-                counts["pdf_cell"] += 1
-                values.append(
-                    SegmentValues(
-                        kind="pdf_cell",
-                        exact_text=cell["text"],
-                        content_sha256=_digest(cell["text"]),
-                        ordinal=counts["pdf_cell"],
-                        page_no=page_no,
-                        table_index=table_index,
-                        cell_row=cell["row"],
-                        cell_column=cell["column"],
-                        row_span=cell["row_span"],
-                        column_span=cell["column_span"],
-                        location_json={
-                            "geometry": page["geometry"],
-                            "table_box": table["box"],
-                            "display_box": cell["box"],
-                            "cut": cell.get("cut"),
-                            "glyphs": [characters[index] for index in indices],
-                        },
-                        **shared,
-                    )
-                )
-        for stream in ("page", "clipped"):
-            layer = (
-                layers[page_no]
-                if stream == "page"
-                else reader_native_token_layer(
-                    {**page, "characters": page["clipped"]},
-                    identity=layers[page_no].identity,
-                    source_sha256=reading.rendition_sha256,
-                )
-            )
-            page_text = page_text_projection(layer)
-            glyphs = (
-                characters
-                if stream == "page"
-                else {c["source_index"]: c for c in page["clipped"]["value"]}
-            )
-            positioned_tokens = _token_ranges(layer)
-            for start, end in page_prose_ranges(page_text):
-                indices = list(
-                    dict.fromkeys(
-                        index
-                        for token_start, token_end, token in positioned_tokens
-                        if token_start < end and start < token_end
-                        for index in layer.quality["token_source_indices"][
-                            token.ordinal
-                        ]
-                    )
-                )
-                counts["pdf_span"] += 1
-                exact = page_text[start:end]
-                values.append(
-                    SegmentValues(
-                        kind="pdf_span",
-                        exact_text=exact,
-                        content_sha256=_digest(exact),
-                        ordinal=counts["pdf_span"],
-                        page_no=page_no,
-                        span_stream=stream,
-                        start_offset=start,
-                        end_offset=end,
-                        location_json={
-                            "geometry": page["geometry"],
-                            "page_text_sha256": _digest(page_text),
-                            "glyphs": [glyphs[index] for index in indices],
-                            "outside_source_indices": [
-                                index for index in indices if not ownership[index]
-                            ],
-                            "ambiguous_source_indices": [
-                                index for index in indices if ownership[index] > 1
-                            ],
-                        },
-                        **shared,
-                    )
-                )
-    return tuple(values)
-
-
-def _token_ranges(layer: TokenLayer) -> list[tuple[int, int, object]]:
-    positioned = []
-    cursor = 0
-    for index, token in enumerate(layer.tokens):
-        if index:
-            cursor += 1  # exactly one space or newline in the projection
-        positioned.append((cursor, cursor + len(token.raw_text), token))
-        cursor += len(token.raw_text)
-    return positioned
 
 
 def append_native_segments(
@@ -359,7 +221,7 @@ class NativeCellIndex:
                 raise SourceSegmentLocatorMismatch(
                     "native reading repeats a cell address"
                 )
-            cells[key] = _canonical(asdict(value))
+            cells[key] = canonical(asdict(value))
         object.__setattr__(self, "project_id", document.project_id)
         object.__setattr__(self, "document_id", document.id)
         object.__setattr__(self, "rendition_sha256", reading.rendition_sha256)
