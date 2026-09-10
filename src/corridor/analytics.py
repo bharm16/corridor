@@ -61,6 +61,19 @@ Customer and project identifiers belong in structured logs and database-backed
 analytical records, NEVER in infrastructure metric labels (#491, #522). Metric
 labels are validated on emission and any high-cardinality identifiers are
 refused.
+
+Each family with an emitter owns its payload shape here, as one constructor
+function returning the ``AnalyticsEvent`` (``child_decision_event``,
+``packet_save_event`` and so on, in the shape ``source_arrival_event`` set).
+Emitters call the constructor rather than spelling a dict; the keys a reader may
+rely on are the constructor's keyword parameters. The event still carries a
+plain ``dict`` payload, because ``as_dict``/``from_dict`` and every historical
+row are dicts. Rows logged before a family declared its shape are read through
+``declared_payload``, ``act_outcome`` and ``child_decision_action``, which hold
+the legacy-key translations once; readers do not fall back inline. Families
+that only arrive as imported observations (``artifact_repair``,
+``work_observation``, ``measurement_sample``, ``provider_usage``) have no
+emitter here and so no constructor.
 """
 
 from __future__ import annotations
@@ -454,6 +467,678 @@ def source_capture_event(
         occurred_at=occurred_at or datetime.now(timezone.utc),
         metric_labels=labels,
     )
+
+
+def proposed_delta_creation_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    source_family: str,
+    source_revision: str,
+    document_id: int | None,
+    delta_id: int,
+    outcome: str,
+    complete_enumerative_source: bool,
+    row_accounting_sealed: bool,
+) -> AnalyticsEvent:
+    """Construct a proposed_delta_creation event; one delta per event."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PROPOSED_DELTA_CREATION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "project_id": project_id,
+            "source_family": source_family,
+            "source_revision": source_revision,
+            "document_id": document_id,
+            "delta_id": delta_id, "delta_count": 1, "delta_ids": [delta_id],
+            "outcome": outcome,
+            "complete_enumerative_source": complete_enumerative_source,
+            "row_accounting_sealed": row_accounting_sealed,
+        },
+    )
+
+
+# What the Work List put in front of a person, in the order the screen reads it
+# (packet_review._item_payload). Shared by packet_surfacing and packet_opening.
+PACKET_ITEM_KEYS: tuple[str, ...] = (
+    "project_id",
+    "item_key",
+    "grouping_key_kind",
+    "grouping_key",
+    "grouping_rule_version",
+    "band",
+    "attention_reasons",
+    "held_out_reason",
+    "child_count",
+    "ready_count",
+    "held_out_count",
+    "unchanged_count",
+    "customer_artifacts",
+    "artifact_rule_version",
+    "observed_accepted_revision_id",
+    "cutoff",
+    "issue_profile_id",
+    "issue_profile_identity",
+    "issue_profile_version",
+    "issue_profile_sha256",
+    "issue_profile_problems",
+    "consequence_rule_version",
+    "consequence_level",
+    "child_consequences",
+)
+
+
+def _packet_item_event(
+    family: EventFamily,
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    principal_subject: str | None,
+    **item: Any,
+) -> AnalyticsEvent:
+    if set(item) != set(PACKET_ITEM_KEYS):
+        raise InvalidEventError(
+            f"{family.value} payload must carry exactly the declared item keys; "
+            f"missing {sorted(set(PACKET_ITEM_KEYS) - set(item))}, unexpected {sorted(set(item) - set(PACKET_ITEM_KEYS))}"
+        )
+    return AnalyticsEvent(
+        family=family,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={**{key: item[key] for key in PACKET_ITEM_KEYS}, "principal_subject": principal_subject},
+        metric_labels={
+            "grouping_key_kind": item["grouping_key_kind"],
+            "band": item["band"],
+            "held_out_reason": item["held_out_reason"] or "none",
+            "consequence_level": item["consequence_level"] or "none",
+        },
+    )
+
+
+def packet_surfacing_event(
+    binding: AnalyticsBinding, *, occurred_at: datetime, principal_subject: str | None, **item: Any
+) -> AnalyticsEvent:
+    """Construct a packet_surfacing event from one Work List item (PACKET_ITEM_KEYS)."""
+
+    return _packet_item_event(EventFamily.PACKET_SURFACING, binding, occurred_at=occurred_at,
+                              principal_subject=principal_subject, **item)
+
+
+def packet_opening_event(
+    binding: AnalyticsBinding, *, occurred_at: datetime, principal_subject: str | None, **item: Any
+) -> AnalyticsEvent:
+    """Construct a packet_opening event from one Work List item (PACKET_ITEM_KEYS)."""
+
+    return _packet_item_event(EventFamily.PACKET_OPENING, binding, occurred_at=occurred_at,
+                              principal_subject=principal_subject, **item)
+
+
+def child_decision_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    delta_id: int,
+    action: str,
+    effect_kind: str | None,
+    outcome: str,
+    refusal_reason: str | None,
+    revision_id: int | None,
+    packet_owned: bool,
+    support_assessment_count: int,
+) -> AnalyticsEvent:
+    """Construct a child_decision event; ``action`` is the record's disposition vocabulary."""
+
+    return AnalyticsEvent(
+        family=EventFamily.CHILD_DECISION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "project_id": project_id,
+            "delta_id": delta_id,
+            "action": action,
+            "effect_kind": effect_kind,
+            "outcome": outcome,
+            "refusal_reason": refusal_reason,
+            "revision_id": revision_id,
+            "packet_owned": packet_owned,
+            "support_assessment_count": support_assessment_count,
+        },
+        metric_labels={
+            "action": action,
+            "outcome": outcome,
+            "refusal_reason": refusal_reason or "none",
+        },
+    )
+
+
+def packet_save_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    receipt_id: int | None,
+    revision_id: int | None,
+    grouping_rule_version: str,
+    grouping_key_kind: str,
+    grouping_key: str,
+    observed_accepted_revision_id: int | None,
+    child_count: int,
+    outcome_counts: dict[str, int],
+    outcome: str,
+    refusal_reason: str | None,
+) -> AnalyticsEvent:
+    """Construct a packet_save event, refusals included."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PACKET_SAVE,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "project_id": project_id,
+            "receipt_id": receipt_id,
+            "revision_id": revision_id,
+            "grouping_rule_version": grouping_rule_version,
+            "grouping_key_kind": grouping_key_kind,
+            "grouping_key": grouping_key,
+            "observed_accepted_revision_id": observed_accepted_revision_id,
+            "child_count": child_count,
+            "outcome_counts": outcome_counts,
+            "outcome": outcome,
+            "refusal_reason": refusal_reason,
+            "wrote_revision": revision_id is not None,
+        },
+        metric_labels={
+            "grouping_key_kind": grouping_key_kind,
+            "outcome": outcome,
+            "refusal_reason": refusal_reason or "none",
+            "wrote_revision": "true" if revision_id is not None else "false",
+        },
+    )
+
+
+def follow_up_plan_creation_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    delta_id: int,
+    follow_up_plan_id: int,
+    revision_id: int,
+    grouping_rule_version: str,
+    has_return_date: bool,
+    responsible_kind: str,
+    evidence_count: int,
+) -> AnalyticsEvent:
+    """Construct a follow_up_plan_creation event."""
+
+    return AnalyticsEvent(
+        family=EventFamily.FOLLOW_UP_PLAN_CREATION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "project_id": project_id,
+            "delta_id": delta_id,
+            "follow_up_plan_id": follow_up_plan_id,
+            "revision_id": revision_id,
+            "grouping_rule_version": grouping_rule_version,
+            "has_return_date": has_return_date,
+            "responsible_kind": responsible_kind,
+            "evidence_count": evidence_count,
+        },
+        metric_labels={
+            "responsible_kind": responsible_kind,
+            "has_return_date": "true" if has_return_date else "false",
+        },
+    )
+
+
+def release_candidate_preparation_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    surface: str,
+    outcome: str,
+    principal_subject: str,
+    project_id: int,
+    source_cutoff: str,
+    accepted_revision_id: int,
+    previous_package_id: int | None,
+    issue_profile_id: int | None,
+    issue_profile_version: int | None,
+    coverage_identity: str | None,
+    configured_artifact_types: list[str],
+    candidate_identity: str | None,
+    content_sha256: str | None,
+    readiness: str,
+    blocker_count: int,
+    exception_count: int,
+    refusal_code: str | None,
+) -> AnalyticsEvent:
+    """Construct a release_candidate_preparation event.
+
+    The act's outcome is the ``status`` metric label, not a payload key; the
+    project and the person stay in the payload (#491, #522).
+    """
+
+    return AnalyticsEvent(
+        family=EventFamily.RELEASE_CANDIDATE_PREPARATION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "principal_subject": principal_subject,
+            "project_id": project_id,
+            "source_cutoff": source_cutoff,
+            "accepted_revision_id": accepted_revision_id,
+            "previous_package_id": previous_package_id,
+            "issue_profile_id": issue_profile_id,
+            "issue_profile_version": issue_profile_version,
+            "coverage_identity": coverage_identity,
+            "configured_artifact_types": configured_artifact_types,
+            "candidate_identity": candidate_identity,
+            "content_sha256": content_sha256,
+            "readiness": readiness,
+            "blocker_count": blocker_count,
+            "exception_count": exception_count,
+            "refusal_code": refusal_code,
+        },
+        metric_labels={"surface": surface, "status": outcome},
+    )
+
+
+def release_authorization_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    surface: str,
+    status: str,
+    principal_subject: str,
+    project_id: int | None,
+    candidate_id: int | None,
+    candidate_identity: str | None,
+    accepted_revision_id: int | None,
+    issue_profile_version: int | None,
+    source_cutoff: str | None,
+    package_identity: str | None,
+    issue_number: int | None,
+    refusal_code: str | None,
+) -> AnalyticsEvent:
+    """Construct a release_authorization event; ``status`` is its metric label, as above."""
+
+    return AnalyticsEvent(
+        family=EventFamily.RELEASE_AUTHORIZATION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "principal_subject": principal_subject,
+            "project_id": project_id,
+            "candidate_id": candidate_id,
+            "candidate_identity": candidate_identity,
+            "accepted_revision_id": accepted_revision_id,
+            "issue_profile_version": issue_profile_version,
+            "source_cutoff": source_cutoff,
+            "package_identity": package_identity,
+            "issue_number": issue_number,
+            "refusal_code": refusal_code,
+        },
+        metric_labels={"surface": surface, "status": status},
+    )
+
+
+def portfolio_reading_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    principal_subject: str,
+    cutoff: str,
+    projects: list[dict[str, Any]],
+) -> AnalyticsEvent:
+    """Construct a portfolio_reading event naming every project shown and its state."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PORTFOLIO_READING,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "principal_subject": principal_subject,
+            "cutoff": cutoff,
+            "project_count": len(projects),
+            "projects": projects,
+        },
+        metric_labels={"surface": "portfolio", "status": "presented"},
+    )
+
+
+def project_selection_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    principal_subject: str,
+    project_id: int,
+    state: str,
+    landing: str,
+    measurement_context: dict[str, Any] | None,
+) -> AnalyticsEvent:
+    """Construct a project_selection event; the standing's measurement context is spread in."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PROJECT_SELECTION,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "principal_subject": principal_subject,
+            "project_id": project_id,
+            "state": state,
+            "landing": landing,
+            **(measurement_context or {}),
+        },
+        metric_labels={"surface": "portfolio", "state": state},
+    )
+
+
+def follow_up_reading_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    surface: str,
+    principal_subject: str,
+    project_id: int,
+    cutoff: str,
+    rule_set: str,
+    accepted_revision_id: int | None,
+    reading_identity: str,
+    bundle_count: int,
+    retained_outgoing_requests: int,
+    bundles_by_band: dict[str, int],
+) -> AnalyticsEvent:
+    """Construct a follow_up_reading event."""
+
+    return AnalyticsEvent(
+        family=EventFamily.FOLLOW_UP_READING,
+        binding=binding,
+        occurred_at=occurred_at,
+        payload={
+            "principal_subject": principal_subject,
+            "project_id": project_id,
+            "cutoff": cutoff,
+            "rule_set": rule_set,
+            "accepted_revision_id": accepted_revision_id,
+            "reading_identity": reading_identity,
+            "bundle_count": bundle_count,
+            "retained_outgoing_requests": retained_outgoing_requests,
+            "bundles_by_band": bundles_by_band,
+        },
+        metric_labels={"surface": surface, "status": "presented"},
+    )
+
+
+def _presentation_event(
+    family: EventFamily, binding: AnalyticsBinding, *, occurred_at: datetime, project_id: int,
+    principal_subject: str, **payload: Any,
+) -> AnalyticsEvent:
+    return AnalyticsEvent(
+        family=family, binding=binding, occurred_at=occurred_at,
+        payload={"project_id": project_id, "principal_subject": principal_subject, **payload},
+        metric_labels={"surface": family.value},
+    )
+
+
+def project_opening_event(
+    binding: AnalyticsBinding, *, occurred_at: datetime, project_id: int, principal_subject: str
+) -> AnalyticsEvent:
+    """Construct a project_opening event."""
+
+    return _presentation_event(EventFamily.PROJECT_OPENING, binding, occurred_at=occurred_at,
+                               project_id=project_id, principal_subject=principal_subject)
+
+
+def coverage_reading_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    principal_subject: str,
+    reading_sha256: str,
+    issue_profile_identity: str | None,
+    issue_profile_version: int | None,
+    issue_profile_sha256: str | None,
+    coverage_declaration_id: int | None,
+    through_source_delivery_id: int | None,
+) -> AnalyticsEvent:
+    """Construct a coverage_reading event."""
+
+    return _presentation_event(
+        EventFamily.COVERAGE_READING, binding, occurred_at=occurred_at, project_id=project_id,
+        principal_subject=principal_subject,
+        reading_sha256=reading_sha256,
+        issue_profile_identity=issue_profile_identity,
+        issue_profile_version=issue_profile_version,
+        issue_profile_sha256=issue_profile_sha256,
+        coverage_declaration_id=coverage_declaration_id,
+        through_source_delivery_id=through_source_delivery_id,
+    )
+
+
+def evidence_opening_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    principal_subject: str,
+    item_key: str,
+    delta_id: int | None,
+    source_row_id: int | None,
+    link_role: str,
+) -> AnalyticsEvent:
+    """Construct an evidence_opening event."""
+
+    return _presentation_event(
+        EventFamily.EVIDENCE_OPENING, binding, occurred_at=occurred_at, project_id=project_id,
+        principal_subject=principal_subject,
+        item_key=item_key, delta_id=delta_id, source_row_id=source_row_id, link_role=link_role,
+    )
+
+
+def _preparation_interaction_event(
+    family: EventFamily, binding: AnalyticsBinding, *, occurred_at: datetime, project_id: int, receipt_id: int,
+    issue_profile_identity: str | None, issue_profile_version: int | None, issue_profile_sha256: str | None,
+    principal_subject: str, **payload: Any,
+) -> AnalyticsEvent:
+    return AnalyticsEvent(
+        family=family, binding=binding, occurred_at=occurred_at,
+        payload={"project_id": project_id, "receipt_id": receipt_id,
+                 "issue_profile_identity": issue_profile_identity,
+                 "issue_profile_version": issue_profile_version,
+                 "issue_profile_sha256": issue_profile_sha256,
+                 "principal_subject": principal_subject, **payload},
+    )
+
+
+def preparation_request_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    receipt_id: int,
+    issue_profile_identity: str | None,
+    issue_profile_version: int | None,
+    issue_profile_sha256: str | None,
+    principal_subject: str,
+    request_id: int,
+    coverage_declaration_id: int,
+    outcome: str,
+) -> AnalyticsEvent:
+    """Construct a preparation_request event beside its ReleasePreparationRequest row."""
+
+    return _preparation_interaction_event(
+        EventFamily.PREPARATION_REQUEST, binding, occurred_at=occurred_at, project_id=project_id,
+        receipt_id=receipt_id, issue_profile_identity=issue_profile_identity,
+        issue_profile_version=issue_profile_version, issue_profile_sha256=issue_profile_sha256,
+        principal_subject=principal_subject,
+        request_id=request_id, coverage_declaration_id=coverage_declaration_id, outcome=outcome,
+    )
+
+
+def coverage_confirmation_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    receipt_id: int,
+    issue_profile_identity: str | None,
+    issue_profile_version: int | None,
+    issue_profile_sha256: str | None,
+    principal_subject: str,
+    coverage_declaration_id: int,
+    reading_sha256: str,
+    annotation_count: int,
+    unchanged_declaration_reused: bool,
+) -> AnalyticsEvent:
+    """Construct a coverage_confirmation event beside its IssueCoverageDeclaration row."""
+
+    return _preparation_interaction_event(
+        EventFamily.COVERAGE_CONFIRMATION, binding, occurred_at=occurred_at, project_id=project_id,
+        receipt_id=receipt_id, issue_profile_identity=issue_profile_identity,
+        issue_profile_version=issue_profile_version, issue_profile_sha256=issue_profile_sha256,
+        principal_subject=principal_subject,
+        coverage_declaration_id=coverage_declaration_id, reading_sha256=reading_sha256,
+        annotation_count=annotation_count, unchanged_declaration_reused=unchanged_declaration_reused,
+    )
+
+
+def preparation_attempt_started_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    request_id: int,
+    coverage_declaration_id: int,
+    principal_subject: str,
+    started_at: str,
+    issue_profile_identity: str | None,
+    issue_profile_version: int | None,
+    issue_profile_sha256: str | None,
+) -> AnalyticsEvent:
+    """Construct the preparation_attempt event that marks an attempt's start."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PREPARATION_ATTEMPT, binding=binding, occurred_at=occurred_at,
+        payload={"project_id": project_id, "request_id": request_id,
+                 "coverage_declaration_id": coverage_declaration_id,
+                 "principal_subject": principal_subject, "outcome": "started",
+                 "started_at": started_at,
+                 "issue_profile_identity": issue_profile_identity,
+                 "issue_profile_version": issue_profile_version,
+                 "issue_profile_sha256": issue_profile_sha256},
+    )
+
+
+def preparation_attempt_finished_event(
+    binding: AnalyticsBinding,
+    *,
+    occurred_at: datetime,
+    project_id: int,
+    request_id: int,
+    attempt_id: int,
+    outcome: str,
+    candidate_id: int | None,
+    refusal_code: str | None,
+    started_at: str,
+    coverage_declaration_id: int,
+    principal_subject: str,
+    issue_profile_identity: str | None,
+    issue_profile_version: int | None,
+    issue_profile_sha256: str | None,
+) -> AnalyticsEvent:
+    """Construct the preparation_attempt event that records what a finished attempt produced."""
+
+    return AnalyticsEvent(
+        family=EventFamily.PREPARATION_ATTEMPT, binding=binding, occurred_at=occurred_at,
+        payload={"project_id": project_id, "request_id": request_id,
+                 "attempt_id": attempt_id, "outcome": outcome,
+                 "candidate_id": candidate_id, "refusal_code": refusal_code,
+                 "started_at": started_at,
+                 "coverage_declaration_id": coverage_declaration_id,
+                 "principal_subject": principal_subject,
+                 "issue_profile_identity": issue_profile_identity,
+                 "issue_profile_version": issue_profile_version,
+                 "issue_profile_sha256": issue_profile_sha256},
+    )
+
+
+def delta_supersession_event(
+    binding: AnalyticsBinding,
+    *,
+    project_id: int,
+    prior_delta_id: int,
+    superseding_delta_id: int | None,
+    source_reading_id: int,
+    source_revision: str,
+    comparison_rule_version: str,
+    occurred_at: datetime | None = None,
+) -> AnalyticsEvent:
+    """Construct a delta_supersession event."""
+
+    return AnalyticsEvent(
+        family=EventFamily.DELTA_SUPERSESSION,
+        binding=binding,
+        occurred_at=occurred_at or datetime.now(timezone.utc),
+        payload={"project_id": project_id,
+                 "prior_delta_id": prior_delta_id,
+                 "superseding_delta_id": superseding_delta_id,
+                 "source_reading_id": source_reading_id, "source_revision": source_revision,
+                 "comparison_rule_version": comparison_rule_version},
+    )
+
+
+# --- Reading a logged payload through its declared keys ----------------------
+#
+# Rows logged before every family declared its shape spelled some keys
+# differently. Each translation is named here, once; a reader calls these
+# rather than falling back inline.
+
+# ``outcome`` is the declared payload key for the act's outcome; older rows
+# spelled it ``status``.
+LEGACY_PAYLOAD_KEYS: dict[str, str] = {"status": "outcome"}
+
+# Older child_decision rows named the act in the screen's words; the record's
+# disposition vocabulary (PACKET_CHILD_OUTCOMES in models/delta.py) is the declared one.
+LEGACY_CHILD_DECISION_ACTIONS: dict[str, str] = {
+    "accept": "apply",
+    "edit": "edit_and_apply",
+    "reject": "keep_current",
+}
+
+
+def declared_payload(event: AnalyticsEvent) -> dict[str, Any]:
+    """The event's payload with every legacy spelling also present under its declared key."""
+
+    payload = dict(event.payload)
+    for legacy, declared in LEGACY_PAYLOAD_KEYS.items():
+        if legacy in payload:
+            payload.setdefault(declared, payload[legacy])
+    return payload
+
+
+def act_outcome(event: AnalyticsEvent) -> str | None:
+    """The outcome of the act this event records.
+
+    Most families declare it as the ``outcome`` payload key.
+    ``release_candidate_preparation`` and ``release_authorization`` declare it
+    as their ``status`` metric label, which is also where rows logged before
+    ``outcome`` was declared carried it.
+    """
+
+    return declared_payload(event).get("outcome", event.metric_labels.get("status"))
+
+
+def child_decision_action(action: str | None) -> str | None:
+    """A child_decision act in the record's disposition vocabulary, whichever way it was logged."""
+
+    return LEGACY_CHILD_DECISION_ACTIONS.get(action, action)
 
 
 class EventEmitter(Protocol):
