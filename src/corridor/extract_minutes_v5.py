@@ -44,6 +44,17 @@ EXTERNAL_PARTY_STATEMENT_TYPES = (
     "committed_date_change",
     "closure",
 )
+# These two dicts are the wire schema, not a convenience: `schema_sha256` is
+# sealed on every Extraction Run this extractor has ever produced, and the
+# prompt version moves with it. Generating them from a `StrictOutputModel`
+# through `typed_output` was measured and does not reproduce these bytes —
+# pydantic emits `anyOf` for a nullable field where these name the union
+# directly, adds a `title` to every property, and lifts the timing object into
+# `$defs`. Adopting typed generation here therefore means reissuing the seal,
+# which is a prompt-version decision and not a refactor. `typed_output` is
+# still the right home for strict *parsing* of an answer, which is a separate
+# behavior change: today's callers accept partial items that this schema
+# forbids.
 TIMING_SCHEMA = {
     "type": ["object", "null"],
     "additionalProperties": False,
