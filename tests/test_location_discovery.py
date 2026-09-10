@@ -714,7 +714,7 @@ def test_sealed_location_is_excluded_before_any_fetch(runtime_database, store):
     [
         (_response(b"<html>error</html>", content_type="text/html"), "error_page"),
         (_response(b"%PDF-1.4 partial", headers={"x-archive-orig-x-crawler-content-length": "9999"}), "truncated"),
-        (_response(b"not a pdf at all", content_type="application/pdf"), "content_mismatch"),
+        (_response(b"not a pdf at all", content_type="application/pdf"), "magic_mismatch"),
         (httpx.Response(500, content=b"boom"), "http_status"),
     ],
 )
