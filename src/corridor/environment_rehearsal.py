@@ -12,15 +12,19 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from hashlib import sha256
-import json
 from uuid import uuid4
 
+from corridor import digests
 from corridor.disposition_contracts import DispositionRefused, json_digest as digest, provider_rows, automated_backup_rows
 
 
 def result_digest(rows) -> str:
-    """Digest exact ordered rows without persisting their customer content."""
-    return sha256(json.dumps(rows, sort_keys=True, separators=(",", ":"), default=str).encode()).hexdigest()
+    """Digest exact ordered rows without persisting their customer content.
+
+    Retained encoding: rehearsal receipts pin query digests computed with
+    non-ASCII escaped and provider timestamps stringified.
+    """
+    return digests.coerced_ascii_escaped_sha256(rows)
 
 
 @dataclass(frozen=True)

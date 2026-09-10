@@ -7,7 +7,6 @@ import json
 import os
 from pathlib import Path
 import re
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -17,32 +16,54 @@ from sqlalchemy.orm import sessionmaker
 import corridor.m8_acceptance_database as acceptance_database
 from corridor.config import settings
 from corridor.db import engine
-from corridor.m8_acceptance import AcceptanceError, CorruptAcceptanceBundle
-from corridor.m8_acceptance_bundle import verify_bundle
+from corridor.m8_acceptance import AcceptanceError
+from corridor.m8_acceptance_bundle import CorruptBundle, verify_bundle
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DATABASE_PREFIX = "corridor_m8_acceptance_"
+DATABASE_LABEL = "m8_acceptance"
+DATABASE_PREFIX = acceptance_database.disposable_database_prefix(DATABASE_LABEL)
 
 
-def test_reusable_database_name_carries_its_process_owner():
-    database_name = acceptance_database.process_owned_database_name(
-        "corridor_due_work_test_"
-    )
+def test_disposable_database_name_carries_its_process_owner():
+    database_name = acceptance_database.disposable_database_name("due_work_test")
 
     assert re.fullmatch(
-        rf"corridor_due_work_test_{os.getpid()}_[0-9a-f]{{12}}",
+        rf"corridor_disposable_due_work_test_{os.getpid()}_[0-9a-f]{{12}}",
         database_name,
     )
+    assert acceptance_database.is_disposable_database_name(database_name)
+    assert (
+        acceptance_database.disposable_database_owner_pid(database_name)
+        == os.getpid()
+    )
+
+
+def test_a_name_outside_the_namespace_is_not_reclaimable():
+    for name in (
+        "corridor",
+        "corridor_m8_acceptance_0e5b0adcb1d54d45a164e63baa8f3841",
+        "corridor_disposable_due_work_test_legacy",
+    ):
+        assert not acceptance_database.is_disposable_database_name(name)
+        assert acceptance_database.disposable_database_owner_pid(name) is None
+
+
+def test_a_label_too_long_for_postgresql_is_refused():
+    with pytest.raises(acceptance_database.DisposableDatabaseRefused):
+        acceptance_database.disposable_database_name("x" * 40)
+
+    with pytest.raises(acceptance_database.DisposableDatabaseRefused):
+        acceptance_database.disposable_database_prefix("Not_A_Label")
 
 
 def test_abandoned_copy_reclamation_keeps_live_process_databases(monkeypatch):
     dropped = []
     connection = _DatabaseCatalogConnection(
         (
-            "corridor_due_work_test_101_deadbeefcafe",
-            "corridor_due_work_test_202_feedfacecafe",
-            "corridor_due_work_test_legacy",
+            "corridor_disposable_due_work_test_101_deadbeefcafe",
+            "corridor_disposable_due_work_test_202_feedfacecafe",
+            "corridor_disposable_due_work_test_legacy",
         ),
         dropped,
     )
@@ -54,10 +75,10 @@ def test_abandoned_copy_reclamation_keeps_live_process_databases(monkeypatch):
 
     acceptance_database.reclaim_abandoned_database_copies(
         connection,
-        "corridor_due_work_test_",
+        "due_work_test",
     )
 
-    assert dropped == ["corridor_due_work_test_101_deadbeefcafe"]
+    assert dropped == ["corridor_disposable_due_work_test_101_deadbeefcafe"]
 
 
 class _DatabaseCatalogConnection:
@@ -97,8 +118,7 @@ def test_reusable_template_lifecycle_uses_the_stable_maintenance_database(
         with acceptance_database.provision_disposable_postgres(
             settings.database_url,
             repo_root=REPO_ROOT,
-            error_cls=AcceptanceError,
-            database_prefix="corridor_due_work_test_",
+            label="due_work_test",
             reuse_migrated_template=True,
         ):
             raise AssertionError("template setup must precede yield")
@@ -126,7 +146,7 @@ def test_reusable_template_honors_a_historical_revision(monkeypatch):
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda *_args, **_kwargs: pytest.fail(
             "historical reusable provisioning replayed migrations per copy"
         ),
@@ -139,8 +159,7 @@ def test_reusable_template_honors_a_historical_revision(monkeypatch):
         with acceptance_database.provision_disposable_postgres(
             settings.database_url,
             repo_root=REPO_ROOT,
-            error_cls=AcceptanceError,
-            database_prefix="corridor_migration_test_",
+            label="migration_test",
             migration_revision="b4d1e2f3a5c6",
             reuse_migrated_template=True,
         ):
@@ -167,7 +186,7 @@ def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda _url, *, revision, **_kwargs: migrated.append(revision),
     )
     monkeypatch.setattr(acceptance_database.atexit, "register", lambda *_args: None)
@@ -178,7 +197,7 @@ def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
             admin_url,
             repo_root=REPO_ROOT,
             error_cls=AcceptanceError,
-            database_prefix="migration_",
+            label="migration",
             migration_revision="head",
         )
         predecessor_template = acceptance_database._ensure_migrated_template(
@@ -186,7 +205,7 @@ def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
             admin_url,
             repo_root=REPO_ROOT,
             error_cls=AcceptanceError,
-            database_prefix="historical_",
+            label="historical",
             migration_revision="b4d1e2f3a5c6",
         )
         repeated_head_template = acceptance_database._ensure_migrated_template(
@@ -194,14 +213,14 @@ def test_reusable_template_cache_separates_migration_revisions(monkeypatch):
             admin_url,
             repo_root=REPO_ROOT,
             error_cls=AcceptanceError,
-            database_prefix="migration_",
+            label="migration",
             migration_revision="head",
         )
     finally:
         acceptance_database._migrated_templates.clear()
 
     assert migrated == ["head", "b4d1e2f3a5c6"]
-    assert reclaimed_prefixes == ["migration_", "historical_", "migration_"]
+    assert reclaimed_prefixes == ["migration", "historical", "migration"]
     assert head_template != predecessor_template
     assert repeated_head_template == head_template
 
@@ -223,11 +242,11 @@ class _TemplateAdminConnection:
 
 
 def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
-    database_name = f"{DATABASE_PREFIX}{uuid4().hex}"
+    database_name = acceptance_database.disposable_database_name(DATABASE_LABEL)
     monkeypatch.setattr(
         acceptance_database,
-        "_disposable_database_name",
-        lambda _prefix: database_name,
+        "disposable_database_name",
+        lambda _label: database_name,
     )
 
     def fail_migration(*_args, **_kwargs):
@@ -236,7 +255,7 @@ def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
 
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         fail_migration,
     )
 
@@ -245,8 +264,7 @@ def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
             with acceptance_database.provision_disposable_postgres(
                 settings.database_url,
                 repo_root=REPO_ROOT,
-                error_cls=AcceptanceError,
-                database_prefix=DATABASE_PREFIX,
+                label=DATABASE_LABEL,
             ):
                 raise AssertionError("migration failure must precede yield")
         assert not _database_exists(database_name)
@@ -255,16 +273,16 @@ def test_disposable_database_is_dropped_when_migration_fails(monkeypatch):
 
 
 def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
-    database_name = f"{DATABASE_PREFIX}{uuid4().hex}"
+    database_name = acceptance_database.disposable_database_name(DATABASE_LABEL)
     seen_urls = []
     monkeypatch.setattr(
         acceptance_database,
-        "_disposable_database_name",
-        lambda _prefix: database_name,
+        "disposable_database_name",
+        lambda _label: database_name,
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda *_args, **_kwargs: None,
     )
 
@@ -278,8 +296,7 @@ def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
         with acceptance_database.provision_disposable_postgres(
             settings.database_url,
             repo_root=REPO_ROOT,
-            error_cls=AcceptanceError,
-            database_prefix=DATABASE_PREFIX,
+            label=DATABASE_LABEL,
         ) as provisioned:
             assert provisioned.name == database_name
             assert provisioned.migration_head == "test-head"
@@ -290,16 +307,16 @@ def test_migration_head_is_read_from_the_disposable_database(monkeypatch):
 
 
 def test_disposable_provisioning_applies_the_production_database_guard(monkeypatch):
-    database_name = f"{DATABASE_PREFIX}{uuid4().hex}"
+    database_name = acceptance_database.disposable_database_name(DATABASE_LABEL)
     seen = []
     monkeypatch.setattr(
         acceptance_database,
-        "_disposable_database_name",
-        lambda _prefix: database_name,
+        "disposable_database_name",
+        lambda _label: database_name,
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda *_args, **_kwargs: None,
     )
     monkeypatch.setattr(
@@ -319,8 +336,7 @@ def test_disposable_provisioning_applies_the_production_database_guard(monkeypat
         with acceptance_database.provision_disposable_postgres(
             settings.database_url,
             repo_root=REPO_ROOT,
-            error_cls=AcceptanceError,
-            database_prefix=DATABASE_PREFIX,
+            label=DATABASE_LABEL,
         ) as provisioned:
             assert provisioned.name == database_name
         assert seen == [(database_name, True)]
@@ -329,9 +345,10 @@ def test_disposable_provisioning_applies_the_production_database_guard(monkeypat
 
 
 def test_guarded_upgrade_moves_only_the_named_disposable_database(monkeypatch):
-    prefix = "corridor_sh99_coordinator_rehearsal_"
+    label = "sh99_coordinator"
+    name = acceptance_database.disposable_database_name(label)
     provisioned = acceptance_database.ProvisionedDatabase(
-        name=f"{prefix}unit",
+        name=name,
         session_factory=sessionmaker(),
         postgres_version="16.9",
         migration_head="e255a7c4d9e2",
@@ -346,7 +363,7 @@ def test_guarded_upgrade_moves_only_the_named_disposable_database(monkeypatch):
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda database_url, **kwargs: seen.append(
             ("upgrade", database_url.render_as_string(hide_password=False), kwargs)
         ),
@@ -357,18 +374,18 @@ def test_guarded_upgrade_moves_only_the_named_disposable_database(monkeypatch):
         admin_url="postgresql+psycopg://corridor:corridor@localhost:5433/corridor",
         repo_root=REPO_ROOT,
         error_cls=AcceptanceError,
-        database_prefix=prefix,
+        label=label,
         expected_current_revision="e255a7c4d9e2",
         target_revision="f255b7c4d9e3",
     )
 
     assert receipt == acceptance_database.DatabaseUpgradeReceipt(
-        database_name=f"{prefix}unit",
+        database_name=name,
         from_revision="e255a7c4d9e2",
         to_revision="f255b7c4d9e3",
         verified_revision="f255b7c4d9e3",
     )
-    assert all(make_url(item[1]).database == f"{prefix}unit" for item in seen)
+    assert all(make_url(item[1]).database == name for item in seen)
     assert seen[1][0] == "upgrade"
     assert seen[1][2]["revision"] == "f255b7c4d9e3"
 
@@ -382,7 +399,7 @@ def test_guarded_upgrade_rejects_a_database_outside_the_disposable_prefix(monkey
     )
     monkeypatch.setattr(
         acceptance_database,
-        "_apply_schema_migrations",
+        "apply_schema_migrations",
         lambda *_args, **_kwargs: pytest.fail("shared database migration was attempted"),
     )
 
@@ -392,7 +409,7 @@ def test_guarded_upgrade_rejects_a_database_outside_the_disposable_prefix(monkey
             admin_url=settings.database_url,
             repo_root=REPO_ROOT,
             error_cls=AcceptanceError,
-            database_prefix="corridor_sh99_coordinator_rehearsal_",
+            label="sh99_coordinator",
             expected_current_revision="e255a7c4d9e2",
             target_revision="f255b7c4d9e3",
         )
@@ -499,24 +516,18 @@ def test_bundle_verifier_rejects_unmanifested_nested_content(tmp_path):
         expected_integrity_manifest_sha256=_sha256(manifest_bytes),
         bundle_schema_version="test-bundle-v1",
         bundle_files=("canonical-content.json",),
-        corrupt_bundle_error_cls=CorruptAcceptanceBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
     ).valid
 
     nested = bundle_dir / "nested"
     nested.mkdir()
     (nested / "surprise.txt").write_text("unmanifested")
 
-    with pytest.raises(CorruptAcceptanceBundle, match="unmanifested export"):
+    with pytest.raises(CorruptBundle, match="unmanifested export"):
         verify_bundle(
             bundle_dir,
             expected_integrity_manifest_sha256=_sha256(manifest_bytes),
             bundle_schema_version="test-bundle-v1",
             bundle_files=("canonical-content.json",),
-            corrupt_bundle_error_cls=CorruptAcceptanceBundle,
-            sha256=_sha256,
-            json_sha256=_json_sha256,
         )
 
 

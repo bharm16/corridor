@@ -15,13 +15,12 @@ from __future__ import annotations
 
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
-import json
 from typing import Any, Iterable
 from collections import Counter
 from decimal import Decimal, InvalidOperation
 import math
 
+from corridor import digests
 from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily
 from corridor.measurement_collection import TIME_CATEGORIES, select_sampling_observations
 from corridor.project_portfolio import NO_ACTION
@@ -767,6 +766,6 @@ def _portfolio(period, events) -> dict[str, Any]:
             "observation_start": period.start.isoformat(), "observation_end": period.end.isoformat()}
 
 
-def _digest(value: Any) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"),
-                             default=str).encode()).hexdigest()
+# Retained encoding: pilot measurement receipts were sealed with non-ASCII
+# escaped and timestamps stringified.
+_digest = digests.coerced_ascii_escaped_sha256

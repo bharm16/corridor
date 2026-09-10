@@ -11,6 +11,7 @@ that extraction seam while making every investigation attempt locally legible.
 
 from __future__ import annotations
 
+from corridor import digests
 import hashlib
 import inspect
 import json
@@ -59,15 +60,8 @@ ADAPTER = "direct-responses-v2"
 ADAPTER_CONTRACT_VERSION = "direct-responses-contract-v2"
 
 
-def canonical_json_bytes(value: object) -> bytes:
-    return json.dumps(
-        value, sort_keys=True, separators=(",", ":"), ensure_ascii=False
-    ).encode()
-
-
-def sha256_json(value: object) -> str:
-    """One canonical JSON digest shared by every investigator receipt layer."""
-    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
+canonical_json_bytes = digests.canonical_json
+sha256_json = digests.canonical_sha256
 
 
 def transport_gate_receipt() -> dict:

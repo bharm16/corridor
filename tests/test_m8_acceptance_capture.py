@@ -29,6 +29,7 @@ from corridor.page_inventory import (
     route_reader_page,
 )
 from corridor.m8_acceptance import (
+    DATABASE_PREFIX,
     AcceptanceCaptureConfig,
     AcceptanceError,
     AcceptanceRunConfig,
@@ -134,7 +135,7 @@ def test_capture_pins_the_rid_and_five_fresh_exact_run_snapshots(tmp_path):
         assert "local_path" not in source
         assert not Path(source["fixture_relpath"]).is_absolute()
         assert (capture.fixture_path.parent / source["fixture_relpath"]).is_file()
-    assert capture.database_name.startswith("corridor_m8_acceptance_")
+    assert capture.database_name.startswith(DATABASE_PREFIX)
     assert not _database_exists(capture.database_name)
 
 

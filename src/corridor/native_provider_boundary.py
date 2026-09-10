@@ -26,6 +26,7 @@ and `pdf_licensing: unresolved`, and both appear in the refusal.
 
 from __future__ import annotations
 
+from corridor import digests
 import base64
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
@@ -52,11 +53,10 @@ def _now() -> str:
 
 
 def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return digests.canonical_json(value).decode()
 
 
-def _digest(value: Any) -> str:
-    return sha256(_canonical(value).encode()).hexdigest()
+_digest = digests.canonical_sha256
 
 
 @dataclass(frozen=True)

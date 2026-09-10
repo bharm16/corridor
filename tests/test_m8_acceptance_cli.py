@@ -145,7 +145,7 @@ def test_live_capture_constructs_one_client_routes_the_production_extractor_and_
         return CaptureSummary(
             fixture_path=output_dir / "fixture.json",
             fixture_sha256="a1" * 32,
-            database_name="corridor_m8_acceptance_" + "1" * 32,
+            database_name="corridor_disposable_m8_acceptance_1234_111111111111",
             run_count=5,
             candidate_count=18,
         )
@@ -189,7 +189,7 @@ def test_live_capture_constructs_one_client_routes_the_production_extractor_and_
     assert _json_output(capsys) == {
         "candidate_count": 18,
         "command": "capture",
-        "database_name": "corridor_m8_acceptance_" + "1" * 32,
+        "database_name": "corridor_disposable_m8_acceptance_1234_111111111111",
         "fixture_path": str(output_dir / "fixture.json"),
         "fixture_sha256": "a1" * 32,
         "run_count": 5,
@@ -410,7 +410,7 @@ def test_replay_routes_model_free_without_constructing_a_client(
             ),
             carried_count=2,
             abstention_counts={"comparison_changed": 1},
-            database_name="corridor_m8_acceptance_" + "2" * 32,
+            database_name="corridor_disposable_m8_acceptance_1234_222222222222",
         )
 
     monkeypatch.setattr("corridor.m8_acceptance_cli.run_m8_acceptance", replay)
@@ -457,7 +457,7 @@ def test_replay_routes_model_free_without_constructing_a_client(
         "canonical_content_sha256": "c3" * 32,
         "carried_count": 2,
         "command": "replay",
-        "database_name": "corridor_m8_acceptance_" + "2" * 32,
+        "database_name": "corridor_disposable_m8_acceptance_1234_222222222222",
         "fixture_sha256": "d4" * 32,
         "integrity_manifest_sha256": "b2" * 32,
         "manifest_path": str(output_dir / "manifest.json"),
@@ -486,7 +486,7 @@ def test_replay_prints_failed_assertions_and_returns_nonzero(
             ),
             carried_count=0,
             abstention_counts={"comparison_changed": 1},
-            database_name="corridor_m8_acceptance_" + "2" * 32,
+            database_name="corridor_disposable_m8_acceptance_1234_222222222222",
         ),
     )
 

@@ -12,6 +12,7 @@ boundary between the real application and ``ProductProvingPass``.
 
 from __future__ import annotations
 
+from corridor import digests
 import base64
 from collections.abc import Callable
 from dataclasses import asdict, dataclass, field, fields
@@ -51,7 +52,11 @@ from corridor.models import (
     ReportRun,
     WorkDecision,
 )
-from corridor.m8_acceptance_bundle import publish_verified_bundle, verify_bundle
+from corridor.m8_acceptance_bundle import (
+    CorruptBundle,
+    publish_verified_bundle,
+    verify_bundle,
+)
 from corridor.product_proving_execution import (
     LiveProductProvingOperationsCapture,
     ProjectWriteSetDiff,
@@ -778,11 +783,6 @@ def publish_frontend_pass_bundle(
         canonical_content=canonical,
         bundle_schema_version=FRONTEND_PASS_BUNDLE_SCHEMA_VERSION,
         bundle_files=FRONTEND_PASS_BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptFrontendPassBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256_bytes,
-        json_sha256=_json_sha256,
         temp_prefix="corridor-product-proving-frontend-pass",
         self_verification_failure=(
             "new Product Proving frontend-pass bundle failed self-verification"
@@ -810,15 +810,15 @@ def verify_frontend_pass_bundle(
     """Reconstruct and verify a pass without PostgreSQL or the checkout."""
 
     root = Path(bundle_dir)
-    verified = verify_bundle(
-        root,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=FRONTEND_PASS_BUNDLE_SCHEMA_VERSION,
-        bundle_files=FRONTEND_PASS_BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptFrontendPassBundle,
-        sha256=_sha256_bytes,
-        json_sha256=_json_sha256,
-    )
+    try:
+        verified = verify_bundle(
+            root,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=FRONTEND_PASS_BUNDLE_SCHEMA_VERSION,
+            bundle_files=FRONTEND_PASS_BUNDLE_FILES,
+        )
+    except CorruptBundle as exc:
+        raise CorruptFrontendPassBundle(str(exc)) from exc
     try:
         canonical = json.loads((root / "canonical-content.json").read_bytes())
         receipt = json.loads((root / "receipt.json").read_bytes())
@@ -1826,21 +1826,9 @@ def _contains_key(value: object, key: str) -> bool:
     return False
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode()
-
-
-def _sha256_bytes(value: bytes) -> str:
-    return sha256(value).hexdigest()
-
-
-def _json_sha256(value: Any) -> str:
-    return _sha256_bytes(_canonical_json(value))
+_canonical_json = digests.canonical_json
+_sha256_bytes = digests.sha256_bytes
+_json_sha256 = digests.canonical_sha256
 
 
 def _validate_database_baseline_identity(

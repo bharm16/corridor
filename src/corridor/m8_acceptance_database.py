@@ -4,6 +4,26 @@ Ad-hoc database creation was rejected because cleanup, migration identity, and
 production separation then depended on each caller. This module owns that
 lifecycle and applies ADR-0049's server-observed production-database refusal
 before any provisioned database reaches an experimental workflow.
+
+It now owns the *names* too. Owning the lifecycle while every caller minted its
+own prefix meant nothing could recognise a disposable database from outside the
+process that made it: eight modules invented eight unrelated prefixes, and
+`scripts/clean_test_databases.py` chased them with twenty-two hand-written
+regular expressions that missed most of them and matched single-digit pids
+only. A caller now names a *label*, this module builds
+`corridor_disposable_<label>_<pid>_<hex>` from it, and
+`is_disposable_database_name` is the one predicate the sweeper and the
+namespace guards ask.
+
+The pid is in the name because process ownership is how an abandoned copy is
+recognised: `reclaim_abandoned_database_copies` and `_drop_abandoned_templates`
+drop a database only when `os.kill(pid, 0)` proves its owner is gone, so a
+sibling xdist worker mid-build is never taken out from under itself.
+
+Refusals are `DisposableDatabaseRefused`. Callers used to pass an `error_cls`
+in — seventy-eight call sites, four different classes, all describing the same
+refusal — and a caller whose public seam owes its own exception type catches
+this one and re-raises.
 """
 
 from __future__ import annotations
@@ -29,6 +49,59 @@ from corridor.experimental_database import (
     ProductionDatabaseRefusal,
     require_experimental_database,
 )
+
+
+class DisposableDatabaseRefused(ValueError):
+    """A guarded disposable database could not be provisioned, or was unsafe."""
+
+
+MAX_DATABASE_NAME_LENGTH = 63
+DISPOSABLE_NAMESPACE = "corridor_disposable_"
+_LABEL = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
+_DISPOSABLE_NAME = re.compile(
+    rf"^{DISPOSABLE_NAMESPACE}[a-z0-9_]+_(?P<pid>[1-9][0-9]*)_[0-9a-f]{{12}}$"
+)
+
+
+def disposable_database_prefix(label: str) -> str:
+    """The prefix every database minted for one label shares.
+
+    Callers hold this to write a `LIKE` scan or to refuse a name from outside
+    their own label's namespace; they no longer invent the prefix itself.
+    """
+
+    if _LABEL.fullmatch(label) is None:
+        raise DisposableDatabaseRefused(
+            f"disposable database label {label!r} is not lowercase_snake_case"
+        )
+    return f"{DISPOSABLE_NAMESPACE}{label}_"
+
+
+def disposable_database_name(label: str) -> str:
+    """Name a disposable database so a later process can prove it is abandoned."""
+
+    database_name = (
+        f"{disposable_database_prefix(label)}{os.getpid()}_{uuid4().hex[:12]}"
+    )
+    if len(database_name) > MAX_DATABASE_NAME_LENGTH:
+        raise DisposableDatabaseRefused(
+            f"disposable database name {database_name!r} exceeds PostgreSQL's "
+            f"{MAX_DATABASE_NAME_LENGTH}-character limit; shorten the label"
+        )
+    return database_name
+
+
+def is_disposable_database_name(name: str) -> bool:
+    """Whether this module minted the name, and may therefore reclaim it."""
+
+    return _DISPOSABLE_NAME.fullmatch(str(name)) is not None
+
+
+def disposable_database_owner_pid(name: str) -> int | None:
+    """The process that minted the name, or `None` if this module did not."""
+
+    match = _DISPOSABLE_NAME.fullmatch(str(name))
+    return int(match.group("pid")) if match else None
 
 
 @dataclass(frozen=True)
@@ -62,21 +135,24 @@ def provision_disposable_postgres(
     admin_url: str,
     *,
     repo_root: Path,
-    error_cls: type[Exception],
-    database_prefix: str,
+    label: str,
     migration_revision: str = "head",
     reuse_migrated_template: bool = False,
 ) -> Iterator[ProvisionedDatabase]:
     """Create, migrate to one revision, and destroy a guarded PostgreSQL database.
 
-    ``reuse_migrated_template`` copies a per-process template that this module
-    migrated to the requested revision, instead of replaying the same Alembic
-    path for every database. Each revision gets a distinct template.
+    ``label`` names the workflow the database belongs to; this module builds the
+    name from it, so every disposable database lives in one recognisable
+    namespace. ``reuse_migrated_template`` copies a per-process template that
+    this module migrated to the requested revision, instead of replaying the
+    same Alembic path for every database. Each revision gets a distinct
+    template.
     """
 
+    error_cls = DisposableDatabaseRefused
     parsed = make_url(admin_url)
     if parsed.get_backend_name() != "postgresql":
-        raise error_cls("M8 acceptance requires PostgreSQL")
+        raise error_cls("a disposable database requires PostgreSQL")
     require_local_postgres_host(parsed.host, error_cls=error_cls)
     maintenance_url = parsed.set(database="postgres")
     admin_engine = create_engine(
@@ -86,18 +162,18 @@ def provision_disposable_postgres(
         future=True,
     )
     uses_template = reuse_migrated_template
-    database_name = (
-        process_owned_database_name(database_prefix)
-        if uses_template
-        else _disposable_database_name(database_prefix)
-    )
+    database_name = disposable_database_name(label)
     database_created = False
     database_engine = None
     primary_error: BaseException | None = None
     try:
         with admin_engine.connect() as connection:
             version = connection.scalar(text("show server_version"))
-        require_postgres_16(version, error_cls=error_cls)
+        require_postgres_16(
+            version,
+            error_cls=error_cls,
+            target=_url_target(parsed),
+        )
         template_name: str | None = None
         if uses_template:
             template_name = _ensure_migrated_template(
@@ -105,7 +181,7 @@ def provision_disposable_postgres(
                 maintenance_url,
                 repo_root=repo_root,
                 error_cls=error_cls,
-                database_prefix=database_prefix,
+                label=label,
                 migration_revision=migration_revision,
             )
         with admin_engine.connect() as connection:
@@ -121,7 +197,7 @@ def provision_disposable_postgres(
             database_created = True
         database_url = parsed.set(database=database_name)
         if template_name is None:
-            _apply_schema_migrations(
+            apply_schema_migrations(
                 database_url,
                 repo_root=repo_root,
                 error_cls=error_cls,
@@ -179,7 +255,7 @@ def provision_disposable_postgres(
         if cleanup_error is not None:
             if primary_error is not None:
                 primary_error.add_note(
-                    "M8 acceptance also failed to drop disposable database "
+                    "also failed to drop disposable database "
                     f"{database_name!r}: {cleanup_error}"
                 )
             else:
@@ -188,10 +264,25 @@ def provision_disposable_postgres(
                 ) from cleanup_error
 
 
-def require_postgres_16(version: str, *, error_cls: type[Exception]) -> None:
+def _url_target(parsed: URL) -> str:
+    """Where a refusal actually looked, rather than the development default.
+
+    The message used to name `localhost:5433` outright. A run pointed at any
+    other local port then reported the wrong address in its own refusal, which
+    is exactly the port confusion the boot guard exists to prevent.
+    """
+
+    return f"{parsed.host or 'localhost'}:{parsed.port or 5432}"
+
+
+def require_postgres_16(
+    version: str, *, error_cls: type[Exception], target: str | None = None
+) -> None:
     if not str(version).startswith("16."):
         raise error_cls(
-            f"M8 acceptance requires PostgreSQL 16 on localhost:5433, got {version!r}"
+            "a disposable database requires PostgreSQL 16"
+            + (f" on {target}" if target else "")
+            + f", got {version!r}"
         )
 
 
@@ -199,7 +290,7 @@ def require_local_postgres_host(
     host: str | None, *, error_cls: type[Exception]
 ) -> None:
     if host not in {None, "localhost", "127.0.0.1", "::1"}:
-        raise error_cls("M8 acceptance must target local PostgreSQL only")
+        raise error_cls("a disposable database must target local PostgreSQL only")
 
 
 def read_migration_head(
@@ -237,7 +328,8 @@ def read_migration_head(
     return str(revisions[0])
 
 
-_TEMPLATE_PREFIX = "corridor_migrated_template_"
+_TEMPLATE_LABEL = "migrated_template"
+_TEMPLATE_PREFIX = disposable_database_prefix(_TEMPLATE_LABEL)
 _migrated_templates: dict[tuple[str, str], str] = {}
 
 
@@ -247,7 +339,7 @@ def _ensure_migrated_template(
     *,
     repo_root: Path,
     error_cls: type[Exception],
-    database_prefix: str,
+    label: str,
     migration_revision: str,
 ) -> str:
     """Migrate one template per process and requested revision.
@@ -259,16 +351,16 @@ def _ensure_migrated_template(
     admin_url_text = admin_url.render_as_string(hide_password=False)
     cache_key = (admin_url_text, migration_revision)
     with admin_engine.connect() as connection:
-        reclaim_abandoned_database_copies(connection, database_prefix)
+        reclaim_abandoned_database_copies(connection, label)
         cached = _migrated_templates.get(cache_key)
         if cached is not None:
             return cached
         _drop_abandoned_templates(connection)
-        template_name = f"{_TEMPLATE_PREFIX}{os.getpid()}_{uuid4().hex[:8]}"
+        template_name = disposable_database_name(_TEMPLATE_LABEL)
         connection.execute(text(f'drop database if exists "{template_name}"'))
         connection.execute(text(f'create database "{template_name}"'))
     try:
-        _apply_schema_migrations(
+        apply_schema_migrations(
             admin_url.set(database=template_name),
             repo_root=repo_root,
             error_cls=error_cls,
@@ -295,7 +387,7 @@ def _drop_abandoned_templates(connection) -> None:
         {"prefix": f"{_TEMPLATE_PREFIX}%"},
     ).all()
     for name in names:
-        owner_pid = _template_owner_pid(str(name))
+        owner_pid = disposable_database_owner_pid(str(name))
         if owner_pid is None or process_is_running(owner_pid):
             continue
         try:
@@ -304,36 +396,18 @@ def _drop_abandoned_templates(connection) -> None:
             continue
 
 
-def _template_owner_pid(template_name: str) -> int | None:
-    match = re.fullmatch(rf"{_TEMPLATE_PREFIX}(\d+)_[0-9a-f]+", template_name)
-    return int(match.group(1)) if match else None
+def reclaim_abandoned_database_copies(connection, label: str) -> None:
+    """Drop one label's disposable databases once their owning process exited."""
 
-
-def process_owned_database_name(database_prefix: str) -> str:
-    """Name a disposable database so a later process can prove it is abandoned."""
-
-    database_name = f"{database_prefix}{os.getpid()}_{uuid4().hex[:12]}"
-    if len(database_name) > 63:
-        raise ValueError(
-            "process-owned disposable database name exceeds PostgreSQL limit"
-        )
-    return database_name
-
-
-def reclaim_abandoned_database_copies(connection, database_prefix: str) -> None:
-    """Drop reusable-template copies only after their owning process has exited."""
-
-    pattern = re.compile(
-        rf"^{re.escape(database_prefix)}([1-9][0-9]*)_[0-9a-f]{{12}}$"
-    )
+    prefix = disposable_database_prefix(label)
     names = connection.scalars(
         text("select datname from pg_database where datname like :prefix"),
-        {"prefix": f"{database_prefix}%"},
+        {"prefix": f"{prefix}%"},
     )
     for raw_name in names:
         database_name = str(raw_name)
-        match = pattern.fullmatch(database_name)
-        if match is None or process_is_running(int(match.group(1))):
+        owner_pid = disposable_database_owner_pid(database_name)
+        if owner_pid is None or process_is_running(owner_pid):
             continue
         try:
             connection.execute(
@@ -395,18 +469,15 @@ def upgrade_provisioned_postgres(
     admin_url: str,
     repo_root: Path,
     error_cls: type[Exception],
-    database_prefix: str,
+    label: str,
     expected_current_revision: str,
     target_revision: str,
 ) -> DatabaseUpgradeReceipt:
     """Upgrade only an explicitly named disposable database between exact pins."""
 
-    if (
-        not database_prefix
-        or not database.name.startswith(database_prefix)
-        or database.name == database_prefix
-        or re.fullmatch(r"[A-Za-z0-9_]+", database.name) is None
-    ):
+    if not database.name.startswith(
+        disposable_database_prefix(label)
+    ) or not is_disposable_database_name(database.name):
         raise error_cls("database is outside the disposable namespace")
     if database.current_revision != expected_current_revision:
         raise error_cls("provisioned database does not carry the expected source revision")
@@ -426,7 +497,7 @@ def upgrade_provisioned_postgres(
     bound_engine = database.session_factory.kw.get("bind")
     if bound_engine is not None:
         bound_engine.dispose()
-    _apply_schema_migrations(
+    apply_schema_migrations(
         database_url,
         repo_root=repo_root,
         error_cls=error_cls,
@@ -447,17 +518,18 @@ def upgrade_provisioned_postgres(
     )
 
 
-def _disposable_database_name(database_prefix: str) -> str:
-    return f"{database_prefix}{uuid4().hex}"
-
-
-def _apply_schema_migrations(
+def apply_schema_migrations(
     database_url: URL,
     *,
     repo_root: Path,
     error_cls: type[Exception],
     revision: str = "head",
 ) -> None:
+    """Run Alembic against one database in a subprocess, and report its failure.
+
+    Public because the pytest harness upgrades its own worker databases and had
+    a byte-for-byte copy of this body in `tests/conftest.py`.
+    """
     environment = {
         **os.environ,
         "DATABASE_URL": database_url.render_as_string(hide_password=False),

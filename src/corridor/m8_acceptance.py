@@ -9,12 +9,13 @@ behavior is exercised only in a separate generated conformance project.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections import Counter
 from collections.abc import Iterator, Sequence
 from copy import deepcopy
+from functools import partial
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
-import hashlib
 import json
 from pathlib import Path
 from pathlib import PurePosixPath
@@ -47,6 +48,8 @@ from corridor.models import (
     Project,
 )
 from corridor.m8_acceptance_bundle import (
+    BundleRefused,
+    CorruptBundle,
     VerificationResult,
     verify_bundle as _verify_bundle,
     write_bundle as _write_bundle_impl,
@@ -65,11 +68,14 @@ from corridor.m8_acceptance_controlled import (
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     ProvisionedDatabase,
+    disposable_database_prefix,
+    is_disposable_database_name,
     provision_disposable_postgres as _provision_disposable_postgres_impl,
     require_local_postgres_host as _require_local_postgres_host_impl,
     require_postgres_16 as _require_postgres_16_impl,
 )
 from corridor.m8_acceptance_fixture import (
+    CorruptFixture,
     first_contract_difference as _first_contract_difference_impl,
     load_captured_fixture as _load_captured_fixture_impl,
     load_transformations as _load_transformations_impl,
@@ -99,9 +105,14 @@ NHHIP_REVISION_IDS = (
 )
 CAPTURE_SCHEMA_VERSION = "corridor.m8.real-chain-fixture.v1"
 BUNDLE_SCHEMA_VERSION = "corridor.m8.acceptance-bundle.v1"
-DATABASE_PREFIX = "corridor_m8_acceptance_"
-_DATABASE_NAME = re.compile(r"^corridor_m8_acceptance_[0-9a-f]{32}$")
+DATABASE_LABEL = "m8_acceptance"
+DATABASE_PREFIX = disposable_database_prefix(DATABASE_LABEL)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
+_DEFAULT_PROVISIONER: DatabaseProvisioner = partial(
+    _provision_disposable_postgres_impl,
+    repo_root=_REPO_ROOT,
+    label=DATABASE_LABEL,
+)
 _BUNDLE_FILES = (
     "assertions.json",
     "canonical-content.json",
@@ -316,15 +327,6 @@ class _SourceChain:
     declarations: tuple[SupersessionDeclaration, ...]
 
 
-def provision_disposable_postgres(admin_url: str) -> Iterator[ProvisionedDatabase]:
-    return _provision_disposable_postgres_impl(
-        admin_url,
-        repo_root=_REPO_ROOT,
-        error_cls=AcceptanceError,
-        database_prefix=DATABASE_PREFIX,
-    )
-
-
 def _require_postgres_16(version: str) -> None:
     _require_postgres_16_impl(version, error_cls=AcceptanceError)
 
@@ -337,7 +339,7 @@ def capture_m8_fixture(
     config: AcceptanceCaptureConfig,
     *,
     extract: Extractor,
-    provision_database: DatabaseProvisioner = provision_disposable_postgres,
+    provision_database: DatabaseProvisioner = _DEFAULT_PROVISIONER,
 ) -> CaptureSummary:
     """Explicitly capture fresh exact NHHIP inputs from an injected extractor."""
 
@@ -1146,28 +1148,15 @@ def _git_state() -> dict[str, str]:
     return {"revision": revision, "status": "dirty" if status_output else "clean"}
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode()
-
-
-def _json_sha256(value: Any) -> str:
-    return _sha256(_canonical_json(value))
-
-
-def _sha256(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
+_canonical_json = digests.canonical_json
+_json_sha256 = digests.canonical_sha256
+_sha256 = digests.sha256_bytes
 
 
 def run_m8_acceptance(
     config: AcceptanceRunConfig,
     *,
-    provision_database: DatabaseProvisioner = provision_disposable_postgres,
+    provision_database: DatabaseProvisioner = _DEFAULT_PROVISIONER,
 ) -> AcceptanceBundleSummary:
     """Replay a captured real chain and controlled oracle without a model."""
 
@@ -1226,8 +1215,9 @@ def run_m8_acceptance(
             "schema_version": BUNDLE_SCHEMA_VERSION,
             "replayed_at": datetime.now(timezone.utc).isoformat(),
             "database_name": database.name,
-            "database_disposable_name_valid": bool(
-                _DATABASE_NAME.fullmatch(database.name)
+            "database_disposable_name_valid": (
+                database.name.startswith(DATABASE_PREFIX)
+                and is_disposable_database_name(database.name)
             ),
             "git_revision": git_state["revision"],
             "git_status": git_state["status"],
@@ -1308,15 +1298,15 @@ def verify_m8_acceptance_bundle(
     *,
     expected_integrity_manifest_sha256: str,
 ) -> VerificationResult:
-    return _verify_bundle(
-        bundle_dir,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=BUNDLE_SCHEMA_VERSION,
-        bundle_files=_BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptAcceptanceBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        return _verify_bundle(
+            bundle_dir,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+            bundle_files=_BUNDLE_FILES,
+        )
+    except CorruptBundle as exc:
+        raise CorruptAcceptanceBundle(str(exc)) from exc
 
 
 def _load_captured_fixture(
@@ -1324,16 +1314,16 @@ def _load_captured_fixture(
     *,
     expected_sha256: str,
 ) -> tuple[dict[str, Any], str, _SourceChain]:
-    return _load_captured_fixture_impl(
-        fixture_path,
-        expected_sha256=expected_sha256,
-        capture_schema_version=CAPTURE_SCHEMA_VERSION,
-        claim_boundary=CLAIM_BOUNDARY,
-        build_chain=_source_chain_from_captured_fixture,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-        corrupt_fixture_error_cls=CorruptAcceptanceFixture,
-    )
+    try:
+        return _load_captured_fixture_impl(
+            fixture_path,
+            expected_sha256=expected_sha256,
+            capture_schema_version=CAPTURE_SCHEMA_VERSION,
+            claim_boundary=CLAIM_BOUNDARY,
+            build_chain=_source_chain_from_captured_fixture,
+        )
+    except CorruptFixture as exc:
+        raise CorruptAcceptanceFixture(str(exc)) from exc
 
 
 def _load_transformations(
@@ -1346,7 +1336,6 @@ def _load_transformations(
         expected_sha256=expected_sha256,
         contract=_CONTROLLED_TRANSFORMATIONS_CONTRACT,
         acceptance_error_cls=AcceptanceError,
-        sha256=_sha256,
     )
 
 
@@ -1991,9 +1980,10 @@ def _acceptance_assertions(
     checks = [
         AssertionResult(
             "disposable_database_name_is_guarded",
-            bool(_DATABASE_NAME.fullmatch(database.name)),
+            database.name.startswith(DATABASE_PREFIX)
+            and is_disposable_database_name(database.name),
             observed=database.name,
-            expected=f"{DATABASE_PREFIX}<32 lowercase hex>",
+            expected=f"{DATABASE_PREFIX}<pid>_<12 lowercase hex>",
         ),
         AssertionResult(
             "real_lane_is_observation_only",
@@ -2270,18 +2260,16 @@ def _write_bundle(
     assertions: Sequence[AssertionResult],
     canonical_content: dict[str, Any],
 ) -> tuple[Path, str, str]:
-    return _write_bundle_impl(
-        output_dir,
-        environment=environment,
-        real_chain=real_chain,
-        controlled_lane=controlled_lane,
-        assertions=assertions,
-        canonical_content=canonical_content,
-        bundle_schema_version=BUNDLE_SCHEMA_VERSION,
-        bundle_files=_BUNDLE_FILES,
-        error_cls=AcceptanceError,
-        corrupt_bundle_error_cls=CorruptAcceptanceBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        return _write_bundle_impl(
+            output_dir,
+            environment=environment,
+            real_chain=real_chain,
+            controlled_lane=controlled_lane,
+            assertions=assertions,
+            canonical_content=canonical_content,
+            bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+            bundle_files=_BUNDLE_FILES,
+        )
+    except BundleRefused as exc:
+        raise AcceptanceError(str(exc)) from exc

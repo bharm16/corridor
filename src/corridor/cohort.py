@@ -16,8 +16,7 @@ boundary, not a view (#175).
 
 from __future__ import annotations
 
-import hashlib
-import json
+from corridor import digests
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -215,7 +214,9 @@ def _members(
 def _digest(
     comparison: RevisionComparisonRun, external_org: str, members: list[dict]
 ) -> str:
-    canonical = json.dumps(
+    # Retained encoding: a stored cohort deduplication key, sealed with
+    # non-ASCII escaped.
+    canonical = digests.ascii_escaped_json(
         {
             "rule_version": COHORT_RULE_VERSION,
             "comparison_id": comparison.id,
@@ -228,11 +229,9 @@ def _digest(
             ),
             "external_org": external_org,
             "members": members,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return digests.sha256_bytes(canonical)
 
 
 def derive_event_cohort_receipt(session: Session, project_id: int) -> EventCohortReceipt:
@@ -369,17 +368,17 @@ def _declared_project_runs(session: Session, project_id: int) -> dict[int, int]:
 def _event_cohort_digest(
     project_id: int, input_run_ids: list[int], members: list[dict]
 ) -> str:
-    canonical = json.dumps(
+    # Retained encoding: a stored cohort deduplication key, sealed with
+    # non-ASCII escaped.
+    canonical = digests.ascii_escaped_json(
         {
             "rule_version": EVENT_COHORT_RULE_VERSION,
             "project_id": project_id,
             "input_run_ids": input_run_ids,
             "members": members,
-        },
-        sort_keys=True,
-        separators=(",", ":"),
+        }
     )
-    return hashlib.sha256(canonical.encode()).hexdigest()
+    return digests.sha256_bytes(canonical)
 
 
 class CohortScopeViolation(ValueError):

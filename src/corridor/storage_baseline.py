@@ -13,7 +13,6 @@ from dataclasses import dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from io import BytesIO
-import json
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +20,7 @@ from pypdf import PdfReader
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from corridor import digests
 from corridor.models import (
     ExternalReportRelease,
     ExtractionRun,
@@ -592,10 +592,10 @@ def _json_value(value: Any) -> Any:
 def canonical_json_bytes(value: Any) -> bytes:
     """Stable bytes used for both output files and semantic digests."""
 
-    return (
-        json.dumps(_json_value(value), sort_keys=True, separators=(",", ":")) + "\n"
-    ).encode()
+    # Retained encoding: the digest covers the exact bytes of the evidence
+    # file, which is newline-terminated and escapes non-ASCII.
+    return digests.ascii_escaped_json(_json_value(value)) + b"\n"
 
 
 def _digest(value: Any) -> str:
-    return sha256(canonical_json_bytes(value)).hexdigest()
+    return digests.sha256_bytes(canonical_json_bytes(value))

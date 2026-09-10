@@ -32,11 +32,10 @@ same ``WorkDecision`` tail the writers project from.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
-import hashlib
-import json
 from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
@@ -956,15 +955,7 @@ def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
 
 
-def _sha256(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+_sha256 = digests.canonical_sha256
 
 
 # ==========================================================================

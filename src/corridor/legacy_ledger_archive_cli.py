@@ -12,13 +12,13 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import re
 import sys
 from typing import Any
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import digests
 from corridor.legacy_ledger_archive import (
     ArchiveReadback,
     LegacyLedgerArchiveError,
@@ -29,7 +29,6 @@ from corridor.legacy_ledger_archive import (
 )
 from corridor.models import Project
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _positive_int(value: str) -> int:
@@ -43,7 +42,7 @@ def _positive_int(value: str) -> int:
 
 
 def _sha256(value: str) -> str:
-    if _SHA256.fullmatch(value) is None:
+    if not digests.is_digest(value):
         raise argparse.ArgumentTypeError(
             "must be exactly 64 lowercase hexadecimal characters"
         )

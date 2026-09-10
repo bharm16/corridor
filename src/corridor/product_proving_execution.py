@@ -12,13 +12,13 @@ all remaining observations are recomputed at the point of use.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, replace
 from datetime import date, datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
-import json
 from pathlib import Path
 import subprocess
 from typing import Any, Protocol
@@ -2526,17 +2526,10 @@ def _fingerprint_json(item: ProjectRowFingerprint) -> dict[str, Any]:
 
 
 def _canonical_json(value: Any) -> str:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    return digests.canonical_json(value).decode()
 
 
-def _json_sha256(value: Any) -> str:
-    return sha256(_canonical_json(value).encode()).hexdigest()
+_json_sha256 = digests.canonical_sha256
 
 
 def _is_sha256(value: Any) -> bool:

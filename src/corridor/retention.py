@@ -16,10 +16,9 @@ so a held object cannot be deleted on either backend (ADR-0080).
 
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
-import json
 from pathlib import Path
 from uuid import uuid4
 
@@ -524,5 +523,6 @@ def _json_value(value):
 
 
 def _digest(value) -> str:
-    raw = json.dumps(_json_value(value), sort_keys=True, separators=(",", ":")).encode()
-    return sha256(raw).hexdigest()
+    # Retained encoding: retained deletion receipts were sealed with
+    # non-ASCII escaped.
+    return digests.ascii_escaped_sha256(_json_value(value))

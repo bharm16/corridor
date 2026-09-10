@@ -39,10 +39,9 @@ on it for the one handler key.
 
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
-import json
 from typing import Any
 
 from sqlalchemy import func, or_, select
@@ -1246,12 +1245,4 @@ def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
 
 
-def _sha256(value: Any) -> str:
-    encoded = json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+_sha256 = digests.canonical_sha256

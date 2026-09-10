@@ -737,8 +737,7 @@ def main(argv: list[str] | None = None) -> int:
 
     results = []
     with provision_disposable_postgres(
-        admin_url, repo_root=REPO_ROOT, error_cls=ReplayRefusal,
-        database_prefix="corridor_native_matrix_measurement_",
+        admin_url, repo_root=REPO_ROOT, label="native_matrix_measure",
     ) as database:
         database_receipt = {"name": database.name, "postgres_version": database.postgres_version,
                             "migration_head": database.migration_head, "disposable": True}

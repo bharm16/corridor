@@ -116,8 +116,7 @@ def event_admission_isolated_database():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=Path(__file__).resolve().parents[1],
-        error_cls=RuntimeError,
-        database_prefix="corridor_event_admission_race_",
+        label="event_admission_race",
     ) as database:
         yield database
 

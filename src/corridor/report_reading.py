@@ -42,9 +42,8 @@ governed names and ``read_entries`` translates version 1 on the way in.
 
 from __future__ import annotations
 
-import json
+from corridor import digests
 from collections.abc import Mapping
-from hashlib import sha256
 from typing import Any
 
 # The version this code writes.  A payload with no version key at all was
@@ -102,9 +101,9 @@ def content_digest(payload: Mapping[str, Any]) -> str:
     without_digest = {
         key: value for key, value in payload.items() if key != DIGEST_KEY
     }
-    return sha256(
-        json.dumps(without_digest, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    # Retained encoding: every sealed reading already carries a digest
+    # computed with non-ASCII escaped, and verification re-derives it.
+    return digests.ascii_escaped_sha256(without_digest)
 
 
 def seal(payload: Mapping[str, Any]) -> dict[str, Any]:

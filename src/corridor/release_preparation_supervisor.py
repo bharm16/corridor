@@ -56,6 +56,7 @@ in. Nothing here calls ``datetime.now``.
 
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
@@ -435,9 +436,9 @@ def _completed_report_preparation_receipt(
 def result_digest(result: dict[str, Any]) -> str:
     """The digest of one retained reading, over canonical bytes."""
 
-    return hashlib.sha256(
-        json.dumps(result, sort_keys=True, separators=(",", ":")).encode("utf-8")
-    ).hexdigest()
+    # Retained encoding: retained reading digests were sealed with non-ASCII
+    # escaped; see `corridor.digests.ascii_escaped_json`.
+    return digests.ascii_escaped_sha256(result)
 
 
 @dataclass(frozen=True, slots=True)

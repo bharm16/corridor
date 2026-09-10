@@ -9,7 +9,8 @@ validation of their recorded provenance; actual reading lives elsewhere.
 from __future__ import annotations
 
 from dataclasses import dataclass
-import re
+
+from corridor import digests
 
 SCOPE_SCHEMA = "corridor.machine-reference-scope.v2"
 NATIVE_AUTHORING_SCHEMA = "corridor.native-reference-authoring.v1"
@@ -66,11 +67,9 @@ def reference_method(name: str, version: str = "1") -> ReferenceMethod:
     raise ValueError("machine-reference scope manifest has unsupported method/version")
 
 
-def is_digest(value: object, length: int = 64) -> bool:
-    return (
-        isinstance(value, str)
-        and re.fullmatch(rf"[0-9a-f]{{{length}}}", value) is not None
-    )
+# One predicate, re-exported here because machine-reference validation is
+# where callers already look for it.
+is_digest = digests.is_digest
 
 
 def validate_native_authoring(value: object, document_hashes: tuple[str, ...]) -> dict:

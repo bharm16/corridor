@@ -1,10 +1,23 @@
-"""Fixture and transformation loading for M8 acceptance."""
+"""Fixture and transformation loading for M8 acceptance.
+
+The digest functions and the refusal class used to arrive as arguments, from a
+caller that held a private copy of the canonical encoding. `corridor.digests`
+owns the encoding and this module owns its own refusal, so a caller that needs
+its own exception type at its public seam catches `CorruptFixture` and
+re-raises.
+"""
 
 from __future__ import annotations
 
 from pathlib import Path, PurePosixPath
 import json
 from typing import Any, Callable
+
+from corridor import digests
+
+
+class CorruptFixture(ValueError):
+    """A retained capture fixture is absent, mis-shaped, or off its digest."""
 
 
 def load_captured_fixture(
@@ -14,50 +27,47 @@ def load_captured_fixture(
     capture_schema_version: str,
     claim_boundary: dict[str, Any],
     build_chain: Callable[[dict[str, Any], Path], Any],
-    sha256: Callable[[bytes], str],
-    json_sha256: Callable[[Any], str],
-    corrupt_fixture_error_cls: type[Exception],
 ) -> tuple[dict[str, Any], str, Any]:
     try:
         wrapper = json.loads(Path(fixture_path).read_bytes())
     except (OSError, json.JSONDecodeError) as exc:
-        raise corrupt_fixture_error_cls("captured fixture is absent or invalid") from exc
+        raise CorruptFixture("captured fixture is absent or invalid") from exc
     if wrapper.get("schema_version") != capture_schema_version:
-        raise corrupt_fixture_error_cls("captured fixture schema is unsupported")
+        raise CorruptFixture("captured fixture schema is unsupported")
     content = wrapper.get("content")
     if not isinstance(content, dict):
-        raise corrupt_fixture_error_cls("captured fixture content is invalid")
-    actual_sha256 = json_sha256(content)
+        raise CorruptFixture("captured fixture content is invalid")
+    actual_sha256 = digests.canonical_sha256(content)
     if wrapper.get("fixture_sha256") != actual_sha256 or actual_sha256 != expected_sha256:
-        raise corrupt_fixture_error_cls("captured fixture digest does not match")
+        raise CorruptFixture("captured fixture digest does not match")
     if content.get("claim_boundary") != claim_boundary:
-        raise corrupt_fixture_error_cls("captured fixture claim boundary drifted")
+        raise CorruptFixture("captured fixture claim boundary drifted")
     if not isinstance(content.get("sources"), list) or not isinstance(
         content.get("rid_index"), dict
     ):
-        raise corrupt_fixture_error_cls("captured fixture source records are invalid")
+        raise CorruptFixture("captured fixture source records are invalid")
     if not isinstance(content.get("runs"), list) or not isinstance(
         content.get("comparisons"), list
     ):
-        raise corrupt_fixture_error_cls("captured fixture does not contain the exact chain")
+        raise CorruptFixture("captured fixture does not contain the exact chain")
     fixture_root = Path(fixture_path).parent.resolve()
     for record in [content["rid_index"], *content["sources"]]:
         registry_id = record.get("registry_id")
         relative = record.get("fixture_relpath")
         if not isinstance(relative, str) or not relative:
-            raise corrupt_fixture_error_cls(f"{registry_id} has no fixture path")
+            raise CorruptFixture(f"{registry_id} has no fixture path")
         pure = PurePosixPath(relative)
         if pure.is_absolute() or ".." in pure.parts or pure.as_posix() != relative:
-            raise corrupt_fixture_error_cls(f"{registry_id} has an unsafe fixture path")
+            raise CorruptFixture(f"{registry_id} has an unsafe fixture path")
         path = (fixture_root / Path(*pure.parts)).resolve()
         try:
             path.relative_to(fixture_root)
         except ValueError as exc:
-            raise corrupt_fixture_error_cls(f"{registry_id} fixture path escapes") from exc
+            raise CorruptFixture(f"{registry_id} fixture path escapes") from exc
         if path.is_symlink() or not path.is_file():
-            raise corrupt_fixture_error_cls(f"{registry_id} fixture source is absent")
-        if sha256(path.read_bytes()) != record.get("sha256"):
-            raise corrupt_fixture_error_cls(f"{registry_id} fixture source hash drifted")
+            raise CorruptFixture(f"{registry_id} fixture source is absent")
+        if digests.sha256_bytes(path.read_bytes()) != record.get("sha256"):
+            raise CorruptFixture(f"{registry_id} fixture source hash drifted")
     chain = build_chain(content, Path(fixture_path))
     return content, actual_sha256, chain
 
@@ -68,14 +78,13 @@ def load_transformations(
     expected_sha256: str,
     contract: dict[str, Any],
     acceptance_error_cls: type[Exception],
-    sha256: Callable[[bytes], str],
 ) -> tuple[dict[str, Any], str]:
     try:
         value = Path(path).read_bytes()
         transformations = json.loads(value)
     except (OSError, json.JSONDecodeError) as exc:
         raise acceptance_error_cls("controlled transformations are absent or invalid") from exc
-    actual_sha256 = sha256(value)
+    actual_sha256 = digests.sha256_bytes(value)
     if actual_sha256 != expected_sha256:
         raise acceptance_error_cls("controlled transformation digest does not match")
     difference = first_contract_difference(
