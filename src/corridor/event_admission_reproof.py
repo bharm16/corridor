@@ -32,6 +32,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
+from typing import Any, ClassVar
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -40,10 +41,26 @@ from corridor.event_admission import (
     UNKNOWN_SCOPE_POLICY_VERSION,
     read_event_admission_policy_status,
 )
+from corridor.due_work_contract import (
+    DECLARED_IDENTITY,
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.event_admission_acceptance import EventAdmissionAcceptanceResult
-from corridor.models import DueWorkSchedule, Project
+from corridor.models import Project
 
 RESULT_SCHEMA_VERSION = "event-admission-reproof-result-v1"
+
+# The one server-owned handler key this module's work runs under. It matches
+# ``due_work.HANDLER_EVENT_ADMISSION_REPROOF``; the constant lives here because
+# this module is the lower layer and the runtime imports its declaration and
+# execution, never the reverse.
+HANDLER_KEY = "event_admission_reproof"
 HEALTH_OK = "healthy"
 HEALTH_ATTENTION = "recovery_attention_required"
 
@@ -142,13 +159,13 @@ def execute_scheduled_reproof(
     """
 
     observed_at = _aware(context.clock.now())
+    # The runtime resolved the claimed schedule before its transaction closed,
+    # so the project, the configuration version and the validated scope arrive
+    # with the claim instead of being re-read here.
+    project_id = int(context.schedule.project_id)
+    configuration_version = str(context.schedule.configuration_version)
+    scope = dict(context.schedule.scope or {})
     with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise ValueError("Event Admission re-proof schedule disappeared")
-        project_id = int(schedule.project_id)
-        configuration_version = str(schedule.configuration_version)
-        scope = dict(schedule.scope_json or {})
         project = reading.get(Project, project_id)
         if project is None:
             raise ValueError("Event Admission re-proof project no longer exists")
@@ -281,3 +298,154 @@ def _aware(value: datetime) -> datetime:
     if not isinstance(value, datetime) or value.tzinfo is None:
         raise ValueError("Event Admission re-proof clock must supply an aware datetime")
     return value
+
+
+# --- The Due Work declaration this recovery runs under ---------------------
+#
+# The three identities a replay is pinned to and the clones one attempt may
+# consume are what this recovery *is*, so they are declared here rather than in
+# the runtime; the runtime keeps the lease and the retries (card 6).
+
+# The upper ceiling for the disposable clones one re-proof attempt may consume;
+# the ADR-0050 replay provisions two policy clones plus a migration rehearsal.
+_CLONE_BUDGET_CEILING = 8
+
+
+@dataclass(frozen=True)
+class EventAdmissionReproofDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables stale-class re-proof recovery.
+
+    Re-proof replays the policy's own recorded history (ADR-0050): it consults no
+    model, so ``model_token_budget`` must be a declared zero, never a silent one, and
+    it delivers nothing outward, so ``notification_budget`` is zero too. Scope names
+    the exact project and the three bound identities the replay is pinned to — the
+    unknown-scope ``policy_version``, its ``reason_version``, and the approved replay
+    population ``selection_rule`` (#324). ``clone_budget`` bounds the disposable clones
+    one attempt may consume. The lease and deadline are generous because a real replay
+    copies the database and rehearses migrations; concurrency stays one.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    policy_version: str
+    reason_version: str
+    selection_rule: str
+    clone_budget: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        policy_version: str,
+        reason_version: str,
+        selection_rule: str,
+        starts_at: datetime,
+    ) -> "EventAdmissionReproofDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            policy_version=policy_version,
+            reason_version=reason_version,
+            selection_rule=selection_rule,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=2,
+            backoff_seconds=300,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+            clone_budget=3,
+        )
+
+
+def _validated_declaration(
+    declaration: EventAdmissionReproofDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one stale-class re-proof declaration.
+
+    Neither a prior activation nor deployed credentials enable recovery
+    automatically: an authorized operator declares the three identities the
+    replay is pinned to, or the handler stays refused.
+    """
+
+    if not DECLARED_IDENTITY.fullmatch(declaration.policy_version):
+        raise DueWorkRefusal("event-admission-reproof policy version is invalid")
+    if not DECLARED_IDENTITY.fullmatch(declaration.reason_version):
+        raise DueWorkRefusal("event-admission-reproof reason version is invalid")
+    if not DECLARED_IDENTITY.fullmatch(declaration.selection_rule):
+        raise DueWorkRefusal("event-admission-reproof selection rule is invalid")
+    starts_at = validate_scheduling(
+        declaration,
+        subject="event-admission-reproof",
+        resources_valid=1 <= declaration.clone_budget <= _CLONE_BUDGET_CEILING,
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "policy_version": declaration.policy_version,
+        "reason_version": declaration.reason_version,
+        "selection_rule": declaration.selection_rule,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={
+                "kind": "one_project_event_admission_class-v1",
+                **scope,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            extra_resources={"clone_budget": declaration.clone_budget},
+        ),
+        input_identity={"handler": HANDLER_KEY, **scope},
+    )
+
+
+def _stored_declaration(
+    stored: ResolvedSchedule,
+) -> EventAdmissionReproofDeclaration:
+    return EventAdmissionReproofDeclaration(
+        **stored.scheduling_fields(),
+        policy_version=stored.scope.get("policy_version", ""),
+        reason_version=stored.scope.get("reason_version", ""),
+        selection_rule=stored.scope.get("selection_rule", ""),
+        # The clone budget is retained with the other resource bounds rather
+        # than in the scope, so it is rebuilt from the configuration.
+        clone_budget=(stored.configuration.get("resources") or {}).get(
+            "clone_budget", 0
+        ),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Run one bounded stale-class re-proof for a claimed occurrence.
+
+    The recovery decision, the ADR-0050 replay, and the suspension-safe
+    reactivation all live in this module; the runtime holds no transaction and no
+    project mutation lock across the replay — the replay owns its own short
+    final mutation.
+    """
+
+    return execute_scheduled_reproof(context)
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_project_event_admission_class",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=EventAdmissionReproofDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+)

@@ -7,7 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 
-from corridor import policy
+from corridor import exceptions, packet_review, policy, presentation
 from corridor.db import Session, engine
 from corridor.dependency_events import (
     closed_party_commitment_lineages,
@@ -2310,3 +2310,197 @@ def test_verbal_unknown_scope_projects_no_constraint_committed_date(
     )
     session.refresh(dependency)
     assert dependency.committed_date is None
+
+
+# --- The coordination authority rule, read once (card 7) --------------------
+#
+# Owner before Next Action, liveness gating, and the words for a gap were six
+# separate expressions across `exceptions`, both builders here, the guided Save
+# screen, `report._coordination` and `notifications`.  They are one reading in
+# `corridor.presentation` now, and these are its table.
+
+
+_RESIDUE_CASES = (
+    # (name, plan, live, decision, codes)
+    ("live and empty", (None, None), True, "owner", ("missing_internal_owner", "missing_next_action")),
+    ("live, owner only", ("Dana", None), True, "next_action", ("missing_next_action",)),
+    ("live, action only", (None, "Send the request"), True, "owner", ("missing_internal_owner",)),
+    ("live and complete", ("Dana", "Send the request"), True, None, ()),
+    ("not live and empty", (None, None), False, None, ()),
+    ("not live, owner only", ("Dana", None), False, None, ()),
+)
+
+
+@pytest.mark.parametrize(
+    "plan,live,decision,codes",
+    [case[1:] for case in _RESIDUE_CASES],
+    ids=[case[0] for case in _RESIDUE_CASES],
+)
+def test_the_constraint_residue_reads_owner_then_next_action_only_while_live(
+    plan, live, decision, codes
+):
+    residue = presentation.read_coordination_residue(
+        presentation.CoordinationPlan(*plan), live=live
+    )
+
+    assert (residue.decision, residue.reason_codes) == (decision, codes)
+    assert residue.missing_owner == ("missing_internal_owner" in codes)
+    assert residue.missing_next_action == ("missing_next_action" in codes)
+    # Nothing recorded at all is what the report skips, and it is one name.
+    assert residue.nothing_recorded == (plan == (None, None) and live)
+
+
+_CRITICAL_CASES = (
+    ("critical and empty", (None, None), True, ("critical_missing_internal_owner", "critical_missing_next_action")),
+    ("critical, owner only", ("Dana", None), True, ("critical_missing_next_action",)),
+    ("critical and complete", ("Dana", "Send the request"), True, ()),
+    # The legacy Constraint item is gated on the critical work type alone; a
+    # non-critical Constraint contributes no coordination Attention Reason even
+    # with an empty plan, and readiness never enters this variant.
+    ("not critical and empty", (None, None), False, ()),
+)
+
+
+@pytest.mark.parametrize(
+    "plan,critical,codes",
+    [case[1:] for case in _CRITICAL_CASES],
+    ids=[case[0] for case in _CRITICAL_CASES],
+)
+def test_the_critical_constraint_residue_is_gated_on_the_work_type_alone(
+    plan, critical, codes
+):
+    residue = presentation.read_critical_coordination_residue(
+        presentation.CoordinationPlan(*plan), critical=critical
+    )
+
+    assert residue.reason_codes == codes
+
+
+_STATEMENT_CASES = (
+    (
+        "open and empty",
+        (None, None, None),
+        False,
+        "owner",
+        ("missing_internal_owner", "missing_next_action"),
+    ),
+    (
+        "open, action without a date",
+        ("Dana", "Send the request", None),
+        False,
+        None,
+        ("action_due_date_unknown",),
+    ),
+    (
+        "open, action due today",
+        ("Dana", "Send the request", date(2026, 3, 1)),
+        False,
+        None,
+        ("action_due",),
+    ),
+    (
+        "open, action due later",
+        ("Dana", "Send the request", date(2026, 4, 1)),
+        False,
+        None,
+        (),
+    ),
+    # Closed with a live action is the one place a closed subject still needs an
+    # owner: the organization reported completion and the project's own action
+    # is still open, so the follow-up is confirmed rather than dropped.
+    (
+        "closed with a live action and no owner",
+        (None, "Send the request", None),
+        True,
+        "owner",
+        ("external_closure_follow_up", "missing_internal_owner", "action_due_date_unknown"),
+    ),
+    ("closed with no action", (None, None, None), True, None, ()),
+)
+
+
+@pytest.mark.parametrize(
+    "plan,closed,decision,codes",
+    [case[1:] for case in _STATEMENT_CASES],
+    ids=[case[0] for case in _STATEMENT_CASES],
+)
+def test_the_statement_residue_keeps_a_closed_commitment_with_a_live_action(
+    plan, closed, decision, codes
+):
+    owner, action, due = plan
+    residue = presentation.read_statement_coordination_residue(
+        presentation.CoordinationPlan(owner, action),
+        closed=closed,
+        action_due_date=due,
+        today=date(2026, 3, 1),
+    )
+
+    assert residue.decision == decision
+    assert set(residue.reason_codes) == set(codes)
+    assert residue.reason_codes == tuple(
+        sorted(residue.reason_codes, key=presentation.attention_reason_sort_key)
+    )
+
+
+def _minted_attention_reason_codes() -> set[str]:
+    """Every literal reason code the work-list builders append, from the source.
+
+    Read from the module rather than restated here: a new Attention Reason with
+    no sentence used to reach the coordinator's screen as a ``KeyError``.
+    """
+    import ast
+    import inspect
+    from corridor import work_list
+    from corridor.support_update_routing import WORK_LIST_REASONS
+
+    tree = ast.parse(inspect.getsource(work_list))
+    minted = {
+        node.args[0].value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "append"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "reason_codes"
+        and node.args
+        and isinstance(node.args[0], ast.Constant)
+        and isinstance(node.args[0].value, str)
+    }
+    # The routed support consequences and the shared coordination reading mint
+    # the rest; both declare their codes as data.
+    return (
+        minted
+        | set(WORK_LIST_REASONS.values())
+        | set(presentation.ATTENTION_REASON_GROUPS)
+    )
+
+
+def test_every_minted_attention_reason_code_has_one_sentence():
+    """A code with no words is a blank row on the Work List (ADR-0085)."""
+    from corridor.review_packet_reading import CONSEQUENCE_BANDS
+
+    minted = _minted_attention_reason_codes()
+    assert minted == set(presentation.ATTENTION_REASON_GROUPS)
+    assert minted == set(presentation._ATTENTION_REASON_SENTENCES)
+    for code in sorted(minted):
+        assert presentation.attention_reason_sentence(code).endswith(".")
+        assert isinstance(presentation.attention_reason_sort_key(code), int)
+    for band in CONSEQUENCE_BANDS:
+        assert presentation.sentence_for(band.name, packet_review.BAND_SENTENCES)
+
+
+def test_an_unknown_attention_reason_fails_loudly_in_both_word_paths():
+    with pytest.raises(presentation.UnknownAttentionReason):
+        presentation.attention_reason_sentence("invented_reason")
+    with pytest.raises(presentation.UnknownAttentionReason):
+        presentation.sentence_for("invented_reason", packet_review.BAND_SENTENCES)
+
+
+def test_every_exception_rule_and_authority_gap_code_has_customer_words():
+    for rule in exceptions.RULES:
+        assert presentation.exception_name(rule) != rule
+    for code in presentation.AUTHORITY_GAP_WORDS:
+        words = presentation.authority_gap_words(code)
+        assert words.title and words.detail and words.label
+    with pytest.raises(presentation.UnknownAuthorityGap):
+        presentation.authority_gap_words("invented_gap")

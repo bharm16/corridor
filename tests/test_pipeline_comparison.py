@@ -7,6 +7,7 @@ from pathlib import Path
 
 import pytest
 
+from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST
 from corridor.db import Session, engine
 from corridor.models import Document, Project
 from corridor.native_matrix import extract_native_matrix, render_native_matrix_context
@@ -55,11 +56,11 @@ def source(tmp_path_factory):
 
 
 class AuthoredStructureClient:
-    model = "gpt-5.6-luna"
-    effort = "none"
+    """One authored structure answer, under the deployed configuration it
+    stands for. It states that configuration instead of carrying four
+    attributes describing a provider this test never reaches."""
+
     image_detail = "original"
-    flex = False
-    base_url = "https://api.openai.com/v1"
 
     def __init__(self):
         self.calls = 0
@@ -68,11 +69,15 @@ class AuthoredStructureClient:
         self.reasoning_tokens = 0
         self.cached_tokens = 0
 
-    def complete(self, *, system, user, schema, images):
+    def configuration(self):
+        return DEPLOYED_NATIVE_MATRIX_REQUEST
+
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
         assert system == semantics.PROMPT_PATH.read_text()
         assert schema == semantics.STRUCTURE_SCHEMA
         assert "Repeated Owner" in user
         assert len(images) == 1 and Path(images[0]).is_file()
+        assert logprobs is False
         self.calls += 1
         return {
             "is_utility_matrix": True, "matrix_table": 0, "header_row": 0,

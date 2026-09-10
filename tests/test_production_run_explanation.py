@@ -29,28 +29,18 @@ from corridor.models import (
     ProductionRunExplanationRequest,
 )
 from corridor.principals import HumanPrincipal
+
+from model_client_support import RecordedAdapter
 from access_support import seed_membership
 
 
 OPERATOR = HumanPrincipal("local:operations")
 
 
-class FakeAdapter:
-    """A recorded structured-output stub; no network, no paid model call."""
+class FakeAdapter(RecordedAdapter):
+    """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-run-explanation"
-    adapter_contract_version = "fake-adapter-v1"
-
-    def __init__(self, result=None, *, raises=None):
-        self._result = result
-        self._raises = raises
-        self.calls: list[dict] = []
-
-    def complete(self, *, system, user, schema):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        if self._raises is not None:
-            raise self._raises
-        return self._result
 
 
 @pytest.fixture
@@ -290,7 +280,7 @@ def test_explanation_reads_immutable_snapshots_and_marks_unsealed_unknown(
 
     # The model saw the frozen snapshots and the untrusted-data notice, once.
     assert len(adapter_box["adapter"].calls) == 1
-    user_message = adapter_box["adapter"].calls[0]["user"]
+    user_message = adapter_box["adapter"].calls[0].user
     assert "never instructions" in user_message
     assert "sealed-reader-v1" in user_message
     # Redacted lineage only: hashes and timing, never the prompt or response text.

@@ -27,7 +27,8 @@ from uuid import uuid4
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
-from corridor.extractor_lineage import deployed_native_matrix_config
+from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST, deployed_native_matrix_config
+from corridor.llm import RequestConfiguration
 from corridor.models import Document, PipelineConfiguration, PipelineObservation, PipelineQualificationPolicy, Project
 from corridor.native_matrix import NativeMatrixExtraction, extract_native_matrix, render_native_matrix_context
 from corridor.native_matrix_bindings import NativeMatrixRefused
@@ -100,24 +101,36 @@ class RecordedPipelineClient:
     `requests` contains system_sha256, schema_sha256, user, image_sha256s and
     answer for every call. Paths are deliberately not identity: a freshly
     rendered image is usable only when its bytes match the retained image.
+
+    `configuration` is what the retained answers were produced under, stated
+    as the value it is. This class used to carry a model name, an endpoint and
+    a reasoning effort as class attributes so that receipt code scraping four
+    duck-typed attributes would accept it — an offline adapter describing a
+    live provider it cannot reach. It states the deployed configuration
+    because that is the one these answers were recorded under; it still sends
+    nothing anywhere.
     """
 
-    model = "gpt-5.6-luna"
-    effort = "none"
-    image_detail = "original"
-    flex = False
-    base_url = "https://api.openai.com/v1"
-
-    def __init__(self, requests: list[dict]):
+    def __init__(
+        self,
+        requests: list[dict],
+        configuration: RequestConfiguration = DEPLOYED_NATIVE_MATRIX_REQUEST,
+    ):
+        self._configuration = configuration
         self._requests = canonical_text(requests)
         self.consumed = 0
         self.calls = self.prompt_tokens = self.completion_tokens = self.cached_tokens = 0
+
+    def configuration(self) -> RequestConfiguration:
+        return self._configuration
 
     @property
     def origin_sha256(self) -> str:
         return sha256(self._requests.encode()).hexdigest()
 
-    def complete(self, *, system, user, schema, images=()):
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
+        if logprobs:
+            raise NativeMatrixRefused("pipeline replay retains no output logprobs")
         expected = json.loads(self._requests)
         if self.consumed >= len(expected):
             raise NativeMatrixRefused("pipeline replay requested an unrecorded answer")
@@ -149,7 +162,11 @@ class _ObservedClient:
     def __getattr__(self, name):
         return getattr(self.client, name)
 
-    def complete(self, *, system, user, schema, images=()):
+    def configuration(self) -> RequestConfiguration:
+        """The observed client's own statement; this wrapper invents nothing."""
+        return self.client.configuration()
+
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
         request = {
             "system_sha256": sha256(system.encode()).hexdigest(), "schema_sha256": content_digest(schema),
             "user": user, "image_sha256s": [sha256(Path(image).read_bytes()).hexdigest() for image in images],
@@ -158,7 +175,9 @@ class _ObservedClient:
         observation: dict[str, Any] = {"request": request, "mode": self.plan.mode}
         self.observations.append(observation)
         try:
-            answer = self.client.complete(system=system, user=user, schema=schema, images=images)
+            answer = self.client.complete(
+                system=system, user=user, schema=schema, images=images, logprobs=logprobs,
+            )
             observation.update(answer=answer, response_sha256=content_digest(answer))
             return answer
         finally:

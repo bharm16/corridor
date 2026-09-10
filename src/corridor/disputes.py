@@ -19,6 +19,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import date, datetime
+from typing import Iterable
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
@@ -232,8 +233,37 @@ def history_resolved_field_names(
     required amendment work remains visible.
     """
     return _current_history_outcome_fields(
-        session, dependency_ids, outcome="physical_superseded"
+        session, dependency_ids, outcome=PHYSICAL_SUPERSEDED
     )
+
+
+CONTRACTUAL_AMENDMENT = "contractual_amendment"
+PHYSICAL_SUPERSEDED = "physical_superseded"
+
+
+def assessed_amendment_field_names(
+    assessments: Iterable[DisputeHistoryAssessment],
+) -> set[str]:
+    """The fields whose *live* history assessment is a stale executed agreement.
+
+    This is the sibling of ``contractual_amendment_field_names`` and answers a
+    different question, which is why both are here rather than one of them being
+    spelled out in a screen. That one reads the *retained*
+    ``DisputeHistoryResolution`` rows and is therefore silent until
+    ``apply_staleness_resolutions`` has run; this one reads the assessments
+    ``history_assessments_for`` derives from the preserved claims, so it speaks
+    as soon as the chronology says a contractual outcome applies.
+
+    The Constraint screen needs the second: it renders the amendment work — the
+    why-line and both quotations, with no settle control — for a field the
+    chronology has already made stale. It used to derive this set itself, from
+    the outcome string spelled as a literal in the web adapter.
+    """
+    return {
+        assessment.field_name
+        for assessment in assessments
+        if assessment.outcome == CONTRACTUAL_AMENDMENT
+    }
 
 
 def contractual_amendment_field_names(
@@ -246,7 +276,7 @@ def contractual_amendment_field_names(
     discrepancy instead of leaving an obsolete amendment task standing alone.
     """
     return _current_history_outcome_fields(
-        session, dependency_ids, outcome="contractual_amendment"
+        session, dependency_ids, outcome=CONTRACTUAL_AMENDMENT
     )
 
 

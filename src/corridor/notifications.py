@@ -37,8 +37,8 @@ module so the runtime and the other families keep one import site.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import date, datetime
-from typing import Any
+from datetime import date, datetime, timedelta
+from typing import Any, ClassVar
 from uuid import uuid4
 
 from sqlalchemy import func, select
@@ -46,6 +46,16 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session, aliased
 
 from corridor import access, audit, digests, outgoing_dispatch
+from corridor.due_work_contract import (
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    aware_utc,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.models import (
     AssignmentNotification,
     AssignmentNotificationAttempt,
@@ -57,6 +67,7 @@ from corridor.models import (
     DueActionNotificationAttempt,
     DueActionNotificationDispatch,
     DueWorkSchedule,
+    Project,
     ProjectRosterEntry,
     WorkDecision,
 )
@@ -72,6 +83,11 @@ from corridor.outgoing_dispatch import (
     resolve_delivery_adapter,
     LIMITATION_REVOKED_MEMBERSHIP,
     LIMITATION_UNRESOLVED_CONTACT,
+)
+from corridor.presentation import (
+    CoordinationPlan,
+    read_action_timing,
+    read_statement_coordination_residue,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.statement_lifecycle import current_work_decision_filter
@@ -796,13 +812,26 @@ def derive_due_action_conditions(
                 continue
             if _has_live_deferral(lineage, today):
                 continue
-            if not lineage.next_action or lineage.action_due_date is None:
+            # The same coordination reading the Work List and the guided Save
+            # screen use decides whether this accepted Commitment still has a
+            # live Next Action; only the urgency vocabulary is this module's.
+            residue = read_statement_coordination_residue(
+                CoordinationPlan(lineage.internal_owner, lineage.next_action),
+                closed=False,
+                action_due_date=lineage.action_due_date,
+                today=today,
+            )
+            if residue.missing_next_action or lineage.action_due_date is None:
                 continue
-            delta = (lineage.action_due_date - today).days
-            if delta < 0:
-                urgency, days = URGENCY_OVERDUE, -delta
-            elif delta <= thresholds.action_due_soon_days:
-                urgency, days = URGENCY_SOON, delta
+            timing = read_action_timing(
+                lineage.action_due_date,
+                today,
+                due_soon_days=thresholds.action_due_soon_days,
+            )
+            if timing.overdue:
+                urgency, days = URGENCY_OVERDUE, timing.days
+            elif timing.due_soon:
+                urgency, days = URGENCY_SOON, timing.days
             else:
                 continue
             plan_decision = _current_plan_decision(
@@ -1486,10 +1515,14 @@ def _stale_due_action_condition(
 
 
 def _urgency_band(action_due_date: date, today: date) -> tuple[str | None, int]:
-    delta = (action_due_date - today).days
-    if delta < 0:
-        return URGENCY_OVERDUE, -delta
-    return URGENCY_SOON, delta
+    """Classify an already-raised condition's date in this module's words.
+
+    The split itself is the shared reading; no threshold applies here, because
+    the question is which band the standing notification is in now, not whether
+    a new one should be raised.
+    """
+    timing = read_action_timing(action_due_date, today, due_soon_days=None)
+    return (URGENCY_OVERDUE if timing.overdue else URGENCY_SOON, timing.days)
 
 
 def _due_action_subject_projection(
@@ -1699,3 +1732,433 @@ def _due_action_subject_summary(
         ),
         "recipient_role": notification.recipient_role,
     }
+
+
+# --- The two Due Work declarations this module's delivery runs under --------
+#
+# What one bounded delivery pass is declared to be — one channel, a positive
+# request budget, and for due actions the urgency criterion, the one escalation
+# contact and the daily-summary window the derivation cannot invent — belongs
+# with the delivery it governs. The runtime keeps the lease (card 6).
+
+# The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
+# notification schedule must declare a positive request budget within this.
+_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
+_DUE_ACTION_NOTIFICATION_BUDGET_CEILING = 10_000
+
+
+@dataclass(frozen=True)
+class AssignmentNotificationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables assignment-notification delivery.
+
+    Delivery reads no model, so its ``model_token_budget`` must be a declared
+    zero; instead it declares a positive ``notification_budget`` — the request
+    budget bounding how many sends one bounded pass may attempt. The declaration
+    also records the project and channel scope, dispatch cadence and timezone,
+    retry budget, missed-run handling, and retention. Missing or invalid
+    configuration leaves delivery refused and disabled; credentials or a wired
+    provider alone never enable it. The recipient/contact mapping is fixed for
+    this slice: a recipient resolves only through the verified-contact record for
+    the selected roster identity's principal.
+    """
+
+    handler_key: ClassVar[str] = ASSIGNMENT_NOTIFICATION_HANDLER
+
+    channel: str
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "AssignmentNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=300,
+            deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+@dataclass(frozen=True)
+class DueActionNotificationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables due-action delivery (#352).
+
+    This extends the assignment-notification declaration to the three derived
+    categories.  Beyond project/channel scope, cadence, timezone and date
+    boundary, retry, missed-run and retention, it declares the parameters the
+    derivation cannot invent: the ``urgent_overdue_days`` criterion for
+    escalation, the single ``escalation_roster_entry_id`` contact (``None`` leaves
+    escalation disabled and visible — never a substitute contact or an invented
+    urgency rule), and the daily-summary window (``summary_hour_utc`` and
+    ``summary_window_days``).  Like the assignment handler it reads no model, so
+    ``model_token_budget`` must be a declared zero and it declares a positive
+    ``notification_budget``.  Missing or invalid configuration leaves delivery
+    refused and disabled; a recipient still resolves only through the verified
+    contact for the accountable roster identity.
+    """
+
+    handler_key: ClassVar[str] = DUE_ACTION_NOTIFICATION_HANDLER
+
+    channel: str
+    urgent_overdue_days: int
+    escalation_roster_entry_id: int | None
+    summary_hour_utc: int
+    summary_window_days: int
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        urgent_overdue_days: int = 3,
+        escalation_roster_entry_id: int | None = None,
+        summary_hour_utc: int = 13,
+        summary_window_days: int = 1,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "DueActionNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            urgent_overdue_days=urgent_overdue_days,
+            escalation_roster_entry_id=escalation_roster_entry_id,
+            summary_hour_utc=summary_hour_utc,
+            summary_window_days=summary_window_days,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=300,
+            deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+def _validated_assignment_declaration(
+    declaration: AssignmentNotificationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one assignment-notification declaration.
+
+    A committed assignment still registers its durable dispatch when this is
+    refused; nothing is delivered until an authorized operator records the scope
+    and a positive request budget.
+    """
+
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "assignment-notification supports only the email channel in this slice"
+        )
+    starts_at = validate_scheduling(
+        declaration,
+        subject="assignment-notification",
+        backoff_seconds=(1, 3600),
+        notification_budget=(1, _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING),
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "channel": declaration.channel,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=ASSIGNMENT_NOTIFICATION_HANDLER,
+            scope=scope,
+            input_identity={
+                "kind": "project_assignment_notifications-v1",
+                **scope,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            # The recipient/contact mapping this delivery is authorized to use.
+            # It is fixed for this slice: a recipient resolves only through the
+            # verified contact for the selected roster identity's principal.
+            extra={"recipient_contact_source": "verified_person_identity-v1"},
+        ),
+        input_identity={"handler": ASSIGNMENT_NOTIFICATION_HANDLER, **scope},
+    )
+
+
+def _stored_assignment_declaration(
+    stored: ResolvedSchedule,
+) -> AssignmentNotificationDeclaration:
+    return AssignmentNotificationDeclaration(
+        **stored.scheduling_fields(),
+        channel=stored.scope.get("channel", ""),
+    )
+
+
+def _run_assignment_due_work(context) -> dict[str, Any]:
+    """Deliver a project's due assignment notifications for a claimed occurrence.
+
+    The pass commits each dispatch outcome durably through the session factory
+    and holds no transaction across the provider call; this adapter turns the
+    runtime's claim into a delivery over the declared channel and request
+    budget, and returns its bounded receipt. It reads no model. The channel's
+    adapter is resolved from the notifications seam, which defaults to a
+    non-sending adapter so completing the code enables no real delivery.
+    """
+
+    channel = context.schedule.scope.get("channel", "")
+    return deliver_project_assignment_notifications(
+        context.session_factory,
+        project_id=context.schedule.project_id,
+        configuration_version=context.schedule.configuration_version,
+        channel=channel,
+        adapter=resolve_delivery_adapter(channel),
+        clock=context.clock,
+        max_attempts=context.schedule.max_attempts,
+        backoff_seconds=context.schedule.backoff_seconds,
+        budget=context.schedule.notification_budget,
+        owner=context.claim.runtime_owner,
+    )
+
+
+ASSIGNMENT_DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=ASSIGNMENT_NOTIFICATION_HANDLER,
+    scope_kind="one_project_assignment_notifications",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING,
+    declaration_type=AssignmentNotificationDeclaration,
+    validate=_validated_assignment_declaration,
+    stored_declaration=_stored_assignment_declaration,
+    run_effectful=_run_assignment_due_work,
+)
+
+
+def _validated_due_action_declaration(
+    declaration: DueActionNotificationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one due-action-notification declaration (#352).
+
+    Nothing is derived or delivered until an authorized operator records this
+    scope.  The urgent-overdue criterion and the daily-summary window must be
+    declared explicitly and in range; a silent or out-of-range value refuses
+    rather than inventing an urgency rule or a window.
+    """
+
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "due-action-notification supports only the email channel in this slice"
+        )
+    escalation_declared_well = not (
+        isinstance(declaration.escalation_roster_entry_id, bool)
+        or (
+            declaration.escalation_roster_entry_id is not None
+            and (
+                not isinstance(declaration.escalation_roster_entry_id, int)
+                or declaration.escalation_roster_entry_id <= 0
+            )
+        )
+    )
+    starts_at = validate_scheduling(
+        declaration,
+        subject="due-action-notification",
+        backoff_seconds=(1, 3600),
+        notification_budget=(1, _DUE_ACTION_NOTIFICATION_BUDGET_CEILING),
+        checks=(
+            (
+                1 <= declaration.urgent_overdue_days <= 3650,
+                "due-action-notification urgent-overdue threshold is invalid",
+            ),
+            (
+                escalation_declared_well,
+                "due-action-notification escalation contact mapping is invalid",
+            ),
+            (
+                0 <= declaration.summary_hour_utc <= 23,
+                "due-action-notification daily-summary hour is invalid",
+            ),
+            (
+                1 <= declaration.summary_window_days <= 365,
+                "due-action-notification daily-summary window is invalid",
+            ),
+        ),
+    )
+    escalation_contact = (
+        "one_configured_roster_identity"
+        if declaration.escalation_roster_entry_id is not None
+        else "disabled"
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "channel": declaration.channel,
+        "urgent_overdue_days": declaration.urgent_overdue_days,
+        "escalation_roster_entry_id": declaration.escalation_roster_entry_id,
+        "summary_hour_utc": declaration.summary_hour_utc,
+        "summary_window_days": declaration.summary_window_days,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=DUE_ACTION_NOTIFICATION_HANDLER,
+            scope=scope,
+            input_identity={
+                "kind": "project_due_action_notifications-v1",
+                "project_id": declaration.project_id,
+                "channel": declaration.channel,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            extra={
+                # The recipient/contact mapping this delivery is authorized to
+                # use. A reminder recipient resolves only through the verified
+                # contact for the accountable roster identity; escalation uses
+                # the one declared contact.
+                "recipient_contact_source": "verified_person_identity-v1",
+                "urgent_overdue": {
+                    "criterion": "action_overdue_days",
+                    "threshold_days": declaration.urgent_overdue_days,
+                    "escalation_contact": escalation_contact,
+                },
+                "daily_summary": {
+                    "cadence": "daily",
+                    "hour_utc": declaration.summary_hour_utc,
+                    "window_days": declaration.summary_window_days,
+                },
+            },
+        ),
+        input_identity={
+            "handler": DUE_ACTION_NOTIFICATION_HANDLER,
+            "project_id": declaration.project_id,
+            "channel": declaration.channel,
+        },
+    )
+
+
+def _stored_due_action_declaration(
+    stored: ResolvedSchedule,
+) -> DueActionNotificationDeclaration:
+    scope = stored.scope
+    return DueActionNotificationDeclaration(
+        **stored.scheduling_fields(),
+        channel=scope.get("channel", ""),
+        urgent_overdue_days=scope.get("urgent_overdue_days", 0),
+        escalation_roster_entry_id=scope.get("escalation_roster_entry_id"),
+        summary_hour_utc=scope.get("summary_hour_utc", -1),
+        summary_window_days=scope.get("summary_window_days", 0),
+    )
+
+
+def _check_due_action_declaration(
+    session: Session, declaration: DueActionNotificationDeclaration
+) -> None:
+    """A declared escalation contact must be an active roster identity here.
+
+    Leaving it unset is valid and leaves escalation visibly disabled; naming
+    another project's member, or an inactive one, is refused.
+    """
+
+    if session.get(Project, declaration.project_id) is None:
+        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
+    if declaration.escalation_roster_entry_id is None:
+        return
+    roster = session.get(ProjectRosterEntry, declaration.escalation_roster_entry_id)
+    if (
+        roster is None
+        or roster.project_id != declaration.project_id
+        or not roster.active
+    ):
+        raise DueWorkRefusal(
+            "the escalation contact must be an active project roster identity"
+        )
+
+
+def _run_due_action_due_work(context) -> dict[str, Any]:
+    """Derive and deliver a project's due-action notifications for one tick (#352).
+
+    Each claimed tick re-derives the current soon/past-due conditions for the
+    whole subject population and converges them onto durable occurrences, then
+    sweeps the queued dispatches through the adapter — committing each dispatch
+    outcome durably and holding no transaction across the provider call.  The
+    daily summary is registered only on the one declared summary hour, keyed to
+    its exposed window, so a late or repeated tick neither backfills a missed day
+    nor replays history.  It reads no model, and the adapter defaults to a
+    non-sending capture so completing the code enables no real delivery.
+    """
+
+    scope = context.schedule.scope
+    channel = scope.get("channel", "")
+    urgent_overdue_days = scope.get("urgent_overdue_days")
+    escalation_roster_entry_id = scope.get("escalation_roster_entry_id")
+    summary_hour_utc = scope.get("summary_hour_utc")
+    summary_window_days = scope.get("summary_window_days")
+    project_id = context.schedule.project_id
+    configuration_version = context.schedule.configuration_version
+
+    now = aware_utc(context.clock.now())
+    today = now.date()
+    register_summary = now.hour == summary_hour_utc
+    summary_window_end = today
+    summary_window_start = today - timedelta(days=summary_window_days - 1)
+
+    with context.session_factory() as registering:
+        with registering.begin():
+            register_due_action_notifications(
+                registering,
+                project_id=project_id,
+                configuration_version=configuration_version,
+                today=today,
+                urgent_overdue_days=urgent_overdue_days,
+                escalation_roster_entry_id=escalation_roster_entry_id,
+                channel=channel,
+                owner=context.claim.runtime_owner,
+                register_summary=register_summary,
+                summary_window_start=summary_window_start,
+                summary_window_end=summary_window_end,
+            )
+
+    return deliver_project_due_action_notifications(
+        context.session_factory,
+        project_id=project_id,
+        configuration_version=configuration_version,
+        channel=channel,
+        adapter=resolve_delivery_adapter(channel),
+        clock=context.clock,
+        max_attempts=context.schedule.max_attempts,
+        backoff_seconds=context.schedule.backoff_seconds,
+        budget=context.schedule.notification_budget,
+        urgent_overdue_days=urgent_overdue_days,
+        escalation_roster_entry_id=escalation_roster_entry_id,
+        owner=context.claim.runtime_owner,
+    )
+
+
+DUE_ACTION_DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=DUE_ACTION_NOTIFICATION_HANDLER,
+    scope_kind="one_project_due_action_notifications",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=_DUE_ACTION_NOTIFICATION_BUDGET_CEILING,
+    declaration_type=DueActionNotificationDeclaration,
+    validate=_validated_due_action_declaration,
+    stored_declaration=_stored_due_action_declaration,
+    run_effectful=_run_due_action_due_work,
+    configure_check=_check_due_action_declaration,
+)

@@ -42,6 +42,9 @@ from corridor.prose_interpretation import interpret_prose_document
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 from corridor.typed_output import TypedOutputValidationError
 
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
+
 from pdf_fixture_support import PdfFixture
 
 
@@ -212,17 +215,14 @@ def test_a_quoted_statement_must_lie_inside_its_segment(session, project):
 # --- Hostile model responses ------------------------------------------------
 
 
-class StubClient:
-    model = "gpt-5.6-luna"
-    effort = "none"
-    flex = False
-    base_url = "https://provider.example/v1"
-
-    def __init__(self, output):
-        self.output = output
-
-    def complete(self, *, system, user, schema):
-        return self.output
+def stub_client(output):
+    """The shared recording double, answering with one authored output."""
+    return FakeModelClient(
+        output,
+        configuration=RequestConfiguration(
+            model="gpt-5.6-luna", base_url="https://provider.example/v1"
+        ),
+    )
 
 
 def _minutes(session, project, tmp_path, name, lines):
@@ -345,7 +345,7 @@ def test_a_hostile_model_response_enters_no_segment_and_no_fact(
         interpret_prose_document(
             session,
             prose["document"],
-            client=StubClient(HOSTILE[hostile](prose)),
+            client=stub_client(HOSTILE[hostile](prose)),
             source_path=prose["path"],
             idempotency_key=f"hostile:{hostile}",
         )
@@ -374,7 +374,7 @@ def test_an_honest_response_writes_the_segment_words_not_the_response(
     result = interpret_prose_document(
         session,
         prose["document"],
-        client=StubClient(_response(prose)),
+        client=stub_client(_response(prose)),
         source_path=prose["path"],
         idempotency_key="honest",
     )

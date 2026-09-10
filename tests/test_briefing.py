@@ -31,6 +31,10 @@ from corridor.models import (
     Project,
 )
 
+from corridor.llm import RequestConfiguration
+
+from model_client_support import FakeModelClient
+
 TODAY = date(2026, 8, 4)
 
 
@@ -113,17 +117,11 @@ def dependency(session, project):
     return dep
 
 
-class StubClient:
-    """Recorded responses. CI never calls a model."""
-
-    def __init__(self, responses, model="gpt-5.6-luna"):
-        self.responses = list(responses)
-        self.model = model
-        self.calls = []
-
-    def complete(self, *, system, user, schema, images=(), logprobs=False):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        return self.responses.pop(0)
+def stub_client(responses, model="gpt-5.6-luna"):
+    """The shared recording double, answering these responses in order."""
+    return FakeModelClient(
+        list(responses), configuration=RequestConfiguration(model=model)
+    )
 
 
 def drafted(*sentences):
@@ -154,7 +152,7 @@ def test_a_briefing_carries_its_stamps(session, dependency):
     """Prompt version and model (what drafted it), evaluation time and
     ruleset version (what its Exception citations are re-checkable
     against — ADR-0003's discipline for Derivations, applied to prose)."""
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     briefing = brief(session, dependency.id, client=client, today=TODAY)
 
@@ -179,7 +177,7 @@ def test_a_briefing_evaluates_the_exact_statement_publication_it_cites(
         return original(*args, **kwargs)
 
     monkeypatch.setattr(briefing_module, "_brief", capture)
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     briefing_module.brief(session, dependency.id, client=client, today=TODAY)
 
@@ -216,7 +214,7 @@ def test_a_briefing_refuses_an_evaluation_from_another_statement_read(
             session,
             [dependency],
             ref_code=dependency.ref_code,
-            client=StubClient([]),
+            client=stub_client([]),
             evaluation=evaluation,
             publication=second,
         )
@@ -226,7 +224,7 @@ def test_an_uncited_sentence_is_withheld_and_counted(session, dependency):
     """A sentence that cannot cite is a sentence the Briefing may not
     contain — withheld loudly, never shown unverified, never silently
     dropped."""
-    client = StubClient([
+    client = stub_client([
         drafted(
             ("This claim cites nothing.", []),
             *covering_sentences(session, dependency),
@@ -242,7 +240,7 @@ def test_an_uncited_sentence_is_withheld_and_counted(session, dependency):
 def test_a_citation_to_nothing_withholds_its_sentence(session, dependency):
     """The model composes over supplied citables; a ref it invented is a
     citation to nothing and takes its sentence with it."""
-    client = StubClient([
+    client = stub_client([
         drafted(
             ("A confident claim.", ["E99"]),
             *covering_sentences(session, dependency),
@@ -270,7 +268,7 @@ def test_an_evidence_quote_absent_from_its_page_withholds_the_sentence(
     link.quote = "words that appear on no page"
     session.flush()
 
-    client = StubClient([
+    client = stub_client([
         drafted(
             ("Backed by the record.", ["E1"]),
             *covering_sentences(session, dependency),
@@ -288,7 +286,7 @@ def test_an_uncovered_floor_refuses_the_whole_draft(session, dependency):
     whole — there is no partially-honest briefing."""
     refs = floor_refs(session, dependency)
     assert len(refs) > 1
-    client = StubClient([
+    client = stub_client([
         drafted(("Only the first fact.", [refs[0]]))
     ])
 
@@ -310,7 +308,7 @@ def test_a_sentence_lost_to_withholding_can_uncover_the_floor(
     # The sentence covering the last ref also cites an invented object,
     # so it is withheld — taking its coverage with it.
     broken = [(f"Fact {refs[-1]} holds.", [refs[-1], "E99"])]
-    client = StubClient([drafted(*covering[:-1], *broken)])
+    client = stub_client([drafted(*covering[:-1], *broken)])
 
     briefing = brief(session, dependency.id, client=client, today=TODAY)
 
@@ -333,7 +331,7 @@ def test_nothing_is_persisted(session, dependency):
         }
 
     before = counts()
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
@@ -344,11 +342,11 @@ def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
     """The model composes over objects the component names — it is never
     asked to invent a citation format. The user message therefore carries
     every ref the checker will accept."""
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert "E1" in user
     assert "A1" in user
     for ref in floor_refs(session, dependency):
@@ -358,13 +356,13 @@ def test_the_prompt_supplies_the_citables_by_reference(session, dependency):
 def test_the_prompt_is_loaded_from_its_checkout_not_the_process_cwd(
     session, dependency, tmp_path, monkeypatch
 ):
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
     monkeypatch.chdir(tmp_path)
 
     briefing = brief(session, dependency.id, client=client, today=TODAY)
 
     assert not briefing.refused
-    assert "The final floor line is not negotiable" in client.calls[0]["system"]
+    assert "The final floor line is not negotiable" in client.calls[0].system
 
 
 def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependency):
@@ -398,11 +396,11 @@ def test_the_prompt_attributes_a_verbal_backed_committed_date(session, dependenc
     )
     dependency.committed_date = committed_date
     session.flush()
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert "[V1]" in user
     assert "CenterPoint Energy told local:phone-coordinator" in user
     assert f"on {TODAY - timedelta(days=1)}" in user
@@ -462,11 +460,11 @@ def test_the_prompt_uses_the_current_exact_day_statement_over_a_stale_scalar(
     )
     session.flush()
     stale_date = dependency.committed_date
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert f"committed {committed_date};" in user
     assert f"committed {stale_date};" not in user
 
@@ -504,11 +502,11 @@ def test_the_prompt_suppresses_a_stale_scalar_after_a_month_statement(
     )
     session.flush()
     stale_date = dependency.committed_date
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert "committed —;" in user
     assert f"committed {stale_date};" not in user
 
@@ -547,11 +545,11 @@ def test_the_prompt_withholds_an_unverified_cited_statement_date(
     )
     session.flush()
     stale_date = dependency.committed_date
-    client = StubClient([drafted(*covering_sentences(session, dependency))])
+    client = stub_client([drafted(*covering_sentences(session, dependency))])
 
     brief(session, dependency.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert "committed —;" in user
     assert f"committed {stale_date};" not in user
     assert f"committed {committed_date};" not in user
@@ -564,7 +562,7 @@ def test_the_prompt_withholds_an_unverified_cited_statement_date(
 def test_the_render_shows_sentences_with_their_markers(session, dependency):
     source_text = "Ready Milestone Road: Evidence and Verbal remain the source wording."
     refs = floor_refs(session, dependency)
-    client = StubClient([drafted((source_text, refs))])
+    client = stub_client([drafted((source_text, refs))])
 
     out = render(brief(session, dependency.id, client=client, today=TODAY))
 
@@ -579,7 +577,7 @@ def test_the_render_shows_sentences_with_their_markers(session, dependency):
 
 
 def test_withheld_counts_are_visible_in_the_render(session, dependency):
-    client = StubClient([
+    client = stub_client([
         drafted(
             ("This claim cites nothing.", []),
             *covering_sentences(session, dependency),
@@ -593,7 +591,7 @@ def test_withheld_counts_are_visible_in_the_render(session, dependency):
 
 def test_a_refused_briefing_renders_as_a_refusal(session, dependency):
     refs = floor_refs(session, dependency)
-    client = StubClient([drafted(("Only one.", [refs[0]]))])
+    client = stub_client([drafted(("Only one.", [refs[0]]))])
 
     out = render(brief(session, dependency.id, client=client, today=TODAY))
 
@@ -606,7 +604,7 @@ def test_withheld_counts_show_even_on_a_refusal(session, dependency):
     withheld on the way. The reader diagnosing a refused draft needs
     both."""
     refs = floor_refs(session, dependency)
-    client = StubClient([
+    client = stub_client([
         drafted(
             ("Cites nothing.", []),
             (f"Fact {refs[0]} holds.", [refs[0]]),
@@ -721,7 +719,7 @@ def test_a_project_briefing_accepts_one_floor_citation_per_exception_bucket(
     briefing = brief_project(
         session,
         project.id,
-        client=StubClient([drafted(*covering)]),
+        client=stub_client([drafted(*covering)]),
         today=TODAY,
     )
 
@@ -766,7 +764,7 @@ def test_the_project_prompt_requires_buckets_and_keeps_instances_optional(
         ).facets()
     )
     bucket_refs = [f"XB{i + 1}" for i in range(facet_count)]
-    client = StubClient(
+    client = stub_client(
         [drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in bucket_refs])]
     )
 
@@ -774,7 +772,7 @@ def test_the_project_prompt_requires_buckets_and_keeps_instances_optional(
 
     floor_line = next(
         line
-        for line in client.calls[0]["user"].splitlines()
+        for line in client.calls[0].user.splitlines()
         if line.startswith("Every one of these")
     )
     assert all(ref in floor_line for ref in briefing.floor)
@@ -797,14 +795,14 @@ def test_a_project_briefing_floors_every_records_exceptions(
 
     covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
     briefing = brief_project(
-        session, project.id, client=StubClient([drafted(*covering)]), today=TODAY
+        session, project.id, client=stub_client([drafted(*covering)]), today=TODAY
     )
     assert not briefing.refused
     assert len(briefing.sentences) == len(refs)
 
     partial = covering[:-1]
     refused = brief_project(
-        session, project.id, client=StubClient([drafted(*partial)]), today=TODAY
+        session, project.id, client=stub_client([drafted(*partial)]), today=TODAY
     )
     assert refused.refused
     assert "floor" in refused.refusal_reason
@@ -820,11 +818,11 @@ def test_project_citables_attribute_their_record(
 
     refs = project_floor(session, project)
     covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
-    client = StubClient([drafted(*covering)])
+    client = stub_client([drafted(*covering)])
 
     briefing = brief_project(session, project.id, client=client, today=TODAY)
 
-    user = client.calls[0]["user"]
+    user = client.calls[0].user
     assert "DEP-00001" in user
     assert "DEP-00002" in user
     assert len({c.ref for c in briefing.citables}) == len(briefing.citables)
@@ -841,7 +839,7 @@ def test_a_project_briefing_carries_the_same_stamps(
     covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
 
     briefing = brief_project(
-        session, project.id, client=StubClient([drafted(*covering)]), today=TODAY
+        session, project.id, client=stub_client([drafted(*covering)]), today=TODAY
     )
 
     assert briefing.prompt_version == PROMPT_VERSION
@@ -859,7 +857,7 @@ def test_a_project_briefing_is_one_model_call(
 
     refs = project_floor(session, project)
     covering = [(f"Fact {ref} holds.", [ref]) for ref in refs]
-    client = StubClient([drafted(*covering)])
+    client = stub_client([drafted(*covering)])
 
     brief_project(session, project.id, client=client, today=TODAY)
 
@@ -872,7 +870,7 @@ def test_an_empty_scope_briefs_empty_without_a_model_call(session, project):
     withhold all of it would burn a call on nothing."""
     from corridor.briefing import brief_project
 
-    client = StubClient([])
+    client = stub_client([])
 
     briefing = brief_project(session, project.id, client=client, today=TODAY)
 
@@ -898,7 +896,7 @@ def test_a_dismissed_record_is_not_narrated(session, project, dependency):
         principal=HumanPrincipal("local:briefing-tester"),
     )
 
-    client = StubClient([])
+    client = stub_client([])
     briefing = brief_project(session, project.id, client=client, today=TODAY)
 
     assert "0 records" in briefing.ref_code
@@ -936,27 +934,23 @@ def test_live_nhhip_project_floor_is_bounded_by_buckets(
         if not freeze_project_reading(shared_session, project.id).rows:
             pytest.skip("the shared NHHIP corpus carries no readable records yet")
 
-        class FloorCoveringClient:
-            model = "scripted-floor-coverer"
-
-            def complete(self, *, system, user, schema, images=(), logprobs=False):
-                floor_line = next(
-                    line
-                    for line in user.splitlines()
-                    if line.startswith("Every one of these")
-                )
-                refs = (
-                    floor_line.rsplit(":", 1)[1]
-                    .strip()
-                    .removesuffix(".")
-                    .split(", ")
-                )
-                return drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in refs])
+        def floor_covering_answer(call):
+            """Cite exactly the floor references the prompt named."""
+            floor_line = next(
+                line
+                for line in call.user.splitlines()
+                if line.startswith("Every one of these")
+            )
+            refs = floor_line.rsplit(":", 1)[1].strip().removesuffix(".").split(", ")
+            return drafted(*[(f"Bucket {ref} holds.", [ref]) for ref in refs])
 
         briefing = brief_project(
             shared_session,
             project.id,
-            client=FloorCoveringClient(),
+            client=FakeModelClient(
+                floor_covering_answer,
+                configuration=RequestConfiguration(model="scripted-floor-coverer"),
+            ),
             today=TODAY,
         )
 

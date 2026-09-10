@@ -16,6 +16,8 @@ boundary, not a view (#175).
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from corridor import digests
 
 from sqlalchemy import select
@@ -48,6 +50,39 @@ _EVENT_COHORT_EVENT_TYPES = frozenset(
 NEWLY_ADDED = "newly_added"
 CONFLICT_FLAG_N_TO_Y = "conflict_flag_n_to_y"
 VERIFICATION_BLOCKED = "verification_blocked"
+
+
+@dataclass(frozen=True, slots=True)
+class CohortClassification:
+    """One reason a row is in the cohort, and the words a screen prints for it.
+
+    The rule that assigns a classification is above; this is the same fact said
+    in English once. It was said four times before: an ordered pair list in
+    ``corridor.web.queue`` whose labels nothing read, a badge map in
+    ``queue.html``, a second (differently capitalised) ordered pair list in the
+    same template, and a bare ``newly_added`` literal further down it. Four
+    spellings of three classifications is how a renamed classification keeps
+    rendering under its old heading in one place and disappears from a rail in
+    another.
+    """
+
+    key: str
+    heading: str
+    badge: str
+
+
+# The order the rail groups its members in, which is also the order the rule
+# above considers them in.
+COHORT_CLASSIFICATIONS: tuple[CohortClassification, ...] = (
+    CohortClassification(CONFLICT_FLAG_N_TO_Y, "Flipped N \N{RIGHTWARDS ARROW} Y", "flipped N \N{RIGHTWARDS ARROW} Y"),
+    CohortClassification(VERIFICATION_BLOCKED, "Verification blocked", "verification blocked"),
+    CohortClassification(NEWLY_ADDED, "Newly added", "newly added"),
+)
+
+CLASSIFICATION_ORDER: dict[str, int] = {
+    classification.key: index
+    for index, classification in enumerate(COHORT_CLASSIFICATIONS)
+}
 
 _CONFLICT_FLAG = "potential_conflict"
 

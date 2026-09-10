@@ -20,6 +20,7 @@ from corridor.extract_minutes_v5 import (
     to_candidate,
 )
 from corridor.extractor_lineage import deployed_extractor_config
+from corridor.llm import RequestConfiguration
 from corridor.models import (
     Candidate,
     DocPage,
@@ -30,6 +31,7 @@ from corridor.models import (
     SourceFactAppendReceipt,
 )
 
+from model_client_support import FakeModelClient
 from pdf_fixture_support import PdfFixture
 
 
@@ -94,18 +96,14 @@ def _event(event_type, quote, *, timing=None):
     }
 
 
-class StubClient:
-    model = "gpt-5.6-luna"
-    effort = "none"
-    flex = False
-    base_url = "https://provider.example/v1"
-    max_workers = 1
+MINUTES_CONFIGURATION = RequestConfiguration(
+    model="gpt-5.6-luna", base_url="https://provider.example/v1"
+)
 
-    def __init__(self, events):
-        self.events = events
 
-    def complete(self, *, system, user, schema):
-        return {"events": self.events}
+def stub_client(events):
+    """The shared recording double, answering with these events every call."""
+    return FakeModelClient({"events": events}, configuration=MINUTES_CONFIGURATION)
 
 
 @pytest.fixture
@@ -188,11 +186,11 @@ def _variants():
 
 
 def test_action_item_membership_survives_model_omission(session, document):
-    omitted = extract_document(session, document, client=StubClient([]))
+    omitted = extract_document(session, document, client=stub_client([]))
     complete = extract_document(
         session,
         document,
-        client=StubClient(
+        client=stub_client(
             [
                 _event("commitment", CHAIN, timing=_timing()),
                 _event("closure", AS_BUILT),
@@ -222,7 +220,7 @@ def test_live_shape_candidate_sets_repeat_across_adversarial_model_results(
         candidates = extract_document(
             session,
             document,
-            client=StubClient(events),
+            client=stub_client(events),
         )
         observed.append(_meaning(candidates))
         assert tuple(
@@ -234,7 +232,7 @@ def test_live_shape_candidate_sets_repeat_across_adversarial_model_results(
 
 
 def test_exact_action_quotes_keep_registered_line_breaks(session, document):
-    candidates = extract_document(session, document, client=StubClient([]))
+    candidates = extract_document(session, document, client=stub_client([]))
 
     assert [candidate.payload_json["fields"]["description"] for candidate in candidates] == [
         CHAIN,
@@ -273,7 +271,7 @@ def test_project_side_and_untimed_action_items_stay_out_even_when_model_adds_the
     candidates = extract_document(
         session,
         document,
-        client=StubClient(model_items),
+        client=stub_client(model_items),
     )
 
     assert [candidate.payload_json["fields"]["description"] for candidate in candidates] == [
@@ -293,7 +291,7 @@ def test_action_item_date_change_requires_two_exact_timings_and_change_wording(
         f"{'registered text ' * 15}\nAction Items:\n1. {changed}\n2. {two_without_change}\nMeeting Notes\n",
     )
 
-    [candidate] = extract_document(session, document, client=StubClient([]))
+    [candidate] = extract_document(session, document, client=stub_client([]))
 
     fields = candidate.payload_json["fields"]
     assert fields["event_type"] == "committed_date_change"
@@ -320,7 +318,7 @@ def test_model_still_supplies_supported_statements_outside_action_items(
     candidates = extract_document(
         session,
         document,
-        client=StubClient([_event("commitment", OUTSIDE, timing=march)]),
+        client=stub_client([_event("commitment", OUTSIDE, timing=march)]),
     )
 
     assert {
@@ -353,7 +351,7 @@ def test_duplicate_literal_outside_action_items_remains_model_eligible(
     candidates = extract_document(
         session,
         document,
-        client=StubClient([model_item]),
+        client=stub_client([model_item]),
     )
 
     assert {
@@ -372,7 +370,7 @@ def test_trailing_prose_is_not_absorbed_into_last_numbered_action_item(
         "Meeting Notes\n",
     )
 
-    [candidate] = extract_document(session, document, client=StubClient([]))
+    [candidate] = extract_document(session, document, client=stub_client([]))
 
     assert candidate.payload_json["fields"]["description"] == CHAIN
     assert candidate.payload_json["fields"]["event_type"] == "commitment"
@@ -393,7 +391,7 @@ def test_production_batch_seam_emits_action_items_when_model_returns_none(
     document.sha256 = sha256(source_path.read_bytes()).hexdigest()
     document.pages = 2
     document._stored_path = str(source_path)
-    client = StubClient([])
+    client = stub_client([])
     config = deployed_extractor_config("minutes", client=client)
 
     created = extract_documents(

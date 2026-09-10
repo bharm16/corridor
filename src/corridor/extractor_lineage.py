@@ -19,6 +19,8 @@ import platform
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from corridor.llm import RequestConfiguration
+
 
 _USAGE_FIELDS = (
     "prompt_tokens",
@@ -36,6 +38,16 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 # The deployed extractors that read a source deterministically and call no
 # model at all. They are the only ones a config may name without a model.
 NATIVE_EXTRACTORS = frozenset({"sheet", "baseline", "key_date_table"})
+
+# The measured native-matrix request, declared once. It was a bare model
+# string compared here and repeated in the provider posture, the replay
+# client and the measurement adapter; a replay adapter had to reproduce the
+# literal to be accepted at all. `tests/test_llm.py` holds the posture and
+# this constant to the same values.
+DEPLOYED_NATIVE_MATRIX_REQUEST = RequestConfiguration(
+    model="gpt-5.6-luna", effort="none", flex=False,
+    base_url="https://api.openai.com/v1",
+)
 
 _POSTPROCESSOR_SOURCES = {
     "native_matrix": (
@@ -182,7 +194,7 @@ def deployed_extractor_config(
         return _deployed_config(
             extractor=extractor,
             prompt_version=module.PROMPT_VERSION,
-            model=_model(client),
+            model=_configuration(client).model,
             schema_version=module.PROMPT_VERSION,
             prompt_bytes=(_REPO_ROOT / module.PROMPT_PATH).read_bytes(),
             schema=module.SCHEMA,
@@ -198,7 +210,7 @@ def deployed_extractor_config(
         return _deployed_config(
             extractor=extractor,
             prompt_version=extract_agreement.PROMPT_VERSION,
-            model=_model(client),
+            model=_configuration(client).model,
             schema_version=extract_agreement.PROMPT_VERSION,
             prompt_bytes=(_REPO_ROOT / extract_agreement.PROMPT_PATH).read_bytes(),
             schema=extract_agreement.SCHEMA,
@@ -270,12 +282,13 @@ def deployed_native_matrix_config(*, client: object) -> ExtractorConfig:
         PROMPT_PATH, PROMPT_VERSION, STRUCTURE_SCHEMA,
     )
 
-    controls = _model_request_controls(client, image_detail="original", logprobs=False)
-    if _model(client) != "gpt-5.6-luna" or controls["reasoning_effort"] != "none":
+    configuration = _configuration(client)
+    if configuration != DEPLOYED_NATIVE_MATRIX_REQUEST:
         raise ValueError("native matrix challenger requires its measured model and reasoning configuration")
+    controls = _model_request_controls(client, image_detail="original", logprobs=False)
     return injected_extractor_config(
         extractor="native_matrix", prompt_version=PROMPT_VERSION,
-        model=_model(client), schema_version=NATIVE_MATRIX_SCHEMA_VERSION,
+        model=configuration.model, schema_version=NATIVE_MATRIX_SCHEMA_VERSION,
         prompt_bytes=PROMPT_PATH.read_bytes(), schema=STRUCTURE_SCHEMA,
         postprocessor_bytes=_read_sources(_REPO_ROOT, _POSTPROCESSOR_SOURCES["native_matrix"]),
         request_controls={
@@ -314,11 +327,22 @@ def _deployed_config(
     )
 
 
-def _model(client: object | None) -> str | None:
-    model = getattr(client, "model", None)
-    if model is not None and (not isinstance(model, str) or not model.strip()):
-        raise ValueError("extractor model must be a non-empty string or null")
-    return model
+def _configuration(client: object | None) -> RequestConfiguration:
+    """The client's own statement of what it will request.
+
+    This used to be four `getattr` calls against an untyped object, so every
+    offline adapter had to grow four attributes describing a provider it never
+    reached, and a missing one produced a receipt that disagreed with the run.
+    """
+    if client is None:
+        raise ValueError("a model-backed deployed extractor requires its client")
+    stated = getattr(client, "configuration", None)
+    if not callable(stated):
+        raise ValueError("a model client must state its request configuration")
+    configuration = stated()
+    if not isinstance(configuration, RequestConfiguration):
+        raise ValueError("a model client's configuration must be a RequestConfiguration")
+    return configuration
 
 
 def _model_request_controls(
@@ -327,18 +351,8 @@ def _model_request_controls(
     image_detail: str | None,
     logprobs: bool | Mapping[str, bool],
 ) -> dict[str, Any]:
-    if client is None:
-        raise ValueError("a model-backed deployed extractor requires its client")
-    effort = getattr(client, "effort", None)
-    flex = getattr(client, "flex", None)
-    provider_base_url = getattr(client, "base_url", None)
-    if not isinstance(effort, str) or not effort:
-        raise ValueError("reasoning effort must be a non-empty string")
-    if not isinstance(flex, bool):
-        raise ValueError("flex must be boolean")
-    if not isinstance(provider_base_url, str) or not provider_base_url.strip():
-        raise ValueError("provider base URL must be a non-empty string")
-    parsed_provider = urlsplit(provider_base_url)
+    configuration = _configuration(client)
+    parsed_provider = urlsplit(configuration.base_url)
     if parsed_provider.username is not None or parsed_provider.password is not None:
         raise ValueError("provider base URL must not contain credentials")
     if (
@@ -360,11 +374,11 @@ def _model_request_controls(
     return {
         "api": "responses",
         "provider_base_url": normalized_provider,
-        "reasoning_effort": effort,
+        "reasoning_effort": configuration.effort,
         "image_detail": image_detail,
         "store": False,
         "strict": True,
-        "flex": flex,
+        "flex": configuration.flex,
         "logprobs": logprobs,
     }
 

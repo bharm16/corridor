@@ -1,8 +1,44 @@
+{% import "_primitives.html" as ui -%}
+{#
+  Every fact on this page comes from `corridor.web.dependency_view`; the handler
+  passes that one reading, the checked return link, and any plan refusal, and
+  adds nothing. The names below are the reading's own fields, bound once here.
+
+  `roster` is one list in one order. This page used to be handed two — the same
+  query ordered by `(display_name, id)` in one place and by `display_name`
+  alone in the other — and gave them to the same
+  `internal_owner_roster_entry_id` control on three different forms.
+#}
+{% set view = reading.view %}
+{% set checklist = reading.checklist %}
+{% set condition_proposals = reading.condition_proposals %}
+{% set sufficient_evidence_ids = reading.sufficient_evidence_ids %}
+{% set disputes = reading.disputes %}
+{% set dispute_assessments = reading.dispute_assessments %}
+{% set dispute_amendments = reading.dispute_amendments %}
+{% set dispute_timelines = reading.dispute_timelines %}
+{% set owner_decision = reading.owner_decision %}
+{% set action_decision = reading.action_decision %}
+{% set deferral_decision = reading.deferral_decision %}
+{% set plan_receipt = reading.plan_receipt %}
+{% set roster = reading.plan.roster %}
+{% set plan_next_action_choices = reading.plan.next_action_choices %}
+{% set plan_unknown_date_reasons = reading.plan.unknown_date_reasons %}
+{% set plan_no_follow_up_reasons = reading.plan.no_follow_up_reasons %}
+{% set plan_cancellation_reasons = reading.plan.cancellation_reasons %}
+{% set plan_deferral_reasons = reading.plan.deferral_reasons %}
+{% set dismiss_reasons = reading.dismiss_reasons %}
+{% set support_consequence = reading.support_consequence %}
+{% set support_context = reading.support_context %}
+{% set revision_change_binding = reading.revision_change_binding %}
+{% set revision_change_explanation = reading.revision_change_explanation %}
+{% set revision_change_configuration = reading.revision_change_configuration %}
+{% set revision_change_prompt_version = reading.revision_change_prompt_version %}
 <!doctype html>
 <meta charset="utf-8">
 <title>{{ view.dependency.ref_code }} — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
+  :root { --line:#e2e2e2; --muted:#666; }
   * { box-sizing:border-box; }
   body { font:14px/1.5 system-ui, sans-serif; margin:0; color:#111; background:#fff; }
   header { display:flex; justify-content:space-between; align-items:baseline;
@@ -13,10 +49,9 @@
        color:var(--muted); margin:1.8rem 0 .5rem; font-weight:600; }
   h2:first-of-type { margin-top:.5rem; }
   .pill { font-size:.72rem; padding:.05rem .4rem; border-radius:10px; border:1px solid var(--line); }
-  .ready { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
-  .notready { color:var(--muted); }
-  .contra { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
-  .unver { color:var(--bad); border-color:#fecdca; background:#fef3f2; }
+  /* No state colour of this page's own (#559): every state below is named
+     in words by the shared primitives, so a coordinator reading a printout,
+     a projector, or a screen reader is told the same fact. */
   .field { border:1px solid var(--line); border-radius:5px; margin-bottom:.6rem; }
   .field > .head { display:flex; gap:.6rem; align-items:baseline; padding:.4rem .6rem;
                    background:#fafafa; border-bottom:1px solid var(--line); }
@@ -29,30 +64,34 @@
   /* Settling a Dispute is one gesture per claim, taken on the row while
      both pages are visible above it — never a screen of its own. */
   .settle { display:flex; gap:.5rem; align-items:center; flex-wrap:wrap;
-            padding:.45rem .6rem; border-top:1px solid #fedf89;
-            background:#fffaeb; font-size:.82rem; }
+            padding:.45rem .6rem; border-top:1px solid var(--line);
+            font-size:.82rem; }
   .settle form { display:inline-flex; gap:.35rem; align-items:center; }
   .settle input[type=text] { font:inherit; padding:.15rem .35rem;
             border:1px solid var(--line); border-radius:3px; }
   .settle button { font:inherit; font-size:.8rem; padding:.15rem .5rem;
             border:1px solid var(--line); border-radius:3px; background:#fff;
             cursor:pointer; }
-  .settle .lead { color:#7a2e0e; }
-  .pill.settled { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
-  .dispute-summary { margin:.5rem .6rem; border:1px solid #fedf89; border-radius:4px;
-                      background:#fffdf5; padding:.65rem; }
+  .dispute-summary { margin:.5rem .6rem; border:1px solid var(--line);
+                      border-radius:4px; padding:.65rem; }
   .dispute-summary h3 { margin:0 0 .35rem; font-size:.9rem; }
-  .dispute-summary .why { color:#7a2e0e; margin:.35rem 0; }
+  .dispute-summary .why { margin:.35rem 0; }
   .dispute-summary .claim { padding:.4rem 0; }
   .dispute-summary .claim .src { min-width:0; flex:1; }
   .dispute-summary .quote { display:block; font-family:ui-monospace,monospace;
                              font-size:.8rem; margin:.2rem 0; }
-  .timeline { margin:.6rem 0; padding:.45rem .6rem; border-left:3px solid #ddd; }
+  .timeline { margin:.6rem 0; padding:.45rem .6rem; border-left:3px solid var(--line); }
   .timeline ol { margin:.35rem 0; padding-left:1.3rem; }
   .timeline li { margin:.35rem 0; }
   .graphical-claims { display:flex; gap:.6rem; flex-wrap:wrap; margin:.5rem 0; }
   .graphical-claims img { max-width:18rem; max-height:14rem; border:1px solid var(--line); }
-  .clarify { margin-top:.5rem; padding-top:.5rem; border-top:1px solid #fedf89; }
+  .clarify { margin-top:.5rem; padding-top:.5rem; border-top:1px solid var(--line); }
+  /* Grey structure only: these replace three inline styles that painted. */
+  .support-update { border:1px solid var(--line); border-radius:6px;
+                    padding:.7rem .9rem; margin:.8rem 0; }
+  .support-explanation { border-top:1px dashed var(--line); margin-top:.6rem;
+                         padding-top:.5rem; }
+  .clarify-condition { border-top:1px solid var(--line); }
   .clarify label { display:block; margin:.35rem 0; }
   .dismiss { display:flex; gap:.4rem; flex-wrap:wrap; margin-bottom:1.2rem; }
   .dismiss button { font:inherit; font-size:.82rem; padding:.2rem .6rem;
@@ -68,6 +107,7 @@
            border-radius:3px; background:#fff; cursor:pointer; }
   button[disabled] { opacity:.4; cursor:not-allowed; }
 </style>
+{{ ui.styles() }}
 
 <header>
   <b>{{ view.dependency.ref_code }}
@@ -85,13 +125,13 @@
     {{ view.org_name or 'no organization identified' }} ·
     {{ view.dependency.station_from or '—' }}{% if view.dependency.station_to %} → {{ view.dependency.station_to }}{% endif %} ·
     {% if view.dependency.resolution_strategy %}{{ resolution_strategy_label(view.dependency.resolution_strategy) }}{% else %}no resolution method recorded{% endif %}
-    <span class="pill {{ 'ready' if view.is_ready else 'notready' }}">{% if checklist.uses_standard_checklist %}{% if view.is_ready %}Documentation fields complete{% else %}Documentation fields not complete{% endif %}{% else %}{{ documentation_review_label(view.is_ready) }}{% endif %}</span>
-    {% if view.contradictions %}<span class="pill contra">Sources disagree on {{ view.contradictions|length }} field(s)</span>{% endif %}
+    {% set documentation_words = (("Documentation fields complete" if view.is_ready else "Documentation fields not complete") if checklist.uses_standard_checklist else documentation_review_label(view.is_ready)) %}
+    {{ ui.state(state_label('settled' if view.is_ready else 'neutral', documentation_words)) }}
+    {% if view.contradictions %}{{ ui.state(state_label('attention', 'Sources disagree on ' ~ view.contradictions|length ~ ' field(s)')) }}{% endif %}
   </p>
 
   {% if support_consequence %}
-    <section class="support-update" aria-label="Newer document needs attention"
-             style="border:1px solid #fdb022; background:#fffaeb; border-radius:6px; padding:.7rem .9rem; margin:.8rem 0;">
+    <section class="support-update" aria-label="Newer document needs attention">
       <h2 style="margin:0 0 .3rem; font-size:1rem;">A newer document needs attention</h2>
       <p style="margin:.2rem 0;">{{ support_consequence.explanation }}</p>
       {% if support_context %}
@@ -143,7 +183,7 @@
 
       {% if revision_change_binding %}
         <div class="revision-change-explanation" aria-label="Optional explanation of the change"
-             style="border-top:1px dashed #d0b070; margin-top:.6rem; padding-top:.5rem;">
+             class="support-explanation">
           <p class="muted" style="margin:.2rem 0; font-size:.82rem;">
             Optional: ask for a plain-language explanation of what the verified
             comparison found. It reads only that comparison, decides nothing, and
@@ -256,7 +296,7 @@
            value="{{ action_decision.id if action_decision else '' }}">
     <select name="internal_owner_roster_entry_id" required>
       <option value="">{{ label('assigned_to') }} — choose a project-team member</option>
-      {% for member in plan_roster %}
+      {% for member in roster %}
         <option value="{{ member.id }}">{{ member.display_name }}</option>
       {% endfor %}
     </select>
@@ -276,7 +316,7 @@
     </select>
     <button type="submit">Save {{ label('follow_up_plan') }}</button>
   </form>
-  {% if not plan_roster %}
+  {% if not roster %}
     <p class="muted">No active project-team member is available to assign. Add the person to the project roster first.</p>
   {% endif %}
   {% if plan_receipt %}
@@ -378,7 +418,7 @@
       <tbody>
         {% for e in view.exceptions %}
           <tr>
-            <td><span class="pill contra">{{ e.label }}</span></td>
+            <td>{{ ui.state(state_label('attention', e.label)) }}</td>
             <td>Technical detail: {{ e.detail }}</td>
           </tr>
         {% endfor %}
@@ -399,8 +439,8 @@
       <div class="head">
         <span class="name">{{ field_label(f.name) }}</span>
         <span class="value">{{ f.values|join('  ·  ') or '—' }}</span>
-        {% if f.contradicted %}<span class="pill contra">sources disagree</span>{% endif %}
-        {% if f.settled %}<span class="pill settled">Conclusion recorded</span>{% endif %}
+        {% if f.contradicted %}{{ ui.state(sources_disagree) }}{% endif %}
+        {% if f.settled %}{{ ui.state(state_label('settled', 'Conclusion recorded')) }}{% endif %}
       </div>
       {% for a in f.assertions %}
         <div class="claim">
@@ -408,7 +448,7 @@
             {{ a.filename or 'unknown document' }}{% if a.page_no %} p.{{ a.page_no }}{% endif %}
             {% if a.document_date %} · {{ a.document_date }}{% else %} · date unavailable{% endif %}
             {% if a.text_source %} · {{ a.text_source|replace('_', ' ') }}{% endif %}
-            {% if a.locator_validation_status != 'valid' %}<span class="pill unver">{{ label('source_passage_check') }}: {{ source_passage_check_label(a.locator_validation_status)|lower }}</span>{% endif %}
+            {% if a.locator_validation_status != 'valid' %}{{ ui.state(state_label('refused', label('source_passage_check') ~ ': ' ~ source_passage_check_label(a.locator_validation_status)|lower)) }}{% endif %}
           </span>
           <span class="value">{{ a.value or '—' }}</span>
           <span class="q">{{ a.quote or '' }}</span>
@@ -600,7 +640,7 @@
             <td>{{ statement_type_label(e.event_type) }}</td>
             <td>
               {% if e.source_kind == 'verbal' %}
-                <span class="pill contra">{{ provenance_label('verbal') }}</span>
+                {{ ui.state(state_label('neutral', provenance_label('verbal'))) }}
                 <span class="muted">heard by {{ e.created_by }} on {{ e.event_date }}</span>
               {% else %}
                 <span class="muted">Cited statement</span>
@@ -636,9 +676,9 @@
             </td>
             <td>
               {% if field.complete %}
-                <span class="pill ready">complete</span>
+                {{ ui.state(state_label('settled', 'complete')) }}
               {% elif field.machine %}
-                <span class="pill contra">not yet</span>
+                {{ ui.state(state_label('attention', 'not yet')) }}
               {% else %}
                 {% for link, doc in view.evidence if link.id in field.candidate_evidence_link_ids %}
                   <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
@@ -649,7 +689,7 @@
                   </form>
                 {% endfor %}
                 {% for link, doc in view.evidence if link.id in field.conditional_evidence_link_ids %}
-                  <div><span class="pill contra">recorded as conditional</span>
+                  <div>{{ ui.state(state_label('attention', 'recorded as conditional')) }}
                     waiting on: <span class="q">“{{ link.quote[:160] }}”</span></div>
                   <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/documentation/confirm-approval">
     {{ csrf_field() }}
@@ -660,7 +700,7 @@
                   </form>
                 {% endfor %}
                 {% if not field.candidate_evidence_link_ids and not field.conditional_evidence_link_ids %}
-                  <span class="pill contra">not yet</span>
+                  {{ ui.state(state_label('attention', 'not yet')) }}
                 {% endif %}
               {% endif %}
             </td>
@@ -673,7 +713,7 @@
     {% if not checklist.is_ready %}
       <form class="clarify" method="post"
             action="/dependencies/{{ view.dependency.id }}/documentation/clarify"
-            style="border-top:1px solid var(--line);">
+            class="clarify clarify-condition">
     {{ csrf_field() }}
         <input type="hidden" name="slug" value="{{ project.slug }}">
         <b>Needs clarification — keep this documentation review open</b>
@@ -721,7 +761,7 @@
               </td>
               <td>
                 {% if c.state == 'open' %}
-                  <span class="pill contra">open</span>
+                  {{ ui.state(state_label('attention', 'open')) }}
                   {% if c.target.kind == 'generic' %}
                     <form class="inline" method="post" action="/dependencies/{{ view.dependency.id }}/conditions/clear">
                       {{ csrf_field() }}
@@ -750,7 +790,7 @@
                     {% endfor %}
                   {% endif %}
                 {% elif c.state == 'cleared' %}
-                  <span class="pill ready">cleared</span>
+                  {{ ui.state(state_label('settled', 'cleared')) }}
                   {% if c.resolution_kind == 'linked_field' %}<span class="muted">its linked field filled</span>
                   {% elif c.resolution_kind == 'linked_row' %}<span class="muted">its linked row completed</span>
                   {% elif c.resolution_kind == 'override' %}<span class="muted">counted as immaterial</span>
@@ -775,11 +815,11 @@
     <tbody>
       {% for link, doc in view.evidence %}
         <tr>
-          <td>{{ doc.filename }}{% if doc.superseded_by %}<br><span class="pill contra">Replaced source</span>{% endif %}</td>
+          <td>{{ doc.filename }}{% if doc.superseded_by %}<br>{{ ui.state(state_label('attention', 'Replaced source')) }}{% endif %}</td>
           <td class="muted">{{ link.page_no }}</td>
           <td class="q" style="font-family:ui-monospace,monospace;font-size:.76rem">{{ link.quote[:110] }}</td>
           {% set passage_check = locator_validation_status(link) %}
-          <td><span class="pill {% if passage_check == 'valid' %}ready{% else %}unver{% endif %}">{{ source_passage_check_label(passage_check) }}</span></td>
+          <td>{{ ui.state(state_label('settled' if passage_check == 'valid' else 'refused', source_passage_check_label(passage_check))) }}</td>
           <td>
             {% if checklist.uses_standard_checklist %}
               <span class="muted">Read through the standard checklist above.</span>

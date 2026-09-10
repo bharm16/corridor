@@ -106,6 +106,7 @@ from corridor.work_decisions import (
     current_next_action_decision,
     set_next_action,
 )
+from corridor.presentation import GuidedSaveOffer
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.web.statement_forms import supporting_statement_evidence
 
@@ -2159,14 +2160,14 @@ def test_http_undo_correct_and_not_relevant_delegate_to_append_only_commands(
 
 
 def test_same_document_replay_authority_gap_uses_project_language():
-    from corridor.statement_coordination import _DEPENDENCY_AUTHORITY_GAP_COPY
+    from corridor.presentation import dependency_admission_gap_words
 
-    title, detail = _DEPENDENCY_AUTHORITY_GAP_COPY[
-        "same_document_replay_unproven"
-    ]
-    assert title == "Same-source Dependency replay not established"
-    assert "current Dependency association" in detail
-    assert "pending for Evidence review" in detail
+    words = dependency_admission_gap_words("same_document_replay_unproven")
+    assert words.title == "Same-source Dependency replay not established"
+    assert "current Dependency association" in words.detail
+    assert "pending for Evidence review" in words.detail
+    # An abstention reason with no words is not a gap a coordinator may keep.
+    assert dependency_admission_gap_words("not_an_abstention_reason") is None
 
 
 def test_closure_without_an_exact_target_can_only_be_kept_as_attributable_unresolved_work(
@@ -4073,3 +4074,95 @@ def test_a_verbal_scope_correction_preserves_the_statement_and_updates_work(
         if work_item.commitment_lineage_id == event.commitment_lineage_id
     )
     assert "unknown_scope" not in item.attention_reason_codes
+
+
+# --- The guided Save offer is one value (card 7) -----------------------------
+
+
+def _save_button_tag(page_text: str) -> str:
+    """The rendered Save control, so its disabled state can be read directly."""
+    fragment = page_text.split("Save statement and Follow-up plan", 1)[0]
+    return "<button" + fragment.rsplit("<button", 1)[1]
+
+
+def test_the_guided_save_offer_is_one_reading_including_the_roster():
+    from corridor.presentation import (
+        GUIDED_SAVE_EVIDENCE_UNAVAILABLE,
+        GUIDED_SAVE_ROSTER_UNAVAILABLE,
+        GUIDED_SAVE_TIMING_UNAVAILABLE,
+        read_guided_save_offer,
+        read_supporting_evidence_offer,
+    )
+
+    assert read_guided_save_offer(
+        evidence_available=True, timing_available=True, roster_available=True
+    ) == GuidedSaveOffer(True, None)
+    # Each half refuses with its own sentence, and Evidence is reported first
+    # because it is the one the write path can still hit.
+    assert read_guided_save_offer(
+        evidence_available=False, timing_available=False, roster_available=False
+    ).refusal == GUIDED_SAVE_EVIDENCE_UNAVAILABLE
+    assert read_guided_save_offer(
+        evidence_available=True, timing_available=False, roster_available=False
+    ).refusal == GUIDED_SAVE_TIMING_UNAVAILABLE
+    assert read_guided_save_offer(
+        evidence_available=True, timing_available=True, roster_available=False
+    ).refusal == GUIDED_SAVE_ROSTER_UNAVAILABLE
+    assert read_supporting_evidence_offer(evidence_available=True).available
+    assert (
+        read_supporting_evidence_offer(evidence_available=False).refusal
+        == GUIDED_SAVE_EVIDENCE_UNAVAILABLE
+    )
+
+
+@pytest.mark.parametrize("timing_supported", (True, False))
+def test_the_save_control_follows_the_offer_without_adding_a_condition(
+    session, project, party, tmp_path, timing_supported
+):
+    """The template renders the offer; it does not recompute half of it.
+
+    The screen used to conjoin Evidence and timing while the template silently
+    added the roster, so no test could describe when the control was offered.
+    The roster half is proved on the reading itself above; this proves the
+    rendered control follows the one value, with an active roster present.
+    """
+    quote = "Kinder Morgan will relocate the 12-inch gas main at Station 6608+70"
+    quote += " by June 1, 2026." if timing_supported else "."
+    document = _document(session, project, "offer-reading.pdf", quote)
+    _register_page_image(session, document, tmp_path / "offer-reading.png")
+    candidate = _candidate(
+        session,
+        project,
+        document,
+        quote=quote,
+        fields={
+            "event_type": "commitment",
+            "external_org": party.name,
+            "stated_party": party.name,
+            "description": quote,
+            "committed_date": {
+                "text": "June 1, 2026",
+                "precision": "day",
+                "start_date": "2026-06-01",
+                "end_date": "2026-06-01",
+            },
+        },
+    )
+    app.dependency_overrides[get_session] = lambda: session
+    app.dependency_overrides[get_human_principal] = lambda: RECORDER
+    try:
+        with TestClient(app) as client:
+            page = client.get(
+                f"/statements/{project.slug}/{candidate.id}/coordinate"
+            )
+    finally:
+        app.dependency_overrides.clear()
+
+    assert page.status_code == 200
+    button = _save_button_tag(page.text)
+    assert ("disabled" in button) is not timing_supported
+    if not timing_supported:
+        assert (
+            "No structured timing is available. This proposed statement stays "
+            "pending until the source supports one." in page.text
+        )

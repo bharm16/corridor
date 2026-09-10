@@ -130,12 +130,12 @@ def test_retired_documentary_locator_keeps_accepted_words_and_explicit_replay_bl
 
 
 def test_email_statement_reader_uses_native_sources_without_legacy_population_queries(session):
-    from test_email_spine import ClosingStatement, deliver, message_bytes
+    from test_email_spine import deliver, fixture_client, message_bytes
     from corridor.email_spine import capture_email_thread
     from corridor.support_assessments import FactProposition, record_support_assessment
     from corridor.models import FactSource
     project, envelope = deliver(session, message_bytes(body="We will finish in October.\n"))
-    captured = capture_email_thread(session, envelope, client=ClosingStatement())
+    captured = capture_email_thread(session, envelope, client=fixture_client())
     fact = session.get(Fact, captured.source_fact_id)
     segment_ids = tuple(session.scalars(select(FactSource.source_segment_id).where(FactSource.fact_id == fact.id)))
     assessment = record_support_assessment(session, project_id=project.id, proposition=FactProposition(fact.id),

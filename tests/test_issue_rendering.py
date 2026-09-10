@@ -44,11 +44,11 @@ from corridor.issue_rendering import (
     SECTION_FOLLOW_UP_PLANS,
     SECTION_KEY_DATES,
     SECTION_PENDING_COORDINATION,
-    AcceptedFollowUpPlan,
     MixedIssueInputs,
     PreviousApprovedIssue,
     ReportSection,
     SourceCoverage,
+    FOLLOW_UP_NOT_RETAINED,
     TemplateBinding,
     bind_issue_reading,
     read_issue_artifacts,
@@ -65,6 +65,10 @@ from corridor.models import (
     Project,
     SourceSegment,
 )
+from corridor.native_follow_up_reading import (
+    AcceptedFollowUpPlan,
+    read_adopted_follow_up_plans,
+)
 from corridor.presentation import accepted_record_exception_name, exception_name
 from corridor.operating_mode import adopt_project_baseline
 from corridor.principals import HumanPrincipal
@@ -75,6 +79,14 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from delta_supersession_support import record_delta_supersession
+from corridor.review_packets import (
+    NEEDS_COORDINATION,
+    SAVED,
+    CoordinationRequest,
+    PacketChildRequest,
+    ReviewPacketRequest,
+    resolve_review_packet,
+)
 from corridor.support_assessments import FactProposition, record_support_assessment
 
 
@@ -84,6 +96,8 @@ OTHER_SUBJECT = "Utility Conflicts!9"
 CUTOFF = datetime(2026, 9, 3, 6, 0, tzinfo=timezone.utc)
 PREPARED_AT = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
 ASSESSED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
+PLANNED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
+RETURNS_AT = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
 
 
 @pytest.fixture
@@ -354,6 +368,57 @@ def _delta(
         ],
     )
     return delta
+
+
+def _plan(
+    session: Session,
+    project: Project,
+    delta,
+    revision: int,
+    *,
+    question: str,
+    responsible_organization: str = "City Water",
+    return_date: datetime | None = None,
+    source_revision: str = "rev-1",
+    decided_at: datetime = PLANNED_AT,
+):
+    """One Needs coordination outcome, recorded the way #526 records it.
+
+    The report's follow-up section is read from these rows and from nothing
+    else, so the tests below record one rather than constructing the reading
+    type by hand.  Two hand-built plans were the *only* constructions of the
+    renderer's own follow-up type, which is how it kept a shape no retained
+    record has (#425).
+    """
+
+    result = resolve_review_packet(
+        session,
+        ReviewPacketRequest(
+            project_id=project.id,
+            grouping_rule_version="packetizer-v1",
+            grouping_key_kind="source_revision",
+            grouping_key=source_revision,
+            principal=ALICE,
+            idempotency_key=f"plan:{delta.id}",
+            decided_at=decided_at,
+            observed_accepted_revision_id=revision,
+            children=(
+                PacketChildRequest(
+                    delta_id=delta.id,
+                    outcome=NEEDS_COORDINATION,
+                    observed_source_revision=source_revision,
+                    coordination=CoordinationRequest(
+                        question=question,
+                        responsible_organization=responsible_organization,
+                        return_date=return_date,
+                    ),
+                ),
+            ),
+        ),
+    )
+    assert result.status == SAVED, result
+    session.expire_all()
+    return result
 
 
 def _accept(session: Session, project: Project, delta, fact, *, at, observed):
@@ -1560,11 +1625,11 @@ def test_the_ported_checks_touch_no_frozen_legacy_table():
         assert write not in module, write
 
 
-def test_the_pending_question_is_neutral_and_states_the_accepted_position(
-    session, project
-):
-    source, baseline = _baseline(session, project)
-    _delta(
+def _planned(session, project, *, question: str, return_date=RETURNS_AT):
+    """One project with one recorded Follow-up Plan, read the production way."""
+
+    _, baseline = _baseline(session, project)
+    delta = _delta(
         session,
         project,
         field="committed_date",
@@ -1572,43 +1637,108 @@ def test_the_pending_question_is_neutral_and_states_the_accepted_position(
         proposed_value="2027-03-01",
         baseline_revision=baseline,
     )
-    plan = AcceptedFollowUpPlan(
-        plan_identity="plan-88",
-        subject_identity=SUBJECT,
-        field="committed_date",
-        assigned_to="Dana Reyes",
-        next_action="Ask City Water to confirm the relocation date",
-        action_due_date=date(2026, 9, 10),
-        open_question="Has the relocation date changed?",
-        recorded_by="local:alice",
-        recorded_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    # The packet that records the plan writes the project's next accepted
+    # revision, and that is the revision an issue prepared afterwards is bound
+    # to, so it is the revision the plan is read at.
+    result = _plan(
+        session, project, delta, baseline, question=question, return_date=return_date
     )
-    reading = _bind(session, project, baseline, follow_up_plans=(plan,))
-    artifacts = read_issue_artifacts(session, reading)
+    revision = int(result.revision_id)
+    plans = read_adopted_follow_up_plans(
+        session, project.id, revision, current=True, as_of=CUTOFF
+    )
+    return revision, plans
 
-    body = render_weekly_report(artifacts.weekly_report).text
+
+def test_the_follow_up_section_states_the_plans_the_records_actually_hold(
+    session, project
+):
+    """The section is read from ``delta_follow_up_plans``, through one type.
+
+    Every field printed here is one a Needs coordination outcome retained. The
+    renderer used to declare its own type requiring a next-action sentence and
+    an internal assignee, so no production caller could fill it and the section
+    was structurally empty in every path that reaches a customer (#425).
+    """
+
+    baseline, plans = _planned(
+        session, project, question="Has the relocation date changed?"
+    )
+    (plan,) = plans
+    assert isinstance(plan, AcceptedFollowUpPlan)
+    assert plan.target_subject_identity == SUBJECT
+    assert plan.target_field == "committed_date"
+    assert plan.responsible == "City Water"
+
+    reading = _bind(session, project, baseline, follow_up_plans=plans)
+    body = render_weekly_report(read_issue_artifacts(session, reading).weekly_report).text
+
+    assert "City Water as the party who can answer it." in body
+    assert "We need the answer by 2026-10-01." in body
+    # The question, and beside it the position the record actually holds.
     assert "Has the relocation date changed?" in body
     assert "2026-11-01" in body
     # The incoming value is not accepted, so it is nowhere in the report.
     assert "2027-03-01" not in body
 
 
+def test_the_follow_up_section_declares_the_next_action_it_cannot_state(
+    session, project
+):
+    """No record holds a next action, so the section says so rather than none.
+
+    ADR-0084 section 1 defines a Follow-up Plan as a question, a responsible
+    party and a return date. Rendering nothing would have been the third silent
+    absence in this area; the section declares it the way the alerts section
+    declares the checks it does not run (ADR-0090).
+    """
+
+    baseline, plans = _planned(session, project, question="Who owns this valve?")
+    reading = _bind(session, project, baseline, follow_up_plans=plans)
+    body = render_weekly_report(read_issue_artifacts(session, reading).weekly_report).text
+
+    for what, why in FOLLOW_UP_NOT_RETAINED:
+        assert f"It does not state {what}" in body, what
+        assert why in body, what
+
+
+def test_a_plan_with_no_return_date_says_none_was_recorded(session, project):
+    baseline, plans = _planned(
+        session, project, question="Has the date moved?", return_date=None
+    )
+    reading = _bind(session, project, baseline, follow_up_plans=plans)
+    body = render_weekly_report(read_issue_artifacts(session, reading).weekly_report).text
+
+    assert "No return date has been recorded for this question." in body
+
+
 def test_a_pending_question_that_is_not_a_question_is_refused(session, project):
-    _, baseline = _baseline(session, project)
-    plan = AcceptedFollowUpPlan(
-        plan_identity="plan-89",
-        subject_identity=SUBJECT,
-        field="committed_date",
-        assigned_to="Dana Reyes",
-        next_action="Confirm the date",
-        action_due_date=None,
-        open_question="The relocation date is now 2027-03-01.",
-        recorded_by="local:alice",
-        recorded_at=datetime(2026, 8, 28, tzinfo=timezone.utc),
+    """A recorded plan whose question asserts a value never reaches a customer."""
+
+    baseline, plans = _planned(
+        session, project, question="The relocation date is now 2027-03-01."
     )
 
-    with pytest.raises(MixedIssueInputs):
-        _bind(session, project, baseline, follow_up_plans=(plan,))
+    with pytest.raises(MixedIssueInputs, match="asks a question"):
+        _bind(session, project, baseline, follow_up_plans=plans)
+
+
+def test_the_follow_up_section_refuses_a_shape_that_is_not_a_plan(session, project):
+    """The one type is the contract, not a hint. #425's twin was not typed.
+
+    ``bind_preparation`` and ``prepare_release_candidate`` both declared
+    ``Sequence[Any]`` for this parameter, so handing the renderer the wrong
+    dataclass was never an error and produced an empty section instead.
+    """
+
+    _, baseline = _baseline(session, project)
+
+    class _Twin:
+        target_subject_identity = SUBJECT
+        open_question = "Has the relocation date changed?"
+
+    with pytest.raises(MixedIssueInputs, match="retained records"):
+        _bind(session, project, baseline, follow_up_plans=(_Twin(),))
 
 
 # --- Coverage, provenance, and determinism --------------------------------

@@ -27,7 +27,6 @@ and `pdf_licensing: unresolved`, and both appear in the refusal.
 from __future__ import annotations
 
 from corridor import digests
-import base64
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -37,6 +36,13 @@ import random
 import time
 from typing import Any, Protocol
 
+from corridor.llm import (
+    MAX_ATTEMPTS,
+    RETRY_STATUSES,
+    RequestConfiguration,
+    responses_payload,
+)
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POSTURE_PATH = REPO_ROOT / "docs/operations/openai-responses-provider-posture.md"
 
@@ -44,8 +50,9 @@ NATIVE_MATRIX_PURPOSE = "native-matrix-structure-mapping"
 MEASUREMENT_PURPOSE = "extraction-measurement"
 EXPERIMENT_STAGE = "experiment"
 CUSTOMER_STAGES: tuple[str, ...] = ("compatibility", "shadow", "authoritative")
-RETRY_STATUSES = (408, 409, 429, 500, 502, 503, 504)
-MAX_ATTEMPTS = 4
+# The retry set and the attempt ceiling come from the client, imported rather
+# than restated: this boundary owns *when* an attempt is counted as a retry,
+# not which statuses are transient.
 
 
 def _now() -> str:
@@ -380,8 +387,6 @@ class AuthorizedNativeMapper:
     a boundary is in front of the provider.
     """
 
-    flex = False
-
     def __init__(self, record: AuthorizationRecord, request: RequestBoundary, *,
                  transport: ResponsesTransport, budget: Budget, source_sha256s: frozenset[str],
                  campaign: str, posture: ProviderPosture, sleep) -> None:
@@ -392,9 +397,12 @@ class AuthorizedNativeMapper:
         self.source_sha256s = source_sha256s
         self.campaign = campaign
         self.opened_at = _now()
-        self.model = request.model
-        self.effort = request.reasoning_effort
-        self.base_url = request.base_url
+        # The matched boundary *is* the request configuration; it is stated
+        # once here rather than spread over four duck-typed attributes.
+        self._configuration = RequestConfiguration(
+            model=request.model, effort=request.reasoning_effort,
+            flex=False, base_url=request.base_url,
+        )
         self.image_detail = request.image_detail
         self.usage = Usage()
         self.calls = 0
@@ -405,6 +413,10 @@ class AuthorizedNativeMapper:
         self.receipts: list[dict[str, Any]] = []
         self._transport = transport
         self._sleep = sleep
+
+    def configuration(self) -> RequestConfiguration:
+        """What this boundary will ask for; the posture already approved it."""
+        return self._configuration
 
     @property
     def origin_sha256(self) -> str:
@@ -470,8 +482,15 @@ class AuthorizedNativeMapper:
 
     # -- the call -----------------------------------------------------------
 
-    def complete(self, *, system: str, user: str, schema: dict[str, Any], images=()) -> dict[str, Any]:
+    def complete(self, *, system: str, user: str, schema: dict[str, Any], images=(),
+                 logprobs: bool = False) -> dict[str, Any]:
         """One structured page mapping, budgeted and counted before it goes out."""
+        if logprobs:
+            raise NativeProviderRefused(
+                "logprobs-not-in-posture",
+                detail="the recorded provider posture does not cover output logprobs",
+                request=self.request,
+            )
         paths = [Path(image) for image in images]
         # The four-field core is the request identity the observation record
         # already verifies. The authorization it went out under is recorded
@@ -484,12 +503,11 @@ class AuthorizedNativeMapper:
         request_identity = {"core": core, "campaign": self.campaign,
                             "record_id": self.record.record_id, "boundary": self.request.as_dict()}
         self._require_budget(len(paths), request_identity)
-        payload = {
-            "model": self.model, "instructions": system,
-            "input": [{"role": "user", "content": self._content(user, paths)}],
-            "text": {"format": {"type": "json_schema", "name": "structure", "strict": True, "schema": schema}},
-            "reasoning": {"effort": self.effort}, "store": self.request.store,
-        }
+        payload = responses_payload(
+            configuration=self._configuration, system=system, user=user, schema=schema,
+            schema_name="structure", store=self.request.store, images=paths,
+            image_detail=self.image_detail,
+        )
         self.pages_requested += len(paths)
         attempts = 0
         last_error = ""
@@ -559,7 +577,7 @@ class AuthorizedNativeMapper:
             "request_sha256": _digest(request_identity["core"]),
             "boundary_sha256": _digest(request_identity), "response_sha256": _digest(answer),
             "raw_response_sha256": _digest(body), "response_id": body.get("id") or "",
-            "model_reported": body.get("model") or self.model,
+            "model_reported": body.get("model") or self._configuration.model,
             "transport_attempts": attempts,
             "usage": {"input_tokens": input_tokens, "output_tokens": output_tokens, "cached_tokens": cached},
             # No response is served from a local store: `store` is false and
@@ -577,15 +595,6 @@ class AuthorizedNativeMapper:
             self._sleep(min(float(retry_after), 30.0))
             return
         self._sleep(min(2**attempt, 16) * (0.5 + random.random()))
-
-    def _content(self, user: str, images: list[Path]) -> list[dict[str, Any]]:
-        """Text first, images last, so the shared prefix stays cacheable."""
-        content: list[dict[str, Any]] = [{"type": "input_text", "text": user}]
-        for image in images:
-            encoded = base64.b64encode(image.read_bytes()).decode()
-            content.append({"type": "input_image", "image_url": f"data:image/png;base64,{encoded}",
-                            "detail": self.image_detail})
-        return content
 
 
 @dataclass

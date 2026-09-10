@@ -236,8 +236,11 @@
         <label for="milestone-impact">Does this changed promise affect a key date? (required only for changed timing)</label><select id="milestone-impact" name="milestone_impact"><option value="">Not a change to promised timing</option><option value="affects">affects</option><option value="does_not_affect">does not affect</option><option value="not_yet_known">not yet known</option></select>
         {% for milestone in milestones %}<label class="check"><input type="checkbox" name="milestone_id" value="{{ milestone.id }}"> {{ milestone.code }} — {{ milestone.name }}</label>{% endfor %}
       </fieldset>
-      {% if not roster %}<p class="error">No project-team member is available to assign. This work stays pending.</p>{% endif %}
-      <button type="submit"{% if not guided_save_available or not roster %} disabled{% endif %}>Save statement and Follow-up plan</button>
+      {# The offer is one value read once (`read_guided_save_offer`); this
+         control adds no condition of its own, and its refusal is the same
+         sentence the write path refuses with. #}
+      {% if not guided_save_available %}<p class="error">{{ guided_save_refusal }}</p>{% endif %}
+      <button type="submit"{% if not guided_save_available %} disabled{% endif %}>Save statement and Follow-up plan</button>
     </form>
     <form method="post" action="/statements/{{ project.slug }}/{{ candidate.id }}/not-relevant">
     {{ csrf_field() }}

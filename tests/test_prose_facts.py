@@ -20,6 +20,7 @@ from corridor.extract_minutes_v5 import (
     to_candidate,
 )
 from corridor.extractor_lineage import deployed_extractor_config
+from corridor.llm import RequestConfiguration
 from corridor.event_admission import waiting_statements
 from corridor.extraction_runs import (
     append_source_facts,
@@ -49,6 +50,7 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal
 from corridor.revision_comparison import _run_inputs
 
+from model_client_support import FakeModelClient
 from pdf_fixture_support import PdfFixture
 
 
@@ -69,15 +71,14 @@ needs_minutes_corpus = pytest.mark.skipif(
 OPERATOR = HumanPrincipal("local:prose-fact-operator")
 
 
-class StubClient:
-    model = "gpt-5.6-luna"
-    effort = "none"
-    flex = False
-    base_url = "https://provider.example/v1"
-    max_workers = 1
-
-    def complete(self, *, system, user, schema):
-        return {"events": []}
+def stub_client():
+    """The shared recording double: no model statements on any page."""
+    return FakeModelClient(
+        {"events": []},
+        configuration=RequestConfiguration(
+            model="gpt-5.6-luna", base_url="https://provider.example/v1"
+        ),
+    )
 
 
 def _minutes_pdf(tmp_path, *, name="equistar-minutes.pdf", statement=STATEMENT):
@@ -399,7 +400,7 @@ def test_minutes_batch_routes_statement_facts_through_the_scoped_append_command(
             images_dir=tmp_path / "images",
         )
         document._stored_path = str(path)
-        client = StubClient()
+        client = stub_client()
         config = deployed_extractor_config("minutes", client=client)
 
         created = extract_documents(
@@ -481,7 +482,7 @@ def test_minutes_batch_refuses_fact_append_when_original_bytes_are_unavailable(
             doc_date=date(2025, 2, 12),
             images_dir=tmp_path / "images",
         )
-        client = StubClient()
+        client = stub_client()
         config = deployed_extractor_config("minutes", client=client)
 
         with pytest.raises(ValueError, match="requires registered original bytes"):

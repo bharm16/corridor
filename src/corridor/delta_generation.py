@@ -33,18 +33,28 @@ runtime (#332) discovers, claims, and retries occurrences.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.due_work_contract import (
+    DECLARED_IDENTITY,
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    previous_completed_reading,
+    validate_scheduling,
+)
 from corridor.fact_types import SINGLE_VALUED_FACT_TYPES
 from corridor.fact_values import scalar_fact_value
 from corridor.models import (
     Document,
-    DueWorkOccurrence,
-    DueWorkReceipt,
     DueWorkSchedule,
     Fact,
     ProjectRecordRevision,
@@ -89,26 +99,15 @@ class DeltaGenerationRefusal(ValueError):
 def last_considered_fact_id(session: Session, schedule_id: int) -> int:
     """The highest Source Fact this schedule's newest completed attempt saw.
 
-    Ordered by receipt identity rather than ``finished_at``: the identifier is
-    monotonic in insertion order no matter what any clock said, and "newest"
-    here must mean the last one retained.
+    The retained reading is read through the runtime's own seam, so what
+    "newest completed attempt" means is decided once for every handler that
+    continues from where its last pass stopped.
     """
 
-    result = session.scalars(
-        select(DueWorkReceipt.handler_result_json)
-        .join(
-            DueWorkOccurrence,
-            DueWorkOccurrence.id == DueWorkReceipt.occurrence_id,
-        )
-        .where(
-            DueWorkOccurrence.scheduled_job_id == schedule_id,
-            DueWorkReceipt.handler_key == HANDLER_KEY,
-            DueWorkReceipt.execution_outcome == "completed",
-        )
-        .order_by(DueWorkReceipt.id.desc())
-        .limit(1)
-    ).first()
-    return int((result or {}).get("through_fact_id") or 0)
+    previous = previous_completed_reading(
+        session, schedule_id=schedule_id, handler_key=HANDLER_KEY
+    )
+    return int(previous.get("through_fact_id") or 0)
 
 
 def execute_delta_generation(
@@ -278,3 +277,123 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this pass runs under ------------------------
+#
+# The comparison rule the pass appends under, and the fact that it proposes and
+# never accepts, are this module's statements about its own work; the runtime
+# keeps the lease and the retries (card 6).
+
+
+@dataclass(frozen=True)
+class DeltaGenerationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables Proposed Delta generation.
+
+    Scope names the project and the comparison rule the pass appends under, so
+    a later change to how values are compared is visible on every delta rather
+    than retroactive.  The pass reads no model and appends only through the
+    source-append command, so both budgets are a declared zero, concurrency
+    stays one, and no destination is authorized: it can propose a difference
+    and can never make one effective.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    comparison_rule_version: str
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        comparison_rule_version: str,
+        starts_at: datetime,
+    ) -> "DeltaGenerationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            comparison_rule_version=comparison_rule_version,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=900,
+            deadline_seconds=600,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: DeltaGenerationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one delta-generation declaration."""
+
+    if not DECLARED_IDENTITY.fullmatch(declaration.comparison_rule_version):
+        raise DueWorkRefusal("delta-generation comparison rule identity is invalid")
+    starts_at = validate_scheduling(declaration, subject="delta-generation")
+    scope = {
+        "project_id": declaration.project_id,
+        "comparison_rule_version": declaration.comparison_rule_version,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={
+                "kind": "project_proposed_delta_generation-v1",
+                **scope,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            # The pass proposes; it never makes anything effective. Every append
+            # goes through the source-append command, so an adopted-baseline
+            # project's accepted values are unreachable from here (#520).
+            extra={"record_authority": "proposes_only_never_accepts"},
+        ),
+        input_identity={"handler": HANDLER_KEY, **scope},
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> DeltaGenerationDeclaration:
+    return DeltaGenerationDeclaration(
+        **stored.scheduling_fields(),
+        comparison_rule_version=stored.scope.get("comparison_rule_version", ""),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Propose one project's new differences from its accepted record (#518).
+
+    The pass commits its Proposed Deltas durably through the session factory
+    before the runtime finalizes the claim, and appends only through the
+    source-append command, so it can never write an accepted value on any path
+    and a recovered re-run appends nothing that is already there.
+    """
+
+    return execute_delta_generation(
+        context.session_factory,
+        schedule_id=context.schedule.schedule_id,
+        clock=context.clock,
+    )
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_project_proposed_delta_generation",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=DeltaGenerationDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+)

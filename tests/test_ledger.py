@@ -1,4 +1,4 @@
-from datetime import date
+from datetime import date, datetime, timezone
 
 import pytest
 from fastapi.testclient import TestClient
@@ -815,3 +815,47 @@ def test_two_real_values_still_contradict_everywhere(session, project, dependenc
     assert field.contradicted is True
     assert row.contradicted is True
     assert any(e.rule == "CONTRADICTION" for e in view.exceptions)
+
+
+def test_the_constraint_log_reads_the_declared_review_instant_not_the_day(
+    client, session, project
+):
+    """`next_action_overdue` on this page is now a fact a test can state.
+
+    The page used to call `date.today()` inside the handler, so whether the
+    overdue alert rendered depended on the day the suite ran and no test could
+    say either way. It takes the same `get_review_clock` seam eight other routes
+    take, and a supplied instant decides it (ADR-0084, #488).
+    """
+    from corridor.presentation import exception_name
+    from corridor.web.app import get_review_clock
+
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="LT-CLOCK-1",
+        dep_type="utility_relocation",
+        title="Overdue next action",
+        internal_owner="local:owner",
+        next_action="chase the utility",
+        # Deliberately later than the wall clock, so the only thing that can
+        # print the overdue words is the instant this request is read at.
+        action_due_date=date(2099, 3, 1),
+    )
+    session.add(dependency)
+    session.flush()
+    # The alert filter lists every rule name, so what is asserted is the state
+    # the shared primitive prints on the row itself.
+    overdue_state = f'>{exception_name("ACTION_OVERDUE")}</span>' 
+
+    def _clock(instant):
+        return lambda: lambda: instant
+
+    app.dependency_overrides[get_review_clock] = _clock(
+        datetime(2099, 2, 28, tzinfo=timezone.utc)
+    )
+    assert overdue_state not in client.get(f"/ledger/{project.slug}").text
+
+    app.dependency_overrides[get_review_clock] = _clock(
+        datetime(2099, 3, 2, tzinfo=timezone.utc)
+    )
+    assert overdue_state in client.get(f"/ledger/{project.slug}").text

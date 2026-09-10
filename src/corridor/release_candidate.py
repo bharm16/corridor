@@ -157,6 +157,7 @@ from corridor.models import (
     ReleasePackage,
     ReleasePreparationRefusal,
 )
+from corridor.native_follow_up_reading import AcceptedFollowUpPlan
 from corridor.object_storage import ObjectStore, content_key, content_store
 from corridor.presentation import field_label
 from corridor.principals import HumanPrincipal, require_human_principal
@@ -714,7 +715,7 @@ def bind_preparation(
     first_issue_behavior: str,
     template_bytes: bytes,
     binding: AnalyticsBinding | None = None,
-    follow_up_plans: Sequence[Any] = (),
+    follow_up_plans: Sequence[AcceptedFollowUpPlan] = (),
     report_receipt_id: int | None = None,
     report_result_sha256: str | None = None,
 ) -> BoundPreparation:
@@ -1365,7 +1366,7 @@ def prepare_release_candidate(
     first_issue_behavior: str,
     template_bytes: bytes,
     binding: AnalyticsBinding | None = None,
-    follow_up_plans: Sequence[Any] = (),
+    follow_up_plans: Sequence[AcceptedFollowUpPlan] = (),
     report_receipt_id: int | None = None,
     report_result_sha256: str | None = None,
     surface: str = "release_preparation",

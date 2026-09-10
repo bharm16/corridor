@@ -788,7 +788,11 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "statement_matcher", "statement_matching", "statement_scope_matching",
         "statement_suggestions", "subject_resolution", "supersession_review",
         "support_transfer", "support_transfer_lineage", "verbal", "web.app",
-        "web.queue", "work_decisions", "work_list",
+        # The queue's reading, moved out of `web.app`'s 309-line route body:
+        # it resolves the one Constraint whose coordination strip is open, in
+        # this project and inside the pinned lane. It reads through the legacy
+        # readers rather than widening them, and retires with them.
+        "web.queue", "web.queue_view", "work_decisions", "work_list",
     ),
     # dependency_events
     "ExternalPartyStatement": (
@@ -839,7 +843,10 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "statement_scope_matching", "statement_spine", "statement_suggestions",
         "supersession", "supersession_review", "support_transfer",
         "support_transfer_lineage", "thread_reading", "web.app", "web.queue",
-        "web.statement_forms", "work_list",
+        # Same move: the queue reading names the Extracted Proposal it opens
+        # and the sibling revisions offered as merges. Nothing new is built on
+        # the table; the read left `web.app` and did not grow.
+        "web.queue_view", "web.statement_forms", "work_list",
     ),
     # commitment_lineages
     "CommitmentLineage": (

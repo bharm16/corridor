@@ -32,6 +32,9 @@ from corridor.models import (
     SourceSegment,
 )
 
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
+
 
 @pytest.fixture
 def session():
@@ -210,12 +213,16 @@ def test_view_query_is_measured_without_materialization(session, record_case):
     assert measured.materialized_view_needed is False
 
 
-class CoveringClient:
-    model = "test-briefing"
+def _covering_sentence(call):
+    refs = sorted(set(re.findall(r"\b(?:XB|X|E|A|V)\d+\b", call.user)))
+    return {"sentences": [{"text": "Frozen reading.", "cites": refs}]}
 
-    def complete(self, *, user, **_kwargs):
-        refs = sorted(set(re.findall(r"\b(?:XB|X|E|A|V)\d+\b", user)))
-        return {"sentences": [{"text": "Frozen reading.", "cites": refs}]}
+
+def covering_client():
+    """The shared recording double, citing every reference it was shown."""
+    return FakeModelClient(
+        _covering_sentence, configuration=RequestConfiguration(model="test-briefing")
+    )
 
 
 def test_four_reader_surfaces_match_view_fed_frozen_reading(
@@ -227,7 +234,7 @@ def test_four_reader_surfaces_match_view_fed_frozen_reading(
         project.id,
         today=date(2026, 8, 31),
         output_dir=tmp_path,
-        briefing_client_factory=CoveringClient,
+        briefing_client_factory=covering_client,
     )
     assert result.rendered_outputs_identical is True
     assert result.passed is False

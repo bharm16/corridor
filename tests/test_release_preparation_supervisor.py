@@ -90,7 +90,16 @@ from corridor.release_authorization import (
     authorize_release_package,
     retrieve_released_artifact,
 )
+from corridor.native_follow_up_reading import AcceptedFollowUpPlan
 from corridor.release_candidate import MIXED_READING, prepare_release_candidate
+from corridor.review_packets import (
+    NEEDS_COORDINATION,
+    SAVED,
+    CoordinationRequest,
+    PacketChildRequest,
+    ReviewPacketRequest,
+    resolve_review_packet,
+)
 
 import test_issue_path_end_to_end as issue_path
 from packet_review_support import Rendition, configure_issue, subject, support
@@ -688,6 +697,107 @@ def _resolve_one_delta(session, *, project_id: int, subject: str, at: datetime):
     )
     assert outcome.status == "resolved", outcome.refusal
     return int(delta.id)
+
+
+PLAN_QUESTION = "Which station does the utility hold to for UC-1?"
+PLAN_RETURNS_AT = datetime(2026, 4, 1, 12, 0, tzinfo=timezone.utc)
+
+
+def _record_a_follow_up_plan(factory, adopted: Adopted, *, subject: str, at: datetime):
+    """One Needs coordination outcome, the only thing that retains a plan.
+
+    #526 writes a Follow-up Plan from a packet act and nowhere else, so this is
+    what a project that has one looks like. The supervisor used to resolve
+    ``follow_up_plans`` empty whatever this wrote, because the renderer's own
+    twin of the reading type demanded a next-action sentence no record holds.
+    """
+
+    revision = f"plan-{subject}"
+    with factory() as writing:
+        (delta,) = create_proposed_delta_group(
+            writing,
+            project_id=adopted.project_id,
+            source_family="REV-B",
+            source_revision=revision,
+            deltas=[
+                ProposedDeltaValues(
+                    change_type="modify",
+                    target=ExistingSubjectTarget(
+                        subject_identity=subject, field="station_from"
+                    ),
+                    accepted_value="1149+00",
+                    proposed_value=f"{subject}+90",
+                    accepted_baseline_revision=f"revision:{subject}",
+                )
+            ],
+        )
+        result = resolve_review_packet(
+            writing,
+            ReviewPacketRequest(
+                project_id=adopted.project_id,
+                grouping_rule_version="packetizer-v1",
+                grouping_key_kind="source_revision",
+                grouping_key=revision,
+                principal=COORDINATOR,
+                idempotency_key=f"plan:{subject}",
+                decided_at=at,
+                observed_accepted_revision_id=adopted.revision_id,
+                children=(
+                    PacketChildRequest(
+                        delta_id=int(delta.id),
+                        outcome=NEEDS_COORDINATION,
+                        observed_source_revision=revision,
+                        coordination=CoordinationRequest(
+                            question=PLAN_QUESTION,
+                            responsible_organization="City Water",
+                            return_date=PLAN_RETURNS_AT,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        assert result.status == SAVED, result
+        writing.commit()
+    return result
+
+
+def test_the_resolved_inputs_state_the_follow_up_plans_this_project_retains(
+    factory, adopted, client, store
+):
+    """``follow_up_plans`` is resolved from the records, not resolved empty.
+
+    The docstring on ``resolve_preparation_inputs`` was right that a supervisor
+    may not compose a next-action sentence, and wrong that the consequence is
+    an empty section: the retained question, the responsible party and the
+    return date are all readable, and the report states those (ADR-0084 §1).
+    Nothing here composes prose.
+    """
+
+    _record_a_follow_up_plan(factory, adopted, subject="UC-1", at=FIRST_DECISIONS_AT)
+    _enable(factory, adopted, supervisor=False)
+    _take_weekly_reading(factory)
+    _confirm_coverage(client, adopted)
+
+    with factory() as resolving:
+        request = resolving.scalars(
+            select(ReleasePreparationRequest).where(
+                ReleasePreparationRequest.project_id == adopted.project_id
+            )
+        ).one()
+        bound = bind_report_preparation_reading(
+            resolving, request=request, bound_at=WORKER_AT
+        )
+        inputs = resolve_preparation_inputs(
+            resolving, request, store=store, reading=bound
+        )
+
+    (plan,) = inputs.follow_up_plans
+    assert isinstance(plan, AcceptedFollowUpPlan)
+    assert plan.open_question == PLAN_QUESTION
+    assert plan.responsible == "City Water"
+    assert plan.return_date == PLAN_RETURNS_AT
+    assert plan.target_field == "station_from"
+    assert plan.recorded_by == COORDINATOR.subject
 
 
 def _move_the_watermarks(factory, adopted: Adopted, subjects, *, at: datetime):

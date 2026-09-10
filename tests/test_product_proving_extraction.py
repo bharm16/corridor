@@ -14,8 +14,7 @@ from corridor.extraction_runs import (
     extractor_configuration,
     record_extraction_run,
 )
-from corridor.extractor_lineage import deployed_extractor_config
-from corridor.llm import Usage
+from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST, deployed_extractor_config
 from corridor.models import DocPage, Document, ExtractionRun, Project
 from corridor.product_proving_extraction import (
     ProductProvingExtractionError,
@@ -23,26 +22,16 @@ from corridor.product_proving_extraction import (
 )
 from corridor.row_accounting import RowAccounting
 
+from model_client_support import FakeModelClient
 
-class StubClient:
-    model = "gpt-5.6-luna"
-    effort = "none"
-    flex = False
-    base_url = "https://api.openai.com/v1"
-    max_workers = 1
 
-    def __init__(self, *, events=()):
-        self.events = list(events)
-        self.usage = Usage()
-        self.calls: list[dict] = []
-        self.closed = False
-
-    def complete(self, **request):
-        self.calls.append(request)
-        return {"events": list(self.events)}
-
-    def close(self):
-        self.closed = True
+def stub_client(*, events=()):
+    """The shared recording double, under the deployed request configuration."""
+    return FakeModelClient(
+        {"events": list(events)},
+        configuration=DEPLOYED_NATIVE_MATRIX_REQUEST,
+        tokens_per_call={},
+    )
 
 
 @pytest.fixture
@@ -156,7 +145,7 @@ def test_it_derives_one_new_current_sealed_run_for_the_exact_document(
     extractor_name,
 ):
     document = _document(session, project, doc_type=doc_type, name=f"{doc_type}.pdf")
-    client = StubClient()
+    client = stub_client()
     calls = []
 
     def operation(db, target, shared_client):
@@ -193,7 +182,7 @@ def test_minutes_path_uses_v5_page_wiring_without_committing_or_closing(
         )
     )
     session.flush()
-    client = StubClient()
+    client = stub_client()
 
     def refuse_commit():
         raise AssertionError("bounded extraction must not commit")
@@ -218,7 +207,7 @@ def test_it_refuses_unsupported_document_types(session, project, doc_type):
     before = set(session.scalars(select(ExtractionRun.id)).all())
 
     with pytest.raises(ProductProvingExtractionError, match="only matrix and minutes"):
-        extract_product_proving_document(session, document, client=StubClient())
+        extract_product_proving_document(session, document, client=stub_client())
 
     assert set(session.scalars(select(ExtractionRun.id)).all()) == before
 
@@ -232,10 +221,10 @@ def test_it_refuses_a_missing_or_extra_extraction_run(session, project, monkeypa
     )
 
     with pytest.raises(ProductProvingExtractionError, match="observed 0"):
-        extract_product_proving_document(session, missing, client=StubClient())
+        extract_product_proving_document(session, missing, client=stub_client())
 
     extra = _document(session, project, name="extra.pdf")
-    client = StubClient()
+    client = stub_client()
 
     def create_two(db, document, shared_client):
         _record(db, document, shared_client)
@@ -277,7 +266,7 @@ def test_it_refuses_unsealed_and_failed_runs(
     )
 
     with pytest.raises(ProductProvingExtractionError, match=message):
-        extract_product_proving_document(session, document, client=StubClient())
+        extract_product_proving_document(session, document, client=stub_client())
 
 
 @pytest.mark.parametrize("different_project", (False, True))
@@ -306,7 +295,7 @@ def test_it_refuses_a_run_for_the_wrong_document_or_project(
     )
 
     with pytest.raises(ProductProvingExtractionError, match="wrong Document/Project"):
-        extract_product_proving_document(session, expected, client=StubClient())
+        extract_product_proving_document(session, expected, client=stub_client())
 
 
 def test_it_refuses_a_sealed_but_stale_or_wrong_extractor(
@@ -324,4 +313,4 @@ def test_it_refuses_a_sealed_but_stale_or_wrong_extractor(
     )
 
     with pytest.raises(ProductProvingExtractionError, match="deployed extractor seal"):
-        extract_product_proving_document(session, document, client=StubClient())
+        extract_product_proving_document(session, document, client=stub_client())

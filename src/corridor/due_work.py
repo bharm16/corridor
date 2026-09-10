@@ -3,27 +3,50 @@
 Feature-owned schedulers were rejected because they duplicate leases, retries,
 clocks, and failure semantics while hiding production ownership. This module
 keeps a small interface over one durable occurrence/claim/receipt lifecycle.
-Persisted rows select only handlers in the server-owned registry; they can never
-name imports, commands, arbitrary destinations, or model tools.
+Persisted rows select only handlers in the server-owned registry below; they can
+never name imports, commands, arbitrary destinations, or model tools.
+
+The runtime keeps the lease; a handler owns its declaration. Each handler
+publishes one ``HandlerRegistration`` (``corridor.due_work_contract``) next to
+its effectful function, saying how its declaration is validated, how a persisted
+row is rebuilt and re-checked, and what to run. The table in
+``_SERVER_OWNED_HANDLERS`` is the closed set of keys a persisted row may select,
+and it is the only place a handler module is named; it is resolved lazily so
+importing the runtime does not import fifteen feature modules.
 """
 
 from __future__ import annotations
 
-from corridor import digests
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
+from importlib import import_module
 import logging
 import re
 from types import MappingProxyType
-from typing import Any, Protocol
+from typing import Any, ClassVar, Protocol
 from uuid import uuid4
 
 from sqlalchemy import func, or_, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from corridor import digests
 from corridor.document_notifications import DOCUMENT_NOTIFICATION_HANDLER
+from corridor.due_work_contract import (
+    COHORT_IDENTITY,
+    DECLARED_IDENTITY,
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    SHA256,
+    ValidatedDeclaration,
+    aware_utc,
+    gate7_configuration,
+    iso_timestamp,
+    validate_scheduling,
+)
 from corridor.models import (
     Document,
     DueWorkOccurrence,
@@ -31,13 +54,11 @@ from corridor.models import (
     DueWorkSchedule,
     ExtractionRun,
     Project,
-    ProjectRosterEntry,
 )
 from corridor.notifications import (
     ASSIGNMENT_NOTIFICATION_HANDLER,
     DUE_ACTION_NOTIFICATION_HANDLER,
 )
-from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.telemetry import correlation_scope, log_event
 
 
@@ -55,8 +76,9 @@ HANDLER_PROJECT_PROCESSING = "project_processing"
 HANDLER_REVISION_RECONCILIATION = "revision_reconciliation"
 HANDLER_LOCATION_DISCOVERY = "location_discovery"
 # Deliver the one new-assignment interruption category through this runtime
-# (#351). The delivery logic and this key live in ``corridor.notifications``;
-# the runtime depends on that module, never the reverse.
+# (#351). The delivery logic, this key, and the declaration live in
+# ``corridor.notifications``; the runtime depends on that module, never the
+# reverse.
 HANDLER_ASSIGNMENT_NOTIFICATION = ASSIGNMENT_NOTIFICATION_HANDLER
 # Derive and deliver the due-action categories — soon/past-due Next Action
 # reminders, urgent-overdue escalation, and daily summaries — through this same
@@ -65,13 +87,14 @@ HANDLER_DUE_ACTION_NOTIFICATION = DUE_ACTION_NOTIFICATION_HANDLER
 HANDLER_EVENT_ADMISSION_REPROOF = "event_admission_reproof"
 HANDLER_EVIDENCE_OUTCOME_CAPTURE = "evidence_outcome_capture"
 # Retain a weekly Coordination Report reading and prepare its external PDF. The
-# string matches ``report_publication.HANDLER_KEY``; the execution lives in that
-# lower module, which the runtime imports lazily so no import cycle forms.
+# string matches ``report_publication.HANDLER_KEY``; the execution and the
+# declaration live in that lower module, which the runtime imports lazily so no
+# import cycle forms.
 HANDLER_REPORT_PUBLICATION = "report_publication"
 # Discover and deliver the two document-related interruption categories (#353):
 # a Documentation Review that lost applicable support, and a source transition
 # affecting a current Commitment or a relocation/removal/abandonment Constraint.
-# The discovery and delivery logic and this key live in
+# The discovery and delivery logic, this key, and the declaration live in
 # ``corridor.document_notifications``; the runtime depends on that module.
 HANDLER_DOCUMENT_NOTIFICATION = DOCUMENT_NOTIFICATION_HANDLER
 # The four recurring passes a live pilot needs (#488). Each string matches its
@@ -94,34 +117,13 @@ HANDLER_RETENTION_SWEEP = "retention_sweep"
 # per-project customer-DB schedule: a Due Work schedule cannot live inside the
 # database being destroyed. Its effectful contract (an effectful-shaped
 # orchestrator and this idempotency key) therefore lives in
-# ``environment_disposition`` rather than in HANDLER_REGISTRY, which enqueues
+# ``environment_disposition`` rather than in the registry below, which enqueues
 # per-project customer-database occurrences.
 HANDLER_ENVIRONMENT_DISPOSITION = "environment_disposition"
-# The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
-# notification schedule must declare a positive request budget within this.
-_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING = 10_000
-_DUE_ACTION_NOTIFICATION_BUDGET_CEILING = 10_000
-_DOCUMENT_NOTIFICATION_BUDGET_CEILING = 10_000
 # The upper safety ceiling for a declared model spend. A processing schedule
 # must declare a positive budget (never a silent zero); it may not exceed this.
 _PROJECT_PROCESSING_TOKEN_CEILING = 100_000_000
-# The upper ceiling for the disposable clones one re-proof attempt may consume;
-# the ADR-0050 replay provisions two policy clones plus a migration rehearsal.
-_REPROOF_CLONE_BUDGET_CEILING = 8
-_CONFIGURATION_VERSION = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
-_EXTRACTOR_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
-_POLICY_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
-_COHORT_IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{2,127}$")
-_LOCATION_IDENTITY = re.compile(r"^[a-z0-9][a-z0-9._-]{2,63}$")
-# A location host is a bare DNS name; the adapter reaches only these and follows
-# no redirect off them (#350). No scheme, port, path, or wildcard is accepted.
-_LOCATION_HOST = re.compile(r"^(?=.{1,253}$)[a-z0-9]([a-z0-9-]{0,62})(\.[a-z0-9]([a-z0-9-]{0,62}))+$")
 _RUNTIME_OWNER = re.compile(r"^runtime:[A-Za-z0-9][A-Za-z0-9._:-]{1,119}$")
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
-
-
-class DueWorkRefusal(ValueError):
-    """A schedule, claim, result, or runtime identity is unsafe."""
 
 
 class StaleDueWorkClaim(DueWorkRefusal):
@@ -131,23 +133,16 @@ class StaleDueWorkClaim(DueWorkRefusal):
 class Clock(Protocol):
     def now(self) -> datetime: ...
 
-
 @dataclass(frozen=True)
-class ProcessingHealthDeclaration:
-    project_id: int
-    configuration_version: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
+class ProcessingHealthDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables the read-only health pass.
+
+    It adds no scope of its own: the project and the stored processing facts it
+    counts are the whole of it, so every field it carries is the shared
+    scheduling envelope the runtime owns.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_PROCESSING_HEALTH
 
     @classmethod
     def released_hourly(
@@ -176,7 +171,7 @@ class ProcessingHealthDeclaration:
 
 
 @dataclass(frozen=True)
-class ProjectProcessingDeclaration:
+class ProjectProcessingDeclaration(DueWorkScheduling):
     """One validated gate-7 declaration that enables project processing.
 
     Processing reads models, so its bounds differ from the read-only health
@@ -186,21 +181,9 @@ class ProjectProcessingDeclaration:
     authorized destinations stay empty and concurrency stays one.
     """
 
-    project_id: int
-    configuration_version: str
+    handler_key: ClassVar[str] = HANDLER_PROJECT_PROCESSING
+
     extractor_identity: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
 
     @classmethod
     def released_hourly(
@@ -232,7 +215,7 @@ class ProjectProcessingDeclaration:
 
 
 @dataclass(frozen=True)
-class RevisionReconciliationDeclaration:
+class RevisionReconciliationDeclaration(DueWorkScheduling):
     """One validated gate-7 declaration that enables automatic revision work.
 
     Revision reconciliation is deterministic — it converges on an already-produced
@@ -245,22 +228,10 @@ class RevisionReconciliationDeclaration:
     Authorized destinations stay empty and concurrency stays one.
     """
 
-    project_id: int
-    configuration_version: str
+    handler_key: ClassVar[str] = HANDLER_REVISION_RECONCILIATION
+
     matcher_identity: str
     support_rule_identity: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
 
     @classmethod
     def released_hourly(
@@ -293,361 +264,7 @@ class RevisionReconciliationDeclaration:
 
 
 @dataclass(frozen=True)
-class LocationDiscoveryDeclaration:
-    """One validated gate-7 declaration that enables one connected location (#350).
-
-    The adapter discovers and fetches; it reads no model, so ``model_token_budget``
-    is a declared zero (extraction of a registered document is the separate
-    project-processing pass). Scope names the one exact location the adapter may
-    reach — its stable ``location_id``, the deployed ``adapter_identity``, the
-    registered source/manifest identity, the concrete ``index_url``, and the
-    authorized host boundary no redirect may leave — plus the sealed-holdout flag
-    and every archive/resource limit. Missing or invalid configuration leaves the
-    adapter refused; credentials never widen this scope, and authorized
-    destinations stay empty.
-    """
-
-    project_id: int
-    configuration_version: str
-    location_id: str
-    adapter_identity: str
-    source_manifest_id: str
-    index_url: str
-    authorized_hosts: tuple[str, ...]
-    sealed: bool
-    nested_archive_depth: int
-    max_archive_compressed_mib: int
-    max_member_decompressed_mib: int
-    enumeration_limit: int
-    request_limit: int
-    document_limit: int
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-    rid_link_text: str | None = None
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        location_id: str,
-        adapter_identity: str,
-        source_manifest_id: str,
-        index_url: str,
-        authorized_hosts: tuple[str, ...],
-        sealed: bool = False,
-        starts_at: datetime,
-        rid_link_text: str | None = None,
-    ) -> "LocationDiscoveryDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            location_id=location_id,
-            adapter_identity=adapter_identity,
-            source_manifest_id=source_manifest_id,
-            index_url=index_url,
-            authorized_hosts=authorized_hosts,
-            sealed=sealed,
-            nested_archive_depth=2,
-            max_archive_compressed_mib=512,
-            max_member_decompressed_mib=128,
-            enumeration_limit=500,
-            request_limit=200,
-            document_limit=100,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=120,
-            claim_ttl_seconds=600,
-            deadline_seconds=300,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-            rid_link_text=rid_link_text,
-        )
-
-
-@dataclass(frozen=True)
-class AssignmentNotificationDeclaration:
-    """One validated gate-7 declaration that enables assignment-notification delivery.
-
-    Delivery reads no model, so its ``model_token_budget`` must be a declared
-    zero; instead it declares a positive ``notification_budget`` — the request
-    budget bounding how many sends one bounded pass may attempt. The declaration
-    also records the project and channel scope, dispatch cadence and timezone,
-    retry budget, missed-run handling, and retention. Missing or invalid
-    configuration leaves delivery refused and disabled; credentials or a wired
-    provider alone never enable it. The recipient/contact mapping is fixed for
-    this slice: a recipient resolves only through the verified-contact record for
-    the selected roster identity's principal.
-    """
-
-    project_id: int
-    configuration_version: str
-    channel: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-        channel: str = "email",
-        notification_budget: int = 500,
-    ) -> "AssignmentNotificationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            channel=channel,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=60,
-            claim_ttl_seconds=300,
-            deadline_seconds=120,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=notification_budget,
-        )
-
-
-@dataclass(frozen=True)
-class DueActionNotificationDeclaration:
-    """One validated gate-7 declaration that enables due-action delivery (#352).
-
-    This extends the assignment-notification declaration to the three derived
-    categories.  Beyond project/channel scope, cadence, timezone and date
-    boundary, retry, missed-run and retention, it declares the parameters the
-    derivation cannot invent: the ``urgent_overdue_days`` criterion for
-    escalation, the single ``escalation_roster_entry_id`` contact (``None`` leaves
-    escalation disabled and visible — never a substitute contact or an invented
-    urgency rule), and the daily-summary window (``summary_hour_utc`` and
-    ``summary_window_days``).  Like the assignment handler it reads no model, so
-    ``model_token_budget`` must be a declared zero and it declares a positive
-    ``notification_budget``.  Missing or invalid configuration leaves delivery
-    refused and disabled; a recipient still resolves only through the verified
-    contact for the accountable roster identity.
-    """
-
-    project_id: int
-    configuration_version: str
-    channel: str
-    urgent_overdue_days: int
-    escalation_roster_entry_id: int | None
-    summary_hour_utc: int
-    summary_window_days: int
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-        urgent_overdue_days: int = 3,
-        escalation_roster_entry_id: int | None = None,
-        summary_hour_utc: int = 13,
-        summary_window_days: int = 1,
-        channel: str = "email",
-        notification_budget: int = 500,
-    ) -> "DueActionNotificationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            channel=channel,
-            urgent_overdue_days=urgent_overdue_days,
-            escalation_roster_entry_id=escalation_roster_entry_id,
-            summary_hour_utc=summary_hour_utc,
-            summary_window_days=summary_window_days,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=60,
-            claim_ttl_seconds=300,
-            deadline_seconds=120,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=notification_budget,
-        )
-
-
-@dataclass(frozen=True)
-class DocumentNotificationDeclaration:
-    """One validated gate-7 declaration that enables document-notification delivery.
-
-    Delivery reads no model, so its ``model_token_budget`` must be a declared
-    zero; instead it declares a positive ``notification_budget`` — the request
-    budget bounding how many sends one bounded pass may attempt. The declaration
-    records the project and channel scope, dispatch cadence and timezone, retry
-    budget, missed-run handling, and retention. Missing or invalid configuration
-    leaves delivery refused and disabled; a committed transition still registers
-    its durable dispatch, but nothing is delivered until an authorized operator
-    records this gate-7 scope. Project, source, and subject scope are fixed for
-    this slice: the two approved categories over the recorded affected population,
-    reaching the typed current assignee and the original reviewer through their
-    verified-contact records only.
-    """
-
-    project_id: int
-    configuration_version: str
-    channel: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-        channel: str = "email",
-        notification_budget: int = 500,
-    ) -> "DocumentNotificationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            channel=channel,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=60,
-            claim_ttl_seconds=600,
-            deadline_seconds=300,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=notification_budget,
-        )
-
-
-@dataclass(frozen=True)
-class EventAdmissionReproofDeclaration:
-    """One validated gate-7 declaration that enables stale-class re-proof recovery.
-
-    Re-proof replays the policy's own recorded history (ADR-0050): it consults no
-    model, so ``model_token_budget`` must be a declared zero, never a silent one, and
-    it delivers nothing outward, so ``notification_budget`` is zero too. Scope names
-    the exact project and the three bound identities the replay is pinned to — the
-    unknown-scope ``policy_version``, its ``reason_version``, and the approved replay
-    population ``selection_rule`` (#324). ``clone_budget`` bounds the disposable clones
-    one attempt may consume. The lease and deadline are generous because a real replay
-    copies the database and rehearses migrations; concurrency stays one.
-    """
-
-    project_id: int
-    configuration_version: str
-    policy_version: str
-    reason_version: str
-    selection_rule: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-    clone_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        policy_version: str,
-        reason_version: str,
-        selection_rule: str,
-        starts_at: datetime,
-    ) -> "EventAdmissionReproofDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            policy_version=policy_version,
-            reason_version=reason_version,
-            selection_rule=selection_rule,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=2,
-            backoff_seconds=300,
-            claim_ttl_seconds=1800,
-            deadline_seconds=1800,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-            clone_budget=3,
-        )
-
-
-
-
-@dataclass(frozen=True)
-class EvidenceOutcomeCaptureDeclaration:
+class EvidenceOutcomeCaptureDeclaration(DueWorkScheduling):
     """One validated gate-7 declaration that enables cutoff-correct capture.
 
     The domain half of the contract — the exact frozen cohort, the sealed model
@@ -662,22 +279,10 @@ class EvidenceOutcomeCaptureDeclaration:
     destinations stay empty and concurrency stays one.
     """
 
-    project_id: int
-    configuration_version: str
+    handler_key: ClassVar[str] = HANDLER_EVIDENCE_OUTCOME_CAPTURE
+
     cohort_id: str
     observation_contract_sha256: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
 
     @classmethod
     def released_hourly(
@@ -703,360 +308,6 @@ class EvidenceOutcomeCaptureDeclaration:
             backoff_seconds=120,
             claim_ttl_seconds=600,
             deadline_seconds=300,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-
-@dataclass(frozen=True)
-class ReportPublicationDeclaration:
-    """One validated gate-7 declaration that enables scheduled report publication.
-
-    Publication renders a report and, when declared, prepares one external PDF;
-    it reads no model, so ``model_token_budget`` must be a declared zero and the
-    schedule is weekly rather than hourly.  Scope names the exact project, the
-    provenance mode the reading and any PDF are taken under, and whether an
-    external PDF is prepared for later human release — the output identity.  The
-    comparison predecessor is the last released report (ADR-0053), declared
-    explicitly so no replacement policy is chosen implicitly.  Authorized
-    destinations stay empty, concurrency stays one, and the notification budget
-    stays zero: this slice adds no delivery and no new notification category.
-    """
-
-    project_id: int
-    configuration_version: str
-    provenance_mode: str
-    prepare_external_pdf: bool
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    comparison_window_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_weekly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-        provenance_mode: str = "all-supported-sources",
-        prepare_external_pdf: bool = True,
-    ) -> "ReportPublicationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            provenance_mode=provenance_mode,
-            prepare_external_pdf=prepare_external_pdf,
-            starts_at=starts_at,
-            cadence="weekly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            comparison_window_policy="since_last_released",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=120,
-            claim_ttl_seconds=1800,
-            deadline_seconds=1800,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-@dataclass(frozen=True)
-class ConnectorPollingDeclaration:
-    """One validated gate-7 declaration that enables connector checkpoint polling.
-
-    Scope names the exact normalized ingress identity of #496: the customer and
-    channel that, with the project and the item's own identity and version,
-    make the delivery identity ADR-0083 fixes, plus the server-owned connector
-    the schedule may build and the one location it may reach.  Polling reads no
-    model, sends nothing, and writes only content-addressed bytes, so the model
-    and notification budgets must both be a declared zero and no destination is
-    authorized.
-    """
-
-    project_id: int
-    configuration_version: str
-    customer: str
-    channel: str
-    connector_identity: str
-    source_url: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        customer: str,
-        channel: str,
-        connector_identity: str,
-        source_url: str,
-        starts_at: datetime,
-    ) -> "ConnectorPollingDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            customer=customer,
-            channel=channel,
-            connector_identity=connector_identity,
-            source_url=source_url,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=120,
-            claim_ttl_seconds=900,
-            deadline_seconds=600,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-@dataclass(frozen=True)
-class DeltaGenerationDeclaration:
-    """One validated gate-7 declaration that enables Proposed Delta generation.
-
-    Scope names the project and the comparison rule the pass appends under, so
-    a later change to how values are compared is visible on every delta rather
-    than retroactive.  The pass reads no model and appends only through the
-    source-append command, so both budgets are a declared zero, concurrency
-    stays one, and no destination is authorized: it can propose a difference
-    and can never make one effective.
-    """
-
-    project_id: int
-    configuration_version: str
-    comparison_rule_version: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_hourly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        comparison_rule_version: str,
-        starts_at: datetime,
-    ) -> "DeltaGenerationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            comparison_rule_version=comparison_rule_version,
-            starts_at=starts_at,
-            cadence="hourly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=120,
-            claim_ttl_seconds=900,
-            deadline_seconds=600,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-@dataclass(frozen=True)
-class ReportPreparationDeclaration:
-    """One validated gate-7 declaration that enables the weekly change reading.
-
-    The reading counts one project's Proposed Delta lifecycle over the week and
-    writes nothing, so it is weekly rather than hourly, reads no model, and
-    authorizes no destination: what the change summary and weekly report are
-    rendered from is a reading, and releasing either stays a separate
-    designated-human act (ADR-0040, ADR-0086).
-    """
-
-    project_id: int
-    configuration_version: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_weekly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-    ) -> "ReportPreparationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            starts_at=starts_at,
-            cadence="weekly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=120,
-            claim_ttl_seconds=600,
-            deadline_seconds=300,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-@dataclass(frozen=True)
-class RetentionSweepDeclaration:
-    """One validated gate-7 declaration that enables the Class B TTL sweep.
-
-    ``authorized_by`` is the named person with authority under the customer
-    relationship who authorized this standing sweep (ADR-0080).  It is a
-    ``HumanPrincipal`` subject, not a role label, and it is the actor recorded
-    on every dry-run manifest and deletion receipt the sweep produces, so an
-    automatic expiry is still attributable to somebody.  The sweep reads no
-    model and sends nothing; it is weekly because the Class B TTL is measured
-    in days, not hours.
-    """
-
-    project_id: int
-    configuration_version: str
-    authorized_by: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_weekly(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        authorized_by: str,
-        starts_at: datetime,
-    ) -> "RetentionSweepDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            authorized_by=authorized_by,
-            starts_at=starts_at,
-            cadence="weekly",
-            timezone_name="UTC",
-            missed_run_policy="latest_only",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=300,
-            claim_ttl_seconds=1800,
-            deadline_seconds=1800,
-            concurrency_limit=1,
-            model_token_budget=0,
-            notification_budget=0,
-        )
-
-
-@dataclass(frozen=True)
-class ReleasePreparationDeclaration:
-    """One project's enabled preparation supervisor (#690).
-
-    ``cadence`` is ``on_request`` and that is not a cosmetic name: this
-    schedule owns the lease, retry and deadline terms one preparation runs
-    under, and produces no occurrence of its own. Occurrences are published,
-    one per ``ReleasePreparationRequest``, by ``enqueue_due_work`` calling the
-    contract's publisher — so a claim, a lease expiry and a retry all apply to
-    a single coordinator's request.
-
-    The lease is long because #529 renders a customer workbook between its
-    transactions, and the deadline sits inside it for the reason every other
-    effectful handler's does: work already committed is idempotent, and a
-    deadline overrun is recovered rather than duplicated.
-    """
-
-    project_id: int
-    configuration_version: str
-    starts_at: datetime
-    cadence: str
-    timezone_name: str
-    missed_run_policy: str
-    retention_days: int
-    max_attempts: int
-    backoff_seconds: int
-    claim_ttl_seconds: int
-    deadline_seconds: int
-    concurrency_limit: int
-    model_token_budget: int
-    notification_budget: int
-
-    @classmethod
-    def released_on_request(
-        cls,
-        *,
-        project_id: int,
-        configuration_version: str,
-        starts_at: datetime,
-    ) -> "ReleasePreparationDeclaration":
-        return cls(
-            project_id=project_id,
-            configuration_version=configuration_version,
-            starts_at=starts_at,
-            cadence="on_request",
-            timezone_name="UTC",
-            missed_run_policy="every_occurrence",
-            retention_days=3650,
-            max_attempts=3,
-            backoff_seconds=60,
-            claim_ttl_seconds=1800,
-            deadline_seconds=1500,
             concurrency_limit=1,
             model_token_budget=0,
             notification_budget=0,
@@ -1096,44 +347,163 @@ class DueWorkRunResult:
 
 
 @dataclass(frozen=True)
-class HandlerContract:
-    key: str
-    scope_kind: str
-    idempotency_contract: str
-    max_result_bytes: int
-    model_token_budget: int
-    notification_budget: int
-    declaration_type: type | None = None
-    configure: Callable[[Session, object, datetime], DueWorkSchedule] | None = None
-    # A read-only handler runs inside a `reading` session and returns a result
-    # dict the runtime finalizes. An effectful handler owns its own durable
-    # commits and instead takes an `EffectfulContext`; exactly one is set.
-    run: Callable[[Session, DueWorkSchedule, datetime], dict[str, Any]] | None = None
-    run_effectful: Callable[["EffectfulContext"], dict[str, Any]] | None = None
-    # A published handler has no cadence slot: its occurrences are created one
-    # per durable request by this hook, which `enqueue_due_work` calls instead
-    # of computing a due slot. The hook returns the occurrence keys it has, so
-    # the enqueue result names them exactly as a cadence occurrence is named.
-    publish: (
-        Callable[[Session, DueWorkSchedule, datetime], tuple[str, ...]] | None
-    ) = None
-
-
-@dataclass(frozen=True)
 class EffectfulContext:
     """What an effectful handler needs to own its durable work and be recovered.
 
     The handler commits its domain work through ``session_factory`` before the
     runtime finalizes the claim, so a stale-claim or deadline failure at finalize
-    only re-runs work that is already durable and idempotent.
+    only re-runs work that is already durable and idempotent. ``schedule`` is the
+    resolved schedule as data — the project, the configuration version, the
+    validated scope and the declared bounds — so a handler never re-opens a
+    session to read the row it was claimed for.
     """
 
     session_factory: Any
-    schedule: DueWorkSchedule
+    schedule: ResolvedSchedule
     claim: "DueWorkClaim"
     clock: "Clock"
-    registry: Mapping[str, "HandlerContract"]
+    registry: Mapping[str, HandlerRegistration]
 
+
+# The registration value every handler publishes. It was called
+# ``HandlerContract`` while it carried only the resource envelope and the
+# callable; the old name stays as an alias because in-process callers build
+# their own registry and pass it to `run_due_work_once`.
+HandlerContract = HandlerRegistration
+
+# Every handler a persisted row may select, and the module that publishes its
+# registration. This table is the server-owned registry: a row names a key in
+# it and nothing else, so it can never reach an arbitrary import. The modules
+# are resolved on first use rather than at import, so the runtime does not drag
+# fifteen feature modules (and their model clients) into every process that
+# enqueues work — and the four registrations the runtime publishes itself are
+# named the same way as the eleven that live with their handler.
+_SERVER_OWNED_HANDLERS: Mapping[str, tuple[str, str]] = MappingProxyType(
+    {
+        HANDLER_PROCESSING_HEALTH: (
+            "corridor.due_work",
+            "PROCESSING_HEALTH_REGISTRATION",
+        ),
+        HANDLER_PROJECT_PROCESSING: (
+            "corridor.due_work",
+            "PROJECT_PROCESSING_REGISTRATION",
+        ),
+        HANDLER_REVISION_RECONCILIATION: (
+            "corridor.due_work",
+            "REVISION_RECONCILIATION_REGISTRATION",
+        ),
+        HANDLER_EVIDENCE_OUTCOME_CAPTURE: (
+            "corridor.due_work",
+            "EVIDENCE_OUTCOME_CAPTURE_REGISTRATION",
+        ),
+        HANDLER_LOCATION_DISCOVERY: (
+            "corridor.location_discovery",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_ASSIGNMENT_NOTIFICATION: (
+            "corridor.notifications",
+            "ASSIGNMENT_DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_DUE_ACTION_NOTIFICATION: (
+            "corridor.notifications",
+            "DUE_ACTION_DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_DOCUMENT_NOTIFICATION: (
+            "corridor.document_notifications",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_EVENT_ADMISSION_REPROOF: (
+            "corridor.event_admission_reproof",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_REPORT_PUBLICATION: (
+            "corridor.report_publication",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_CONNECTOR_POLLING: (
+            "corridor.connector_polling",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_DELTA_GENERATION: (
+            "corridor.delta_generation",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_REPORT_PREPARATION: (
+            "corridor.report_preparation",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_RELEASE_PREPARATION: (
+            "corridor.release_preparation_supervisor",
+            "DUE_WORK_REGISTRATION",
+        ),
+        HANDLER_RETENTION_SWEEP: (
+            "corridor.retention_sweep",
+            "DUE_WORK_REGISTRATION",
+        ),
+    }
+)
+
+
+class _ServerOwnedRegistry(Mapping[str, HandlerRegistration]):
+    """The registry as a mapping, resolving each registration once, on demand."""
+
+    def __init__(self) -> None:
+        self._resolved: dict[str, HandlerRegistration] = {}
+
+    def __getitem__(self, key: str) -> HandlerRegistration:
+        registration = self._resolved.get(key)
+        if registration is None:
+            if key not in _SERVER_OWNED_HANDLERS:
+                raise KeyError(key)
+            module_name, attribute = _SERVER_OWNED_HANDLERS[key]
+            registration = getattr(import_module(module_name), attribute)
+            if registration.key != key:
+                raise DueWorkRefusal(
+                    "server-owned Due Work registration does not match its key"
+                )
+            self._resolved[key] = registration
+        return registration
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(_SERVER_OWNED_HANDLERS)
+
+    def __len__(self) -> int:
+        return len(_SERVER_OWNED_HANDLERS)
+
+
+HANDLER_REGISTRY: Mapping[str, HandlerRegistration] = _ServerOwnedRegistry()
+
+# The declarations that moved to their handlers, and the names callers still
+# import from the runtime. Resolved through the registry above rather than
+# re-imported here, so the compatibility name cannot drift from the handler's
+# own declaration and importing the runtime still imports no handler module.
+_MOVED_DECLARATIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "LocationDiscoveryDeclaration": HANDLER_LOCATION_DISCOVERY,
+        "AssignmentNotificationDeclaration": HANDLER_ASSIGNMENT_NOTIFICATION,
+        "DueActionNotificationDeclaration": HANDLER_DUE_ACTION_NOTIFICATION,
+        "DocumentNotificationDeclaration": HANDLER_DOCUMENT_NOTIFICATION,
+        "EventAdmissionReproofDeclaration": HANDLER_EVENT_ADMISSION_REPROOF,
+        "ReportPublicationDeclaration": HANDLER_REPORT_PUBLICATION,
+        "ConnectorPollingDeclaration": HANDLER_CONNECTOR_POLLING,
+        "DeltaGenerationDeclaration": HANDLER_DELTA_GENERATION,
+        "ReportPreparationDeclaration": HANDLER_REPORT_PREPARATION,
+        "ReleasePreparationDeclaration": HANDLER_RELEASE_PREPARATION,
+        "RetentionSweepDeclaration": HANDLER_RETENTION_SWEEP,
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve a moved declaration's old runtime name to the handler that owns it."""
+
+    handler_key = _MOVED_DECLARATIONS.get(name)
+    if handler_key is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    declaration_type = HANDLER_REGISTRY[handler_key].declaration_type
+    if declaration_type is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return declaration_type
 
 def _processing_health(
     session: Session,
@@ -1182,7 +552,7 @@ def _processing_health(
         "schema_version": "processing-health-result-v1",
         "project_id": project_id,
         "configuration_version": schedule.configuration_version,
-        "observed_at": _iso(observed_at),
+        "observed_at": iso_timestamp(observed_at),
         "health": health,
         "document_count": document_count,
         "failed_document_count": failed_document_count,
@@ -1202,13 +572,8 @@ def _project_processing_effectful(context: EffectfulContext) -> dict[str, Any]:
     from corridor.pipeline import production_extraction_routes
     from corridor.project_processing import process_project, summarize_pass
 
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-
+    project_id = context.schedule.project_id
+    configuration_version = context.schedule.configuration_version
     with production_extraction_routes() as select_route:
         result = process_project(
             context.session_factory,
@@ -1219,7 +584,7 @@ def _project_processing_effectful(context: EffectfulContext) -> dict[str, Any]:
     return summarize_pass(
         result,
         configuration_version=configuration_version,
-        observed_at=_aware_utc(context.clock.now()),
+        observed_at=aware_utc(context.clock.now()),
     )
 
 
@@ -1238,14 +603,9 @@ def _revision_reconciliation_effectful(context: EffectfulContext) -> dict[str, A
         summarize_revision_reconciliation,
     )
 
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        matcher_identity = schedule.scope_json.get("matcher_identity", "")
-
+    project_id = context.schedule.project_id
+    configuration_version = context.schedule.configuration_version
+    matcher_identity = context.schedule.scope.get("matcher_identity", "")
     result = reconcile_project_revisions(
         context.session_factory,
         project_id=project_id,
@@ -1255,247 +615,8 @@ def _revision_reconciliation_effectful(context: EffectfulContext) -> dict[str, A
     return summarize_revision_reconciliation(
         result,
         configuration_version=configuration_version,
-        observed_at=_aware_utc(context.clock.now()),
+        observed_at=aware_utc(context.clock.now()),
     )
-
-
-def _location_discovery_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Run one bounded discovery-and-fetch pass for a claimed occurrence (#350).
-
-    The pass commits its discovered references, fetch attempts, and any registered
-    Documents durably through the session factory; this wrapper only rebuilds the
-    server-owned location scope and resource budgets from the persisted schedule,
-    runs the pass over an ordinary HTTP client, and summarizes the result. It reads
-    no model — a registered document is handed to the standing project-processing
-    pass. Its own HTTP client is closed before the runtime finalizes the claim.
-    """
-
-    import httpx
-
-    from corridor.location_discovery import (
-        DiscoveryBudgets,
-        LocationScope,
-        discover_and_process,
-        summarize_discovery_pass,
-    )
-
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        scope_json = dict(schedule.scope_json)
-        deadline_seconds = schedule.deadline_seconds
-
-    scope = LocationScope(
-        location_id=scope_json["location_id"],
-        project_id=project_id,
-        index_url=scope_json["index_url"],
-        authorized_hosts=frozenset(scope_json["authorized_hosts"]),
-        sealed=bool(scope_json.get("sealed")),
-        source_manifest_id=scope_json["source_manifest_id"],
-        adapter_identity=scope_json["adapter_identity"],
-        rid_link_text=scope_json.get("rid_link_text"),
-    )
-    budgets = DiscoveryBudgets(
-        max_references=scope_json["enumeration_limit"],
-        max_requests=scope_json["request_limit"],
-        max_documents=scope_json["document_limit"],
-        nested_archive_depth=scope_json["nested_archive_depth"],
-        max_compressed_bytes=scope_json["max_archive_compressed_mib"] * 1024 * 1024,
-        max_decompressed_bytes=scope_json["max_member_decompressed_mib"] * 1024 * 1024,
-        time_budget_seconds=deadline_seconds,
-    )
-    client = httpx.Client(timeout=60.0)
-    try:
-        result = discover_and_process(
-            context.session_factory,
-            scope=scope,
-            budgets=budgets,
-            client=client,
-            clock=context.clock,
-        )
-    finally:
-        client.close()
-    return summarize_discovery_pass(
-        result,
-        configuration_version=configuration_version,
-        observed_at=_aware_utc(context.clock.now()),
-    )
-
-
-def _assignment_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Deliver a project's due assignment notifications for a claimed occurrence.
-
-    The pass commits each dispatch outcome durably through the session factory
-    and holds no transaction across the provider call; this wrapper only adapts
-    the runtime's claim into a ``deliver_project_assignment_notifications`` call
-    over the declared channel and request budget, and summarizes it into a
-    bounded receipt. It reads no model. The channel's adapter is resolved from
-    the notifications seam, which defaults to a non-sending adapter so completing
-    the code enables no real delivery.
-    """
-
-    from corridor import notifications
-
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        channel = schedule.scope_json.get("channel", "")
-        max_attempts = schedule.max_attempts
-        backoff_seconds = schedule.backoff_seconds
-        budget = schedule.notification_budget
-
-    adapter = notifications.resolve_delivery_adapter(channel)
-    return notifications.deliver_project_assignment_notifications(
-        context.session_factory,
-        project_id=project_id,
-        configuration_version=configuration_version,
-        channel=channel,
-        adapter=adapter,
-        clock=context.clock,
-        max_attempts=max_attempts,
-        backoff_seconds=backoff_seconds,
-        budget=budget,
-        owner=context.claim.runtime_owner,
-    )
-
-
-def _due_action_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Derive and deliver a project's due-action notifications for one tick (#352).
-
-    Each claimed tick re-derives the current soon/past-due conditions for the
-    whole subject population and converges them onto durable occurrences, then
-    sweeps the queued dispatches through the adapter — committing each dispatch
-    outcome durably and holding no transaction across the provider call.  The
-    daily summary is registered only on the one declared summary hour, keyed to
-    its exposed window, so a late or repeated tick neither backfills a missed day
-    nor replays history.  It reads no model, and the adapter defaults to a
-    non-sending capture so completing the code enables no real delivery.
-    """
-
-    from corridor import notifications
-
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        scope = dict(schedule.scope_json)
-        channel = scope.get("channel", "")
-        urgent_overdue_days = scope.get("urgent_overdue_days")
-        escalation_roster_entry_id = scope.get("escalation_roster_entry_id")
-        summary_hour_utc = scope.get("summary_hour_utc")
-        summary_window_days = scope.get("summary_window_days")
-        max_attempts = schedule.max_attempts
-        backoff_seconds = schedule.backoff_seconds
-        budget = schedule.notification_budget
-
-    now = _aware_utc(context.clock.now())
-    today = now.date()
-    register_summary = now.hour == summary_hour_utc
-    summary_window_end = today
-    summary_window_start = today - timedelta(days=summary_window_days - 1)
-
-    with context.session_factory() as registering:
-        with registering.begin():
-            notifications.register_due_action_notifications(
-                registering,
-                project_id=project_id,
-                configuration_version=configuration_version,
-                today=today,
-                urgent_overdue_days=urgent_overdue_days,
-                escalation_roster_entry_id=escalation_roster_entry_id,
-                channel=channel,
-                owner=context.claim.runtime_owner,
-                register_summary=register_summary,
-                summary_window_start=summary_window_start,
-                summary_window_end=summary_window_end,
-            )
-
-    adapter = notifications.resolve_delivery_adapter(channel)
-    return notifications.deliver_project_due_action_notifications(
-        context.session_factory,
-        project_id=project_id,
-        configuration_version=configuration_version,
-        channel=channel,
-        adapter=adapter,
-        clock=context.clock,
-        max_attempts=max_attempts,
-        backoff_seconds=backoff_seconds,
-        budget=budget,
-        urgent_overdue_days=urgent_overdue_days,
-        escalation_roster_entry_id=escalation_roster_entry_id,
-        owner=context.claim.runtime_owner,
-    )
-
-
-def _document_notification_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Discover and deliver a project's due document notifications (#353).
-
-    First, in its own committed transaction, it re-discovers the complete
-    authoritative affected population from committed state and registers any new
-    interruption occurrences idempotently — a rolled-back transition leaves
-    nothing, and a persistent condition converges on the existing rows. Then it
-    delivers the due dispatches, committing each outcome durably and holding no
-    transaction across the provider call. It reads no model, and the channel's
-    adapter is resolved from the shared notifications seam, which defaults to a
-    non-sending adapter so completing the code enables no real delivery.
-    """
-
-    from corridor import document_notifications, notifications
-
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        channel = schedule.scope_json.get("channel", "")
-        max_attempts = schedule.max_attempts
-        backoff_seconds = schedule.backoff_seconds
-        budget = schedule.notification_budget
-
-    with context.session_factory() as registering:
-        with registering.begin():
-            document_notifications.register_project_document_notifications(
-                registering,
-                project_id=project_id,
-                registered_by=context.claim.runtime_owner,
-            )
-
-    adapter = notifications.resolve_delivery_adapter(channel)
-    return document_notifications.deliver_project_document_notifications(
-        context.session_factory,
-        project_id=project_id,
-        configuration_version=configuration_version,
-        channel=channel,
-        adapter=adapter,
-        clock=context.clock,
-        max_attempts=max_attempts,
-        backoff_seconds=backoff_seconds,
-        budget=budget,
-        owner=context.claim.runtime_owner,
-    )
-
-
-def _event_admission_reproof_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Run one bounded stale-class re-proof for a claimed occurrence.
-
-    The recovery decision, the ADR-0050 replay, and the suspension-safe reactivation
-    all live in :mod:`corridor.event_admission_reproof`; this wrapper only adapts the
-    runtime's claim into that call. It holds no runtime transaction and no project
-    mutation lock across the replay — the replay owns its own short final mutation.
-    """
-
-    from corridor.event_admission_reproof import execute_scheduled_reproof
-
-    return execute_scheduled_reproof(context)
 
 
 def _evidence_outcome_capture_effectful(context: EffectfulContext) -> dict[str, Any]:
@@ -1511,349 +632,13 @@ def _evidence_outcome_capture_effectful(context: EffectfulContext) -> dict[str, 
 
     from corridor.evidence_investigator_capture import run_outcome_capture
 
-    with context.session_factory() as reading:
-        schedule = reading.get(DueWorkSchedule, context.claim.schedule_id)
-        if schedule is None:
-            raise DueWorkRefusal("Due Work schedule disappeared")
-        project_id = schedule.project_id
-        configuration_version = schedule.configuration_version
-        contract_sha256 = schedule.scope_json.get("observation_contract_sha256", "")
-
     return run_outcome_capture(
         context.session_factory,
-        project_id=project_id,
-        contract_sha256=contract_sha256,
-        configuration_version=configuration_version,
+        project_id=context.schedule.project_id,
+        contract_sha256=context.schedule.scope.get("observation_contract_sha256", ""),
+        configuration_version=context.schedule.configuration_version,
         clock=context.clock,
     )
-
-
-def _report_publication_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Retain one weekly reading and prepare its external PDF for a claimed slot.
-
-    The pass commits its retained reading and any prepared artifact durably
-    through the session factory and converges on the occurrence's one retained
-    row; this wrapper only adapts the runtime's claim into the publication call
-    and returns its bounded receipt. It reads no model.
-    """
-
-    from corridor.report_publication import execute_report_publication
-
-    return execute_report_publication(
-        context.session_factory,
-        occurrence_id=context.claim.occurrence_id,
-        schedule_id=context.claim.schedule_id,
-        clock=context.clock,
-    )
-
-
-def _connector_polling_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Take delivery of one connected location's changes for a claimed occurrence.
-
-    The pass stores every listed change in the content-addressed store, records
-    each delivery in the shared ledger, and only then records the advance its
-    cursor reached, so the checkpoint can never advance past an unstored change
-    or a transient failure (ADR-0083 as extended by ADR-0089). It reads no model
-    and holds no runtime transaction while fetching. The attempt identity is the
-    run identity the ledger and the advance are attributed to.
-    """
-
-    from corridor.connector_polling import execute_connector_polling
-
-    return execute_connector_polling(
-        context.session_factory,
-        schedule_id=context.claim.schedule_id,
-        clock=context.clock,
-        run_identity=context.claim.attempt_id,
-    )
-
-
-def _delta_generation_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Propose one project's new differences from its accepted record (#518).
-
-    The pass commits its Proposed Deltas durably through the session factory
-    before the runtime finalizes the claim, and appends only through the
-    source-append command, so it can never write an accepted value on any path
-    and a recovered re-run appends nothing that is already there.
-    """
-
-    from corridor.delta_generation import execute_delta_generation
-
-    return execute_delta_generation(
-        context.session_factory,
-        schedule_id=context.claim.schedule_id,
-        clock=context.clock,
-    )
-
-
-def _report_preparation(
-    session: Session,
-    schedule: DueWorkSchedule,
-    observed_at: datetime,
-) -> dict[str, Any]:
-    """Read one week of Proposed Delta lifecycle for the change summary (#488)."""
-
-    from corridor.report_preparation import execute_report_preparation
-
-    return execute_report_preparation(session, schedule, observed_at)
-
-
-def _retention_sweep_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Expire one project's due Class B intermediaries for a claimed occurrence.
-
-    The manifest, the hold and reachability rechecks, and the deletion permit
-    all stay in ``corridor.retention``; this wrapper only adapts the runtime's
-    claim into that sweep. A refusal comes back as an attention reading rather
-    than an exception, so a held or still-reachable candidate is visible in the
-    receipt instead of burning the occurrence's retries.
-    """
-
-    from corridor.retention_sweep import execute_retention_sweep
-
-    return execute_retention_sweep(
-        context.session_factory,
-        schedule_id=context.claim.schedule_id,
-        clock=context.clock,
-    )
-
-
-def _release_preparation_effectful(context: EffectfulContext) -> dict[str, Any]:
-    """Prepare the one issue this claimed occurrence names (#690).
-
-    The occurrence names exactly one ``ReleasePreparationRequest`` through its
-    publication, so the lease, the retry budget and the receipt all belong to
-    one coordinator's request. The supervisor resolves that request's retained
-    authorities, invokes #529's three phases through the session factory, and
-    records the finished attempt durably before the runtime finalizes the
-    claim; a worker that dies leaves the occurrence reclaimable and the retry
-    reuses the reading the request was already bound to.
-    """
-
-    from corridor.release_preparation_supervisor import (
-        execute_release_preparation,
-    )
-
-    return execute_release_preparation(
-        context.session_factory,
-        occurrence_id=context.claim.occurrence_id,
-        schedule_id=context.claim.schedule_id,
-        clock=context.clock,
-        runtime_owner=context.claim.runtime_owner,
-    )
-
-
-def _release_preparation_publish(
-    session: Session, schedule: DueWorkSchedule, now: datetime
-) -> tuple[str, ...]:
-    """Publish one occurrence for each of this project's unworked requests."""
-
-    from corridor.release_preparation_supervisor import (
-        publish_pending_preparation_requests,
-    )
-
-    return publish_pending_preparation_requests(session, schedule, now=now)
-
-
-HANDLER_REGISTRY: Mapping[str, HandlerContract] = MappingProxyType(
-    {
-        HANDLER_PROCESSING_HEALTH: HandlerContract(
-            key=HANDLER_PROCESSING_HEALTH,
-            scope_kind="one_project_stored_processing_facts",
-            idempotency_contract="read_only_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=ProcessingHealthDeclaration,
-            configure=lambda session, declaration, now: configure_processing_health(
-                session, declaration, now=now
-            ),
-            run=_processing_health,
-        ),
-        HANDLER_PROJECT_PROCESSING: HandlerContract(
-            key=HANDLER_PROJECT_PROCESSING,
-            scope_kind="one_registered_project_extraction",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=8192,
-            model_token_budget=_PROJECT_PROCESSING_TOKEN_CEILING,
-            notification_budget=0,
-            declaration_type=ProjectProcessingDeclaration,
-            configure=lambda session, declaration, now: configure_project_processing(
-                session, declaration, now=now
-            ),
-            run_effectful=_project_processing_effectful,
-        ),
-        HANDLER_REVISION_RECONCILIATION: HandlerContract(
-            key=HANDLER_REVISION_RECONCILIATION,
-            scope_kind="one_registered_project_revision",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=RevisionReconciliationDeclaration,
-            configure=lambda session, declaration, now: configure_revision_reconciliation(
-                session, declaration, now=now
-            ),
-            run_effectful=_revision_reconciliation_effectful,
-        ),
-        HANDLER_LOCATION_DISCOVERY: HandlerContract(
-            key=HANDLER_LOCATION_DISCOVERY,
-            scope_kind="one_connected_location",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=LocationDiscoveryDeclaration,
-            configure=lambda session, declaration, now: configure_location_discovery(
-                session, declaration, now=now
-            ),
-            run_effectful=_location_discovery_effectful,
-        ),
-        HANDLER_ASSIGNMENT_NOTIFICATION: HandlerContract(
-            key=HANDLER_ASSIGNMENT_NOTIFICATION,
-            scope_kind="one_project_assignment_notifications",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=_ASSIGNMENT_NOTIFICATION_BUDGET_CEILING,
-            declaration_type=AssignmentNotificationDeclaration,
-            configure=lambda session, declaration, now: configure_assignment_notification(
-                session, declaration, now=now
-            ),
-            run_effectful=_assignment_notification_effectful,
-        ),
-        HANDLER_DUE_ACTION_NOTIFICATION: HandlerContract(
-            key=HANDLER_DUE_ACTION_NOTIFICATION,
-            scope_kind="one_project_due_action_notifications",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=_DUE_ACTION_NOTIFICATION_BUDGET_CEILING,
-            declaration_type=DueActionNotificationDeclaration,
-            configure=lambda session, declaration, now: configure_due_action_notification(
-                session, declaration, now=now
-            ),
-            run_effectful=_due_action_notification_effectful,
-        ),
-        HANDLER_DOCUMENT_NOTIFICATION: HandlerContract(
-            key=HANDLER_DOCUMENT_NOTIFICATION,
-            scope_kind="one_project_document_notifications",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=_DOCUMENT_NOTIFICATION_BUDGET_CEILING,
-            declaration_type=DocumentNotificationDeclaration,
-            configure=lambda session, declaration, now: configure_document_notification(
-                session, declaration, now=now
-            ),
-            run_effectful=_document_notification_effectful,
-        ),
-        HANDLER_EVENT_ADMISSION_REPROOF: HandlerContract(
-            key=HANDLER_EVENT_ADMISSION_REPROOF,
-            scope_kind="one_project_event_admission_class",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=EventAdmissionReproofDeclaration,
-            configure=lambda session, declaration, now: configure_event_admission_reproof(
-                session, declaration, now=now
-            ),
-            run_effectful=_event_admission_reproof_effectful,
-        ),
-        HANDLER_EVIDENCE_OUTCOME_CAPTURE: HandlerContract(
-            key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-            scope_kind="one_declared_capture_cohort",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=EvidenceOutcomeCaptureDeclaration,
-            configure=lambda session, declaration, now: configure_evidence_outcome_capture(
-                session, declaration, now=now
-            ),
-            run_effectful=_evidence_outcome_capture_effectful,
-        ),
-        HANDLER_REPORT_PUBLICATION: HandlerContract(
-            key=HANDLER_REPORT_PUBLICATION,
-            scope_kind="one_project_scheduled_report_publication",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=ReportPublicationDeclaration,
-            configure=lambda session, declaration, now: configure_report_publication(
-                session, declaration, now=now
-            ),
-            run_effectful=_report_publication_effectful,
-        ),
-        HANDLER_CONNECTOR_POLLING: HandlerContract(
-            key=HANDLER_CONNECTOR_POLLING,
-            scope_kind="one_declared_pull_connector",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=ConnectorPollingDeclaration,
-            configure=lambda session, declaration, now: configure_connector_polling(
-                session, declaration, now=now
-            ),
-            run_effectful=_connector_polling_effectful,
-        ),
-        HANDLER_DELTA_GENERATION: HandlerContract(
-            key=HANDLER_DELTA_GENERATION,
-            scope_kind="one_project_proposed_delta_generation",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=DeltaGenerationDeclaration,
-            configure=lambda session, declaration, now: configure_delta_generation(
-                session, declaration, now=now
-            ),
-            run_effectful=_delta_generation_effectful,
-        ),
-        HANDLER_REPORT_PREPARATION: HandlerContract(
-            key=HANDLER_REPORT_PREPARATION,
-            scope_kind="one_project_change_summary_reading",
-            idempotency_contract="read_only_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=ReportPreparationDeclaration,
-            configure=lambda session, declaration, now: configure_report_preparation(
-                session, declaration, now=now
-            ),
-            run=_report_preparation,
-        ),
-        HANDLER_RELEASE_PREPARATION: HandlerContract(
-            key=HANDLER_RELEASE_PREPARATION,
-            scope_kind="one_confirmed_preparation_request",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=ReleasePreparationDeclaration,
-            configure=lambda session, declaration, now: configure_release_preparation(
-                session, declaration, now=now
-            ),
-            run_effectful=_release_preparation_effectful,
-            publish=_release_preparation_publish,
-        ),
-        HANDLER_RETENTION_SWEEP: HandlerContract(
-            key=HANDLER_RETENTION_SWEEP,
-            scope_kind="one_project_class_b_intermediaries",
-            idempotency_contract="at_least_once_reconcilable",
-            max_result_bytes=4096,
-            model_token_budget=0,
-            notification_budget=0,
-            declaration_type=RetentionSweepDeclaration,
-            configure=lambda session, declaration, now: configure_retention_sweep(
-                session, declaration, now=now
-            ),
-            run_effectful=_retention_sweep_effectful,
-        ),
-    }
-)
 
 
 def configure_processing_health(
@@ -1864,20 +649,7 @@ def configure_processing_health(
 ) -> DueWorkSchedule:
     """Validate and retain one enabled gate-7 processing-health declaration."""
 
-    configuration = _validated_health_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_PROCESSING_HEALTH,
-        configuration=configuration,
-        scope={"project_id": declaration.project_id},
-        input_identity={
-            "handler": HANDLER_PROCESSING_HEALTH,
-            "project_id": declaration.project_id,
-            "source": "stored_processing_facts-v1",
-        },
-    )
+    return _configure(session, declaration, HANDLER_PROCESSING_HEALTH, now=now)
 
 
 def configure_project_processing(
@@ -1886,32 +658,9 @@ def configure_project_processing(
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 project-processing declaration.
+    """Validate and retain one enabled gate-7 project-processing declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written; model credentials alone never enable a project sweep. Enabling a
-    new configuration disables the project's prior processing schedule while
-    retaining it for audit.
-    """
-
-    configuration = _validated_processing_declaration(declaration)
-    scope = {
-        "project_id": declaration.project_id,
-        "extractor_identity": declaration.extractor_identity,
-    }
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_PROJECT_PROCESSING,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_PROJECT_PROCESSING,
-            "project_id": declaration.project_id,
-            "extractor_identity": declaration.extractor_identity,
-        },
-    )
+    return _configure(session, declaration, HANDLER_PROJECT_PROCESSING, now=now)
 
 
 def configure_revision_reconciliation(
@@ -1920,216 +669,64 @@ def configure_revision_reconciliation(
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 revision-reconciliation declaration.
+    """Validate and retain one enabled gate-7 revision-reconciliation declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written; a deterministic handler still requires an explicit gate-7 declaration
-    before it may run. Enabling a new configuration disables the project's prior
-    revision schedule while retaining it for audit.
-    """
-
-    configuration = _validated_revision_reconciliation_declaration(declaration)
-    scope = {
-        "project_id": declaration.project_id,
-        "matcher_identity": declaration.matcher_identity,
-        "support_rule_identity": declaration.support_rule_identity,
-    }
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_REVISION_RECONCILIATION,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_REVISION_RECONCILIATION,
-            "project_id": declaration.project_id,
-            "matcher_identity": declaration.matcher_identity,
-            "support_rule_identity": declaration.support_rule_identity,
-        },
-    )
+    return _configure(session, declaration, HANDLER_REVISION_RECONCILIATION, now=now)
 
 
 def configure_location_discovery(
     session: Session,
-    declaration: LocationDiscoveryDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 connected-location declaration (#350).
+    """Validate and retain one enabled gate-7 connected-location declaration (#350)."""
 
-    Missing, invalid, or incomplete configuration leaves the adapter refused and no
-    schedule written; a location's credentials never authorize a broader scan.
-    Enabling a new configuration disables the project's prior location schedule for
-    the same location while retaining it for audit.
-    """
-
-    configuration = _validated_location_discovery_declaration(declaration)
-    scope = configuration["scope"]
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_LOCATION_DISCOVERY,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_LOCATION_DISCOVERY,
-            "project_id": declaration.project_id,
-            "location_id": declaration.location_id,
-            "adapter_identity": declaration.adapter_identity,
-            "source_manifest_id": declaration.source_manifest_id,
-        },
-        disable_same_input_only=True,
-    )
+    return _configure(session, declaration, HANDLER_LOCATION_DISCOVERY, now=now)
 
 
 def configure_assignment_notification(
     session: Session,
-    declaration: AssignmentNotificationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 assignment-notification declaration.
+    """Validate and retain one enabled gate-7 assignment-notification declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written, so a committed assignment still registers its durable dispatch but
-    nothing is delivered until an authorized operator records this gate-7 scope.
-    Enabling a new configuration disables the project's prior notification
-    schedule while retaining it for audit.
-    """
-
-    configuration = _validated_assignment_notification_declaration(declaration)
-    scope = {"project_id": declaration.project_id, "channel": declaration.channel}
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_ASSIGNMENT_NOTIFICATION,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_ASSIGNMENT_NOTIFICATION,
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-    )
+    return _configure(session, declaration, HANDLER_ASSIGNMENT_NOTIFICATION, now=now)
 
 
 def configure_due_action_notification(
     session: Session,
-    declaration: DueActionNotificationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 due-action-notification declaration.
+    """Validate and retain one enabled gate-7 due-action-notification declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written, so nothing is derived or delivered until an authorized operator
-    records this gate-7 scope.  A declared escalation contact must be an active
-    roster identity of this project; leaving it unset is valid and leaves
-    escalation visibly disabled.  Enabling a new configuration disables the
-    project's prior due-action schedule while retaining it for audit.
-    """
-
-    configuration = _validated_due_action_notification_declaration(declaration)
-    if session.get(Project, declaration.project_id) is None:
-        raise DueWorkRefusal(f"project {declaration.project_id} does not exist")
-    if declaration.escalation_roster_entry_id is not None:
-        roster = session.get(
-            ProjectRosterEntry, declaration.escalation_roster_entry_id
-        )
-        if (
-            roster is None
-            or roster.project_id != declaration.project_id
-            or not roster.active
-        ):
-            raise DueWorkRefusal(
-                "the escalation contact must be an active project roster identity"
-            )
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_DUE_ACTION_NOTIFICATION,
-        configuration=configuration,
-        scope=configuration["scope"],
-        input_identity={
-            "handler": HANDLER_DUE_ACTION_NOTIFICATION,
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-    )
+    return _configure(session, declaration, HANDLER_DUE_ACTION_NOTIFICATION, now=now)
 
 
 def configure_document_notification(
     session: Session,
-    declaration: DocumentNotificationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 document-notification declaration.
+    """Validate and retain one enabled gate-7 document-notification declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written, so a committed transition still registers its durable occurrences
-    but nothing is delivered until an authorized operator records this gate-7
-    scope. Enabling a new configuration disables the project's prior document
-    notification schedule while retaining it for audit.
-    """
-
-    configuration = _validated_document_notification_declaration(declaration)
-    scope = {"project_id": declaration.project_id, "channel": declaration.channel}
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_DOCUMENT_NOTIFICATION,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_DOCUMENT_NOTIFICATION,
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-    )
+    return _configure(session, declaration, HANDLER_DOCUMENT_NOTIFICATION, now=now)
 
 
 def configure_event_admission_reproof(
     session: Session,
-    declaration: EventAdmissionReproofDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 stale-class re-proof declaration.
+    """Validate and retain one enabled gate-7 stale-class re-proof declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written; neither a prior activation nor deployed credentials enable recovery
-    automatically. Enabling a new configuration disables the project's prior re-proof
-    schedule while retaining it for audit.
-    """
-
-    configuration = _validated_event_admission_reproof_declaration(declaration)
-    scope = {
-        "project_id": declaration.project_id,
-        "policy_version": declaration.policy_version,
-        "reason_version": declaration.reason_version,
-        "selection_rule": declaration.selection_rule,
-    }
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_EVENT_ADMISSION_REPROOF,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_EVENT_ADMISSION_REPROOF,
-            "project_id": declaration.project_id,
-            "policy_version": declaration.policy_version,
-            "reason_version": declaration.reason_version,
-            "selection_rule": declaration.selection_rule,
-        },
-    )
+    return _configure(session, declaration, HANDLER_EVENT_ADMISSION_REPROOF, now=now)
 
 
 def configure_evidence_outcome_capture(
@@ -2138,205 +735,75 @@ def configure_evidence_outcome_capture(
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 outcome-capture declaration.
+    """Validate and retain one enabled gate-7 outcome-capture declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written; an elapsed interval or the mere existence of frozen cases never
-    enables capture. The referenced observation contract is declared and
-    validated separately in ``evidence_investigator_capture``; this seam only
-    binds the operational envelope to the project, cohort, and contract identity.
-    Enabling a new configuration disables the cohort's prior capture schedule
-    while retaining it for audit.
-    """
-
-    configuration = _validated_evidence_outcome_capture_declaration(declaration)
-    scope = {
-        "project_id": declaration.project_id,
-        "cohort_id": declaration.cohort_id,
-        "observation_contract_sha256": declaration.observation_contract_sha256,
-    }
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
-            "project_id": declaration.project_id,
-            "cohort_id": declaration.cohort_id,
-            "observation_contract_sha256": declaration.observation_contract_sha256,
-        },
-        disable_same_input_only=True,
-    )
+    return _configure(session, declaration, HANDLER_EVIDENCE_OUTCOME_CAPTURE, now=now)
 
 
 def configure_report_publication(
     session: Session,
-    declaration: ReportPublicationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 report-publication declaration.
+    """Validate and retain one enabled gate-7 report-publication declaration."""
 
-    Missing or invalid configuration leaves the handler refused and no schedule
-    written; a schedule is never enabled with silent production defaults.
-    Enabling a new configuration disables the project's prior publication
-    schedule for this output identity while retaining it for audit.
-    """
-
-    configuration = _validated_report_publication_declaration(declaration)
-    scope = {
-        "project_id": declaration.project_id,
-        "provenance_mode": declaration.provenance_mode,
-        "prepare_external_pdf": declaration.prepare_external_pdf,
-    }
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_REPORT_PUBLICATION,
-        configuration=configuration,
-        scope=scope,
-        input_identity={
-            "handler": HANDLER_REPORT_PUBLICATION,
-            "project_id": declaration.project_id,
-            "provenance_mode": declaration.provenance_mode,
-            "prepare_external_pdf": declaration.prepare_external_pdf,
-        },
-        disable_same_input_only=True,
-    )
+    return _configure(session, declaration, HANDLER_REPORT_PUBLICATION, now=now)
 
 
 def configure_connector_polling(
     session: Session,
-    declaration: ConnectorPollingDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
-    """Validate and retain one enabled gate-7 connector-polling declaration.
+    """Validate and retain one enabled gate-7 connector-polling declaration."""
 
-    Enabling a new configuration disables the project's prior schedule for this
-    exact ingress identity while retaining it for audit; a second connector or
-    a second location on the same project is a different identity and keeps its
-    own schedule and its own checkpoint.
-    """
-
-    configuration = _validated_connector_polling_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_CONNECTOR_POLLING,
-        configuration=configuration,
-        scope=configuration["scope"],
-        input_identity={
-            "handler": HANDLER_CONNECTOR_POLLING,
-            "project_id": declaration.project_id,
-            "customer": declaration.customer,
-            "channel": declaration.channel,
-            "connector_identity": declaration.connector_identity,
-            "source_url": declaration.source_url,
-        },
-        disable_same_input_only=True,
-    )
+    return _configure(session, declaration, HANDLER_CONNECTOR_POLLING, now=now)
 
 
 def configure_delta_generation(
     session: Session,
-    declaration: DeltaGenerationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
     """Validate and retain one enabled gate-7 delta-generation declaration."""
 
-    configuration = _validated_delta_generation_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_DELTA_GENERATION,
-        configuration=configuration,
-        scope=configuration["scope"],
-        input_identity={
-            "handler": HANDLER_DELTA_GENERATION,
-            "project_id": declaration.project_id,
-            "comparison_rule_version": declaration.comparison_rule_version,
-        },
-    )
+    return _configure(session, declaration, HANDLER_DELTA_GENERATION, now=now)
 
 
 def configure_report_preparation(
     session: Session,
-    declaration: ReportPreparationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
     """Validate and retain one enabled gate-7 report-preparation declaration."""
 
-    configuration = _validated_report_preparation_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_REPORT_PREPARATION,
-        configuration=configuration,
-        scope=configuration["scope"],
-        input_identity={
-            "handler": HANDLER_REPORT_PREPARATION,
-            "project_id": declaration.project_id,
-            "source": "proposed_delta_lifecycle-v1",
-        },
-    )
+    return _configure(session, declaration, HANDLER_REPORT_PREPARATION, now=now)
 
 
 def configure_release_preparation(
     session: Session,
-    declaration: ReleasePreparationDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
     """Validate and retain one project's enabled preparation supervisor."""
 
-    configuration = _validated_release_preparation_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_RELEASE_PREPARATION,
-        configuration=configuration,
-        scope={"project_id": declaration.project_id},
-        input_identity={
-            "handler": HANDLER_RELEASE_PREPARATION,
-            "project_id": declaration.project_id,
-            "source": "confirmed_preparation_requests-v1",
-        },
-    )
+    return _configure(session, declaration, HANDLER_RELEASE_PREPARATION, now=now)
 
 
 def configure_retention_sweep(
     session: Session,
-    declaration: RetentionSweepDeclaration,
+    declaration: object,
     *,
     now: datetime,
 ) -> DueWorkSchedule:
     """Validate and retain one enabled gate-7 Class B retention-sweep declaration."""
 
-    configuration = _validated_retention_sweep_declaration(declaration)
-    return _retain_due_work_schedule(
-        session,
-        declaration,
-        now=now,
-        handler_key=HANDLER_RETENTION_SWEEP,
-        configuration=configuration,
-        scope=configuration["scope"],
-        input_identity={
-            "handler": HANDLER_RETENTION_SWEEP,
-            "project_id": declaration.project_id,
-            "retention_class": "class_b",
-        },
-    )
+    return _configure(session, declaration, HANDLER_RETENTION_SWEEP, now=now)
 
 
 def configure_due_work(
@@ -2344,36 +811,75 @@ def configure_due_work(
     declaration: object,
     *,
     now: datetime,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
 ) -> DueWorkSchedule:
-    """Validate and retain any server-owned Due Work declaration."""
-    for contract in HANDLER_REGISTRY.values():
-        if (
-            contract.declaration_type is not None
-            and isinstance(declaration, contract.declaration_type)
-            and contract.configure is not None
-        ):
-            return contract.configure(session, declaration, now)
-    raise DueWorkRefusal("Due Work declaration is not server-owned")
+    """Validate and retain any server-owned Due Work declaration.
+
+    A declaration says which handler it is for, and the registry says whether
+    that handler is server-owned; nothing else about the object is trusted.
+    """
+
+    return _configure(
+        session,
+        declaration,
+        getattr(declaration, "handler_key", ""),
+        now=now,
+        registry=registry,
+    )
+
+
+def _configure(
+    session: Session,
+    declaration: object,
+    handler_key: str,
+    *,
+    now: datetime,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
+) -> DueWorkSchedule:
+    """Validate one declaration through its own registration, and retain it.
+
+    Every ``configure_`` seam above is this one path: the handler owns what its
+    declaration means, and the runtime owns idempotency, supersession, and
+    persistence. A refused declaration writes no schedule.
+    """
+
+    registration = _handler(handler_key, registry)
+    if (
+        registration.declaration_type is None
+        or not isinstance(declaration, registration.declaration_type)
+        or getattr(declaration, "handler_key", "") != handler_key
+        or registration.validate is None
+    ):
+        raise DueWorkRefusal("Due Work declaration is not server-owned")
+    validated = registration.validate(declaration)
+    if registration.configure_check is not None:
+        registration.configure_check(session, declaration)
+    return _retain_due_work_schedule(
+        session,
+        declaration,
+        now=now,
+        handler_key=handler_key,
+        validated=validated,
+        disable_same_input_only=registration.disable_same_input_only,
+    )
 
 
 def _retain_due_work_schedule(
     session: Session,
-    declaration: object,
+    declaration: DueWorkScheduling,
     *,
     now: datetime,
     handler_key: str,
-    configuration: dict[str, Any],
-    scope: dict[str, Any],
-    input_identity: dict[str, Any],
+    validated: ValidatedDeclaration,
     disable_same_input_only: bool = False,
 ) -> DueWorkSchedule:
     """Own idempotency, supersession, and persistence for every declaration."""
-    now = _aware_utc(now)
+    now = aware_utc(now)
     project_id = declaration.project_id
     if session.get(Project, project_id) is None:
         raise DueWorkRefusal(f"project {project_id} does not exist")
-    configuration_sha256 = _sha256(configuration)
-    input_identity_sha256 = _sha256(input_identity)
+    configuration_sha256 = _sha256(validated.configuration)
+    input_identity_sha256 = _sha256(validated.input_identity)
     existing = session.scalar(
         select(DueWorkSchedule).where(
             DueWorkSchedule.project_id == project_id,
@@ -2407,8 +913,8 @@ def _retain_due_work_schedule(
         project_id=project_id,
         handler_key=handler_key,
         configuration_version=declaration.configuration_version,
-        scope_json=scope,
-        configuration_json=configuration,
+        scope_json=validated.scope,
+        configuration_json=validated.configuration,
         configuration_sha256=configuration_sha256,
         input_identity_sha256=input_identity_sha256,
         starts_at=declaration.starts_at,
@@ -2430,10 +936,15 @@ def _retain_due_work_schedule(
     return schedule
 
 
-def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurrence, ...]:
+def enqueue_due_work(
+    session: Session,
+    *,
+    now: datetime,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
+) -> tuple[DueWorkOccurrence, ...]:
     """Coalesce the latest due occurrence for every active validated schedule."""
 
-    now = _aware_utc(now)
+    now = aware_utc(now)
     schedules = session.scalars(
         select(DueWorkSchedule)
         .where(
@@ -2444,8 +955,8 @@ def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurre
     ).all()
     keys: list[str] = []
     for schedule in schedules:
-        _validate_stored_schedule(schedule)
-        contract = HANDLER_REGISTRY[schedule.handler_key]
+        _validate_stored_schedule(schedule, registry)
+        contract = registry[schedule.handler_key]
         if contract.publish is not None:
             # A published handler has no slot to coalesce onto: it creates one
             # occurrence per durable request, so a request that arrived while
@@ -2462,7 +973,7 @@ def enqueue_due_work(session: Session, *, now: datetime) -> tuple[DueWorkOccurre
                 "configuration_version": schedule.configuration_version,
                 "configuration_sha256": schedule.configuration_sha256,
                 "input_identity_sha256": schedule.input_identity_sha256,
-                "due_at": _iso(due_at),
+                "due_at": iso_timestamp(due_at),
             }
         )
         keys.append(occurrence_key)
@@ -2500,10 +1011,11 @@ def claim_due_work(
     *,
     now: datetime,
     owner: str,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
 ) -> DueWorkClaim | None:
     """Claim one ready occurrence, recovering or retaining abandoned attempts."""
 
-    now = _aware_utc(now)
+    now = aware_utc(now)
     _validate_owner(owner)
     candidates = session.scalars(
         select(DueWorkOccurrence)
@@ -2530,7 +1042,7 @@ def claim_due_work(
         schedule = session.get(DueWorkSchedule, occurrence.scheduled_job_id)
         if schedule is None:
             continue
-        _validate_stored_schedule(schedule)
+        _validate_stored_schedule(schedule, registry)
         if occurrence.state == "claimed":
             if occurrence.attempt_count >= schedule.max_attempts:
                 _record_abandoned_failure(session, occurrence, schedule, now=now)
@@ -2580,12 +1092,13 @@ def complete_due_work(
     *,
     handler_result: dict[str, Any],
     now: datetime,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
 ) -> DueWorkRunResult:
     """Finalize a live claim with one validated append-only completed receipt."""
 
-    now = _aware_utc(now)
+    now = aware_utc(now)
     occurrence, schedule = _locked_live_claim(session, claim, now=now)
-    contract = _handler(schedule.handler_key)
+    contract = _handler(schedule.handler_key, registry)
     _validate_handler_result(contract, handler_result)
     safe_next_step = _safe_next_step(contract, handler_result)
     receipt = _append_receipt(
@@ -2614,7 +1127,7 @@ def fail_due_work(
 ) -> DueWorkRunResult:
     """Retain a failed attempt and schedule bounded retry or terminal failure."""
 
-    now = _aware_utc(now)
+    now = aware_utc(now)
     occurrence, schedule = _locked_live_claim(session, claim, now=now)
     if not error_code or len(error_code) > 64:
         raise DueWorkRefusal("Due Work error code is invalid")
@@ -2646,14 +1159,16 @@ def run_due_work_once(
     *,
     clock: Clock,
     owner: str,
-    registry: Mapping[str, HandlerContract] = HANDLER_REGISTRY,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
 ) -> DueWorkRunResult | None:
     """Claim, execute outside the claim transaction, and reconcile one attempt."""
 
-    started_at = _aware_utc(clock.now())
+    started_at = aware_utc(clock.now())
     with session_factory() as claiming:
         with claiming.begin():
-            claim = claim_due_work(claiming, now=started_at, owner=owner)
+            claim = claim_due_work(
+                claiming, now=started_at, owner=owner, registry=registry
+            )
     if claim is None:
         return None
 
@@ -2672,6 +1187,7 @@ def run_due_work_once(
                 if schedule is None or schedule.handler_key not in registry:
                     raise DueWorkRefusal("claimed handler is not server-owned")
                 contract = registry[schedule.handler_key]
+                resolved = resolved_schedule(schedule)
                 if contract.run_effectful is None:
                     # Read-only handler: run inside the reading transaction and
                     # let the runtime finalize its result.
@@ -2682,13 +1198,13 @@ def run_due_work_once(
                 handler_result = contract.run_effectful(
                     EffectfulContext(
                         session_factory=session_factory,
-                        schedule=schedule,
+                        schedule=resolved,
                         claim=claim,
                         clock=clock,
                         registry=registry,
                     )
                 )
-            finished_at = _aware_utc(clock.now())
+            finished_at = aware_utc(clock.now())
             with session_factory() as finalizing:
                 with finalizing.begin():
                     if finished_at > claim.deadline_at:
@@ -2709,12 +1225,13 @@ def run_due_work_once(
                             claim,
                             handler_result=handler_result,
                             now=finished_at,
+                            registry=registry,
                         )
                     )
         except StaleDueWorkClaim:
             raise
         except Exception:
-            failed_at = _aware_utc(clock.now())
+            failed_at = aware_utc(clock.now())
             with session_factory() as finalizing:
                 with finalizing.begin():
                     return _logged_attempt(
@@ -2834,11 +1351,11 @@ def due_work_status(session: Session, *, project_id: int | None = None) -> dict[
                 "input_identity_sha256": schedule_by_id[
                     item.scheduled_job_id
                 ].input_identity_sha256,
-                "due_at": _iso(item.due_at),
+                "due_at": iso_timestamp(item.due_at),
                 "state": item.state,
                 "attempt_count": item.attempt_count,
                 "next_attempt_at": (
-                    _iso(item.next_attempt_at) if item.next_attempt_at else None
+                    iso_timestamp(item.next_attempt_at) if item.next_attempt_at else None
                 ),
                 "runtime_owner": item.owner,
                 "last_error_code": item.last_error_code,
@@ -2889,7 +1406,7 @@ def supervise_due_work(
         raise DueWorkRefusal("Due Work supervisor poll interval is invalid")
     completed_cycles = 0
     while not stop_requested():
-        tick_at = _aware_utc(clock.now())
+        tick_at = aware_utc(clock.now())
         with session_factory() as ticking:
             with ticking.begin():
                 enqueue_due_work(ticking, now=tick_at)
@@ -2909,1232 +1426,261 @@ def supervise_due_work(
 
 def _validated_health_declaration(
     declaration: ProcessingHealthDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("processing-health starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "processing-health supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 900
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("processing-health gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_PROCESSING_HEALTH,
-        "project_id": declaration.project_id,
-        "scope": {"project_id": declaration.project_id},
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "stored_processing_facts-v1",
+) -> ValidatedDeclaration:
+    starts_at = validate_scheduling(
+        declaration,
+        subject="processing-health",
+        claim_ttl_seconds=(30, 900),
+    )
+    scope = {"project_id": declaration.project_id}
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_PROCESSING_HEALTH,
+            scope=scope,
+            input_identity={
+                "kind": "stored_processing_facts-v1",
+                "project_id": declaration.project_id,
+            },
+            idempotency_contract="read_only_reconcilable",
+            starts_at=starts_at,
+        ),
+        input_identity={
+            "handler": HANDLER_PROCESSING_HEALTH,
             "project_id": declaration.project_id,
+            "source": "stored_processing_facts-v1",
         },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "read_only_reconcilable",
-    }
+    )
+
+
+def _stored_health_declaration(
+    stored: ResolvedSchedule,
+) -> ProcessingHealthDeclaration:
+    return ProcessingHealthDeclaration(**stored.scheduling_fields())
+
+
+PROCESSING_HEALTH_REGISTRATION = HandlerRegistration(
+    key=HANDLER_PROCESSING_HEALTH,
+    scope_kind="one_project_stored_processing_facts",
+    idempotency_contract="read_only_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=ProcessingHealthDeclaration,
+    validate=_validated_health_declaration,
+    stored_declaration=_stored_health_declaration,
+    run=_processing_health,
+)
 
 
 def _validated_processing_declaration(
     declaration: ProjectProcessingDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("project-processing starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.extractor_identity):
+) -> ValidatedDeclaration:
+    """Validate one project-processing declaration.
+
+    Missing or invalid configuration leaves the handler refused and no schedule
+    written; model credentials alone never enable a project sweep. Processing
+    reads models, so a positive spending budget must be declared explicitly
+    rather than left at a silent zero.
+    """
+
+    if not DECLARED_IDENTITY.fullmatch(declaration.extractor_identity):
         raise DueWorkRefusal("project-processing extractor identity is invalid")
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "project-processing supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and 1 <= declaration.model_token_budget <= _PROJECT_PROCESSING_TOKEN_CEILING
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal(
-            "project-processing gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_PROJECT_PROCESSING,
+    starts_at = validate_scheduling(
+        declaration,
+        subject="project-processing",
+        model_token_budget=(1, _PROJECT_PROCESSING_TOKEN_CEILING),
+    )
+    scope = {
         "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "extractor_identity": declaration.extractor_identity,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "registered_project_extraction-v1",
-            "project_id": declaration.project_id,
-            "extractor_identity": declaration.extractor_identity,
-        },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
+        "extractor_identity": declaration.extractor_identity,
     }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_PROJECT_PROCESSING,
+            scope=scope,
+            input_identity={
+                "kind": "registered_project_extraction-v1",
+                "project_id": declaration.project_id,
+                "extractor_identity": declaration.extractor_identity,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+        ),
+        input_identity={
+            "handler": HANDLER_PROJECT_PROCESSING,
+            "project_id": declaration.project_id,
+            "extractor_identity": declaration.extractor_identity,
+        },
+    )
+
+
+def _stored_processing_declaration(
+    stored: ResolvedSchedule,
+) -> ProjectProcessingDeclaration:
+    return ProjectProcessingDeclaration(
+        **stored.scheduling_fields(),
+        extractor_identity=stored.scope.get("extractor_identity", ""),
+    )
+
+
+PROJECT_PROCESSING_REGISTRATION = HandlerRegistration(
+    key=HANDLER_PROJECT_PROCESSING,
+    scope_kind="one_registered_project_extraction",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=8192,
+    model_token_budget=_PROJECT_PROCESSING_TOKEN_CEILING,
+    notification_budget=0,
+    declaration_type=ProjectProcessingDeclaration,
+    validate=_validated_processing_declaration,
+    stored_declaration=_stored_processing_declaration,
+    run_effectful=_project_processing_effectful,
+)
 
 
 def _validated_revision_reconciliation_declaration(
     declaration: RevisionReconciliationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "revision-reconciliation starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.matcher_identity):
+) -> ValidatedDeclaration:
+    """Validate one revision-reconciliation declaration.
+
+    A deterministic handler still requires an explicit gate-7 declaration
+    before it may run, and it authorizes no model spending: its budget must be
+    a declared zero, never a silent one.
+    """
+
+    if not DECLARED_IDENTITY.fullmatch(declaration.matcher_identity):
         raise DueWorkRefusal("revision-reconciliation matcher identity is invalid")
-    if not _POLICY_IDENTITY.fullmatch(declaration.support_rule_identity):
+    if not DECLARED_IDENTITY.fullmatch(declaration.support_rule_identity):
         raise DueWorkRefusal(
             "revision-reconciliation support rule identity is invalid"
         )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "revision-reconciliation supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal(
-            "revision-reconciliation gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_REVISION_RECONCILIATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "matcher_identity": declaration.matcher_identity,
-            "support_rule_identity": declaration.support_rule_identity,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "registered_project_revision-v1",
-            "project_id": declaration.project_id,
-            "matcher_identity": declaration.matcher_identity,
-            "support_rule_identity": declaration.support_rule_identity,
-        },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_location_discovery_declaration(
-    declaration: "LocationDiscoveryDeclaration",
-) -> dict[str, Any]:
-    from urllib.parse import urlparse
-
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("location-discovery starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _LOCATION_IDENTITY.fullmatch(declaration.location_id):
-        raise DueWorkRefusal("location-discovery location identity is invalid")
-    if not _EXTRACTOR_IDENTITY.fullmatch(declaration.adapter_identity):
-        raise DueWorkRefusal("location-discovery adapter identity is invalid")
-    if declaration.adapter_identity not in {
-        "http-index-v1",
-        "txdot-rid-box-v1",
-    }:
-        raise DueWorkRefusal("location-discovery adapter is not installed")
-    rid_link_text = (
-        declaration.rid_link_text.strip()
-        if isinstance(declaration.rid_link_text, str)
-        else None
+    starts_at = validate_scheduling(
+        declaration, subject="revision-reconciliation"
     )
-    if declaration.adapter_identity == "txdot-rid-box-v1" and (
-        not rid_link_text or len(rid_link_text) > 128
-    ):
-        raise DueWorkRefusal("location-discovery TxDOT RID link text is invalid")
-    if declaration.adapter_identity == "http-index-v1" and rid_link_text is not None:
-        raise DueWorkRefusal("http-index-v1 does not accept TxDOT RID link text")
-    if not _LOCATION_IDENTITY.fullmatch(declaration.source_manifest_id):
-        raise DueWorkRefusal("location-discovery source manifest identity is invalid")
-    hosts = tuple(dict.fromkeys(declaration.authorized_hosts))
-    if not hosts or any(not _LOCATION_HOST.fullmatch(host) for host in hosts):
-        raise DueWorkRefusal("location-discovery authorized hosts are invalid")
-    parsed_index = urlparse(declaration.index_url)
-    if (
-        parsed_index.scheme not in ("http", "https")
-        or not parsed_index.hostname
-        or parsed_index.hostname not in hosts
-    ):
-        raise DueWorkRefusal(
-            "location-discovery index url must be http(s) within an authorized host"
-        )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "location-discovery supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.nested_archive_depth <= 8
-        and 1 <= declaration.max_archive_compressed_mib <= 4096
-        and 1 <= declaration.max_member_decompressed_mib <= 4096
-        and 1 <= declaration.enumeration_limit <= 100_000
-        and 1 <= declaration.request_limit <= 100_000
-        and 1 <= declaration.document_limit <= 100_000
-    ):
-        raise DueWorkRefusal(
-            "location-discovery archive/resource limits are invalid"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal(
-            "location-discovery gate-7 resource declaration is invalid"
-        )
     scope = {
         "project_id": declaration.project_id,
-        "location_id": declaration.location_id,
-        "adapter_identity": declaration.adapter_identity,
-        "source_manifest_id": declaration.source_manifest_id,
-        "index_url": declaration.index_url,
-        "authorized_hosts": sorted(hosts),
-        "sealed": declaration.sealed,
-        "nested_archive_depth": declaration.nested_archive_depth,
-        "max_archive_compressed_mib": declaration.max_archive_compressed_mib,
-        "max_member_decompressed_mib": declaration.max_member_decompressed_mib,
-        "enumeration_limit": declaration.enumeration_limit,
-        "request_limit": declaration.request_limit,
-        "document_limit": declaration.document_limit,
+        "matcher_identity": declaration.matcher_identity,
+        "support_rule_identity": declaration.support_rule_identity,
     }
-    if rid_link_text is not None:
-        scope["rid_link_text"] = rid_link_text
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_LOCATION_DISCOVERY,
-        "project_id": declaration.project_id,
-        "scope": scope,
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "connected_location-v1",
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_REVISION_RECONCILIATION,
+            scope=scope,
+            input_identity={
+                "kind": "registered_project_revision-v1",
+                "project_id": declaration.project_id,
+                "matcher_identity": declaration.matcher_identity,
+                "support_rule_identity": declaration.support_rule_identity,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+        ),
+        input_identity={
+            "handler": HANDLER_REVISION_RECONCILIATION,
             "project_id": declaration.project_id,
-            "location_id": declaration.location_id,
-            "adapter_identity": declaration.adapter_identity,
-            "source_manifest_id": declaration.source_manifest_id,
+            "matcher_identity": declaration.matcher_identity,
+            "support_rule_identity": declaration.support_rule_identity,
         },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_assignment_notification_declaration(
-    declaration: AssignmentNotificationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "assignment-notification starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if declaration.channel != "email":
-        raise DueWorkRefusal(
-            "assignment-notification supports only the email channel in this slice"
-        )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "assignment-notification supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 1 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and 1 <= declaration.notification_budget <= _ASSIGNMENT_NOTIFICATION_BUDGET_CEILING
-    ):
-        raise DueWorkRefusal(
-            "assignment-notification gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_ASSIGNMENT_NOTIFICATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_assignment_notifications-v1",
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-        # The recipient/contact mapping this delivery is authorized to use. It is
-        # fixed for this slice: a recipient resolves only through the verified
-        # contact for the selected roster identity's principal.
-        "recipient_contact_source": "verified_person_identity-v1",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_due_action_notification_declaration(
-    declaration: DueActionNotificationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "due-action-notification starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if declaration.channel != "email":
-        raise DueWorkRefusal(
-            "due-action-notification supports only the email channel in this slice"
-        )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "due-action-notification supports only hourly UTC latest-only scheduling"
-        )
-    # The urgent-overdue criterion and the daily-summary window must be declared
-    # explicitly and in range; a silent or out-of-range value refuses rather than
-    # inventing an urgency rule or a window.
-    if not 1 <= declaration.urgent_overdue_days <= 3650:
-        raise DueWorkRefusal(
-            "due-action-notification urgent-overdue threshold is invalid"
-        )
-    if (
-        isinstance(declaration.escalation_roster_entry_id, bool)
-        or (
-            declaration.escalation_roster_entry_id is not None
-            and (
-                not isinstance(declaration.escalation_roster_entry_id, int)
-                or declaration.escalation_roster_entry_id <= 0
-            )
-        )
-    ):
-        raise DueWorkRefusal(
-            "due-action-notification escalation contact mapping is invalid"
-        )
-    if not 0 <= declaration.summary_hour_utc <= 23:
-        raise DueWorkRefusal(
-            "due-action-notification daily-summary hour is invalid"
-        )
-    if not 1 <= declaration.summary_window_days <= 365:
-        raise DueWorkRefusal(
-            "due-action-notification daily-summary window is invalid"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 1 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and 1
-        <= declaration.notification_budget
-        <= _DUE_ACTION_NOTIFICATION_BUDGET_CEILING
-    ):
-        raise DueWorkRefusal(
-            "due-action-notification gate-7 resource declaration is invalid"
-        )
-    escalation_contact = (
-        "one_configured_roster_identity"
-        if declaration.escalation_roster_entry_id is not None
-        else "disabled"
     )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_DUE_ACTION_NOTIFICATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-            "urgent_overdue_days": declaration.urgent_overdue_days,
-            "escalation_roster_entry_id": declaration.escalation_roster_entry_id,
-            "summary_hour_utc": declaration.summary_hour_utc,
-            "summary_window_days": declaration.summary_window_days,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_due_action_notifications-v1",
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-        # The recipient/contact mapping this delivery is authorized to use. A
-        # reminder recipient resolves only through the verified contact for the
-        # accountable roster identity; escalation uses the one declared contact.
-        "recipient_contact_source": "verified_person_identity-v1",
-        "urgent_overdue": {
-            "criterion": "action_overdue_days",
-            "threshold_days": declaration.urgent_overdue_days,
-            "escalation_contact": escalation_contact,
-        },
-        "daily_summary": {
-            "cadence": "daily",
-            "hour_utc": declaration.summary_hour_utc,
-            "window_days": declaration.summary_window_days,
-        },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
 
 
-def _validated_document_notification_declaration(
-    declaration: DocumentNotificationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "document-notification starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if declaration.channel != "email":
-        raise DueWorkRefusal(
-            "document-notification supports only the email channel in this slice"
-        )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "document-notification supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 1 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and 1 <= declaration.notification_budget <= _DOCUMENT_NOTIFICATION_BUDGET_CEILING
-    ):
-        raise DueWorkRefusal(
-            "document-notification gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_DOCUMENT_NOTIFICATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_document_notifications-v1",
-            "project_id": declaration.project_id,
-            "channel": declaration.channel,
-        },
-        # The project/source/subject scope this delivery is authorized for: the
-        # two approved categories over the recorded affected population, reaching
-        # the typed current assignee and the original reviewer only through their
-        # verified-contact records.
-        "subject_scope": "documentation_loss_and_document_change-v1",
-        "recipient_contact_source": "verified_person_identity-v1",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
+def _stored_revision_reconciliation_declaration(
+    stored: ResolvedSchedule,
+) -> RevisionReconciliationDeclaration:
+    return RevisionReconciliationDeclaration(
+        **stored.scheduling_fields(),
+        matcher_identity=stored.scope.get("matcher_identity", ""),
+        support_rule_identity=stored.scope.get("support_rule_identity", ""),
+    )
 
 
-def _validated_event_admission_reproof_declaration(
-    declaration: EventAdmissionReproofDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "event-admission-reproof starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _POLICY_IDENTITY.fullmatch(declaration.policy_version):
-        raise DueWorkRefusal("event-admission-reproof policy version is invalid")
-    if not _POLICY_IDENTITY.fullmatch(declaration.reason_version):
-        raise DueWorkRefusal("event-admission-reproof reason version is invalid")
-    if not _POLICY_IDENTITY.fullmatch(declaration.selection_rule):
-        raise DueWorkRefusal("event-admission-reproof selection rule is invalid")
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "event-admission-reproof supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-        and 1 <= declaration.clone_budget <= _REPROOF_CLONE_BUDGET_CEILING
-    ):
-        raise DueWorkRefusal(
-            "event-admission-reproof gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_EVENT_ADMISSION_REPROOF,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "policy_version": declaration.policy_version,
-            "reason_version": declaration.reason_version,
-            "selection_rule": declaration.selection_rule,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "one_project_event_admission_class-v1",
-            "project_id": declaration.project_id,
-            "policy_version": declaration.policy_version,
-            "reason_version": declaration.reason_version,
-            "selection_rule": declaration.selection_rule,
-        },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-            "clone_budget": declaration.clone_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
+REVISION_RECONCILIATION_REGISTRATION = HandlerRegistration(
+    key=HANDLER_REVISION_RECONCILIATION,
+    scope_kind="one_registered_project_revision",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=RevisionReconciliationDeclaration,
+    validate=_validated_revision_reconciliation_declaration,
+    stored_declaration=_stored_revision_reconciliation_declaration,
+    run_effectful=_revision_reconciliation_effectful,
+)
 
 
 def _validated_evidence_outcome_capture_declaration(
     declaration: EvidenceOutcomeCaptureDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("outcome-capture starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _COHORT_IDENTITY.fullmatch(declaration.cohort_id):
+) -> ValidatedDeclaration:
+    """Validate one outcome-capture declaration.
+
+    An elapsed interval or the mere existence of frozen cases never enables
+    capture. The referenced observation contract is declared and validated
+    separately in ``evidence_investigator_capture``; this seam only binds the
+    operational envelope to the project, cohort, and contract identity.
+    """
+
+    if not COHORT_IDENTITY.fullmatch(declaration.cohort_id):
         raise DueWorkRefusal("outcome-capture cohort identity is invalid")
-    if not _SHA256.fullmatch(declaration.observation_contract_sha256):
+    if not SHA256.fullmatch(declaration.observation_contract_sha256):
         raise DueWorkRefusal("outcome-capture observation contract must be SHA-256")
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "outcome-capture supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("outcome-capture gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+    starts_at = validate_scheduling(declaration, subject="outcome-capture")
+    scope = {
         "project_id": declaration.project_id,
-        "scope": {
+        "cohort_id": declaration.cohort_id,
+        "observation_contract_sha256": declaration.observation_contract_sha256,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+            scope=scope,
+            input_identity={
+                "kind": "declared_capture_cohort-v1",
+                "project_id": declaration.project_id,
+                "cohort_id": declaration.cohort_id,
+                "observation_contract_sha256": (
+                    declaration.observation_contract_sha256
+                ),
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+        ),
+        input_identity={
+            "handler": HANDLER_EVIDENCE_OUTCOME_CAPTURE,
             "project_id": declaration.project_id,
             "cohort_id": declaration.cohort_id,
             "observation_contract_sha256": declaration.observation_contract_sha256,
         },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "declared_capture_cohort-v1",
-            "project_id": declaration.project_id,
-            "cohort_id": declaration.cohort_id,
-            "observation_contract_sha256": declaration.observation_contract_sha256,
-        },
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
+    )
 
 
-def _validated_report_publication_declaration(
-    declaration: ReportPublicationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("report-publication starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if declaration.provenance_mode not in (
-        "all-supported-sources",
-        "document-only",
-    ):
-        raise DueWorkRefusal("report-publication provenance mode is invalid")
-    if not isinstance(declaration.prepare_external_pdf, bool):
-        raise DueWorkRefusal("report-publication external preparation flag is invalid")
-    if (
-        declaration.cadence != "weekly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-        or declaration.comparison_window_policy != "since_last_released"
-    ):
-        raise DueWorkRefusal(
-            "report-publication supports only weekly UTC latest-only scheduling "
-            "against the last released report"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal(
-            "report-publication gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_REPORT_PUBLICATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "provenance_mode": declaration.provenance_mode,
-            "prepare_external_pdf": declaration.prepare_external_pdf,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "scheduled_report_publication-v1",
-            "project_id": declaration.project_id,
-            "provenance_mode": declaration.provenance_mode,
-            "prepare_external_pdf": declaration.prepare_external_pdf,
-        },
-        "output": {
-            "internal_snapshot": True,
-            "external_preparation": declaration.prepare_external_pdf,
-        },
-        "comparison_window_policy": declaration.comparison_window_policy,
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
+def _stored_evidence_outcome_capture_declaration(
+    stored: ResolvedSchedule,
+) -> EvidenceOutcomeCaptureDeclaration:
+    return EvidenceOutcomeCaptureDeclaration(
+        **stored.scheduling_fields(),
+        cohort_id=stored.scope.get("cohort_id", ""),
+        observation_contract_sha256=stored.scope.get(
+            "observation_contract_sha256", ""
+        ),
+    )
 
 
-def _validated_connector_polling_declaration(
-    declaration: ConnectorPollingDeclaration,
-) -> dict[str, Any]:
-    from urllib.parse import urlparse
-
-    from corridor.connector_polling import CONNECTOR_FACTORIES
-
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("connector-polling starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _COHORT_IDENTITY.fullmatch(declaration.customer):
-        raise DueWorkRefusal("connector-polling customer identity is invalid")
-    if not _LOCATION_IDENTITY.fullmatch(declaration.channel):
-        raise DueWorkRefusal("connector-polling channel identity is invalid")
-    if not _LOCATION_IDENTITY.fullmatch(declaration.connector_identity):
-        raise DueWorkRefusal("connector-polling connector identity is invalid")
-    if declaration.connector_identity not in CONNECTOR_FACTORIES:
-        raise DueWorkRefusal("connector-polling connector is not installed")
-    parsed = urlparse(declaration.source_url)
-    if (
-        parsed.scheme != "https"
-        or not parsed.hostname
-        or not _LOCATION_HOST.fullmatch(parsed.hostname)
-        or len(declaration.source_url) > 2048
-    ):
-        raise DueWorkRefusal(
-            "connector-polling source url must be one https location"
-        )
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "connector-polling supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("connector-polling gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_CONNECTOR_POLLING,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "customer": declaration.customer,
-            "channel": declaration.channel,
-            "connector_identity": declaration.connector_identity,
-            "source_url": declaration.source_url,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "declared_pull_connector-v1",
-            "project_id": declaration.project_id,
-            "customer": declaration.customer,
-            "channel": declaration.channel,
-            "connector_identity": declaration.connector_identity,
-            "source_url": declaration.source_url,
-        },
-        # ADR-0083: the token advances only after every change up to it is in
-        # the content-addressed store under its digest. The retained completed
-        # receipt is where this schedule's token stands.
-        "checkpoint_policy": "advance_after_durable_storage",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_delta_generation_declaration(
-    declaration: DeltaGenerationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("delta-generation starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if not _POLICY_IDENTITY.fullmatch(declaration.comparison_rule_version):
-        raise DueWorkRefusal("delta-generation comparison rule identity is invalid")
-    if (
-        declaration.cadence != "hourly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "delta-generation supports only hourly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("delta-generation gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_DELTA_GENERATION,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "comparison_rule_version": declaration.comparison_rule_version,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_proposed_delta_generation-v1",
-            "project_id": declaration.project_id,
-            "comparison_rule_version": declaration.comparison_rule_version,
-        },
-        # The pass proposes; it never makes anything effective. Every append
-        # goes through the source-append command, so an adopted-baseline
-        # project's accepted values are unreachable from here (#520).
-        "record_authority": "proposes_only_never_accepts",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_report_preparation_declaration(
-    declaration: ReportPreparationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("report-preparation starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if (
-        declaration.cadence != "weekly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "report-preparation supports only weekly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("report-preparation gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_REPORT_PREPARATION,
-        "project_id": declaration.project_id,
-        "scope": {"project_id": declaration.project_id},
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_change_summary_reading-v1",
-            "project_id": declaration.project_id,
-        },
-        # The week the reading covers starts where the previous retained
-        # reading observed, so consecutive readings tile without a gap and
-        # without counting one resolution twice.
-        "comparison_window_policy": "since_last_prepared_reading",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "read_only_reconcilable",
-    }
-
-
-def _validated_release_preparation_declaration(
-    declaration: ReleasePreparationDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal(
-            "release-preparation starts_at must align to a UTC hour"
-        )
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    if (
-        declaration.cadence != "on_request"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "every_occurrence"
-    ):
-        raise DueWorkRefusal(
-            "release-preparation runs one published occurrence per confirmed "
-            "request; it has no cadence and coalesces nothing"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 300 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal(
-            "release-preparation gate-7 resource declaration is invalid"
-        )
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_RELEASE_PREPARATION,
-        "project_id": declaration.project_id,
-        "scope": {"project_id": declaration.project_id},
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "confirmed_preparation_requests-v1",
-            "project_id": declaration.project_id,
-        },
-        # One occurrence per request, so nothing is ever coalesced away and a
-        # request that waited is worked rather than skipped.
-        "publication_policy": "one_occurrence_per_preparation_request",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
-
-
-def _validated_retention_sweep_declaration(
-    declaration: RetentionSweepDeclaration,
-) -> dict[str, Any]:
-    starts_at = _aware_utc(declaration.starts_at)
-    if starts_at.minute or starts_at.second or starts_at.microsecond:
-        raise DueWorkRefusal("retention-sweep starts_at must align to a UTC hour")
-    if not _CONFIGURATION_VERSION.fullmatch(declaration.configuration_version):
-        raise DueWorkRefusal("Due Work configuration version is invalid")
-    try:
-        HumanPrincipal(declaration.authorized_by)
-    except InvalidHumanPrincipal as exc:
-        raise DueWorkRefusal(
-            "retention-sweep authorization must name a human principal"
-        ) from exc
-    if (
-        declaration.cadence != "weekly"
-        or declaration.timezone_name != "UTC"
-        or declaration.missed_run_policy != "latest_only"
-    ):
-        raise DueWorkRefusal(
-            "retention-sweep supports only weekly UTC latest-only scheduling"
-        )
-    if not (
-        1 <= declaration.max_attempts <= 5
-        and 0 <= declaration.backoff_seconds <= 3600
-        and 30 <= declaration.claim_ttl_seconds <= 3600
-        and 1 <= declaration.deadline_seconds <= declaration.claim_ttl_seconds
-        and declaration.concurrency_limit == 1
-        and declaration.retention_days >= 365
-        and declaration.model_token_budget == 0
-        and declaration.notification_budget == 0
-    ):
-        raise DueWorkRefusal("retention-sweep gate-7 resource declaration is invalid")
-    return {
-        "schema_version": "due-work-gate-7-v1",
-        "handler": HANDLER_RETENTION_SWEEP,
-        "project_id": declaration.project_id,
-        "scope": {
-            "project_id": declaration.project_id,
-            "authorized_by": declaration.authorized_by,
-        },
-        "configuration_version": declaration.configuration_version,
-        "input_identity": {
-            "kind": "project_class_b_intermediaries-v1",
-            "project_id": declaration.project_id,
-        },
-        # ADR-0080: only the five Class B intermediary families and registered
-        # processing artifacts are reachable, and every deletion still passes
-        # the hold check, the reachability check, and the dry-run manifest.
-        "retention_class": "class_b",
-        "starts_at": _iso(starts_at),
-        "cadence": declaration.cadence,
-        "timezone": declaration.timezone_name,
-        "missed_run_policy": declaration.missed_run_policy,
-        "retention": {
-            "policy": "retain_all_terminal_receipts",
-            "minimum_days": declaration.retention_days,
-        },
-        "retry": {
-            "max_attempts": declaration.max_attempts,
-            "backoff_seconds": declaration.backoff_seconds,
-        },
-        "resources": {
-            "claim_ttl_seconds": declaration.claim_ttl_seconds,
-            "deadline_seconds": declaration.deadline_seconds,
-            "concurrency_limit": declaration.concurrency_limit,
-            "model_token_budget": declaration.model_token_budget,
-            "notification_budget": declaration.notification_budget,
-        },
-        "authorized_destinations": [],
-        "idempotency_contract": "at_least_once_reconcilable",
-    }
+EVIDENCE_OUTCOME_CAPTURE_REGISTRATION = HandlerRegistration(
+    key=HANDLER_EVIDENCE_OUTCOME_CAPTURE,
+    scope_kind="one_declared_capture_cohort",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=EvidenceOutcomeCaptureDeclaration,
+    validate=_validated_evidence_outcome_capture_declaration,
+    stored_declaration=_stored_evidence_outcome_capture_declaration,
+    run_effectful=_evidence_outcome_capture_effectful,
+    disable_same_input_only=True,
+)
 
 
 def _due_slot(schedule: DueWorkSchedule, now: datetime) -> datetime | None:
@@ -4147,8 +1693,8 @@ def _due_slot(schedule: DueWorkSchedule, now: datetime) -> datetime | None:
     missed week from that same weekly boundary.
     """
 
-    now = _aware_utc(now)
-    starts_at = _aware_utc(schedule.starts_at)
+    now = aware_utc(now)
+    starts_at = aware_utc(schedule.starts_at)
     if schedule.cadence == "weekly":
         if now < starts_at:
             return None
@@ -4158,547 +1704,85 @@ def _due_slot(schedule: DueWorkSchedule, now: datetime) -> datetime | None:
     return slot if slot >= starts_at else None
 
 
-def _validate_stored_schedule(schedule: DueWorkSchedule) -> None:
-    if schedule.handler_key not in HANDLER_REGISTRY:
+def resolved_schedule(schedule: DueWorkSchedule) -> ResolvedSchedule:
+    """One persisted schedule as data, resolved once by the runtime.
+
+    Revalidation rebuilds a declaration from this, and an effectful handler is
+    handed it in place of the row, so neither has to re-open a session to learn
+    what it was claimed for.
+    """
+
+    return ResolvedSchedule(
+        schedule_id=schedule.id,
+        handler_key=schedule.handler_key,
+        project_id=schedule.project_id,
+        configuration_version=schedule.configuration_version,
+        scope=dict(schedule.scope_json),
+        configuration=dict(schedule.configuration_json),
+        starts_at=schedule.starts_at,
+        cadence=schedule.cadence,
+        timezone_name=schedule.timezone_name,
+        missed_run_policy=schedule.missed_run_policy,
+        retention_days=schedule.retention_days,
+        max_attempts=schedule.max_attempts,
+        backoff_seconds=schedule.backoff_seconds,
+        claim_ttl_seconds=schedule.claim_ttl_seconds,
+        deadline_seconds=schedule.deadline_seconds,
+        concurrency_limit=schedule.concurrency_limit,
+        model_token_budget=schedule.model_token_budget,
+        notification_budget=schedule.notification_budget,
+    )
+
+
+def _validate_stored_schedule(
+    schedule: DueWorkSchedule,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
+) -> None:
+    """Ask this row's own registration to rebuild its declaration and re-check it.
+
+    A persisted row is only ever trusted to name a server-owned handler key and
+    the values that handler's declaration would have produced: the runtime
+    rebuilds the declaration from the stored columns, revalidates it, and
+    compares the retained configuration, scope, and input identity. Anything
+    edited in the database — a cadence, a scope, a budget — fails here rather
+    than reaching a handler.
+    """
+
+    if schedule.handler_key not in registry:
         raise DueWorkRefusal("persisted Due Work handler is not server-owned")
     if schedule.configuration_sha256 != _sha256(schedule.configuration_json):
         raise DueWorkRefusal("persisted Due Work configuration digest does not match")
     if schedule.configuration_json.get("handler") != schedule.handler_key:
         raise DueWorkRefusal("persisted Due Work configuration handler does not match")
-    if schedule.handler_key == HANDLER_PROJECT_PROCESSING:
-        expected_config = _validated_processing_declaration(
-            ProjectProcessingDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                extractor_identity=schedule.scope_json.get("extractor_identity", ""),
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "extractor_identity": schedule.scope_json.get("extractor_identity", ""),
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "extractor_identity": schedule.scope_json.get("extractor_identity", ""),
-            }
-        )
-    elif schedule.handler_key == HANDLER_REVISION_RECONCILIATION:
-        matcher_identity = schedule.scope_json.get("matcher_identity", "")
-        support_rule_identity = schedule.scope_json.get("support_rule_identity", "")
-        expected_config = _validated_revision_reconciliation_declaration(
-            RevisionReconciliationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                matcher_identity=matcher_identity,
-                support_rule_identity=support_rule_identity,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "matcher_identity": matcher_identity,
-            "support_rule_identity": support_rule_identity,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "matcher_identity": matcher_identity,
-                "support_rule_identity": support_rule_identity,
-            }
-        )
-    elif schedule.handler_key == HANDLER_LOCATION_DISCOVERY:
-        scope_json = schedule.scope_json
-        expected_config = _validated_location_discovery_declaration(
-            LocationDiscoveryDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                location_id=scope_json.get("location_id", ""),
-                adapter_identity=scope_json.get("adapter_identity", ""),
-                source_manifest_id=scope_json.get("source_manifest_id", ""),
-                index_url=scope_json.get("index_url", ""),
-                authorized_hosts=tuple(scope_json.get("authorized_hosts", ())),
-                sealed=bool(scope_json.get("sealed", False)),
-                nested_archive_depth=scope_json.get("nested_archive_depth", 0),
-                max_archive_compressed_mib=scope_json.get(
-                    "max_archive_compressed_mib", 0
-                ),
-                max_member_decompressed_mib=scope_json.get(
-                    "max_member_decompressed_mib", 0
-                ),
-                enumeration_limit=scope_json.get("enumeration_limit", 0),
-                request_limit=scope_json.get("request_limit", 0),
-                document_limit=scope_json.get("document_limit", 0),
-                rid_link_text=scope_json.get("rid_link_text"),
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "location_id": scope_json.get("location_id", ""),
-                "adapter_identity": scope_json.get("adapter_identity", ""),
-                "source_manifest_id": scope_json.get("source_manifest_id", ""),
-            }
-        )
-    elif schedule.handler_key == HANDLER_ASSIGNMENT_NOTIFICATION:
-        channel = schedule.scope_json.get("channel", "")
-        expected_config = _validated_assignment_notification_declaration(
-            AssignmentNotificationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                channel=channel,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "channel": channel,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "channel": channel,
-            }
-        )
-    elif schedule.handler_key == HANDLER_DUE_ACTION_NOTIFICATION:
-        scope_json = schedule.scope_json
-        channel = scope_json.get("channel", "")
-        expected_config = _validated_due_action_notification_declaration(
-            DueActionNotificationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                channel=channel,
-                urgent_overdue_days=scope_json.get("urgent_overdue_days", 0),
-                escalation_roster_entry_id=scope_json.get(
-                    "escalation_roster_entry_id"
-                ),
-                summary_hour_utc=scope_json.get("summary_hour_utc", -1),
-                summary_window_days=scope_json.get("summary_window_days", 0),
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "channel": channel,
-            }
-        )
-    elif schedule.handler_key == HANDLER_DOCUMENT_NOTIFICATION:
-        channel = schedule.scope_json.get("channel", "")
-        expected_config = _validated_document_notification_declaration(
-            DocumentNotificationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                channel=channel,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "channel": channel,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "channel": channel,
-            }
-        )
-    elif schedule.handler_key == HANDLER_EVENT_ADMISSION_REPROOF:
-        policy_version = schedule.scope_json.get("policy_version", "")
-        reason_version = schedule.scope_json.get("reason_version", "")
-        selection_rule = schedule.scope_json.get("selection_rule", "")
-        clone_budget = (schedule.configuration_json.get("resources") or {}).get(
-            "clone_budget", 0
-        )
-        expected_config = _validated_event_admission_reproof_declaration(
-            EventAdmissionReproofDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                policy_version=policy_version,
-                reason_version=reason_version,
-                selection_rule=selection_rule,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-                clone_budget=clone_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "policy_version": policy_version,
-            "reason_version": reason_version,
-            "selection_rule": selection_rule,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "policy_version": policy_version,
-                "reason_version": reason_version,
-                "selection_rule": selection_rule,
-            }
-        )
-    elif schedule.handler_key == HANDLER_EVIDENCE_OUTCOME_CAPTURE:
-        cohort_id = schedule.scope_json.get("cohort_id", "")
-        observation_contract_sha256 = schedule.scope_json.get(
-            "observation_contract_sha256", ""
-        )
-        expected_config = _validated_evidence_outcome_capture_declaration(
-            EvidenceOutcomeCaptureDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                cohort_id=cohort_id,
-                observation_contract_sha256=observation_contract_sha256,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "cohort_id": cohort_id,
-            "observation_contract_sha256": observation_contract_sha256,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "cohort_id": cohort_id,
-                "observation_contract_sha256": observation_contract_sha256,
-            }
-        )
-    elif schedule.handler_key == HANDLER_REPORT_PUBLICATION:
-        provenance_mode = schedule.scope_json.get("provenance_mode", "")
-        prepare_external_pdf = schedule.scope_json.get("prepare_external_pdf")
-        expected_config = _validated_report_publication_declaration(
-            ReportPublicationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                provenance_mode=provenance_mode,
-                prepare_external_pdf=prepare_external_pdf,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                comparison_window_policy=schedule.configuration_json.get(
-                    "comparison_window_policy", ""
-                ),
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {
-            "project_id": schedule.project_id,
-            "provenance_mode": provenance_mode,
-            "prepare_external_pdf": prepare_external_pdf,
-        }
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "provenance_mode": provenance_mode,
-                "prepare_external_pdf": prepare_external_pdf,
-            }
-        )
-    elif schedule.handler_key == HANDLER_CONNECTOR_POLLING:
-        customer = schedule.scope_json.get("customer", "")
-        channel = schedule.scope_json.get("channel", "")
-        connector_identity = schedule.scope_json.get("connector_identity", "")
-        source_url = schedule.scope_json.get("source_url", "")
-        expected_config = _validated_connector_polling_declaration(
-            ConnectorPollingDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                customer=customer,
-                channel=channel,
-                connector_identity=connector_identity,
-                source_url=source_url,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "customer": customer,
-                "channel": channel,
-                "connector_identity": connector_identity,
-                "source_url": source_url,
-            }
-        )
-    elif schedule.handler_key == HANDLER_DELTA_GENERATION:
-        comparison_rule_version = schedule.scope_json.get(
-            "comparison_rule_version", ""
-        )
-        expected_config = _validated_delta_generation_declaration(
-            DeltaGenerationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                comparison_rule_version=comparison_rule_version,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "comparison_rule_version": comparison_rule_version,
-            }
-        )
-    elif schedule.handler_key == HANDLER_REPORT_PREPARATION:
-        expected_config = _validated_report_preparation_declaration(
-            ReportPreparationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "source": "proposed_delta_lifecycle-v1",
-            }
-        )
-    elif schedule.handler_key == HANDLER_RELEASE_PREPARATION:
-        expected_config = _validated_release_preparation_declaration(
-            ReleasePreparationDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "source": "confirmed_preparation_requests-v1",
-            }
-        )
-    elif schedule.handler_key == HANDLER_RETENTION_SWEEP:
-        authorized_by = schedule.scope_json.get("authorized_by", "")
-        expected_config = _validated_retention_sweep_declaration(
-            RetentionSweepDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                authorized_by=authorized_by,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = expected_config["scope"]
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "retention_class": "class_b",
-            }
-        )
-    else:
-        expected_config = _validated_health_declaration(
-            ProcessingHealthDeclaration(
-                project_id=schedule.project_id,
-                configuration_version=schedule.configuration_version,
-                starts_at=schedule.starts_at,
-                cadence=schedule.cadence,
-                timezone_name=schedule.timezone_name,
-                missed_run_policy=schedule.missed_run_policy,
-                retention_days=schedule.retention_days,
-                max_attempts=schedule.max_attempts,
-                backoff_seconds=schedule.backoff_seconds,
-                claim_ttl_seconds=schedule.claim_ttl_seconds,
-                deadline_seconds=schedule.deadline_seconds,
-                concurrency_limit=schedule.concurrency_limit,
-                model_token_budget=schedule.model_token_budget,
-                notification_budget=schedule.notification_budget,
-            )
-        )
-        expected_scope = {"project_id": schedule.project_id}
-        expected_input_identity = _sha256(
-            {
-                "handler": schedule.handler_key,
-                "project_id": schedule.project_id,
-                "source": "stored_processing_facts-v1",
-            }
-        )
-    if schedule.configuration_json != expected_config:
+    registration = registry[schedule.handler_key]
+    if schedule.handler_key in HANDLER_REGISTRY:
+        # An in-process caller may substitute a handler's *execution* — a test
+        # double, a controlled run — but never what a persisted row is allowed
+        # to say: for a server-owned key that answer is the server's.
+        registration = HANDLER_REGISTRY[schedule.handler_key]
+    validated = registration.revalidate(resolved_schedule(schedule))
+    if schedule.configuration_json != validated.configuration:
         raise DueWorkRefusal("persisted Due Work configuration is unsupported")
     if (
-        schedule.scope_json != expected_scope
-        or schedule.input_identity_sha256 != expected_input_identity
+        schedule.scope_json != validated.scope
+        or schedule.input_identity_sha256 != _sha256(validated.input_identity)
     ):
         raise DueWorkRefusal("persisted Due Work scope or input identity is invalid")
-    contract = HANDLER_REGISTRY[schedule.handler_key]
     if (
-        schedule.model_token_budget > contract.model_token_budget
-        or schedule.notification_budget > contract.notification_budget
+        schedule.model_token_budget > registration.model_token_budget
+        or schedule.notification_budget > registration.notification_budget
     ):
         raise DueWorkRefusal("persisted Due Work budgets exceed the handler contract")
 
 
-def _handler(key: str) -> HandlerContract:
-    contract = HANDLER_REGISTRY.get(key)
-    if contract is None:
+def _handler(
+    key: str,
+    registry: Mapping[str, HandlerRegistration] = HANDLER_REGISTRY,
+) -> HandlerRegistration:
+    registration = registry.get(key)
+    if registration is None:
         raise DueWorkRefusal("Due Work handler is not server-owned")
-    return contract
+    return registration
 
 
 def _safe_next_step(contract: HandlerContract, handler_result: dict[str, Any]) -> str:
@@ -5135,8 +2219,8 @@ def _receipt_content(
         "handler_result": handler_result,
         "error_code": error_code,
         "safe_next_step": safe_next_step,
-        "started_at": _iso(started_at),
-        "finished_at": _iso(finished_at),
+        "started_at": iso_timestamp(started_at),
+        "finished_at": iso_timestamp(finished_at),
     }
 
 
@@ -5327,16 +2411,6 @@ def _run_result(
 def _validate_owner(owner: str) -> None:
     if not isinstance(owner, str) or _RUNTIME_OWNER.fullmatch(owner) is None:
         raise DueWorkRefusal("Due Work runtime owner must be a namespaced runtime id")
-
-
-def _aware_utc(value: datetime) -> datetime:
-    if not isinstance(value, datetime) or value.tzinfo is None:
-        raise DueWorkRefusal("Due Work clock must supply an aware datetime")
-    return value.astimezone(timezone.utc)
-
-
-def _iso(value: datetime) -> str:
-    return _aware_utc(value).isoformat()
 
 
 _canonical_json = digests.canonical_json

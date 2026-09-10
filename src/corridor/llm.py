@@ -7,8 +7,15 @@ test can pass a recorded stub and `make eval` can pin a version.
 The wire shape is the **Responses API**. The provider documents it as the
 surface reasoning models belong on, and every GPT-5.6 control this pipeline
 needs is reachable only there: reasoning effort, image detail, prompt
-caching, and output logprobs. `StructuredClient` is unchanged by that
-migration, so every stub and every text-only extractor is untouched.
+caching, and output logprobs. `responses_payload` is the one body builder for
+that call; a second copy of it is where `strict` quietly goes missing.
+
+`StructuredClient` is the one protocol: `complete`, plus the
+`RequestConfiguration` the client will make its request under. Receipt code
+reads that value instead of scraping `model`, `effort`, `flex` and `base_url`
+off whatever object it was handed, so a replay adapter states the
+configuration its retained answers came from rather than impersonating a
+live provider well enough to satisfy four `getattr` calls.
 
 Four defaults here are load-bearing, and each was measured rather than
 assumed (spike against `gpt-5.6-luna`, 2026-08-03):
@@ -77,7 +84,51 @@ FLEX_TIMEOUT = 900.0
 META_KEY = "_meta"
 
 
+# The one live endpoint. A client states it in its configuration rather than
+# every client, every replay adapter and every double naming its own string.
+OPENAI_RESPONSES_BASE_URL = "https://api.openai.com/v1"
+
+
+@dataclass(frozen=True)
+class RequestConfiguration:
+    """What a client will actually ask the provider for, stated as a value.
+
+    Receipt code used to scrape `model`, `effort`, `flex` and `base_url` off
+    whatever object it had been handed, so every replay adapter grew four
+    attributes describing a live provider it never called — and a stub that
+    forgot one produced a receipt that silently disagreed with the run. A
+    configuration is one value a client returns: a replay adapter states the
+    configuration its retained answers were produced under and states it once.
+    """
+
+    model: str
+    effort: str = "none"
+    flex: bool = False
+    base_url: str = OPENAI_RESPONSES_BASE_URL
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.model, str) or not self.model.strip():
+            raise ValueError("a request configuration must name its model")
+        if self.effort not in EFFORTS:
+            raise ValueError(
+                f"unknown reasoning effort {self.effort!r}; expected one of "
+                f"{', '.join(EFFORTS)}"
+            )
+        if not isinstance(self.flex, bool):
+            raise ValueError("flex must be boolean")
+        if not isinstance(self.base_url, str) or not self.base_url.strip():
+            raise ValueError("a request configuration must name its base URL")
+
+
 class StructuredClient(Protocol):
+    """One structured call, and the request configuration it is made under.
+
+    Both halves are the seam. A caller that needs to seal what was requested
+    reads `configuration()`; it never guesses from duck-typed attributes.
+    """
+
+    def configuration(self) -> RequestConfiguration: ...
+
     def complete(
         self,
         *,
@@ -87,6 +138,53 @@ class StructuredClient(Protocol):
         images: Sequence[Path | str] = (),
         logprobs: bool = False,
     ) -> dict: ...
+
+
+def responses_payload(
+    *,
+    configuration: RequestConfiguration,
+    system: str,
+    user: str,
+    schema: dict,
+    schema_name: str,
+    store: bool,
+    images: Sequence[Path | str] = (),
+    image_detail: str = "original",
+    cache_key: str | None = None,
+    max_output_tokens: int | None = None,
+    logprobs: bool = False,
+) -> dict:
+    """The one Responses request body every Corridor caller sends.
+
+    There were three of these — this client's, the boundary's, and the ported
+    tier's — each with its own strictness flag and its own image part, for the
+    same `/v1/responses` call. A second copy is where `strict` quietly goes
+    missing. Only the values a caller legitimately differs on are arguments.
+    """
+    payload: dict = {
+        "model": configuration.model,
+        "instructions": system,
+        "input": [{"role": "user", "content": _content(user, images, image_detail)}],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": schema_name,
+                "strict": True,
+                "schema": schema,
+            }
+        },
+        "reasoning": {"effort": configuration.effort},
+        "store": store,
+    }
+    if cache_key is not None:
+        payload["prompt_cache_key"] = cache_key
+    if max_output_tokens is not None:
+        payload["max_output_tokens"] = max_output_tokens
+    if logprobs:
+        payload["include"] = ["message.output_text.logprobs"]
+    if configuration.flex:
+        payload["service_tier"] = "flex"
+    return payload
 
 
 @dataclass
@@ -111,18 +209,15 @@ class OpenAIClient:
         flex: bool = False,
         max_output_tokens: int | None = None,
     ):
-        self.model = model or settings.llm_model
         self.api_key = api_key or settings.openai_api_key
-        self.base_url = (base_url or settings.openai_base_url).rstrip("/")
         self.max_workers = max_workers
-        self.flex = flex
         self.timeout = FLEX_TIMEOUT if flex else timeout
-        if effort not in EFFORTS:
-            raise ValueError(
-                f"unknown reasoning effort {effort!r}; expected one of "
-                f"{', '.join(EFFORTS)}"
-            )
-        self.effort = effort
+        self._configuration = RequestConfiguration(
+            model=model or settings.llm_model,
+            effort=effort,
+            flex=flex,
+            base_url=(base_url or settings.openai_base_url).rstrip("/"),
+        )
         self.max_output_tokens = max_output_tokens
         # One key per client, so a run's requests share a cached prefix.
         # Deliberately not sharded across workers: the provider suggests
@@ -148,6 +243,27 @@ class OpenAIClient:
             ),
         )
 
+    def configuration(self) -> RequestConfiguration:
+        return self._configuration
+
+    # The configuration is the one source of these values; they stay readable
+    # because modules that only report the model have not moved to it yet.
+    @property
+    def model(self) -> str:
+        return self._configuration.model
+
+    @property
+    def effort(self) -> str:
+        return self._configuration.effort
+
+    @property
+    def flex(self) -> bool:
+        return self._configuration.flex
+
+    @property
+    def base_url(self) -> str:
+        return self._configuration.base_url
+
     def close(self) -> None:
         self._http.close()
 
@@ -166,28 +282,18 @@ class OpenAIClient:
         images: Sequence[Path | str] = (),
         logprobs: bool = False,
     ) -> dict:
-        payload = {
-            "model": self.model,
-            "instructions": system,
-            "input": [{"role": "user", "content": _content(user, images)}],
-            "text": {
-                "format": {
-                    "type": "json_schema",
-                    "name": "extraction",
-                    "strict": True,
-                    "schema": schema,
-                }
-            },
-            "reasoning": {"effort": self.effort},
-            "store": False,
-            "prompt_cache_key": self.cache_key,
-        }
-        if self.max_output_tokens is not None:
-            payload["max_output_tokens"] = self.max_output_tokens
-        if logprobs:
-            payload["include"] = ["message.output_text.logprobs"]
-        if self.flex:
-            payload["service_tier"] = "flex"
+        payload = responses_payload(
+            configuration=self._configuration,
+            system=system,
+            user=user,
+            schema=schema,
+            schema_name="extraction",
+            store=False,
+            images=images,
+            cache_key=self.cache_key,
+            max_output_tokens=self.max_output_tokens,
+            logprobs=logprobs,
+        )
 
         last_error = ""
         for attempt in range(MAX_ATTEMPTS):
@@ -277,7 +383,9 @@ class OpenAIClient:
         time.sleep(min(2**attempt, 16) * (0.5 + random.random()))
 
 
-def _content(user: str, images: Sequence[Path | str]) -> list[dict]:
+def _content(
+    user: str, images: Sequence[Path | str], detail: str = "original"
+) -> list[dict]:
     """The text part first, images last.
 
     Prompt caching matches on a shared leading prefix, and the image is the
@@ -293,7 +401,7 @@ def _content(user: str, images: Sequence[Path | str]) -> list[dict]:
             {
                 "type": "input_image",
                 "image_url": f"data:image/png;base64,{encoded}",
-                "detail": "original",
+                "detail": detail,
             }
         )
     return content
@@ -339,16 +447,16 @@ def complete_many(
     One failure does not kill the batch — it comes back as a `Completion`
     that `failed`, so a single bad page costs that page and nothing else.
 
-    `images` is one image set per user, or None. Omitted rather than passed
-    empty when there are none, so text-only stubs that take no `images`
-    keyword keep working; `logprobs` is passed the same way.
+    `images` is one image set per user, or None for a text-only batch. Every
+    keyword of the seam goes out on every call: the conditional version was
+    shaped by test doubles that took no `images` argument, which made the
+    narrowest double the real interface.
     """
     if not users:
         return []
 
     workers = max_workers or getattr(client, "max_workers", DEFAULT_WORKERS)
     results: list[Completion] = [Completion() for _ in users]
-    extra = {"logprobs": True} if logprobs else {}
 
     with ThreadPoolExecutor(max_workers=min(workers, len(users))) as pool:
         futures = {
@@ -357,8 +465,8 @@ def complete_many(
                 system=system,
                 user=user,
                 schema=schema,
-                **({"images": images[i]} if images else {}),
-                **extra,
+                images=images[i] if images else (),
+                logprobs=logprobs,
             ): i
             for i, user in enumerate(users)
         }

@@ -27,7 +27,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Sequence
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -302,6 +302,19 @@ def current_configuration(
     ).first()
 
 
+def competing_runs_among(runs: Iterable[ExtractionRun]) -> list[ExtractionRun]:
+    """The completed runs among rows a caller has already loaded, in id order.
+
+    A screen that lists every document reads each document's runs once, in one
+    query; asking this module to re-read them per document is the same answer
+    at N times the cost. The filter is here rather than in the caller so the
+    definition of "a run that is a reading to declare" stays in one place.
+    """
+    return sorted(
+        (run for run in runs if is_completed_run(run)), key=lambda run: run.id
+    )
+
+
 def competing_production_runs(
     session: Session, document_id: int
 ) -> list[ExtractionRun]:
@@ -310,26 +323,56 @@ def competing_production_runs(
     Ordered by id, exactly the set the operations screen renders declare
     controls for. Failed and page-error runs are history, not choices.
     """
-    runs = session.scalars(
-        select(ExtractionRun)
-        .where(ExtractionRun.document_id == document_id)
-        .order_by(ExtractionRun.id)
-    ).all()
-    return [run for run in runs if is_completed_run(run)]
+    return competing_runs_among(
+        session.scalars(
+            select(ExtractionRun)
+            .where(ExtractionRun.document_id == document_id)
+            .order_by(ExtractionRun.id)
+        )
+    )
+
+
+def runs_compete(runs: Sequence[ExtractionRun]) -> bool:
+    """Whether an explanation has anything to explain.
+
+    Two or more completed runs are an actual choice between readings; one is
+    the reading, and none is nothing. The screen used to spell this as
+    ``len(competing) >= 2`` in the web adapter beside the refusal that spells
+    it here, so a changed rule would have been enforced on the request and
+    contradicted by the button that made it.
+    """
+    return len(tuple(runs)) >= 2
+
+
+def competing_runs_token(
+    *,
+    document_id: int,
+    active_run_id: int | None,
+    declaration_id: int | None,
+    completed_run_ids: Sequence[int],
+) -> str:
+    """The stale-state digest over facts the caller already holds."""
+    return _sha(
+        {
+            "document_id": document_id,
+            "active_run_id": active_run_id,
+            "declaration_id": declaration_id,
+            "completed_run_ids": list(completed_run_ids),
+        }
+    )
 
 
 def competing_runs_state_token(session: Session, document_id: int) -> str:
     """Bind to the exact competing identities and declaration state now shown."""
     current = session.get(ActiveExtractionRun, document_id)
     tail = current_active_run_declaration(session, document_id)
-    completed = [run.id for run in competing_production_runs(session, document_id)]
-    return _sha(
-        {
-            "document_id": document_id,
-            "active_run_id": None if current is None else current.extraction_run_id,
-            "declaration_id": None if tail is None else tail.id,
-            "completed_run_ids": completed,
-        }
+    return competing_runs_token(
+        document_id=document_id,
+        active_run_id=None if current is None else current.extraction_run_id,
+        declaration_id=None if tail is None else tail.id,
+        completed_run_ids=[
+            run.id for run in competing_production_runs(session, document_id)
+        ],
     )
 
 
@@ -479,7 +522,7 @@ def prepare_run_explanation(
             "cross_project", "source document is not in the authorized project"
         )
     competing = competing_production_runs(session, document_id)
-    if len(competing) < 2:
+    if not runs_compete(competing):
         raise ExplanationRequestRefused(
             "not_competing",
             "the document has no competing completed runs to explain",

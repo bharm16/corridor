@@ -49,12 +49,22 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
 from hashlib import sha256
+from typing import Any, ClassVar
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from corridor.changes import accepted_revision_id, snapshot
+from corridor.due_work_contract import (
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.export import to_pdf_bytes
 from corridor.models import (
     DueWorkOccurrence,
@@ -461,3 +471,162 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this publication runs under ------------------
+#
+# The output identity — the provenance mode, whether an external PDF is
+# prepared, and the last released report as the comparison predecessor — is
+# what publication *is*, so it is declared here beside the pass that honours
+# it; the runtime keeps the lease and the receipt (card 6).
+
+
+@dataclass(frozen=True)
+class ReportPublicationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables scheduled report publication.
+
+    Publication renders a report and, when declared, prepares one external PDF;
+    it reads no model, so ``model_token_budget`` must be a declared zero and the
+    schedule is weekly rather than hourly.  Scope names the exact project, the
+    provenance mode the reading and any PDF are taken under, and whether an
+    external PDF is prepared for later human release — the output identity.  The
+    comparison predecessor is the last released report (ADR-0053), declared
+    explicitly so no replacement policy is chosen implicitly.  Authorized
+    destinations stay empty, concurrency stays one, and the notification budget
+    stays zero: this slice adds no delivery and no new notification category.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    provenance_mode: str
+    prepare_external_pdf: bool
+    comparison_window_policy: str
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        provenance_mode: str = "all-supported-sources",
+        prepare_external_pdf: bool = True,
+    ) -> "ReportPublicationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            provenance_mode=provenance_mode,
+            prepare_external_pdf=prepare_external_pdf,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            comparison_window_policy="since_last_released",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: ReportPublicationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one report-publication declaration.
+
+    A schedule is never enabled with silent production defaults: the provenance
+    mode, the external-PDF decision, and the comparison predecessor are all
+    declared or the handler stays refused.
+    """
+
+    if declaration.provenance_mode not in (
+        "all-supported-sources",
+        "document-only",
+    ):
+        raise DueWorkRefusal("report-publication provenance mode is invalid")
+    if not isinstance(declaration.prepare_external_pdf, bool):
+        raise DueWorkRefusal("report-publication external preparation flag is invalid")
+    starts_at = validate_scheduling(
+        declaration,
+        subject="report-publication",
+        cadence="weekly",
+        schedule_valid=(
+            declaration.comparison_window_policy == "since_last_released"
+        ),
+        schedule_refusal=(
+            "report-publication supports only weekly UTC latest-only scheduling "
+            "against the last released report"
+        ),
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "provenance_mode": declaration.provenance_mode,
+        "prepare_external_pdf": declaration.prepare_external_pdf,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={"kind": "scheduled_report_publication-v1", **scope},
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            extra={
+                "output": {
+                    "internal_snapshot": True,
+                    "external_preparation": declaration.prepare_external_pdf,
+                },
+                "comparison_window_policy": declaration.comparison_window_policy,
+            },
+        ),
+        input_identity={"handler": HANDLER_KEY, **scope},
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> ReportPublicationDeclaration:
+    return ReportPublicationDeclaration(
+        **stored.scheduling_fields(),
+        provenance_mode=stored.scope.get("provenance_mode", ""),
+        prepare_external_pdf=bool(stored.scope.get("prepare_external_pdf", False)),
+        # Not part of the scope: the predecessor policy is retained in the
+        # configuration, so an edited row is refused by this handler's own rule.
+        comparison_window_policy=str(
+            stored.configuration.get("comparison_window_policy", "")
+        ),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Retain one weekly reading and prepare its external PDF for a claimed slot.
+
+    The pass commits its retained reading and any prepared artifact durably
+    through the session factory and converges on the occurrence's one retained
+    row; this adapter only turns the runtime's claim into the publication call
+    and returns its bounded receipt. It reads no model.
+    """
+
+    return execute_report_publication(
+        context.session_factory,
+        occurrence_id=context.claim.occurrence_id,
+        schedule_id=context.schedule.schedule_id,
+        clock=context.clock,
+    )
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_project_scheduled_report_publication",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=ReportPublicationDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+    disable_same_input_only=True,
+)

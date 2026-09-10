@@ -7,19 +7,34 @@ from pathlib import Path
 from sqlalchemy import select
 
 from corridor.db import WorkerSession
-from corridor.llm import OpenAIClient
+from corridor.llm import OpenAIClient, RequestConfiguration
 from corridor.minutes_spine import capture_minutes, inspect_minutes
 from corridor.models import Document, Project
 from corridor.operating_mode import is_adopted_baseline
 
 
 class RetainedMinutesResponse:
-    model = "retained-minutes-response"
+    """A retained strict answer, replayed with the configuration it names.
+
+    The configuration is a statement about the retained file, not a live
+    provider: the endpoint says the answer came off disk.
+    """
+
+    CONFIGURATION = RequestConfiguration(
+        model="retained-minutes-response", base_url="retained://offline"
+    )
 
     def __init__(self, path):
         self.output = json.loads(path.read_text())
 
-    def complete(self, **_request):
+    def configuration(self):
+        return self.CONFIGURATION
+
+    @property
+    def model(self):
+        return self.CONFIGURATION.model
+
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
         return self.output
 
 

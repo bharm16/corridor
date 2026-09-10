@@ -120,6 +120,7 @@ from corridor.models import (
     Project,
     ProposedDelta,
 )
+from corridor.native_follow_up_reading import plan_field, plan_subject_identity
 from corridor.presentation import field_label
 from corridor.project_workflow import FollowUpNeed, outstanding_follow_up
 from corridor.record_projection import (
@@ -842,9 +843,8 @@ def _plan_items(
         if plan is None or delta is None:
             continue
         organization = (plan.responsible_organization or "").strip()
-        subject_identity = str(
-            (plan.affected_scope or {}).get("subject_identity")
-            or delta.target_subject_identity
+        subject_identity = plan_subject_identity(
+            plan.affected_scope, delta.target_subject_identity
         )
         values = projection.get(subject_identity, {})
         accepted_org = values.get(RESPONSIBLE_ORGANIZATION_FIELD)
@@ -865,9 +865,7 @@ def _plan_items(
         else:
             quantity = (return_date - today).days
 
-        field_name = str((plan.affected_scope or {}).get("field") or "") or (
-            delta.target_field or ""
-        )
+        field_name = plan_field(plan.affected_scope, delta.target_field) or ""
         accepted_lines = ()
         value = values.get(field_name)
         if value is not None:

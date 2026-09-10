@@ -29,13 +29,23 @@ runtime (#332) discovers, claims, and retries occurrences.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import func, select
 
+from corridor.due_work_contract import (
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.models import DueWorkSchedule, RetentionManifestItem
-from corridor.principals import HumanPrincipal
+from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.retention import RetentionRefused, execute_retention, plan_retention
 
 # The one server-owned handler key this module's work runs under.  It matches
@@ -138,3 +148,137 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this pass runs under ------------------------
+#
+# The runtime keeps the lease, the retries and the receipt; what a sweep *is*
+# — weekly, attributable to a named person, spending no model tokens and
+# sending nothing — is this module's own statement, so it lives here with the
+# execution rather than in the runtime (card 6).
+
+
+@dataclass(frozen=True)
+class RetentionSweepDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables the Class B TTL sweep.
+
+    ``authorized_by`` is the named person with authority under the customer
+    relationship who authorized this standing sweep (ADR-0080).  It is a
+    ``HumanPrincipal`` subject, not a role label, and it is the actor recorded
+    on every dry-run manifest and deletion receipt the sweep produces, so an
+    automatic expiry is still attributable to somebody.  The sweep reads no
+    model and sends nothing; it is weekly because the Class B TTL is measured
+    in days, not hours.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    authorized_by: str
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        authorized_by: str,
+        starts_at: datetime,
+    ) -> "RetentionSweepDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            authorized_by=authorized_by,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=300,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1800,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: RetentionSweepDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one Class B retention-sweep declaration."""
+
+    try:
+        HumanPrincipal(declaration.authorized_by)
+    except InvalidHumanPrincipal as exc:
+        raise DueWorkRefusal(
+            "retention-sweep authorization must name a human principal"
+        ) from exc
+    starts_at = validate_scheduling(
+        declaration, subject="retention-sweep", cadence="weekly"
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "authorized_by": declaration.authorized_by,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={
+                "kind": "project_class_b_intermediaries-v1",
+                "project_id": declaration.project_id,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            # ADR-0080: only the five Class B intermediary families and
+            # registered processing artifacts are reachable, and every deletion
+            # still passes the hold check, the reachability check, and the
+            # dry-run manifest.
+            extra={"retention_class": "class_b"},
+        ),
+        input_identity={
+            "handler": HANDLER_KEY,
+            "project_id": declaration.project_id,
+            "retention_class": "class_b",
+        },
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> RetentionSweepDeclaration:
+    return RetentionSweepDeclaration(
+        **stored.scheduling_fields(),
+        authorized_by=stored.scope.get("authorized_by", ""),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Expire one project's due Class B intermediaries for a claimed occurrence.
+
+    The manifest, the hold and reachability rechecks, and the deletion permit
+    all stay in ``corridor.retention``; this adapter only turns the runtime's
+    claim into that sweep. A refusal comes back as an attention reading rather
+    than an exception, so a held or still-reachable candidate is visible in the
+    receipt instead of burning the occurrence's retries.
+    """
+
+    return execute_retention_sweep(
+        context.session_factory,
+        schedule_id=context.schedule.schedule_id,
+        clock=context.clock,
+    )
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_project_class_b_intermediaries",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=RetentionSweepDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+)

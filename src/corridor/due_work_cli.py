@@ -8,29 +8,33 @@ same durable interfaces for operations and controlled validation.
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 from datetime import datetime, timezone
 import json
 import signal
 from threading import Event
 import time
+from types import MappingProxyType
+from typing import Any
 from uuid import uuid4
 
 from sqlalchemy import select
 
 from corridor.due_work import (
-    AssignmentNotificationDeclaration,
-    ConnectorPollingDeclaration,
-    DeltaGenerationDeclaration,
-    DocumentNotificationDeclaration,
+    HANDLER_ASSIGNMENT_NOTIFICATION,
+    HANDLER_CONNECTOR_POLLING,
+    HANDLER_DELTA_GENERATION,
+    HANDLER_DOCUMENT_NOTIFICATION,
+    HANDLER_EVENT_ADMISSION_REPROOF,
+    HANDLER_LOCATION_DISCOVERY,
+    HANDLER_PROCESSING_HEALTH,
+    HANDLER_PROJECT_PROCESSING,
+    HANDLER_REGISTRY,
+    HANDLER_RELEASE_PREPARATION,
+    HANDLER_REPORT_PREPARATION,
+    HANDLER_REPORT_PUBLICATION,
+    HANDLER_RETENTION_SWEEP,
     DueWorkRefusal,
-    EventAdmissionReproofDeclaration,
-    LocationDiscoveryDeclaration,
-    ProcessingHealthDeclaration,
-    ProjectProcessingDeclaration,
-    ReleasePreparationDeclaration,
-    ReportPreparationDeclaration,
-    ReportPublicationDeclaration,
-    RetentionSweepDeclaration,
     configure_due_work,
     due_work_status,
     enqueue_due_work,
@@ -46,7 +50,9 @@ class SystemClock:
         return datetime.now(timezone.utc)
 
 
-def _common_declaration_kwargs(args, project_id: int) -> dict:
+def _scheduling_arguments(args, project_id: int) -> dict:
+    """The shared scheduling fields every declaration carries, from the parser."""
+
     return {
         "project_id": project_id,
         "configuration_version": args.configuration_version,
@@ -65,98 +71,72 @@ def _common_declaration_kwargs(args, project_id: int) -> dict:
     }
 
 
-def _health_declaration(args, project_id: int):
-    return ProcessingHealthDeclaration(**_common_declaration_kwargs(args, project_id))
+# What each handler's declaration needs beyond the shared scheduling fields.
+# Every name here is both the declaration's field and the parser's destination,
+# so one builder covers every command: the operator surface follows whatever a
+# handler declares, and adding a handler adds one line rather than a twin
+# constructor that can drift from its declaration.
+_HANDLER_ARGUMENTS: Mapping[str, tuple[str, ...]] = MappingProxyType(
+    {
+        HANDLER_PROCESSING_HEALTH: (),
+        HANDLER_PROJECT_PROCESSING: ("extractor_identity",),
+        HANDLER_LOCATION_DISCOVERY: (
+            "location_id",
+            "adapter_identity",
+            "source_manifest_id",
+            "index_url",
+            "rid_link_text",
+            "authorized_hosts",
+            "sealed",
+            "nested_archive_depth",
+            "max_archive_compressed_mib",
+            "max_member_decompressed_mib",
+            "enumeration_limit",
+            "request_limit",
+            "document_limit",
+        ),
+        HANDLER_ASSIGNMENT_NOTIFICATION: ("channel",),
+        HANDLER_DOCUMENT_NOTIFICATION: ("channel",),
+        HANDLER_EVENT_ADMISSION_REPROOF: (
+            "policy_version",
+            "reason_version",
+            "selection_rule",
+            "clone_budget",
+        ),
+        HANDLER_REPORT_PUBLICATION: (
+            "provenance_mode",
+            "prepare_external_pdf",
+            "comparison_window_policy",
+        ),
+        HANDLER_CONNECTOR_POLLING: (
+            "customer",
+            "channel",
+            "connector_identity",
+            "source_url",
+        ),
+        HANDLER_DELTA_GENERATION: ("comparison_rule_version",),
+        HANDLER_REPORT_PREPARATION: (),
+        HANDLER_RELEASE_PREPARATION: (),
+        HANDLER_RETENTION_SWEEP: ("authorized_by",),
+    }
+)
+# A repeatable option arrives as a list; the declaration holds the immutable
+# tuple its digest is taken over.
+_ARGUMENT_VALUES: Mapping[str, Any] = MappingProxyType({"authorized_hosts": tuple})
 
 
-def _processing_declaration(args, project_id: int):
-    return ProjectProcessingDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        extractor_identity=args.extractor_identity,
-    )
+def _declaration(args, project_id: int, handler_key: str):
+    """Build this command's declaration through the handler's own registration."""
 
-
-def _discovery_declaration(args, project_id: int):
-    return LocationDiscoveryDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        location_id=args.location_id,
-        adapter_identity=args.adapter_identity,
-        source_manifest_id=args.source_manifest_id,
-        index_url=args.index_url,
-        rid_link_text=args.rid_link_text,
-        authorized_hosts=tuple(args.authorized_hosts),
-        sealed=args.sealed,
-        nested_archive_depth=args.nested_archive_depth,
-        max_archive_compressed_mib=args.max_archive_compressed_mib,
-        max_member_decompressed_mib=args.max_member_decompressed_mib,
-        enumeration_limit=args.enumeration_limit,
-        request_limit=args.request_limit,
-        document_limit=args.document_limit,
-    )
-
-
-def _assignment_notification_declaration(args, project_id: int):
-    return AssignmentNotificationDeclaration(
-        **_common_declaration_kwargs(args, project_id), channel=args.channel
-    )
-
-
-def _document_notification_declaration(args, project_id: int):
-    return DocumentNotificationDeclaration(
-        **_common_declaration_kwargs(args, project_id), channel=args.channel
-    )
-
-
-def _reproof_declaration(args, project_id: int):
-    return EventAdmissionReproofDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        policy_version=args.policy_version,
-        reason_version=args.reason_version,
-        selection_rule=args.selection_rule,
-        clone_budget=args.clone_budget,
-    )
-
-
-def _publication_declaration(args, project_id: int):
-    return ReportPublicationDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        provenance_mode=args.provenance_mode,
-        prepare_external_pdf=args.prepare_external_pdf,
-        comparison_window_policy=args.comparison_window_policy,
-    )
-
-
-def _connector_polling_declaration(args, project_id: int):
-    return ConnectorPollingDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        customer=args.customer,
-        channel=args.channel,
-        connector_identity=args.connector_identity,
-        source_url=args.source_url,
-    )
-
-
-def _delta_generation_declaration(args, project_id: int):
-    return DeltaGenerationDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        comparison_rule_version=args.comparison_rule_version,
-    )
-
-
-def _report_preparation_declaration(args, project_id: int):
-    return ReportPreparationDeclaration(**_common_declaration_kwargs(args, project_id))
-
-
-def _release_preparation_declaration(args, project_id: int):
-    return ReleasePreparationDeclaration(
-        **_common_declaration_kwargs(args, project_id)
-    )
-
-
-def _retention_sweep_declaration(args, project_id: int):
-    return RetentionSweepDeclaration(
-        **_common_declaration_kwargs(args, project_id),
-        authorized_by=args.authorized_by,
+    registration = HANDLER_REGISTRY[handler_key]
+    if registration.declaration_type is None:
+        raise DueWorkRefusal("Due Work handler declares no configuration")
+    declared = {
+        name: _ARGUMENT_VALUES.get(name, lambda value: value)(getattr(args, name))
+        for name in _HANDLER_ARGUMENTS[handler_key]
+    }
+    return registration.declaration_type(
+        **_scheduling_arguments(args, project_id), **declared
     )
 
 
@@ -183,12 +163,12 @@ def _parser() -> argparse.ArgumentParser:
 
     configure = commands.add_parser("configure-health")
     _add_schedule_arguments(configure)
-    configure.set_defaults(declaration_builder=_health_declaration)
+    configure.set_defaults(handler_key=HANDLER_PROCESSING_HEALTH)
 
     processing = commands.add_parser("configure-processing")
     processing.add_argument("--extractor-identity", required=True)
     _add_schedule_arguments(processing)
-    processing.set_defaults(declaration_builder=_processing_declaration)
+    processing.set_defaults(handler_key=HANDLER_PROJECT_PROCESSING)
 
     discovery = commands.add_parser("configure-discovery")
     discovery.add_argument("--location-id", required=True)
@@ -212,7 +192,7 @@ def _parser() -> argparse.ArgumentParser:
     discovery.add_argument("--document-limit", type=int, default=100)
     _add_schedule_arguments(discovery)
     discovery.set_defaults(
-        declaration_builder=_discovery_declaration,
+        handler_key=HANDLER_LOCATION_DISCOVERY,
         payload_extra=lambda args: {
             "location_id": args.location_id,
             "sealed": args.sealed,
@@ -222,15 +202,13 @@ def _parser() -> argparse.ArgumentParser:
     notifications = commands.add_parser("configure-notifications")
     notifications.add_argument("--channel", required=True)
     _add_schedule_arguments(notifications)
-    notifications.set_defaults(
-        declaration_builder=_assignment_notification_declaration
-    )
+    notifications.set_defaults(handler_key=HANDLER_ASSIGNMENT_NOTIFICATION)
 
     document_notifications = commands.add_parser("configure-document-notifications")
     document_notifications.add_argument("--channel", required=True)
     _add_schedule_arguments(document_notifications)
     document_notifications.set_defaults(
-        declaration_builder=_document_notification_declaration
+        handler_key=HANDLER_DOCUMENT_NOTIFICATION
     )
 
     reproof = commands.add_parser("configure-reproof")
@@ -239,7 +217,7 @@ def _parser() -> argparse.ArgumentParser:
     reproof.add_argument("--selection-rule", required=True)
     reproof.add_argument("--clone-budget", required=True, type=int)
     _add_schedule_arguments(reproof)
-    reproof.set_defaults(declaration_builder=_reproof_declaration)
+    reproof.set_defaults(handler_key=HANDLER_EVENT_ADMISSION_REPROOF)
 
     publication = commands.add_parser("configure-publication")
     publication.add_argument(
@@ -256,7 +234,7 @@ def _parser() -> argparse.ArgumentParser:
     )
     publication.add_argument("--comparison-window-policy", required=True)
     _add_schedule_arguments(publication)
-    publication.set_defaults(declaration_builder=_publication_declaration)
+    publication.set_defaults(handler_key=HANDLER_REPORT_PUBLICATION)
 
     polling = commands.add_parser("configure-connector-polling")
     polling.add_argument("--customer", required=True)
@@ -265,7 +243,7 @@ def _parser() -> argparse.ArgumentParser:
     polling.add_argument("--source-url", required=True)
     _add_schedule_arguments(polling)
     polling.set_defaults(
-        declaration_builder=_connector_polling_declaration,
+        handler_key=HANDLER_CONNECTOR_POLLING,
         payload_extra=lambda args: {
             "channel": args.channel,
             "connector_identity": args.connector_identity,
@@ -275,20 +253,20 @@ def _parser() -> argparse.ArgumentParser:
     delta_generation = commands.add_parser("configure-delta-generation")
     delta_generation.add_argument("--comparison-rule-version", required=True)
     _add_schedule_arguments(delta_generation)
-    delta_generation.set_defaults(declaration_builder=_delta_generation_declaration)
+    delta_generation.set_defaults(handler_key=HANDLER_DELTA_GENERATION)
 
     preparation = commands.add_parser("configure-report-preparation")
     _add_schedule_arguments(preparation)
-    preparation.set_defaults(declaration_builder=_report_preparation_declaration)
+    preparation.set_defaults(handler_key=HANDLER_REPORT_PREPARATION)
 
     supervisor = commands.add_parser("configure-release-preparation")
     _add_schedule_arguments(supervisor)
-    supervisor.set_defaults(declaration_builder=_release_preparation_declaration)
+    supervisor.set_defaults(handler_key=HANDLER_RELEASE_PREPARATION)
 
     sweep = commands.add_parser("configure-retention-sweep")
     sweep.add_argument("--authorized-by", required=True)
     _add_schedule_arguments(sweep)
-    sweep.set_defaults(declaration_builder=_retention_sweep_declaration)
+    sweep.set_defaults(handler_key=HANDLER_RETENTION_SWEEP)
 
     commands.add_parser("tick")
     for name in ("run-once", "recover"):
@@ -344,12 +322,12 @@ def main(
             return 1
 
     try:
-        declaration_builder = getattr(args, "declaration_builder", None)
-        if declaration_builder is not None:
+        handler_key = getattr(args, "handler_key", None)
+        if handler_key is not None:
             with session_factory() as session:
                 with session.begin():
                     project = _project(session, args.project_slug)
-                    declaration = declaration_builder(args, project.id)
+                    declaration = _declaration(args, project.id, handler_key)
                     schedule = configure_due_work(
                         session,
                         declaration,

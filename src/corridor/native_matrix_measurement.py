@@ -30,6 +30,8 @@ from pathlib import Path
 import sys
 from typing import Any
 
+from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST
+from corridor.llm import RequestConfiguration
 from corridor_pdf_reader.replacement import semantics
 
 
@@ -135,7 +137,14 @@ def verify_measured_configuration(configuration: Mapping[str, Any]) -> None:
 
 
 class RecordedStructureClient:
-    """Check exact request inputs and return the next preserved raw answer."""
+    """Check exact request inputs and return the next preserved raw answer.
+
+    Its `configuration()` states the configuration the retained answers were
+    produced under, taken from the retained dataset rather than asserted: the
+    dataset records the model and the reasoning effort, and the deployed
+    endpoint is named for the one they were recorded against because no
+    dataset field holds it. Nothing here opens a connection.
+    """
 
     def __init__(self, case: RetainedCase, configuration: Mapping[str, Any]):
         verify_measured_configuration(configuration)
@@ -146,16 +155,21 @@ class RecordedStructureClient:
             raise ReplayRefusal("retained model or prompt identity differs from the dataset")
         self.case = case
         self.configuration = configuration
-        self.model = configuration["model"]
-        self.effort = configuration["reasoning_effort"]
+        self._configuration = RequestConfiguration(
+            model=configuration["model"], effort=configuration["reasoning_effort"],
+            flex=False,
+            base_url=configuration.get("provider_base_url", DEPLOYED_NATIVE_MATRIX_REQUEST.base_url),
+        )
+        self.model = self._configuration.model
         self.image_detail = configuration["image_detail"]
-        self.flex = False
-        self.base_url = "https://api.openai.com/v1"
         self.calls = 0
         self.prompt_tokens = 0
         self.completion_tokens = 0
         self.cached_tokens = 0
         self.replayed_calls = 0
+
+    def configuration(self) -> RequestConfiguration:
+        return self._configuration
 
     def complete(
         self,
@@ -164,7 +178,10 @@ class RecordedStructureClient:
         user: str,
         schema: dict[str, Any],
         images: Sequence[Path | str] = (),
+        logprobs: bool = False,
     ) -> dict[str, Any]:
+        if logprobs:
+            raise ReplayRefusal("the retained dataset holds no output logprobs")
         if self.replayed_calls >= len(self.case.document["pages"]):
             raise ReplayRefusal("adapter asked for an unrecorded structure answer")
         expected = self.case.document["pages"][self.replayed_calls]

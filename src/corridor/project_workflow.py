@@ -80,11 +80,10 @@ from corridor.issue_profile import effective_issue_inventories
 from corridor.models import (
     BaselineSourceRow,
     DeltaFollowUpPlan,
-    DeltaReviewPacketChild,
-    DeltaReviewPacketReversal,
     Document,
     ProposedDelta,
 )
+from corridor.native_follow_up_reading import undone_follow_up_plan_ids
 from corridor.packet_review import ItemReading, ReviewReading, read_review_items
 from corridor.presentation import field_label
 from corridor.release_preparation import PreparationStanding, preparation_standings
@@ -303,17 +302,11 @@ def outstanding_follow_up_by_project(
         return found
     project_ids = tuple(live)
     every_open = tuple({delta_id for ids in live.values() for delta_id in ids})
-    undone = (
-        select(DeltaReviewPacketChild.follow_up_plan_id)
-        .join(
-            DeltaReviewPacketReversal,
-            DeltaReviewPacketReversal.receipt_id == DeltaReviewPacketChild.receipt_id,
-        )
-        .where(
-            DeltaReviewPacketChild.project_id.in_(project_ids),
-            DeltaReviewPacketChild.follow_up_plan_id.is_not(None),
-        )
-    )
+    # Whether the one act that recorded a plan still stands is decided in
+    # ``native_follow_up_reading``, where the as-of reader decides it too. The
+    # same join written twice here and there is how two renderings of one plan
+    # came to be able to disagree about a reversal.
+    undone = undone_follow_up_plan_ids(project_ids)
     rows = session.execute(
         select(DeltaFollowUpPlan, ProposedDelta)
         .join(

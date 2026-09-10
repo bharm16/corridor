@@ -234,4 +234,5 @@ def test_the_boundary_exposes_the_configuration_the_extractor_seals():
     config = deployed_native_matrix_config(client=boundary)
     assert config.model == "gpt-5.6-luna"
     assert config.config_json["request_controls"]["reasoning_effort"] == "none"
-    assert boundary.flex is False and boundary.image_detail == "original"
+    assert boundary.configuration().flex is False
+    assert boundary.image_detail == "original"

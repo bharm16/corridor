@@ -134,7 +134,7 @@ PRIVATE_JSON_DIGESTS = {
     "subject_resolution.py": "resolution payload digest",
     "unreadable_cells.py": "unreadable-cell payload digest (default=str)",
     "evidence_investigator.py": "investigation payload digest (default=str)",
-    "web/app.py": "recorded policy-choice digest",
+    "web/operations_view.py": "recorded policy-choice digest",
     # Digests behind a module's own value normalizer, where the normalization
     # and not the encoding is what the module owns.
     "disposition_contracts.py": "dataclass sha256 property over asdict",

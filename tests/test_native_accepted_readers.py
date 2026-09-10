@@ -29,6 +29,9 @@ from corridor.report import Assertion, build_report, render
 from corridor.source_append import append_fact
 from corridor.source_intake import validate_and_stage
 
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
+
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
 TODAY = date(2026, 9, 9)
@@ -74,11 +77,17 @@ def adopted(session, tmp_path, monkeypatch):
     return _adopt_native_workbook(session, tmp_path, monkeypatch)
 
 
-class CoveringClient:
-    model = "synthetic-briefing"
-    def complete(self, *, user, **kwargs):
-        references = sorted(set(re.findall(r"^  \[((?:XB|X|E|A|V)\d+)\]", user, re.MULTILINE)))
-        return {"sentences": [{"text": "Read the accepted values and their cited sources.", "cites": references}]}
+def covering_sentence(call):
+    """One sentence citing every reference the briefing showed the model."""
+    references = sorted(set(re.findall(r"^  \[((?:XB|X|E|A|V)\d+)\]", call.user, re.MULTILINE)))
+    return {"sentences": [{"text": "Read the accepted values and their cited sources.", "cites": references}]}
+
+
+def covering_client():
+    return FakeModelClient(
+        covering_sentence,
+        configuration=RequestConfiguration(model="synthetic-briefing"),
+    )
 
 
 def test_actual_readers_never_select_legacy_populations_or_values(session, adopted, tmp_path):
@@ -106,7 +115,7 @@ def test_actual_readers_never_select_legacy_populations_or_values(session, adopt
         assert "100+00" in body and "200+00" in body and "p.None" not in body
         assert "Utility Conflicts!" in body
         assert any(isinstance(cell.provenance, Assertion) and cell.provenance.decision_id for cell in report.cells)
-        briefing = brief_project(session, project.id, client=CoveringClient(), today=TODAY, frozen_reading=reading)
+        briefing = brief_project(session, project.id, client=covering_client(), today=TODAY, frozen_reading=reading)
         assert not briefing.refused and briefing.sentences
         assert any("decision " in item.text for item in briefing.citables)
         output = to_xlsx(session, project.id, tmp_path / "native.xlsx", evaluation=reading.evaluation,
@@ -251,7 +260,7 @@ def test_native_follow_up_plan_preserves_question_evidence_without_accepting_its
     body = render(report)
     assert plan.open_question in body and "local:utility-coordinator" in body
     assert f"Follow-up Plan {plan.plan_id}" in body
-    briefing = brief_project(session, project.id, client=CoveringClient(), frozen_reading=reading)
+    briefing = brief_project(session, project.id, client=covering_client(), frozen_reading=reading)
     assert not briefing.refused
     assert any(item.kind == "decision" and plan.open_question in item.text for item in briefing.citables)
     stored = snapshot(session, project.id, evaluation=reading.evaluation)

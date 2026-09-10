@@ -25,6 +25,7 @@ from corridor.extraction_runs import (
     is_completed_run,
     record_extraction_run,
 )
+from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST
 from corridor.facts import proposal_input_snapshots, replay_fact
 from corridor.models import (
     ActiveExtractionRun,
@@ -209,15 +210,17 @@ def _document(session, project, source, **overrides):
 
 
 class RecordedStructureClient:
-    """Return authored IDs after verifying the actual measured request contract."""
+    """Return authored IDs after verifying the actual measured request contract.
 
-    model = "gpt-5.6-luna"
-    effort = "none"
+    It states one request configuration — the deployed one the authored
+    answers stand for — rather than carrying four attributes that describe a
+    provider this test never reaches.
+    """
+
     image_detail = "original"
-    flex = False
-    base_url = "https://api.openai.com/v1"
 
-    def __init__(self, source, *, answers=None):
+    def __init__(self, source, *, answers=None, configuration=DEPLOYED_NATIVE_MATRIX_REQUEST):
+        self.stated = configuration
         self.source = source
         self.answers = deepcopy(source.answers if answers is None else answers)
         self.requests = []
@@ -227,7 +230,11 @@ class RecordedStructureClient:
         self.reasoning_tokens = 0
         self.cached_tokens = 0
 
-    def complete(self, *, system, user, schema, images=()):
+    def configuration(self):
+        return self.stated
+
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
+        assert logprobs is False
         page = self.source.reading.pages[self.calls]
         number = page["number"]
         assert system == semantics.PROMPT_PATH.read_text()
@@ -898,9 +905,9 @@ def test_unmeasured_context_or_model_configuration_is_refused_before_transmissio
             image.resize((900, 480)).save(wrong)
         images[1] = wrong
     elif case == "model":
-        client.model = "unmeasured-model"
+        client.stated = replace(client.stated, model="unmeasured-model")
     elif case == "effort":
-        client.effort = "high"
+        client.stated = replace(client.stated, effort="high")
     else:
         reading = read_native_pdf(matrix_source.path, source_sha256=document.sha256, dpi=37)
 

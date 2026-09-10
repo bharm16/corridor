@@ -119,6 +119,14 @@ class CoordinationSubject:
     ``int`` Dependency ids remain accepted by the public service APIs for
     compatibility.  New callers use this discriminated value so a statement
     plan cannot accidentally acquire both a lineage and a Dependency subject.
+
+    What is still undecided about a subject's plan — which residual decision it
+    needs, its Attention Reason codes, and the words for an authority gap — is
+    one reading in ``corridor.presentation``
+    (``read_coordination_residue`` and its named variants).  It lives there
+    rather than here because this module imports ``notifications``, and the
+    alert engine that has to ask the same question is what ``notifications``
+    imports.
     """
 
     dependency_id: int | None = None

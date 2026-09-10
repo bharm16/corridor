@@ -27,7 +27,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
-from corridor import audit, notifications
+from corridor import audit, notifications, presentation
+from corridor.presentation import (
+    CoordinationPlan,
+    CoordinationResidue,
+    RESIDUAL_NEXT_ACTION,
+    RESIDUAL_OWNER,
+    read_admitted_statement_residue,
+)
 from corridor.coordination_history import coordination_operation, sync_coordination_reversals
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.statement_spine import (
@@ -145,10 +152,12 @@ _LEGACY_STATEMENT_NEXT_ACTION_CHOICES = (
     "Obtain additional Evidence for this statement",
 )
 
-CLOSURE_TARGET_GAP = "closure_target_commitment_not_established"
-CLOSURE_TARGET_RELATIONSHIP_GAP = "closure_target_relationship_not_established"
-CLOSURE_TARGET_AMBIGUOUS_GAP = "closure_target_commitment_ambiguous"
-CLOSURE_PARTY_GAP = "closure_affected_party_not_established"
+# The codes and their customer words are minted together in
+# `corridor.presentation`; these names stay the ones callers already import.
+CLOSURE_TARGET_GAP = presentation.CLOSURE_TARGET_GAP
+CLOSURE_TARGET_RELATIONSHIP_GAP = presentation.CLOSURE_TARGET_RELATIONSHIP_GAP
+CLOSURE_TARGET_AMBIGUOUS_GAP = presentation.CLOSURE_TARGET_AMBIGUOUS_GAP
+CLOSURE_PARTY_GAP = presentation.CLOSURE_PARTY_GAP
 
 
 @dataclass(frozen=True)
@@ -191,14 +200,26 @@ class AdmittedStatementCoordination:
     evidence: tuple[AdmittedStatementEvidence, ...]
     scope_dependencies: tuple[Dependency, ...]
     roster: tuple[ProjectRosterEntry, ...]
-    next_decision: str | None
-    authority_gap: str | None
+    # The one coordination authority reading (`corridor.presentation`).  The two
+    # published names below are views of it, so no caller and no entry-point
+    # guard restates the owner-then-Next-Action ordering.
+    residue: CoordinationResidue
     # The live Next Action a coordinator may now complete, cancel, or defer,
     # and the current deferral if immediate work was already delayed.  These
     # are the exact Coordination Decision tails the close and deferral commands
     # bind to, never the lineage projection alone (ADR-0038).
     next_action_decision: WorkDecision | None = None
     deferral_decision: WorkDecision | None = None
+
+    @property
+    def next_decision(self) -> str | None:
+        """The one residual decision this accepted Commitment still needs."""
+        return self.residue.decision
+
+    @property
+    def authority_gap(self) -> str | None:
+        """Why the residual decision cannot be recorded, in customer words."""
+        return self.residue.authority_gap
 
     @property
     def next_action_choices(self) -> tuple[str, ...]:
@@ -405,19 +426,11 @@ def read_admitted_statement_coordination(
             .execution_options(populate_existing=True)
         ).all()
     )
-    next_decision = (
-        "owner"
-        if not lineage.internal_owner
-        else "next_action"
-        if not lineage.next_action
-        else None
+    residue = read_admitted_statement_residue(
+        CoordinationPlan(lineage.internal_owner, lineage.next_action),
+        evidence_available=bool(evidence),
+        roster_available=bool(roster),
     )
-    authority_gap = None
-    if not evidence:
-        next_decision = "blocked"
-        authority_gap = "Verified statement Evidence is unavailable; residual decisions remain pending."
-    elif next_decision == "owner" and not roster:
-        authority_gap = "No active project roster choices are available; Internal Owner remains pending."
     subject = CoordinationSubject.statement(lineage.id)
     action_tail = current_next_action_decision(session, subject)
     next_action_decision = (
@@ -444,8 +457,7 @@ def read_admitted_statement_coordination(
         evidence=evidence,
         scope_dependencies=scope_dependencies,
         roster=roster,
-        next_decision=next_decision,
-        authority_gap=authority_gap,
+        residue=residue,
         next_action_decision=next_action_decision,
         deferral_decision=deferral_decision,
     )
@@ -468,7 +480,7 @@ def assign_admitted_statement_owner(
         raise StatementCoordinationRefusal(
             "no mechanically admitted statement exists in this project"
         )
-    if coordination.next_decision != "owner":
+    if coordination.residue.decision != RESIDUAL_OWNER:
         raise StatementCoordinationRefusal(
             "Internal Owner is no longer the next unresolved decision"
         )
@@ -516,7 +528,7 @@ def set_admitted_statement_next_action(
         raise StatementCoordinationRefusal(
             "no mechanically admitted statement exists in this project"
         )
-    if coordination.next_decision != "next_action":
+    if coordination.residue.decision != RESIDUAL_NEXT_ACTION:
         raise StatementCoordinationRefusal(
             "Next Action is no longer the next unresolved decision"
         )
@@ -1348,54 +1360,14 @@ def correct_statement_facts(
     return successor
 
 
-_DEPENDENCY_AUTHORITY_GAP_COPY = {
-    "citations_unverified": (
-        "Source citation not verified",
-        "Dependency Admission could not verify this proposal against its cited source.",
-    ),
-    "no_utility_id": (
-        "Dependency identifier not established",
-        "The current source row does not establish an identifier for this Dependency.",
-    ),
-    "no_row_identity": (
-        "External Party identity not established",
-        "This source numbers rows within each External Party, but the current Evidence does not establish the party needed to name this Dependency.",
-    ),
-    "missing_from_agreement_document": (
-        "Current revisions do not establish one row",
-        "The current source revisions do not agree that this Dependency row is present.",
-    ),
-    "multiple_rows_in_agreement_document": (
-        "Source row identity is not unique",
-        "The current source lists more than one row with this Dependency identity.",
-    ),
-    "revisions_disagree": (
-        "Current revisions disagree",
-        "The current source revisions do not establish one supported Dependency proposal.",
-    ),
-    "revisions_disagree_on_party": (
-        "External Party differs across current Evidence",
-        "The current source revisions name different External Parties for this Dependency.",
-    ),
-    "already_admitted": (
-        "Dependency identity already exists",
-        "The Project Record already carries this proposed Dependency identity.",
-    ),
-    "same_document_replay_unproven": (
-        "Same-source Dependency replay not established",
-        "This same source row was previously handled, but its current Dependency "
-        "association or extracted facts no longer prove safe replay. Keep it "
-        "pending for Evidence review.",
-    ),
-    "asserts_nothing": (
-        "No Dependency facts established",
-        "The current source row does not establish any Dependency facts to record.",
-    ),
-    "write_refused": (
-        "Dependency write authority not established",
-        "The current proposal did not satisfy the protected Dependency write contract.",
-    ),
-}
+
+
+def _closure_gap(code: str, **facts) -> CandidateAuthorityGap:
+    """One closure-family gap: its code and its own words, never separately."""
+    words = presentation.authority_gap_words(code)
+    return CandidateAuthorityGap(
+        code=code, title=words.title, detail=words.detail, **facts
+    )
 
 
 def _open_commitment_lineage_ids(
@@ -1469,14 +1441,8 @@ def pending_candidate_authority_gap(
             return None
         affected_external_org_id = facts.affected_party.external_org_id
         if affected_external_org_id is None:
-            return CandidateAuthorityGap(
-                code=CLOSURE_PARTY_GAP,
-                title="Affected External Party not established",
-                detail=(
-                    "The Evidence establishes a closure statement, but it does "
-                    "not establish the registered External Party whose Commitment "
-                    "could be closed."
-                ),
+            return _closure_gap(
+                CLOSURE_PARTY_GAP,
                 source_family="external-party-statement",
             )
         matching_lineage_ids = _open_commitment_lineage_ids(
@@ -1485,38 +1451,21 @@ def pending_candidate_authority_gap(
             affected_external_org_id,
         )
         if len(matching_lineage_ids) == 1:
-            return CandidateAuthorityGap(
-                code=CLOSURE_TARGET_RELATIONSHIP_GAP,
-                title="Closure-to-Commitment relationship not established",
-                detail=(
-                    "The Project Record has one open Commitment for this External "
-                    "Party, but the closure Evidence does not establish that it is "
-                    "the Commitment being closed."
-                ),
+            return _closure_gap(
+                CLOSURE_TARGET_RELATIONSHIP_GAP,
                 source_family="external-party-statement",
                 affected_external_org_id=affected_external_org_id,
                 matching_commitment_lineage_ids=matching_lineage_ids,
             )
         if len(matching_lineage_ids) > 1:
-            return CandidateAuthorityGap(
-                code=CLOSURE_TARGET_AMBIGUOUS_GAP,
-                title="Several open Commitments could be the closure target",
-                detail=(
-                    "The Project Record has several open Commitments for this "
-                    "External Party, and the closure Evidence does not identify "
-                    "which exact Commitment it closes."
-                ),
+            return _closure_gap(
+                CLOSURE_TARGET_AMBIGUOUS_GAP,
                 source_family="external-party-statement",
                 affected_external_org_id=affected_external_org_id,
                 matching_commitment_lineage_ids=matching_lineage_ids,
             )
-        return CandidateAuthorityGap(
-            code=CLOSURE_TARGET_GAP,
-            title="Exact target Commitment not established",
-            detail=(
-                "The Evidence establishes a closure statement, but it does not "
-                "identify an open Commitment in the Project Record that it closes."
-            ),
+        return _closure_gap(
+            CLOSURE_TARGET_GAP,
             source_family="external-party-statement",
             affected_external_org_id=affected_external_org_id,
         )
@@ -1540,14 +1489,15 @@ def pending_candidate_authority_gap(
     if row is None:
         return None
     outcome, policy_run = row
-    copy = _DEPENDENCY_AUTHORITY_GAP_COPY.get(outcome.reason or "")
-    if copy is None:
+    words = presentation.dependency_admission_gap_words(outcome.reason or "")
+    if words is None:
+        # Not an allowed unresolved gap: this abstention reason has no words
+        # because it is not work a coordinator may keep.
         return None
-    title, detail = copy
     return CandidateAuthorityGap(
         code=f"dependency_admission_{outcome.reason}",
-        title=title,
-        detail=detail,
+        title=words.title,
+        detail=words.detail,
         source_family="dependency-admission",
         abstention_reason=outcome.reason,
         outcome_id=outcome.id,

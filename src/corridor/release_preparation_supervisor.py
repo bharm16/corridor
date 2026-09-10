@@ -61,7 +61,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import json
-from typing import Any, Callable
+from typing import Any, Callable, ClassVar
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -69,6 +69,14 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import default_binding
 from corridor.baseline_adoption import effective_baseline_formats
+from corridor.due_work_contract import (
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.issue_profile import effective_issue_inventory
 from corridor.issue_rendering import (
     RELEASED_FIRST_ISSUE_BEHAVIOR,
@@ -87,6 +95,7 @@ from corridor.models import (
     ReleasePreparationReading,
     ReleasePreparationRequest,
 )
+from corridor.native_follow_up_reading import read_adopted_follow_up_plans
 from corridor.object_storage import (
     ObjectStore,
     StorageError,
@@ -554,14 +563,17 @@ def resolve_preparation_inputs(
     | ``follow_up_plans``       | see below                                   |
     | analytics binding         | the deployed code and product identity      |
 
-    ``follow_up_plans`` resolves empty, deliberately and not by oversight.
-    #425 retains an open question, a responsible party and a return date;
-    ``AcceptedFollowUpPlan`` additionally requires the **next action** sentence
-    the report prints, and no retained record holds one. A supervisor that
+    ``follow_up_plans`` is read from the retained records, and it is read
+    rather than composed. #425 retains an open question, a responsible party
+    and a return date, and ``AcceptedFollowUpPlan`` is now exactly those
+    fields, so this resolution is a read with no prose in it. It used to
+    resolve empty because the renderer's own twin of that type additionally
+    required a **next action** sentence no record holds; a supervisor that
     composed that sentence would be writing customer-facing prose out of a
-    background job, which is the exact thing this module refuses to do. The
-    chase list still reaches the candidate: ``bind_preparation`` reads
-    ``read_follow_up_bundles`` itself, from the same #425 records.
+    background job, which this module still refuses to do. The report declares
+    the absent next action instead. The chase list reaches the candidate by its
+    own path: ``bind_preparation`` reads ``read_follow_up_bundles`` itself,
+    from the same #425 records.
     """
 
     receipt = session.get(DueWorkReceipt, int(reading.receipt_id))
@@ -630,7 +642,13 @@ def resolve_preparation_inputs(
         ),
         first_issue_behavior=RELEASED_FIRST_ISSUE_BEHAVIOR,
         template_bytes=template.content,
-        follow_up_plans=(),
+        follow_up_plans=read_adopted_follow_up_plans(
+            session,
+            int(request.project_id),
+            int(preparation["accepted_revision_id"]),
+            current=True,
+            as_of=_aware_utc(request.source_cutoff),
+        ),
         binding=default_binding(),
         report_receipt_id=int(reading.receipt_id),
         report_result_sha256=reading.result_sha256,
@@ -829,3 +847,146 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this supervisor runs under -------------------
+#
+# ``on_request`` is this module's own statement about its work: it publishes one
+# occurrence per confirmed request instead of coalescing a cadence slot, so the
+# declaration and the publisher belong together. The runtime keeps the lease,
+# the retries and the receipts (card 6).
+
+
+@dataclass(frozen=True)
+class ReleasePreparationDeclaration(DueWorkScheduling):
+    """One project's enabled preparation supervisor (#690).
+
+    ``cadence`` is ``on_request`` and that is not a cosmetic name: this
+    schedule owns the lease, retry and deadline terms one preparation runs
+    under, and produces no occurrence of its own. Occurrences are published,
+    one per ``ReleasePreparationRequest``, by ``enqueue_due_work`` calling the
+    registration's publisher — so a claim, a lease expiry and a retry all apply
+    to a single coordinator's request.
+
+    The lease is long because #529 renders a customer workbook between its
+    transactions, and the deadline sits inside it for the reason every other
+    effectful handler's does: work already committed is idempotent, and a
+    deadline overrun is recovered rather than duplicated.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    @classmethod
+    def released_on_request(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+    ) -> "ReleasePreparationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            starts_at=starts_at,
+            cadence="on_request",
+            timezone_name="UTC",
+            missed_run_policy="every_occurrence",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=1800,
+            deadline_seconds=1500,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: ReleasePreparationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one preparation-supervisor declaration."""
+
+    starts_at = validate_scheduling(
+        declaration,
+        subject="release-preparation",
+        cadence="on_request",
+        missed_run_policy="every_occurrence",
+        claim_ttl_seconds=(300, 3600),
+        schedule_refusal=(
+            "release-preparation runs one published occurrence per confirmed "
+            "request; it has no cadence and coalesces nothing"
+        ),
+    )
+    scope = {"project_id": declaration.project_id}
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={
+                "kind": "confirmed_preparation_requests-v1",
+                "project_id": declaration.project_id,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            # One occurrence per request, so nothing is ever coalesced away and
+            # a request that waited is worked rather than skipped.
+            extra={
+                "publication_policy": "one_occurrence_per_preparation_request"
+            },
+        ),
+        input_identity={
+            "handler": HANDLER_KEY,
+            "project_id": declaration.project_id,
+            "source": "confirmed_preparation_requests-v1",
+        },
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> ReleasePreparationDeclaration:
+    return ReleasePreparationDeclaration(**stored.scheduling_fields())
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Prepare the one issue this claimed occurrence names (#690).
+
+    The occurrence names exactly one ``ReleasePreparationRequest`` through its
+    publication, so the lease, the retry budget and the receipt all belong to
+    one coordinator's request. The supervisor resolves that request's retained
+    authorities, invokes #529's three phases through the session factory, and
+    records the finished attempt durably before the runtime finalizes the
+    claim; a worker that dies leaves the occurrence reclaimable and the retry
+    reuses the reading the request was already bound to.
+    """
+
+    return execute_release_preparation(
+        context.session_factory,
+        occurrence_id=context.claim.occurrence_id,
+        schedule_id=context.schedule.schedule_id,
+        clock=context.clock,
+        runtime_owner=context.claim.runtime_owner,
+    )
+
+
+def _publish_due_work(
+    session: Session, schedule: DueWorkSchedule, now: datetime
+) -> tuple[str, ...]:
+    """Publish one occurrence for each of this project's unworked requests."""
+
+    return publish_pending_preparation_requests(session, schedule, now=now)
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_confirmed_preparation_request",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=ReleasePreparationDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+    publish=_publish_due_work,
+)
