@@ -74,6 +74,16 @@ class DisputeMovedOn(DisputeRefusal):
 
     refusal_kind = refusals.STALE
 
+class DisputeInputRefused(DisputeRefusal):
+    """The act names a Constraint or a field this project does not hold.
+
+    Malformed input, in the domain's own words: the adapter answers 400 with
+    this sentence instead of a generic one, and no dispute row is touched.
+    """
+
+    refusal_kind = refusals.MALFORMED_INPUT
+
+
 
 @dataclass(frozen=True)
 class DisputeHistoryAssessment:
@@ -474,7 +484,7 @@ def history_assessments_for(
     """
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
-        raise ValueError(f"dependency {dependency_id} does not exist")
+        raise DisputeInputRefused(f"dependency {dependency_id} does not exist")
     assessments = []
     for dispute in _raw_disputes_for(session, dependency_id):
         # Only a like-for-like text projection can witness the row's own
@@ -498,7 +508,7 @@ def apply_staleness_resolutions(
     """
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
-        raise ValueError(f"dependency {dependency_id} does not exist")
+        raise DisputeInputRefused(f"dependency {dependency_id} does not exist")
     lock_project(session, dependency.project_id)
     session.refresh(dependency)
     if dependency.dismissed_at is not None:
@@ -568,7 +578,7 @@ def record_dispute_clarification(
     recorder = require_human_principal(principal)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
-        raise ValueError(f"dependency {dependency_id} does not exist")
+        raise DisputeInputRefused(f"dependency {dependency_id} does not exist")
     if field_name not in {
         dispute.field_name for dispute in disputes_for(session, dependency_id)
     }:
@@ -818,7 +828,7 @@ def settle_dispute(
     settler = require_human_principal(principal)
     dependency = session.get(Dependency, dependency_id)
     if dependency is None:
-        raise ValueError(f"dependency {dependency_id} does not exist")
+        raise DisputeInputRefused(f"dependency {dependency_id} does not exist")
     lock_project(session, dependency.project_id)
     session.refresh(dependency)
     if dependency.dismissed_at is not None:

@@ -140,7 +140,7 @@ class CoordinationSubject:
     def __post_init__(self) -> None:
         subjects = (self.dependency_id, self.commitment_lineage_id)
         if sum(subject is not None for subject in subjects) != 1:
-            raise ValueError(
+            raise CoordinationDecisionRefusal(
                 "a Coordination Subject is exactly one Dependency or Commitment Lineage"
             )
         for identity in subjects:
@@ -149,7 +149,7 @@ class CoordinationSubject:
                 or not isinstance(identity, int)
                 or identity <= 0
             ):
-                raise ValueError("a Coordination Subject needs one positive identity")
+                raise CoordinationDecisionRefusal("a Coordination Subject needs one positive identity")
 
     @classmethod
     def dependency(cls, dependency_id: int) -> "CoordinationSubject":
@@ -682,7 +682,7 @@ def _locked_subject(
     if coordination_subject.dependency_id is not None:
         dependency = session.get(Dependency, coordination_subject.dependency_id)
         if dependency is None:
-            raise ValueError(f"dependency {coordination_subject.dependency_id} does not exist")
+            raise CoordinationDecisionRefusal(f"dependency {coordination_subject.dependency_id} does not exist")
         lock_project(session, dependency.project_id)
         session.refresh(dependency)
         if dependency.dismissed_at is not None:
@@ -694,7 +694,7 @@ def _locked_subject(
 
     lineage = session.get(CommitmentLineage, coordination_subject.commitment_lineage_id)
     if lineage is None:
-        raise ValueError(
+        raise CoordinationDecisionRefusal(
             f"Commitment Lineage {coordination_subject.commitment_lineage_id} does not exist"
         )
     lock_project(session, lineage.project_id)
@@ -710,7 +710,7 @@ def _coerce_subject(subject: SubjectInput) -> CoordinationSubject:
     if isinstance(subject, CoordinationSubject):
         return subject
     if isinstance(subject, bool) or not isinstance(subject, int):
-        raise ValueError("a Work Decision needs a Coordination Subject")
+        raise CoordinationDecisionRefusal("a Work Decision needs a Coordination Subject")
     return CoordinationSubject.dependency(subject)
 
 

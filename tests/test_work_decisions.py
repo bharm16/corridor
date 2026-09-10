@@ -1163,3 +1163,15 @@ def test_statement_plan_audit_trail_is_readable(session, accepted_statement):
         {"commitment_lineage_id": subject.commitment_lineage_id, "work_decision_id": owner.id},
         {"commitment_lineage_id": subject.commitment_lineage_id, "work_decision_id": action.id},
     ]
+
+
+def test_a_bad_coordination_subject_is_the_declared_decision_refusal(session):
+    """Missing records and malformed subjects refuse in the family the adapter maps."""
+    from corridor.work_decisions import CoordinationDecisionRefusal, CoordinationSubject, complete_next_action
+
+    with pytest.raises(CoordinationDecisionRefusal, match="dependency 999999 does not exist"):
+        complete_next_action(session, 999999, principal=HumanPrincipal("local:coordinator"))
+    with pytest.raises(CoordinationDecisionRefusal, match="needs a Coordination Subject"):
+        complete_next_action(session, True, principal=HumanPrincipal("local:coordinator"))
+    with pytest.raises(CoordinationDecisionRefusal, match="exactly one Dependency or Commitment Lineage"):
+        CoordinationSubject()

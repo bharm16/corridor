@@ -127,7 +127,6 @@ from corridor.condition_tracking import (
     propose_condition_clears,
 )
 from corridor.documentation_checklist import (
-    DocumentationConfirmationRefusal,
     confirm_interpretation,
     read_checklist,
     record_documentation_clarification,
@@ -6301,16 +6300,13 @@ def confirm_documentation_approval(
 
     project = _project(session, slug, principal, designation=access.DOCUMENTATION_REVIEW)
     _project_dependency(session, project, dependency_id)
-    try:
-        confirmation = confirm_interpretation(
-            session,
-            dependency_id,
-            evidence_link_id,
-            principal=principal,
-            condition_immaterial=condition_immaterial,
-        )
-    except DocumentationConfirmationRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
+    confirmation = confirm_interpretation(
+        session,
+        dependency_id,
+        evidence_link_id,
+        principal=principal,
+        condition_immaterial=condition_immaterial,
+    )
     response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
     record_frontend_request(
         session,
