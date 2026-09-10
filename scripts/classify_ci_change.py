@@ -76,7 +76,7 @@ DOCUMENTATION_PATHS: tuple[str, ...] = (
 # `migration-test.yml` trigger.
 MIGRATION_PATHS: tuple[str, ...] = (
     "src/corridor/migrations/**",
-    "src/corridor/models.py",
+    "src/corridor/models/**",
     "src/corridor/shadow_schema.py",
     "src/corridor/legacy_history_inventory.py",
     "src/corridor/db.py",

@@ -49,6 +49,16 @@ DEPLOYED_NATIVE_MATRIX_REQUEST = RequestConfiguration(
     base_url="https://api.openai.com/v1",
 )
 
+# The schema every postprocessor writes through. Card 21 split `models.py` into
+# one module per bounded context, so the sealed reading names the package rather
+# than one file. It is globbed rather than listed so it keeps meaning "every byte
+# of the schema": a listed set would let a family module added later fall
+# silently outside the reading a run is sealed under.
+_MODELS_SOURCES = tuple(
+    f"src/corridor/models/{path.name}"
+    for path in sorted((_REPO_ROOT / "src" / "corridor" / "models").glob("*.py"))
+)
+
 _POSTPROCESSOR_SOURCES = {
     "native_matrix": (
         "src/corridor/native_matrix.py",
@@ -69,7 +79,7 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/extract_batch.py",
         "src/corridor/verify.py",
         "src/corridor/candidates.py",
-        "src/corridor/models.py",
+        *_MODELS_SOURCES,
         "src/corridor/llm.py",
     ),
     "agreement": (
@@ -77,7 +87,7 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/extract_batch.py",
         "src/corridor/verify.py",
         "src/corridor/candidates.py",
-        "src/corridor/models.py",
+        *_MODELS_SOURCES,
         "src/corridor/llm.py",
     ),
     "sheet": (
@@ -87,7 +97,7 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/vocabulary.py",
         "src/corridor/verify.py",
         "src/corridor/candidates.py",
-        "src/corridor/models.py",
+        *_MODELS_SOURCES,
     ),
     # The Adopt Baseline importer (#509). It uses no model either, and its
     # reading is sealed for the same reason the native sheet reader's is: a
@@ -100,7 +110,7 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/source_segments.py",
         "src/corridor/vocabulary.py",
         "src/corridor/materializer.py",
-        "src/corridor/models.py",
+        *_MODELS_SOURCES,
     ),
     # The Key Date table reader (#450). No model either: a schedule export's
     # three declared columns arrive in coordination vocabulary, so nothing on
@@ -109,7 +119,7 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/key_date_table.py",
         "src/corridor/source_segments.py",
         "src/corridor/materializer.py",
-        "src/corridor/models.py",
+        *_MODELS_SOURCES,
     ),
 }
 
