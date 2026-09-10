@@ -72,7 +72,7 @@
   <details>
     <summary>Run-explanation model authority{% if run_explanation_configuration %} — declared{% else %} — not declared{% endif %}</summary>
     {% if run_explanation_configuration %}
-      <p class="muted">Explaining competing runs may spend the declared bounded budget: model <code>{{ run_explanation_configuration.model }}</code> · prompt <code>{{ run_explanation_configuration.prompt_version }}</code> · at most {{ run_explanation_configuration.max_input_tokens }} input / {{ run_explanation_configuration.max_output_tokens }} output tokens · {{ run_explanation_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ run_explanation_configuration.created_by }}.</p>
+      <p class="muted">Explaining competing runs may spend the declared bounded budget: model <code>{{ run_explanation_configuration.model }}</code> · prompt <code>{{ run_explanation_configuration.prompt_version }}</code> · at most {{ run_explanation_configuration.max_input_tokens }} input / {{ run_explanation_configuration.max_output_tokens }} output tokens · {{ run_explanation_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ run_explanation_configuration.authorization.declared_by }}.</p>
     {% else %}
       <p>{{ ui.state(state_label('attention', 'No run-explanation authority is declared')) }} Until one is, requesting an explanation refuses before any model call.</p>
     {% endif %}
@@ -94,7 +94,7 @@
   <details>
     <summary>Failure-diagnosis model authority{% if failure_diagnosis_configuration %} — declared{% else %} — not declared{% endif %}</summary>
     {% if failure_diagnosis_configuration %}
-      <p class="muted">Diagnosing a failed attempt may spend the declared bounded budget: model <code>{{ failure_diagnosis_configuration.model }}</code> · prompt <code>{{ failure_diagnosis_configuration.prompt_version }}</code> · at most {{ failure_diagnosis_configuration.max_input_tokens }} input / {{ failure_diagnosis_configuration.max_output_tokens }} output tokens · {{ failure_diagnosis_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ failure_diagnosis_configuration.created_by }}.</p>
+      <p class="muted">Diagnosing a failed attempt may spend the declared bounded budget: model <code>{{ failure_diagnosis_configuration.model }}</code> · prompt <code>{{ failure_diagnosis_configuration.prompt_version }}</code> · at most {{ failure_diagnosis_configuration.max_input_tokens }} input / {{ failure_diagnosis_configuration.max_output_tokens }} output tokens · {{ failure_diagnosis_configuration.timeout_seconds }}s · one request, no retry. Declared by {{ failure_diagnosis_configuration.authorization.declared_by }}.</p>
     {% else %}
       <p>{{ ui.state(state_label('attention', 'No failure-diagnosis authority is declared')) }} Until one is, requesting a diagnosis refuses before any model call.</p>
     {% endif %}

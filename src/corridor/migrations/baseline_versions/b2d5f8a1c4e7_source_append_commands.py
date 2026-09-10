@@ -181,6 +181,7 @@ from corridor.migrations.source_append_commands import (
     resolve_delta,
     review_packets,
     scanned_observations,
+    spend_authorization,
     unified_delivery,
     web_capability,
 )
@@ -1487,6 +1488,12 @@ def upgrade() -> None:
     # the baseline created, and nothing later in the revision names its table.
     scanned_observations.upgrade(op)
 
+    # --- #811 One spend authorization the five assistant configurations name -
+    # After the observation binding and before the sibling transitions: it
+    # alters the five configuration relations the baseline created and creates
+    # one relation nothing later in the revision names.
+    spend_authorization.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1546,8 +1553,11 @@ def downgrade() -> None:
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
 
-    # --- #809 The observation an Unconfirmed reading was read out of -------
+    # --- #811 One spend authorization the five assistant configurations name -
     # First among the feature reversals, because the upgrade added it last.
+    spend_authorization.downgrade(op)
+
+    # --- #809 The observation an Unconfirmed reading was read out of -------
     scanned_observations.downgrade(op)
 
     # --- The bound customer environment (#656) ---------------------------

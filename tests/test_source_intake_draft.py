@@ -438,10 +438,13 @@ def test_missing_configuration_refuses_before_any_model_call(
 
 def test_configuration_rejects_uninstalled_prompt_and_bad_bounds(session, project):
     from corridor.source_intake_draft import InvalidDraftConfiguration
+    from corridor.spend_authorization import InvalidSpendAuthorization
 
     with pytest.raises(InvalidDraftConfiguration):
         _declare_config(session, project, prompt_version="not-installed")
-    with pytest.raises(InvalidDraftConfiguration):
+    # The bounds are the one declaration's to refuse
+    # (`tests/test_spend_authorization.py`); the family passes them through.
+    with pytest.raises(InvalidSpendAuthorization):
         _declare_config(session, project, max_input_tokens=0)
 
 
@@ -746,5 +749,5 @@ def test_configuration_is_recorded_with_its_actor(session, project):
         )
     ).one()
     assert stored.id == config.id
-    assert stored.created_by == CURATOR.subject
+    assert stored.authorization.declared_by == CURATOR.subject
     assert stored.prompt_version == "source_intake_draft_v1"

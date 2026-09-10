@@ -6,6 +6,20 @@ customer content with a disposal obligation. The five families repeat that
 shape deliberately: they were one generic ``llm_request`` table first, and a
 single table could not carry per-family inputs without a JSON grab bag that no
 constraint could check.
+
+What the five did not need to repeat was the authorization to spend (#811).
+Each configuration used to carry the same nine columns and nine CHECKs — the
+model, the input, output and time limits, one request, no retry, the
+retention class, the observation context and the declaring actor — five times
+over. ``SpendAuthorization`` is that declaration once: one immutable,
+attributable row naming one project and one permitted operation, and each
+family configuration references it by id and keeps only what is its own (the
+prompt it runs, the source scope a summary reads). The reference is a composite
+foreign key on ``(authorization_id, project_id, operation)``, so a declaration
+made for an intake draft cannot back a Coordination Summary configuration, and
+a declaration for one project cannot back a configuration in another: the
+scope is unrepresentable rather than merely unchecked. The generic request
+table stays rejected; only the authorization was ever common.
 """
 
 from datetime import date, datetime
@@ -17,6 +31,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    ForeignKeyConstraint,
     Index,
     Integer,
     String,
@@ -26,13 +41,16 @@ from sqlalchemy import (
     true,
 )
 from sqlalchemy.dialects.postgresql import JSONB
-from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from corridor.models.base import Base
 
 
 __all__ = [
     "ClassBRetentionMixin",
+    "SPEND_OPERATIONS",
+    "SpendAuthorization",
+    "SpendAuthorizedConfiguration",
     "CoordinationSummaryConfiguration",
     "CoordinationSummaryRequest",
     "ExtractionFailureDiagnosisConfiguration",
@@ -58,7 +76,152 @@ class ClassBRetentionMixin:
     )
 
 
-class CoordinationSummaryConfiguration(Base):
+# The one operation each family configuration is permitted to spend on. A
+# declaration names exactly one, and the composite foreign key on every family
+# table holds the configuration to the declaration that names its own.
+SPEND_OPERATIONS = (
+    "coordination_summary",
+    "production_run_explanation",
+    "extraction_failure_diagnosis",
+    "revision_change_explanation",
+    "source_intake_draft",
+)
+_SPEND_OPERATIONS_SQL = ", ".join(f"'{operation}'" for operation in SPEND_OPERATIONS)
+
+
+class SpendAuthorization(Base):
+    """One immutable, attributable authorization to spend model budget (#811).
+
+    A row names the declaring actor, the project, the one operation it
+    permits, the model, the input, output and time limits, one request, no
+    retry, the retention class, the observation context, and when it took
+    effect. Rows are append-only: a changed bound is another declaration, and
+    two independently declared acts stay two rows however alike their limits.
+    Nothing here is a wallet or a budget account; the row is the authority a
+    family configuration must reference before a client is ever constructed.
+    """
+
+    __tablename__ = "spend_authorizations"
+    __table_args__ = (
+        CheckConstraint(
+            f"operation in ({_SPEND_OPERATIONS_SQL})",
+            name="ck_spend_authorization_operation",
+        ),
+        CheckConstraint("length(trim(model)) > 0", name="ck_spend_authorization_model"),
+        CheckConstraint(
+            "max_input_tokens between 1 and 200000",
+            name="ck_spend_authorization_input_budget",
+        ),
+        CheckConstraint(
+            "max_output_tokens between 1 and 20000",
+            name="ck_spend_authorization_output_budget",
+        ),
+        CheckConstraint(
+            "timeout_seconds between 1 and 600", name="ck_spend_authorization_timeout"
+        ),
+        CheckConstraint("max_requests = 1", name="ck_spend_authorization_one_request"),
+        CheckConstraint("retry_policy = 'none'", name="ck_spend_authorization_no_retry"),
+        # The database has always admitted the pre-#355 indefinite class so
+        # those rows can be carried; only `class_b_30_days` authorizes a request.
+        CheckConstraint(
+            "retention_policy in ('retained_indefinitely', 'class_b_30_days')",
+            name="ck_spend_authorization_retention",
+        ),
+        CheckConstraint(
+            "length(trim(observation_context)) > 0",
+            name="ck_spend_authorization_context",
+        ),
+        CheckConstraint(
+            "length(trim(declared_by)) > 0", name="ck_spend_authorization_actor"
+        ),
+        # The target of every family's composite reference: a configuration
+        # can only name a declaration whose project and operation are its own.
+        UniqueConstraint(
+            "id", "project_id", "operation", name="uq_spend_authorization_scope"
+        ),
+        Index("ix_spend_authorizations_project_id", "project_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
+    operation: Mapped[str] = mapped_column(String(48))
+    model: Mapped[str] = mapped_column(String(128))
+    max_input_tokens: Mapped[int] = mapped_column(Integer)
+    max_output_tokens: Mapped[int] = mapped_column(Integer)
+    timeout_seconds: Mapped[int] = mapped_column(Integer)
+    max_requests: Mapped[int] = mapped_column(Integer)
+    retry_policy: Mapped[str] = mapped_column(String(32))
+    retention_policy: Mapped[str] = mapped_column(String(64))
+    observation_context: Mapped[str] = mapped_column(String(128))
+    declared_by: Mapped[str] = mapped_column(String(128))
+    effective_from: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+class SpendAuthorizedConfiguration:
+    """The declared bounds a family configuration reads through its reference.
+
+    Every reader of a configuration's model, limits and retention — the
+    bounded loop's budget check, the adapter factories, the receipt writers —
+    reads the declaration the configuration names. Nothing here is writable:
+    the declaration is immutable and the reference is the configuration's
+    identity, not a copy of the declaration's values.
+    """
+
+    authorization: Mapped[SpendAuthorization]
+
+    @property
+    def model(self) -> str:
+        return self.authorization.model
+
+    @property
+    def max_input_tokens(self) -> int:
+        return self.authorization.max_input_tokens
+
+    @property
+    def max_output_tokens(self) -> int:
+        return self.authorization.max_output_tokens
+
+    @property
+    def timeout_seconds(self) -> int:
+        return self.authorization.timeout_seconds
+
+    @property
+    def max_requests(self) -> int:
+        return self.authorization.max_requests
+
+    @property
+    def retry_policy(self) -> str:
+        return self.authorization.retry_policy
+
+    @property
+    def retention_policy(self) -> str:
+        return self.authorization.retention_policy
+
+    @property
+    def observation_context(self) -> str:
+        return self.authorization.observation_context
+
+
+def _authorization_reference(table: str, prefix: str, operation: str) -> tuple:
+    """The composite reference every family table carries, named for its family."""
+    return (
+        CheckConstraint(f"operation = '{operation}'", name=f"ck_{prefix}_operation"),
+        UniqueConstraint("authorization_id", name=f"uq_{table}_authorization"),
+        ForeignKeyConstraint(
+            ["authorization_id", "project_id", "operation"],
+            [
+                "spend_authorizations.id",
+                "spend_authorizations.project_id",
+                "spend_authorizations.operation",
+            ],
+            name=f"fk_{table}_authorization",
+        ),
+    )
+
+
+class CoordinationSummaryConfiguration(SpendAuthorizedConfiguration, Base):
     """One explicit, server-owned authorization for bounded summary drafting.
 
     Unlike ordinary report reading, a Coordination Summary can spend model
@@ -71,33 +234,20 @@ class CoordinationSummaryConfiguration(Base):
     __tablename__ = "coordination_summary_configurations"
     __table_args__ = (
         CheckConstraint("source_scope in ('all_sources', 'documents_only')", name="ck_summary_config_source_scope"),
-        CheckConstraint("max_input_tokens between 1 and 200000", name="ck_summary_config_input_budget"),
-        CheckConstraint("max_output_tokens between 1 and 20000", name="ck_summary_config_output_budget"),
-        CheckConstraint("timeout_seconds between 1 and 600", name="ck_summary_config_timeout"),
-        CheckConstraint("max_requests = 1", name="ck_summary_config_one_request"),
-        CheckConstraint("retry_policy = 'none'", name="ck_summary_config_no_retry"),
-        CheckConstraint("retention_policy = 'class_b_30_days'", name="ck_summary_config_retention"),
-        CheckConstraint("length(trim(model)) > 0", name="ck_summary_config_model"),
         CheckConstraint("length(trim(prompt_version)) > 0", name="ck_summary_config_prompt"),
-        CheckConstraint("length(trim(observation_context)) > 0", name="ck_summary_config_context"),
-        CheckConstraint("length(trim(created_by)) > 0", name="ck_summary_config_actor"),
+        *_authorization_reference(
+            "coordination_summary_configurations", "summary_config", "coordination_summary"
+        ),
         Index("ix_coordination_summary_configurations_project_id", "project_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
     source_scope: Mapped[str] = mapped_column(String(32))
-    model: Mapped[str] = mapped_column(String(128))
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(String(48), default="coordination_summary")
     prompt_version: Mapped[str] = mapped_column(String(128))
-    max_input_tokens: Mapped[int] = mapped_column(Integer)
-    max_output_tokens: Mapped[int] = mapped_column(Integer)
-    timeout_seconds: Mapped[int] = mapped_column(Integer)
-    max_requests: Mapped[int] = mapped_column(Integer)
-    retry_policy: Mapped[str] = mapped_column(String(32))
-    retention_policy: Mapped[str] = mapped_column(String(64))
-    observation_context: Mapped[str] = mapped_column(String(128))
-    created_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    authorization: Mapped[SpendAuthorization] = relationship(lazy="joined")
 
 
 class CoordinationSummaryRequest(ClassBRetentionMixin, Base):
@@ -134,7 +284,7 @@ class CoordinationSummaryRequest(ClassBRetentionMixin, Base):
     completed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
-class ProductionRunExplanationConfiguration(Base):
+class ProductionRunExplanationConfiguration(SpendAuthorizedConfiguration, Base):
     """One explicit, server-owned authorization for a bounded run explanation.
 
     Explaining competing Current Production Runs can spend model budget, so it
@@ -147,52 +297,20 @@ class ProductionRunExplanationConfiguration(Base):
     __tablename__ = "production_run_explanation_configurations"
     __table_args__ = (
         CheckConstraint(
-            "max_input_tokens between 1 and 200000",
-            name="ck_run_explanation_config_input_budget",
-        ),
-        CheckConstraint(
-            "max_output_tokens between 1 and 20000",
-            name="ck_run_explanation_config_output_budget",
-        ),
-        CheckConstraint(
-            "timeout_seconds between 1 and 600",
-            name="ck_run_explanation_config_timeout",
-        ),
-        CheckConstraint("max_requests = 1", name="ck_run_explanation_config_one_request"),
-        CheckConstraint("retry_policy = 'none'", name="ck_run_explanation_config_no_retry"),
-        CheckConstraint(
-            "retention_policy = 'class_b_30_days'",
-            name="ck_run_explanation_config_retention",
-        ),
-        CheckConstraint("length(trim(model)) > 0", name="ck_run_explanation_config_model"),
-        CheckConstraint(
             "length(trim(prompt_version)) > 0", name="ck_run_explanation_config_prompt"
         ),
-        CheckConstraint(
-            "length(trim(observation_context)) > 0",
-            name="ck_run_explanation_config_context",
-        ),
-        CheckConstraint(
-            "length(trim(created_by)) > 0", name="ck_run_explanation_config_actor"
+        *_authorization_reference(
+            "production_run_explanation_configurations", "run_explanation_config", "production_run_explanation"
         ),
         Index("ix_run_explanation_configurations_project_id", "project_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    model: Mapped[str] = mapped_column(String(128))
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(String(48), default="production_run_explanation")
     prompt_version: Mapped[str] = mapped_column(String(128))
-    max_input_tokens: Mapped[int] = mapped_column(Integer)
-    max_output_tokens: Mapped[int] = mapped_column(Integer)
-    timeout_seconds: Mapped[int] = mapped_column(Integer)
-    max_requests: Mapped[int] = mapped_column(Integer)
-    retry_policy: Mapped[str] = mapped_column(String(32))
-    retention_policy: Mapped[str] = mapped_column(String(64))
-    observation_context: Mapped[str] = mapped_column(String(128))
-    created_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    authorization: Mapped[SpendAuthorization] = relationship(lazy="joined")
 
 
 class ProductionRunExplanationRequest(ClassBRetentionMixin, Base):
@@ -277,7 +395,7 @@ class ProductionRunExplanationRequest(ClassBRetentionMixin, Base):
     )
 
 
-class ExtractionFailureDiagnosisConfiguration(Base):
+class ExtractionFailureDiagnosisConfiguration(SpendAuthorizedConfiguration, Base):
     """One explicit, server-owned authorization for a bounded failure diagnosis.
 
     Diagnosing an unreadable, no-matrix, quarantined, or otherwise failed
@@ -291,59 +409,21 @@ class ExtractionFailureDiagnosisConfiguration(Base):
     __tablename__ = "extraction_failure_diagnosis_configurations"
     __table_args__ = (
         CheckConstraint(
-            "max_input_tokens between 1 and 200000",
-            name="ck_failure_diagnosis_config_input_budget",
-        ),
-        CheckConstraint(
-            "max_output_tokens between 1 and 20000",
-            name="ck_failure_diagnosis_config_output_budget",
-        ),
-        CheckConstraint(
-            "timeout_seconds between 1 and 600",
-            name="ck_failure_diagnosis_config_timeout",
-        ),
-        CheckConstraint(
-            "max_requests = 1", name="ck_failure_diagnosis_config_one_request"
-        ),
-        CheckConstraint(
-            "retry_policy = 'none'", name="ck_failure_diagnosis_config_no_retry"
-        ),
-        CheckConstraint(
-            "retention_policy = 'class_b_30_days'",
-            name="ck_failure_diagnosis_config_retention",
-        ),
-        CheckConstraint(
-            "length(trim(model)) > 0", name="ck_failure_diagnosis_config_model"
-        ),
-        CheckConstraint(
             "length(trim(prompt_version)) > 0",
             name="ck_failure_diagnosis_config_prompt",
         ),
-        CheckConstraint(
-            "length(trim(observation_context)) > 0",
-            name="ck_failure_diagnosis_config_context",
-        ),
-        CheckConstraint(
-            "length(trim(created_by)) > 0", name="ck_failure_diagnosis_config_actor"
+        *_authorization_reference(
+            "extraction_failure_diagnosis_configurations", "failure_diagnosis_config", "extraction_failure_diagnosis"
         ),
         Index("ix_failure_diagnosis_configurations_project_id", "project_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    model: Mapped[str] = mapped_column(String(128))
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(String(48), default="extraction_failure_diagnosis")
     prompt_version: Mapped[str] = mapped_column(String(128))
-    max_input_tokens: Mapped[int] = mapped_column(Integer)
-    max_output_tokens: Mapped[int] = mapped_column(Integer)
-    timeout_seconds: Mapped[int] = mapped_column(Integer)
-    max_requests: Mapped[int] = mapped_column(Integer)
-    retry_policy: Mapped[str] = mapped_column(String(32))
-    retention_policy: Mapped[str] = mapped_column(String(64))
-    observation_context: Mapped[str] = mapped_column(String(128))
-    created_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    authorization: Mapped[SpendAuthorization] = relationship(lazy="joined")
 
 
 class ExtractionFailureDiagnosisRequest(ClassBRetentionMixin, Base):
@@ -433,7 +513,7 @@ class ExtractionFailureDiagnosisRequest(ClassBRetentionMixin, Base):
     )
 
 
-class RevisionChangeExplanationConfiguration(Base):
+class RevisionChangeExplanationConfiguration(SpendAuthorizedConfiguration, Base):
     """One explicit, server-owned authorization for a bounded revision-change
     explanation (#360).
 
@@ -447,52 +527,20 @@ class RevisionChangeExplanationConfiguration(Base):
     __tablename__ = "revision_change_explanation_configurations"
     __table_args__ = (
         CheckConstraint(
-            "max_input_tokens between 1 and 200000",
-            name="ck_rev_change_expl_cfg_input_budget",
-        ),
-        CheckConstraint(
-            "max_output_tokens between 1 and 20000",
-            name="ck_rev_change_expl_cfg_output_budget",
-        ),
-        CheckConstraint(
-            "timeout_seconds between 1 and 600",
-            name="ck_rev_change_expl_cfg_timeout",
-        ),
-        CheckConstraint("max_requests = 1", name="ck_rev_change_expl_cfg_one_request"),
-        CheckConstraint("retry_policy = 'none'", name="ck_rev_change_expl_cfg_no_retry"),
-        CheckConstraint(
-            "retention_policy = 'class_b_30_days'",
-            name="ck_rev_change_expl_cfg_retention",
-        ),
-        CheckConstraint("length(trim(model)) > 0", name="ck_rev_change_expl_cfg_model"),
-        CheckConstraint(
             "length(trim(prompt_version)) > 0", name="ck_rev_change_expl_cfg_prompt"
         ),
-        CheckConstraint(
-            "length(trim(observation_context)) > 0",
-            name="ck_rev_change_expl_cfg_context",
-        ),
-        CheckConstraint(
-            "length(trim(created_by)) > 0", name="ck_rev_change_expl_cfg_actor"
+        *_authorization_reference(
+            "revision_change_explanation_configurations", "rev_change_expl_cfg", "revision_change_explanation"
         ),
         Index("ix_rev_change_expl_cfg_project_id", "project_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    model: Mapped[str] = mapped_column(String(128))
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(String(48), default="revision_change_explanation")
     prompt_version: Mapped[str] = mapped_column(String(128))
-    max_input_tokens: Mapped[int] = mapped_column(Integer)
-    max_output_tokens: Mapped[int] = mapped_column(Integer)
-    timeout_seconds: Mapped[int] = mapped_column(Integer)
-    max_requests: Mapped[int] = mapped_column(Integer)
-    retry_policy: Mapped[str] = mapped_column(String(32))
-    retention_policy: Mapped[str] = mapped_column(String(64))
-    observation_context: Mapped[str] = mapped_column(String(128))
-    created_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    authorization: Mapped[SpendAuthorization] = relationship(lazy="joined")
 
 
 class RevisionChangeExplanationRequest(ClassBRetentionMixin, Base):
@@ -585,7 +633,7 @@ class RevisionChangeExplanationRequest(ClassBRetentionMixin, Base):
     )
 
 
-class SourceIntakeDraftConfiguration(Base):
+class SourceIntakeDraftConfiguration(SpendAuthorizedConfiguration, Base):
     """One explicit, server-owned authorization for a bounded intake draft (#362).
 
     Drafting source-bound intake metadata and replacement proposals can spend
@@ -598,52 +646,20 @@ class SourceIntakeDraftConfiguration(Base):
     __tablename__ = "source_intake_draft_configurations"
     __table_args__ = (
         CheckConstraint(
-            "max_input_tokens between 1 and 200000",
-            name="ck_intake_draft_config_input_budget",
-        ),
-        CheckConstraint(
-            "max_output_tokens between 1 and 20000",
-            name="ck_intake_draft_config_output_budget",
-        ),
-        CheckConstraint(
-            "timeout_seconds between 1 and 600",
-            name="ck_intake_draft_config_timeout",
-        ),
-        CheckConstraint("max_requests = 1", name="ck_intake_draft_config_one_request"),
-        CheckConstraint("retry_policy = 'none'", name="ck_intake_draft_config_no_retry"),
-        CheckConstraint(
-            "retention_policy = 'class_b_30_days'",
-            name="ck_intake_draft_config_retention",
-        ),
-        CheckConstraint("length(trim(model)) > 0", name="ck_intake_draft_config_model"),
-        CheckConstraint(
             "length(trim(prompt_version)) > 0", name="ck_intake_draft_config_prompt"
         ),
-        CheckConstraint(
-            "length(trim(observation_context)) > 0",
-            name="ck_intake_draft_config_context",
-        ),
-        CheckConstraint(
-            "length(trim(created_by)) > 0", name="ck_intake_draft_config_actor"
+        *_authorization_reference(
+            "source_intake_draft_configurations", "intake_draft_config", "source_intake_draft"
         ),
         Index("ix_intake_draft_configurations_project_id", "project_id"),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"))
-    model: Mapped[str] = mapped_column(String(128))
+    authorization_id: Mapped[int] = mapped_column(BigInteger)
+    operation: Mapped[str] = mapped_column(String(48), default="source_intake_draft")
     prompt_version: Mapped[str] = mapped_column(String(128))
-    max_input_tokens: Mapped[int] = mapped_column(Integer)
-    max_output_tokens: Mapped[int] = mapped_column(Integer)
-    timeout_seconds: Mapped[int] = mapped_column(Integer)
-    max_requests: Mapped[int] = mapped_column(Integer)
-    retry_policy: Mapped[str] = mapped_column(String(32))
-    retention_policy: Mapped[str] = mapped_column(String(64))
-    observation_context: Mapped[str] = mapped_column(String(128))
-    created_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
+    authorization: Mapped[SpendAuthorization] = relationship(lazy="joined")
 
 
 class SourceIntakeDraftRequest(ClassBRetentionMixin, Base):
