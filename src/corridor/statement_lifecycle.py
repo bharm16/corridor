@@ -5,12 +5,20 @@ Candidate disposition facts.  The earlier per-reader filters left a reversed
 Save publishable wherever a reader forgot to reimplement the exclusion.  Undo
 is therefore a compensating act over one exact group, never a delete or update,
 and every current-state reader now shares these filters and lineage lookup.
+
+The filters and the two single-row readers take an optional instant.  Without
+one they read the current state; with one they read the state as it stood at
+that instant, counting only the rows appended by then.  The Evidence
+Investigator's cutoff capture used to spell that as-of form as its own queries
+beside these, and the two drifted; one rule with a time parameter keeps the
+current reading and the as-of reading the same reading.
 """
 
 from __future__ import annotations
 
 from collections.abc import Iterable
 from dataclasses import dataclass
+from datetime import datetime
 
 from sqlalchemy import exists, or_, select
 from sqlalchemy.orm import aliased
@@ -50,37 +58,37 @@ class CurrentStatementObservation:
         )
 
 
-def current_statement_event_filter(event_id):
+def current_statement_event_filter(event_id, *, as_of: datetime | None = None):
     """Keep only unreversed statement tails, never their stale predecessors."""
     successor = ExternalPartyStatement.__table__.alias("successor")
-    return (
-        ~exists(
-            select(StatementCoordinationReversal.id)
-            .join(
-                StatementCoordinationReceipt,
-                StatementCoordinationReceipt.id
-                == StatementCoordinationReversal.receipt_id,
-            )
-            .where(StatementCoordinationReceipt.dependency_event_id == event_id)
+    reversed_ = (
+        select(StatementCoordinationReversal.id)
+        .join(
+            StatementCoordinationReceipt,
+            StatementCoordinationReceipt.id == StatementCoordinationReversal.receipt_id,
         )
-        & ~select(successor.c.id)
-        .where(successor.c.supersedes_event_id == event_id)
-        .exists()
+        .where(StatementCoordinationReceipt.dependency_event_id == event_id)
     )
+    superseded = select(successor.c.id).where(
+        successor.c.supersedes_event_id == event_id
+    )
+    if as_of is not None:
+        reversed_ = reversed_.where(StatementCoordinationReversal.created_at <= as_of)
+        superseded = superseded.where(successor.c.created_at <= as_of)
+    return ~exists(reversed_) & ~superseded.exists()
 
 
 def current_lineage_statement(
-    session, commitment_lineage_id: int
+    session, commitment_lineage_id: int, *, as_of: datetime | None = None
 ) -> ExternalPartyStatement | None:
     """Return the current, unreversed statement at one lineage tail."""
-    return session.scalar(
-        select(ExternalPartyStatement)
-        .where(
-            ExternalPartyStatement.commitment_lineage_id == commitment_lineage_id,
-            current_statement_event_filter(ExternalPartyStatement.id),
-        )
-        .order_by(ExternalPartyStatement.id)
+    query = select(ExternalPartyStatement).where(
+        ExternalPartyStatement.commitment_lineage_id == commitment_lineage_id,
+        current_statement_event_filter(ExternalPartyStatement.id, as_of=as_of),
     )
+    if as_of is not None:
+        query = query.where(ExternalPartyStatement.created_at <= as_of)
+    return session.scalar(query.order_by(ExternalPartyStatement.id))
 
 
 def observe_current_statement(
@@ -221,9 +229,11 @@ def current_work_decision_filter(work_decision_id):
     )
 
 
-def current_candidate_disposition_filter(disposition_id):
+def current_candidate_disposition_filter(
+    disposition_id, *, as_of: datetime | None = None
+):
     """Exclude a disposition once its explicit restoration has been appended."""
-    return ~exists(
+    reversed_ = (
         select(StatementCoordinationReversal.id)
         .outerjoin(
             StatementCoordinationReceipt,
@@ -237,17 +247,19 @@ def current_candidate_disposition_filter(disposition_id):
             )
         )
     )
+    if as_of is not None:
+        reversed_ = reversed_.where(StatementCoordinationReversal.created_at <= as_of)
+    return ~exists(reversed_)
 
 
 def current_candidate_disposition(
-    session, candidate_id: int
+    session, candidate_id: int, *, as_of: datetime | None = None
 ) -> CandidateDisposition | None:
     """Return the one unreversed disposition, if the Candidate has one."""
-    return session.scalar(
-        select(CandidateDisposition)
-        .where(
-            CandidateDisposition.candidate_id == candidate_id,
-            current_candidate_disposition_filter(CandidateDisposition.id),
-        )
-        .order_by(CandidateDisposition.id)
+    query = select(CandidateDisposition).where(
+        CandidateDisposition.candidate_id == candidate_id,
+        current_candidate_disposition_filter(CandidateDisposition.id, as_of=as_of),
     )
+    if as_of is not None:
+        query = query.where(CandidateDisposition.created_at <= as_of)
+    return session.scalar(query.order_by(CandidateDisposition.id))

@@ -37,27 +37,17 @@ from corridor.evidence_investigator_runtime import (
     run_receipted_investigation,
 )
 from corridor.receipts import write_sealed
+from corridor.evidence_investigator_human_outcome import read_human_outcome
 from corridor.models import (
     Candidate,
-    CandidateDisposition,
-    DependencyEvent,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
-    EvidenceInvestigationPacketReceipt,
     EvidenceInvestigationCandidateReviewStart,
     EvidenceInvestigationReviewObservation,
     EvidenceInvestigationShadowCase,
     EvidenceInvestigationShadowExecution,
     EvidenceInvestigationShadowOutcome,
     Project,
-    StatementCoordinationReceipt,
-    StatementCoordinationReversal,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
-from corridor.statement_lifecycle import (
-    current_candidate_disposition,
-    current_lineage_statement,
-)
 from corridor.work_list import build_work_list
 
 
@@ -442,7 +432,11 @@ def observe_shadow_review(
 def capture_shadow_outcome(
     session: Session, shadow_public_id: str
 ) -> EvidenceInvestigationShadowOutcome:
-    """Associate current independent human facts with one frozen case once."""
+    """Associate current independent human facts with one frozen case once.
+
+    The facts are ``read_human_outcome`` at the instant of this call; this
+    writer owns only the immutable one-time record and its duplicate refusal.
+    """
     shadow_case = session.scalar(
         select(EvidenceInvestigationShadowCase).where(
             EvidenceInvestigationShadowCase.public_id == shadow_public_id
@@ -457,112 +451,17 @@ def capture_shadow_outcome(
     )
     if existing is not None:
         return existing
-    candidate = session.get(Candidate, shadow_case.candidate_id)
-    if candidate is None or candidate.project_id != shadow_case.project_id:
-        raise ValueError("shadow Candidate is outside its frozen project")
-    disposition = current_candidate_disposition(session, candidate.id)
-    any_disposition = session.scalar(
-        select(CandidateDisposition)
-        .where(CandidateDisposition.candidate_id == candidate.id)
-        .order_by(CandidateDisposition.id.desc())
-        .limit(1)
-    )
-    receipt = None
-    scope = None
-    selected_dependency_ids: list[int] = []
-    correction = False
-    if disposition is not None and disposition.disposition == "accepted":
-        receipt = session.scalar(
-            select(StatementCoordinationReceipt).where(
-                StatementCoordinationReceipt.candidate_disposition_id == disposition.id
-            )
-        )
-        if receipt is None:
-            raise ValueError("accepted shadow outcome has no grouped Save receipt")
-        event = session.get(DependencyEvent, receipt.dependency_event_id)
-        scope = session.get(DependencyEventScopeDecision, receipt.scope_decision_id)
-        if event is None or scope is None or event.project_id != shadow_case.project_id:
-            raise ValueError("shadow outcome crosses its frozen project")
-        selected_dependency_ids = list(
-            session.scalars(
-                select(DependencyEventScope.dependency_id)
-                .where(DependencyEventScope.scope_decision_id == scope.id)
-                .order_by(DependencyEventScope.dependency_id)
-            ).all()
-        )
-        current = current_lineage_statement(session, receipt.commitment_lineage_id)
-        correction = current is not None and current.id != receipt.dependency_event_id
-    reversal_ids = list(
-        session.scalars(
-            select(StatementCoordinationReversal.id).where(
-                StatementCoordinationReversal.candidate_id == candidate.id
-            )
-        ).all()
-    )
-    undo = bool(reversal_ids)
-    unresolved = disposition is None
-    observations = {
-        item.boundary: item
-        for item in session.scalars(
-            select(EvidenceInvestigationReviewObservation).where(
-                EvidenceInvestigationReviewObservation.shadow_case_id == shadow_case.id
-            )
-        ).all()
-    }
-    review_seconds = None
-    if "start" in observations and "end" in observations:
-        elapsed = (
-            observations["end"].observed_at - observations["start"].observed_at
-        ).total_seconds()
-        if 0 <= elapsed <= 14_400:
-            review_seconds = elapsed
-    strata: set[str] = set()
-    if disposition is not None and disposition.disposition == "not_relevant":
-        strata.add("not_relevant")
-    if scope is not None:
-        if scope.scope_mode == "unknown":
-            strata.add("unknown_scope")
-        elif len(selected_dependency_ids) == 1:
-            strata.add("single_dependency")
-        elif len(selected_dependency_ids) > 1:
-            strata.add("multiple_dependencies")
-    if correction:
-        strata.add("later_corrected")
-    if unresolved:
-        strata.add("unresolved")
-    packet = session.scalar(
-        select(EvidenceInvestigationPacketReceipt)
-        .join(
-            EvidenceInvestigationShadowExecution,
-            EvidenceInvestigationShadowExecution.run_id
-            == EvidenceInvestigationPacketReceipt.run_id,
-        )
-        .where(EvidenceInvestigationShadowExecution.shadow_case_id == shadow_case.id)
-    )
-    if packet is not None:
-        if len(packet.packet_json.get("possible_parties") or []) > 1:
-            strata.add("party_ambiguity")
-        questions = " ".join(packet.packet_json.get("human_questions") or []).casefold()
-        if "timing" in questions or "date" in questions:
-            strata.add("timing_ambiguity")
+    read = read_human_outcome(session, shadow_case)
+    reversal_ids = list(read.reversal_ids)
+    selected_dependency_ids = list(read.selected_dependency_ids)
     identities = {
-        "candidate_disposition_id": disposition.id if disposition else None,
-        "last_candidate_disposition_id": any_disposition.id if any_disposition else None,
-        "statement_coordination_receipt_id": receipt.id if receipt else None,
-        "scope_decision_id": scope.id if scope else None,
+        "candidate_disposition_id": read.candidate_disposition_id,
+        "last_candidate_disposition_id": read.last_candidate_disposition_id,
+        "statement_coordination_receipt_id": read.statement_coordination_receipt_id,
+        "scope_decision_id": read.scope_decision_id,
         "reversal_ids": reversal_ids,
     }
-    human_outcome_identity = sha256_json(
-        {
-            "candidate_id": candidate.id,
-            "candidate_disposition_id": identities["candidate_disposition_id"],
-            "statement_coordination_receipt_id": identities[
-                "statement_coordination_receipt_id"
-            ],
-            "reversal_ids": reversal_ids,
-            "unresolved": unresolved,
-        }
-    )
+    human_outcome_identity = read.human_outcome_identity
     duplicate = session.scalar(
         select(EvidenceInvestigationShadowOutcome).where(
             EvidenceInvestigationShadowOutcome.human_outcome_identity
@@ -579,7 +478,7 @@ def capture_shadow_outcome(
             == EvidenceInvestigationShadowOutcome.shadow_case_id,
         )
         .where(
-            EvidenceInvestigationShadowCase.candidate_id == candidate.id,
+            EvidenceInvestigationShadowCase.candidate_id == shadow_case.candidate_id,
             EvidenceInvestigationShadowOutcome.shadow_case_id != shadow_case.id,
             EvidenceInvestigationShadowOutcome.outcome_identities_json == identities,
         )
@@ -589,15 +488,15 @@ def capture_shadow_outcome(
             "human outcome already captured for another shadow case on this Candidate"
         )
     content = {
-        "candidate_disposition": disposition.disposition if disposition else None,
-        "scope_mode": scope.scope_mode if scope else None,
+        "candidate_disposition": read.candidate_disposition,
+        "scope_mode": read.scope_mode,
         "selected_dependency_ids": selected_dependency_ids,
-        "correction": correction,
-        "undo": undo,
-        "unresolved": unresolved,
+        "correction": read.correction,
+        "undo": read.undo,
+        "unresolved": read.unresolved,
         "outcome_identities": identities,
-        "strata": sorted(strata),
-        "review_seconds": review_seconds,
+        "strata": list(read.strata),
+        "review_seconds": read.review_seconds,
     }
     outcome = EvidenceInvestigationShadowOutcome(
         shadow_case_id=shadow_case.id,
@@ -605,12 +504,12 @@ def capture_shadow_outcome(
         candidate_disposition=content["candidate_disposition"],
         scope_mode=content["scope_mode"],
         selected_dependency_ids_json=selected_dependency_ids,
-        correction=correction,
-        undo=undo,
-        unresolved=unresolved,
+        correction=read.correction,
+        undo=read.undo,
+        unresolved=read.unresolved,
         outcome_identities_json=identities,
-        strata_json=sorted(strata),
-        review_seconds=review_seconds,
+        strata_json=list(read.strata),
+        review_seconds=read.review_seconds,
         outcome_sha256=sha256_json(content),
         captured_at=datetime.now(timezone.utc),
     )

@@ -5,10 +5,13 @@ current state at the instant a human happens to run it. That is wrong for a
 scheduled regression measurement: a late run must associate the human outcome as
 it stood at a *declared cutoff*, not as it stands when the scheduler finally
 fires. Reconstructing "now" and backdating it would silently label execution-time
-state as cutoff-time truth, so this module instead reconstructs the outcome from
-the append-only human history filtered to ``created_at <= cutoff`` and, when the
-retained history cannot support an exact answer, keeps an ``incomplete`` result
-with its reason rather than inventing one.
+state as cutoff-time truth, so this module instead reads the outcome as of the
+cutoff through ``evidence_investigator_human_outcome.read_human_outcome``, the
+one reading both captures share with a time parameter, and, when the retained
+history cannot support an exact answer, keeps an ``incomplete`` result with its
+reason rather than inventing one. This module used to carry its own copy of that
+reading, filtered by ``created_at <= cutoff``; the copy drifted from the one-time
+capture's, so it was retired.
 
 This module owns two records only: the declared gate-7 observation contract and
 the per-case cutoff association. It never writes a human Project Record decision,
@@ -24,38 +27,32 @@ run and refuses to borrow a fresh v3 run to stand in for the frozen v2 cohort.
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 import re
 from uuid import uuid4
 
-from sqlalchemy import exists, or_, select
+from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.orm import Session
 
+from corridor.evidence_investigator_human_outcome import (
+    HumanOutcomeUnreadable,
+    read_human_outcome,
+)
 from corridor.evidence_investigator_runtime import sha256_json
 from corridor.models import (
-    Candidate,
-    CandidateDisposition,
-    DependencyEvent,
-    DependencyEventScope,
-    DependencyEventScopeDecision,
     EvidenceInvestigationCaptureContract,
     EvidenceInvestigationCaptureResult,
-    EvidenceInvestigationPacketReceipt,
-    EvidenceInvestigationReviewObservation,
     EvidenceInvestigationShadowCase,
     EvidenceInvestigationShadowExecution,
     Project,
-    StatementCoordinationReceipt,
-    StatementCoordinationReversal,
 )
 
 
 CAPTURE_RESULT_SCHEMA_VERSION = "evidence-outcome-capture-result-v1"
 MISSING_LABEL_POLICY = "remain_missing"
-_MAX_REVIEW_SECONDS = 14_400
 _IDENTITY = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._:-]{1,127}$")
 _SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
@@ -226,11 +223,10 @@ def reconstruct_cutoff_outcome(
 ) -> ReconstructedOutcome:
     """Reconstruct one frozen case's independent outcome as of the cutoff.
 
-    Every time-varying human fact is filtered to ``created_at <= cutoff``; the
-    per-receipt facts a save fixed atomically are read as they stand because the
-    grouped Save receipt is immutable. If the retained history does not provably
-    cover the case, or an identity cannot be verified, the result is incomplete
-    with its reason and carries no fabricated disposition.
+    The outcome is ``read_human_outcome`` at the cutoff. If the retained history
+    does not provably cover the case, an identity cannot be verified, or the
+    reading refuses, the result is incomplete with its reason and carries no
+    fabricated disposition.
     """
 
     cutoff = _aware(contract.cutoff_at)
@@ -240,12 +236,7 @@ def reconstruct_cutoff_outcome(
         )
     )
 
-    candidate = session.get(Candidate, shadow_case.candidate_id)
-    if (
-        candidate is None
-        or candidate.project_id != shadow_case.project_id
-        or shadow_case.project_id != contract.project_id
-    ):
+    if shadow_case.project_id != contract.project_id:
         return _incomplete(run_id, "cross_project_or_missing_candidate")
     if not _case_identity_matches(shadow_case, contract):
         return _incomplete(run_id, "configuration_identity_mismatch")
@@ -255,88 +246,33 @@ def reconstruct_cutoff_outcome(
         # the cutoff state, so we never claim it.
         return _incomplete(run_id, "case_predates_retained_history")
 
-    disposition = _as_of_cutoff_disposition(session, candidate.id, cutoff)
-    receipt = None
-    scope = None
-    selected_dependency_ids: list[int] = []
-    correction = False
-    if disposition is not None and disposition.disposition == "accepted":
-        receipt = session.scalar(
-            select(StatementCoordinationReceipt).where(
-                StatementCoordinationReceipt.candidate_disposition_id == disposition.id
-            )
-        )
-        if receipt is None:
-            return _incomplete(run_id, "accepted_outcome_missing_receipt")
-        event = session.get(DependencyEvent, receipt.dependency_event_id)
-        scope = session.get(DependencyEventScopeDecision, receipt.scope_decision_id)
-        if event is None or scope is None or event.project_id != contract.project_id:
-            return _incomplete(run_id, "accepted_outcome_crosses_project")
-        selected_dependency_ids = list(
-            session.scalars(
-                select(DependencyEventScope.dependency_id)
-                .where(DependencyEventScope.scope_decision_id == scope.id)
-                .order_by(DependencyEventScope.dependency_id)
-            ).all()
-        )
-        correction = _corrected_by_cutoff(session, receipt, cutoff)
-
-    reversal_ids = list(
-        session.scalars(
-            select(StatementCoordinationReversal.id).where(
-                StatementCoordinationReversal.candidate_id == candidate.id,
-                StatementCoordinationReversal.created_at <= cutoff,
-            ).order_by(StatementCoordinationReversal.id)
-        ).all()
-    )
-    undo = bool(reversal_ids)
-    unresolved = disposition is None
-
-    review_seconds = _review_seconds_by_cutoff(session, shadow_case.id, cutoff)
-    strata = _strata(
-        disposition=disposition,
-        scope=scope,
-        selected_dependency_ids=selected_dependency_ids,
-        correction=correction,
-        unresolved=unresolved,
-        packet=_packet_for_case(session, shadow_case.id),
-    )
+    try:
+        read = read_human_outcome(session, shadow_case, as_of=cutoff)
+    except HumanOutcomeUnreadable as refusal:
+        return _incomplete(run_id, refusal.reason)
     identities = {
         "shadow_case_id": shadow_case.id,
         "run_id": run_id,
-        "candidate_id": candidate.id,
-        "candidate_disposition_id": disposition.id if disposition else None,
-        "statement_coordination_receipt_id": receipt.id if receipt else None,
-        "scope_decision_id": scope.id if scope else None,
-        "reversal_ids": reversal_ids,
+        "candidate_id": read.candidate_id,
+        "candidate_disposition_id": read.candidate_disposition_id,
+        "statement_coordination_receipt_id": read.statement_coordination_receipt_id,
+        "scope_decision_id": read.scope_decision_id,
+        "reversal_ids": list(read.reversal_ids),
     }
-    human_outcome_identity = sha256_json(
-        {
-            "candidate_id": candidate.id,
-            "candidate_disposition_id": identities["candidate_disposition_id"],
-            "statement_coordination_receipt_id": identities[
-                "statement_coordination_receipt_id"
-            ],
-            "reversal_ids": reversal_ids,
-            "unresolved": unresolved,
-        }
-    )
     return ReconstructedOutcome(
         completeness="complete",
         incomplete_reason=None,
         run_id=run_id,
-        candidate_disposition=(
-            disposition.disposition if disposition is not None else None
-        ),
-        scope_mode=scope.scope_mode if scope is not None else None,
-        selected_dependency_ids=tuple(selected_dependency_ids),
-        correction=correction,
-        undo=undo,
-        unresolved=unresolved,
-        human_outcome_identity=human_outcome_identity,
+        candidate_disposition=read.candidate_disposition,
+        scope_mode=read.scope_mode,
+        selected_dependency_ids=read.selected_dependency_ids,
+        correction=read.correction,
+        undo=read.undo,
+        unresolved=read.unresolved,
+        human_outcome_identity=read.human_outcome_identity,
         outcome_identities=identities,
-        strata=strata,
-        review_seconds=review_seconds,
+        strata=read.strata,
+        review_seconds=read.review_seconds,
     )
 
 
@@ -612,132 +548,6 @@ def _refuse_duplicate_human_outcome(
     if duplicate is None:
         return outcome
     return _incomplete(outcome.run_id, "human_outcome_claimed_by_another_case")
-
-
-def _as_of_cutoff_disposition(
-    session: Session, candidate_id: int, cutoff: datetime
-) -> CandidateDisposition | None:
-    reversed_by_cutoff = exists(
-        select(StatementCoordinationReversal.id)
-        .outerjoin(
-            StatementCoordinationReceipt,
-            StatementCoordinationReceipt.id == StatementCoordinationReversal.receipt_id,
-        )
-        .where(
-            StatementCoordinationReversal.created_at <= cutoff,
-            or_(
-                StatementCoordinationReversal.candidate_disposition_id
-                == CandidateDisposition.id,
-                StatementCoordinationReceipt.candidate_disposition_id
-                == CandidateDisposition.id,
-            ),
-        )
-    )
-    return session.scalar(
-        select(CandidateDisposition)
-        .where(
-            CandidateDisposition.candidate_id == candidate_id,
-            CandidateDisposition.created_at <= cutoff,
-            ~reversed_by_cutoff,
-        )
-        .order_by(CandidateDisposition.id)
-    )
-
-
-def _corrected_by_cutoff(
-    session: Session,
-    receipt: StatementCoordinationReceipt,
-    cutoff: datetime,
-) -> bool:
-    successor = StatementCoordinationReceipt.__table__.alias("successor_receipt")
-    reversed_successor = exists(
-        select(StatementCoordinationReversal.id).where(
-            StatementCoordinationReversal.receipt_id == successor.c.id,
-            StatementCoordinationReversal.created_at <= cutoff,
-        )
-    )
-    return bool(
-        session.scalar(
-            select(successor.c.id)
-            .where(
-                successor.c.commitment_lineage_id == receipt.commitment_lineage_id,
-                successor.c.dependency_event_id != receipt.dependency_event_id,
-                successor.c.created_at <= cutoff,
-                ~reversed_successor,
-            )
-            .limit(1)
-        )
-    )
-
-
-def _review_seconds_by_cutoff(
-    session: Session, shadow_case_id: int, cutoff: datetime
-) -> float | None:
-    observations = {
-        item.boundary: item
-        for item in session.scalars(
-            select(EvidenceInvestigationReviewObservation).where(
-                EvidenceInvestigationReviewObservation.shadow_case_id == shadow_case_id,
-                EvidenceInvestigationReviewObservation.observed_at <= cutoff,
-            )
-        ).all()
-    }
-    if "start" not in observations or "end" not in observations:
-        return None
-    elapsed = (
-        observations["end"].observed_at - observations["start"].observed_at
-    ).total_seconds()
-    if 0 <= elapsed <= _MAX_REVIEW_SECONDS:
-        return elapsed
-    return None
-
-
-def _packet_for_case(
-    session: Session, shadow_case_id: int
-) -> EvidenceInvestigationPacketReceipt | None:
-    return session.scalar(
-        select(EvidenceInvestigationPacketReceipt)
-        .join(
-            EvidenceInvestigationShadowExecution,
-            EvidenceInvestigationShadowExecution.run_id
-            == EvidenceInvestigationPacketReceipt.run_id,
-        )
-        .where(EvidenceInvestigationShadowExecution.shadow_case_id == shadow_case_id)
-    )
-
-
-def _strata(
-    *,
-    disposition: CandidateDisposition | None,
-    scope: DependencyEventScopeDecision | None,
-    selected_dependency_ids: Sequence[int],
-    correction: bool,
-    unresolved: bool,
-    packet: EvidenceInvestigationPacketReceipt | None,
-) -> tuple[str, ...]:
-    strata: set[str] = set()
-    if disposition is not None and disposition.disposition == "not_relevant":
-        strata.add("not_relevant")
-    if scope is not None:
-        if scope.scope_mode == "unknown":
-            strata.add("unknown_scope")
-        elif scope.scope_mode == "all_active_snapshot":
-            strata.add("all_active_snapshot")
-        elif len(selected_dependency_ids) == 1:
-            strata.add("single_dependency")
-        elif len(selected_dependency_ids) > 1:
-            strata.add("multiple_dependencies")
-    if correction:
-        strata.add("later_corrected")
-    if unresolved:
-        strata.add("unresolved")
-    if packet is not None:
-        if len(packet.packet_json.get("possible_parties") or []) > 1:
-            strata.add("party_ambiguity")
-        questions = " ".join(packet.packet_json.get("human_questions") or []).casefold()
-        if "timing" in questions or "date" in questions:
-            strata.add("timing_ambiguity")
-    return tuple(sorted(strata))
 
 
 def _case_identity_matches(

@@ -949,7 +949,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "adjudicate", "candidate_statement_facts", "candidates", "cohort", "demo",
         "dependency_admission", "disputes", "eval", "event_admission",
         "event_admission_acceptance", "evidence_investigator",
-        "evidence_investigator_capture", "evidence_investigator_runtime",
+        "evidence_investigator_human_outcome", "evidence_investigator_runtime",
         "evidence_investigator_shadow", "external_statements",
         "extract_agreement", "extract_batch", "extract_minutes_v5", "extract_project",
         "extract_sheet", "extraction_runs", "fact_decisions", "facts", "gold",
