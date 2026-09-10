@@ -459,6 +459,18 @@ def session():
     ``pytest_configure`` rewrites ``DATABASE_URL``.
     """
 
+    with rollback_scoped_session() as scoped:
+        yield scoped
+
+
+@contextmanager
+def rollback_scoped_session():
+    """One transaction on the owner engine that always rolls back on exit.
+
+    The ``session`` fixture is this and nothing more; a test that must prove
+    the rollback itself, rather than rely on it, opens the same seam directly.
+    """
+
     from corridor.db import capability_engine
 
     connection = capability_engine("owner").connect()
@@ -473,6 +485,17 @@ def session():
         connection.close()
 
 
+def synthetic_project(session):
+    """Flush one synthetic Project with a fresh slug into the given session."""
+
+    from corridor.models import Project
+
+    row = Project(slug=f"project-{uuid4().hex[:8]}", name="Project", is_synthetic=True)
+    session.add(row)
+    session.flush()
+    return row
+
+
 @pytest.fixture
 def project(session):
     """One synthetic Project, flushed inside the test's own transaction.
@@ -483,12 +506,7 @@ def project(session):
     that a project exists.
     """
 
-    from corridor.models import Project
-
-    row = Project(slug=f"project-{uuid4().hex[:8]}", name="Project", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
+    return synthetic_project(session)
 
 
 @pytest.fixture
