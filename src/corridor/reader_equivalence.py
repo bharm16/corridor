@@ -15,7 +15,6 @@ from io import BytesIO
 from pathlib import Path
 import re
 
-from openpyxl import load_workbook
 from pypdf import PdfReader
 from sqlalchemy.orm import Session
 
@@ -26,6 +25,7 @@ from corridor.record_projection import read_current_project_record
 
 from corridor.report import build_report, render as render_report
 from corridor.report_release import render_external_report_pdf
+from corridor.native_reader_coverage import workbook_cells
 from corridor.reader_coverage import CONTRACTS, CoverageResult, SemanticRecord, SurfaceReading, compare_all_surfaces
 from corridor.accepted_field_reading import NativeReadingRefused, accepted_field_text
 
@@ -178,7 +178,7 @@ def prove_reader_equivalence(
         statement_publication=viewed.statement_publication,
         frozen_reading=viewed,
     )
-    workbook_identical = _workbook_cells(legacy_xlsx) == _workbook_cells(viewed_xlsx)
+    workbook_identical = workbook_cells(legacy_xlsx.read_bytes()) == workbook_cells(viewed_xlsx.read_bytes())
 
     legacy_release = render_external_report_pdf(
         session, project_id, today=today, frozen_reading=legacy
@@ -232,17 +232,6 @@ def native_constraint_log_surface(reading: FrozenProjectReading) -> SurfaceReadi
             rows.append(SemanticRecord("check", f"{record.subject_key}/{finding.rule}",
                 {**fields, "check_results": ((finding.rule, finding.detail, finding.quantity_days),)}, origins))
     return SurfaceReading("constraint_log", tuple(rows), frozenset({"constraint", "check"}))
-
-
-def _workbook_cells(path: Path) -> tuple:
-    workbook = load_workbook(path, data_only=False, read_only=True)
-    try:
-        return tuple(
-            (sheet.title, tuple(tuple(cell for cell in row) for row in sheet.iter_rows(values_only=True)))
-            for sheet in workbook.worksheets
-        )
-    finally:
-        workbook.close()
 
 
 def _pdf_text(pdf_bytes: bytes) -> tuple[str, ...]:

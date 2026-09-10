@@ -46,7 +46,7 @@ from corridor.native_pipeline import (
 )
 from corridor.native_provider_boundary import AuthorizedNativeMapper, POSTURE
 from corridor.pipeline_contracts import ObservationPlan, content_digest
-from corridor.pipeline_qualification import (
+from corridor.pipeline_selection_readback import (
     PipelineQualificationRefused,
     selected_pipeline_configuration,
 )
@@ -534,55 +534,66 @@ def extraction_route(
         except ValueError as exc:
             requested_config_error = str(exc)
 
-    def validate(session: Session, doc: Document) -> None:
+    @contextmanager
+    def refusal_is_a_failed_extraction():
+        # The one place a refused selection becomes a failed extraction,
+        # whether the readback below refuses it or the routing inside the
+        # extraction does.
         try:
-            selected_pipeline_configuration(
-                session, doc, deployment=deployment, configuration_sha256=configuration_sha256,
-            )
+            yield
         except PipelineQualificationRefused as exc:
             raise ExtractionFailed(f"native matrix selection refused for deployment {deployment!r}: {exc}") from exc
 
-    def extract(session: Session, doc: Document) -> list[Candidate]:
-        try:
-            # Also runs for a missing provider record: name a missing or stale
-            # selection before any rendering, source reading or outbound call.
-            validate(session, doc)
-            if requested_config_error:
-                raise ExtractionFailed(requested_config_error)
-            if runtime is None:
-                raise ExtractionFailed(runtime_error or "native matrix runtime is not configured")
-            if isinstance(matrix_client, AuthorizedNativeMapper):
-                project = session.get_one(Project, doc.project_id)
-                if matrix_client.request.project != project.slug:
-                    raise ExtractionFailed("native matrix provider boundary does not cover this Document's project")
-            source_path = getattr(doc, "_stored_path", None) or stored_file(doc)
-            if source_path is None:
-                raise ExtractionFailed("native matrix source file is unavailable")
-            attempt = uuid4().hex
-            # One key belongs to one extraction attempt; --redo creates a new
-            # immutable run rather than replacing previous runs or candidates.
-            result = run_selected_native_matrix(
-                session, doc, deployment=deployment, client=matrix_client, plan=plan,
-                source_path=source_path, output_dir=runtime.output_dir / attempt,
-                document_label=doc.filename, idempotency_key=f"matrix-route:{doc.id}:{attempt}",
+    def validate(session: Session, doc: Document) -> None:
+        with refusal_is_a_failed_extraction():
+            selected_pipeline_configuration(
+                session, doc, deployment=deployment, configuration_sha256=configuration_sha256,
             )
-            if result.extraction is None:
-                outcome = json.loads(result.observation.receipt_text)["outcome"]
-                raise NativeObservationFailed(
-                    f"native matrix {outcome['disposition']} at {outcome.get('stage')}: "
-                    f"{outcome.get('reason') or outcome.get('type') or 'no source capture'}",
-                    observation_id=result.observation.id,
+
+    def extract(session: Session, doc: Document) -> list[Candidate]:
+        with refusal_is_a_failed_extraction():
+            try:
+                # Also runs for a missing provider record: name a missing or stale
+                # selection before any rendering, source reading or outbound call.
+                validate(session, doc)
+                if requested_config_error:
+                    raise ExtractionFailed(requested_config_error)
+                if runtime is None:
+                    raise ExtractionFailed(runtime_error or "native matrix runtime is not configured")
+                if isinstance(matrix_client, AuthorizedNativeMapper):
+                    project = session.get_one(Project, doc.project_id)
+                    if matrix_client.request.project != project.slug:
+                        raise ExtractionFailed("native matrix provider boundary does not cover this Document's project")
+                source_path = getattr(doc, "_stored_path", None) or stored_file(doc)
+                if source_path is None:
+                    raise ExtractionFailed("native matrix source file is unavailable")
+                attempt = uuid4().hex
+                # One key belongs to one extraction attempt; --redo creates a new
+                # immutable run rather than replacing previous runs or candidates.
+                result = run_selected_native_matrix(
+                    session, doc, deployment=deployment, client=matrix_client, plan=plan,
+                    source_path=source_path, output_dir=runtime.output_dir / attempt,
+                    document_label=doc.filename, idempotency_key=f"matrix-route:{doc.id}:{attempt}",
                 )
-            doc.extraction_tiers = {"native_matrix_cells": len(result.extraction.mapping.pages)}
-            doc.header_disagreements = 0
-            return CapturedReading(result.extraction.run, tuple(result.extraction.candidates))
-        except PipelineQualificationRefused as exc:
-            raise ExtractionFailed(f"native matrix selection refused for deployment {deployment!r}: {exc}") from exc
-        except (ValueError, OSError) as exc:
-            raise ExtractionFailed(f"native matrix processing refused: {exc}") from exc
-        finally:
-            if native_runtime is None and runtime is not None:
-                runtime.close()
+                if result.extraction is None:
+                    outcome = json.loads(result.observation.receipt_text)["outcome"]
+                    raise NativeObservationFailed(
+                        f"native matrix {outcome['disposition']} at {outcome.get('stage')}: "
+                        f"{outcome.get('reason') or outcome.get('type') or 'no source capture'}",
+                        observation_id=result.observation.id,
+                    )
+                doc.extraction_tiers = {"native_matrix_cells": len(result.extraction.mapping.pages)}
+                doc.header_disagreements = 0
+                return CapturedReading(result.extraction.run, tuple(result.extraction.candidates))
+            except PipelineQualificationRefused:
+                # The one wording for a refused selection is above; a refusal
+                # raised by the routing inside the extraction reaches it here.
+                raise
+            except (ValueError, OSError) as exc:
+                raise ExtractionFailed(f"native matrix processing refused: {exc}") from exc
+            finally:
+                if native_runtime is None and runtime is not None:
+                    runtime.close()
 
     return ExtractionRoute(
         effective_prompt_version=extractor_config.prompt_version,
