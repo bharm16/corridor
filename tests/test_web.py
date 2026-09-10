@@ -5675,6 +5675,7 @@ def test_same_document_replay_residual_has_human_review_copy():
 def test_frontend_request_receipt_uses_response_status_and_type_tagged_hashes(
     session, project
 ):
+    from starlette.requests import Request
     from starlette.responses import Response
 
     from corridor.frontend_request_receipts import (
@@ -5700,13 +5701,27 @@ def test_frontend_request_receipt_uses_response_status_and_type_tagged_hashes(
         request_fields_sha256({"member": ["1", "2"]})
     )
 
+    def matched(route_name: str) -> Request:
+        """A request the router matched to the route of that name."""
+        route = next(item for item in app.routes if item.name == route_name)
+        (method,) = route.methods
+        return Request(
+            {
+                "type": "http",
+                "method": method,
+                "route": route,
+                "path": route.path,
+                "headers": [],
+                "query_string": b"",
+            }
+        )
+
     secret = "project-person private free text"
     entry = record_frontend_request(
         session,
         principal=TEST_PRINCIPAL,
         route_name="correct_statement_scope_from_screen",
-        route_template="/statements/{slug}/{candidate_id}/correct/scope",
-        method="POST",
+        request=matched("correct_statement_scope_from_screen"),
         response=Response(status_code=409),
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields={"private": secret},
@@ -5714,15 +5729,33 @@ def test_frontend_request_receipt_uses_response_status_and_type_tagged_hashes(
 
     assert entry.after_json["status"] == 409
     assert entry.after_json["schema_version"].endswith(".v2")
+    # The template and method are read from the matched route, not retyped.
+    assert entry.after_json["route_template"] == (
+        "/statements/{slug}/{candidate_id}/correct/scope"
+    )
+    assert entry.after_json["method"] == "POST"
     assert secret not in json.dumps(entry.after_json)
 
+    # The receipt cannot describe a route the router did not match: the name
+    # and the matched route disagree here, and no request is matched at all
+    # below.
     with pytest.raises(ValueError, match="registered route"):
         record_frontend_request(
             session,
             principal=TEST_PRINCIPAL,
             route_name="correct_statement_scope_from_screen",
-            route_template="/wrong-template",
-            method="POST",
+            request=matched("download_prepared_report"),
+            response=Response(status_code=409),
+            subject=FrontendRequestSubject(project_id=project.id),
+        )
+    with pytest.raises(ValueError, match="registered route"):
+        record_frontend_request(
+            session,
+            principal=TEST_PRINCIPAL,
+            route_name="correct_statement_scope_from_screen",
+            request=Request(
+                {"type": "http", "method": "POST", "headers": [], "query_string": b""}
+            ),
             response=Response(status_code=409),
             subject=FrontendRequestSubject(project_id=project.id),
         )
