@@ -66,6 +66,21 @@ REFUSALS: tuple[type[Exception], ...] = (
 )
 
 
+class SingleValue(argparse.Action):
+    """A flag that may be given once; a repeat is a usage error, not a silent overwrite.
+
+    The hand-rolled parsers these commands replaced refused a repeated
+    single-valued flag with their usage sentence and exit 2. argparse's default
+    ``store`` action keeps the last value, which would let a doubled
+    ``--database-url`` or ``--reference-manifest`` pass unnoticed.
+    """
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        if getattr(namespace, self.dest, None) is not None:
+            parser.error(f"{option_string} may be given once")
+        setattr(namespace, self.dest, values)
+
+
 def experiment_parser(
     *, database_url_required: bool = True, **parser_arguments
 ) -> argparse.ArgumentParser:
@@ -78,6 +93,7 @@ def experiment_parser(
     parser.add_argument(
         "--database-url",
         required=database_url_required,
+        action=SingleValue,
         help=DATABASE_URL_HELP,
     )
     return parser

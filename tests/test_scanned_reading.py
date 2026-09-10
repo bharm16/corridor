@@ -38,7 +38,13 @@ from corridor.scanned_reading import (
 )
 from corridor.scanned_reading import TextractRescue
 from corridor.principals import HumanPrincipal
-from corridor.token_layers import EngineIdentity, READER_ENGINE, Token, TokenLayer
+from corridor.token_layers import (
+    EngineIdentity,
+    READER_ENGINE,
+    Token,
+    TokenLayer,
+    reader_native_token_layer,
+)
 from corridor.unreadable_cells import (
     CellReadingRefused,
     contributes_to_ready,
@@ -53,7 +59,11 @@ from corridor_pdf_reader.textract_adapter.boundary import (
     TextractProcessingFailure,
     open_boundary,
 )
-from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
+from corridor_pdf_reader.textract_adapter.identity import (
+    NativeGlyphs,
+    RequestConfiguration,
+    normalize,
+)
 from corridor_pdf_reader.textract_adapter.records import (
     PROVIDER_POSTURE,
     ExperimentScope,
@@ -469,6 +479,68 @@ def test_a_cell_with_re_mapped_native_glyphs_takes_the_source_verification_path(
     # The cell Textract read 'PLACEH0LDER' out of is the same cell; only the
     # characters differ, and the document's own win.
     assert (second.value, second.state) == ("42", "unconfirmed")
+
+
+def test_the_routes_word_token_assignment_is_not_the_measured_lane_a_re_map():
+    """One document, two rules, one cell whose text differs between them.
+
+    ADR-0094 measured lane A with `remap_page`: each glyph goes to the Textract
+    polygon holding its own ink-box centre and the cell's text is `ordered_text`
+    over those glyphs. The adapter runs that rule only for
+    `analyze_page(native_glyphs=)`, and a customer request must name the
+    `native-table-geometry-assistance` purpose to receive it. The route
+    requests `scanned-page-reading`, receives Textract's words, and assigns
+    the reader's *word tokens* by their centres itself, so a word printed
+    across a cell border is split by the measured rule and kept whole by the
+    route's. This pins that difference with exact values on both sides. Moving
+    the route onto the measured rule needs a second request boundary under the
+    geometry purpose (the check refuses glyphs under any other) and a per-cell
+    locator the re-mapped reading does not carry (its cells hold a glyph count,
+    not the glyph boxes), so it is not a change to this module alone; when it
+    lands, this test fails and is replaced by one asserting the split.
+    """
+    # Textract drew two cells split at x=200 and read the word, with a zero
+    # for the O, wholly into the left one.
+    page = Page()
+    word = page.word("T0TAL", (165, 100, 225, 112))
+    page.line([word])
+    left = page.cell(1, 1, (90, 95, 200, 118), [word])
+    right = page.cell(1, 2, (200, 95, 260, 118))
+    page.table((90, 95, 260, 118), [left, right])
+    response = page.response()
+    # The document's own glyphs: TOTAL at 12 points per glyph from x=165, so
+    # T, O, T have their centres left of the border and A, L right of it.
+    glyphs = [
+        {"text": char, "display_box": [165.0 + 12.0 * index, 100.0, 177.0 + 12.0 * index, 112.0], "object_id": 7, "source_index": index}
+        for index, char in enumerate("TOTAL")
+    ]
+    reader_page = {
+        "number": 1,
+        "geometry": {"rotation": 0},
+        "text": {"value": "TOTAL"},
+        "characters": {"value": glyphs},
+        "clipped": {"value": []},
+    }
+    layer = reader_native_token_layer(
+        reader_page,
+        identity=native_layer().identity,
+        source_sha256=SOURCE_SHA,
+    )
+    assert [token.raw_text for token in layer.tokens] == ["TOTAL"], "the reader assembles one word across the border"
+
+    measured = normalize(response, number=1, size=(612.0, 792.0), rotation=0, glyphs=NativeGlyphs(characters=glyphs))
+    words = normalize(response, number=1, size=(612.0, 792.0), rotation=0)
+    routed = classify_region_values(
+        words,
+        regions=routed_textract_regions(reader_decision()),
+        native_layer=layer,
+        provenance={},
+    )
+
+    assert measured["text_source"] == "pdfium-glyphs"
+    assert [(cell["text"], cell["glyphs"]) for cell in measured["tables"][0]["cells"]] == [("TOT", 3), ("AL", 2)]
+    assert [(value.column, value.value, value.value_source) for value in routed] == [(0, "TOTAL", "native_glyphs")]
+    assert routed[0].locator == PdfRect(x0=165_000, y0=100_000, x1=225_000, y1=112_000)
 
 
 def test_the_incumbent_native_layer_is_not_a_usable_native_layer():

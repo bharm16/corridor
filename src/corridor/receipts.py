@@ -79,13 +79,24 @@ def identity(payload: Mapping[str, object], *, volatile: Iterable[str] = ()) -> 
 
 
 def write_sealed(
-    path: Path, body: bytes | str, *, volatile: Iterable[str] = ()
+    path: Path,
+    body: bytes | str,
+    *,
+    volatile: Iterable[str] = (),
+    private_only: bool = False,
 ) -> bool:
     """Create a receipt once; accept an identical rerun; refuse anything else.
 
     Returns True when this call created the file and False when an identical
     receipt already occupied it. The first receipt's bytes are the evidence:
     an accepted rerun changes nothing on disk, not even a volatile field.
+
+    A new receipt is always created owner-only. ``private_only`` additionally
+    refuses to accept an existing file that is a symlink or readable beyond its
+    owner; the two shadow exports that always carried that rule pass it. The
+    measurement writers do not, because artifacts they wrote before this module
+    existed took the umask mode, and an identical rerun over one of those must
+    still be accepted rather than refused for its permission bits.
     """
     path = Path(path)
     data = body.encode("utf-8") if isinstance(body, str) else body
@@ -102,7 +113,7 @@ def write_sealed(
         try:
             os.link(temporary, path)
         except FileExistsError:
-            _accept_existing(path, data, set(volatile))
+            _accept_existing(path, data, set(volatile), private_only)
             return False
         return True
     finally:
@@ -128,9 +139,11 @@ def write_private_snapshot(path: Path, body: bytes | str) -> None:
         temporary.unlink(missing_ok=True)
 
 
-def _accept_existing(path: Path, data: bytes, volatile: set[str]) -> None:
+def _accept_existing(
+    path: Path, data: bytes, volatile: set[str], private_only: bool
+) -> None:
     metadata = path.lstat()
-    if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
+    if not stat.S_ISREG(metadata.st_mode) or (private_only and metadata.st_mode & 0o077):
         raise ArtifactCollision(
             f"refusing to accept {path} as an immutable measurement artifact: "
             "not a private regular file"

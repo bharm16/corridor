@@ -33,7 +33,7 @@ def retain_private_artifact(directory, payload):
     digest = digests.sha256_bytes(body)
     target = directory / f"{digest}.json"
     try:
-        write_sealed(target, body)
+        write_sealed(target, body, private_only=True)
     except ArtifactCollision as exc:
         raise ValueError(f"retained artifact refused: {exc}") from exc
     return {"sha256": digest, "path": str(target.resolve())}

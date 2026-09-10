@@ -168,6 +168,33 @@ def test_a_refusal_names_every_failing_field_not_the_first(adapter: Adapter, tmp
     assert caught.value.outbound_requests == 0
 
 
+def test_a_purpose_outside_the_posture_is_named_even_when_the_record_permits_it(adapter: Adapter, tmp_path: Path) -> None:
+    """The posture's `permitted_purposes` is checked on its own: a customer
+    record cannot widen it by listing a purpose the posture never named."""
+    purpose = "minutes-prose-extraction"
+    assert purpose not in adapter.posture.permitted_purposes
+
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.customer(purposes=frozenset({purpose})), adapter.request(purpose=purpose), adapter.accepted, tmp_path)
+
+    entries = [entry for entry in caught.value.mismatches if entry.startswith("purpose:")]
+    assert len(entries) == 1 and f"{purpose!r} is not a purpose the posture permits" in entries[0]
+    assert caught.value.outbound_requests == 0
+
+
+def test_a_customer_record_answering_an_experiment_request_names_every_disagreeing_field(adapter: Adapter, tmp_path: Path) -> None:
+    request = adapter.experiment_request(project="project-9", source_class="email", purpose=adapter.other_purpose)
+
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.customer(), request, adapter.accepted, tmp_path)
+
+    found = caught.value.mismatches
+    assert _shared(found, "project", "source-class", "purpose", "stage") == ["source-class", "project", "purpose", "stage"]
+    for field in ("source-class", "project", "purpose", "stage"):
+        assert any(entry.startswith(f"{field}:") and "record" in entry for entry in found), field
+    assert caught.value.outbound_requests == 0
+
+
 def test_a_record_that_is_not_an_authorization_record_is_refused(adapter: Adapter) -> None:
     found = adapter.mismatches({"record_id": "auth-0001"}, adapter.request(), adapter.accepted)
 

@@ -259,7 +259,7 @@ def test_the_documentation_allowlist_is_narrow_and_names_no_wildcard():
         "prompts/minutes_v5.md",
         "src/corridor/ledger.py",
         "tests/test_ci_policy.py",
-        "scripts/test_shard.py",
+        "scripts/test_gate/partition.py",
         "workers/render/pyproject.toml",
         ".github/workflows/release-gate.yml",
         "pyproject.toml",

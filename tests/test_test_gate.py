@@ -213,3 +213,17 @@ def test_the_strict_reader_refuses_ambiguous_or_non_finite_evidence(tmp_path):
     path = tmp_path / "policy.json"
     path.write_text(json.dumps(deepcopy({"a": 1})))
     assert read_json(path) == {"a": 1}
+
+
+def test_timing_tool_refuses_a_baseline_that_names_a_file_the_suite_no_longer_has(tmp_path, capsys):
+    """`--against` reads the baseline through the same strict JUnit rule."""
+    report = tmp_path / "suite.xml"
+    report.write_text('<testsuites><testcase classname="tests.test_test_gate" time="1"/></testsuites>')
+    baseline = tmp_path / "baseline.xml"
+    baseline.write_text('<testsuites><testcase classname="tests.test_absent" time="1"/></testsuites>')
+    assert test_timing.main([str(report), "--against", str(baseline)]) == 2
+    assert "outside its assigned partition" in capsys.readouterr().err
+
+    baseline.write_text('<testsuites><testcase classname="tests.test_test_gate" time="2"/></testsuites>')
+    assert test_timing.main([str(report), "--against", str(baseline)]) == 0
+    assert "tests/test_test_gate.py" in capsys.readouterr().out

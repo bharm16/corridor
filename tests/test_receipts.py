@@ -80,12 +80,24 @@ def test_an_unreadable_receipt_is_refused_rather_than_compared(tmp_path):
     assert path.read_bytes() == b"{not json"
 
 
-def test_a_file_the_policy_did_not_write_is_refused(tmp_path):
+def test_an_identical_artifact_written_before_this_module_is_accepted_whatever_its_mode(tmp_path):
+    # The old writers took the umask mode; an identical rerun over one of their
+    # artifacts is accepted, and the first bytes and mode stay as they were.
+    shared = tmp_path / "shared.json"
+    shared.write_text(_text(FIRST))
+    shared.chmod(0o644)
+    assert write_sealed(shared, _text(FIRST), volatile=("ran_at",)) is False
+    assert stat.S_IMODE(shared.stat().st_mode) == 0o644
+    with pytest.raises(ArtifactCollision, match="divergent overwrite"):
+        write_sealed(shared, _text({**FIRST, "matched": 2}), volatile=("ran_at",))
+
+
+def test_a_private_only_writer_refuses_a_file_the_policy_did_not_write(tmp_path):
     shared = tmp_path / "shared.json"
     shared.write_text(_text(FIRST))
     shared.chmod(0o644)
     with pytest.raises(ArtifactCollision, match="not a private regular file"):
-        write_sealed(shared, _text(FIRST), volatile=("ran_at",))
+        write_sealed(shared, _text(FIRST), volatile=("ran_at",), private_only=True)
 
     original = tmp_path / "original.json"
     original.write_text(_text(FIRST))

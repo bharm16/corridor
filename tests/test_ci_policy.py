@@ -8,9 +8,11 @@ never reports; a job skipped by an `if` reports `skipped`, which the
 against what `scripts/classify_ci_change.py` asked for (ADR-0093, #697).
 """
 
+import ast
 import os
 from pathlib import Path
 import subprocess
+import sys
 
 import pytest
 from sqlalchemy import create_engine, text
@@ -752,3 +754,35 @@ def test_uv_caches_retain_wheels_and_separate_the_complete_dependency_population
             if step.get("uses", "").startswith("astral-sh/setup-uv@"):
                 assert step["with"]["prune-cache"] == "false"
                 assert step["with"]["cache-suffix"] == "root-render-wheels-v1"
+
+
+BARE_PYTHON_SCRIPTS = ("scripts/classify_ci_change.py", "scripts/ci_feedback.py")
+
+
+def _imported_top_level_names(path: Path) -> set[str]:
+    names = set()
+    for node in ast.walk(ast.parse(path.read_text(), filename=str(path))):
+        if isinstance(node, ast.Import):
+            names.update(alias.name.split(".")[0] for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.level == 0 and node.module:
+            names.add(node.module.split(".")[0])
+    return names
+
+
+def test_the_bare_python_jobs_scripts_import_only_the_standard_library_and_scripts():
+    """The classify and summary jobs run `python3 scripts/...` with no `uv sync`.
+
+    `scripts/__init__.py` states that nothing in the package may import outside
+    the standard library; this is the rule as a test rather than a sentence.
+    Relative imports inside `scripts/test_gate` resolve within the package.
+    """
+
+    checked = [ROOT / name for name in BARE_PYTHON_SCRIPTS]
+    checked += sorted((ROOT / "scripts" / "test_gate").glob("*.py"))
+    checked.append(ROOT / "scripts" / "__init__.py")
+    allowed = set(sys.stdlib_module_names) | {"scripts", "__future__"}
+    offenders = {
+        str(path.relative_to(ROOT)): sorted(_imported_top_level_names(path) - allowed)
+        for path in checked
+    }
+    assert {name: extra for name, extra in offenders.items() if extra} == {}

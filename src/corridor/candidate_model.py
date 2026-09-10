@@ -41,6 +41,7 @@ from corridor.eval import (
     measure,
 )
 from corridor.experimental_command import (
+    SingleValue,
     experiment_parser,
     print_receipt,
     run_command,
@@ -518,10 +519,10 @@ def main(
         default=[],
         dest="current_extraction_runs",
     )
-    parser.add_argument("--candidate-model")
-    parser.add_argument("--prompt-version")
-    parser.add_argument("--reference-manifest")
-    parser.add_argument("--case-predictions")
+    parser.add_argument("--candidate-model", action=SingleValue)
+    parser.add_argument("--prompt-version", action=SingleValue)
+    parser.add_argument("--reference-manifest", action=SingleValue)
+    parser.add_argument("--case-predictions", action=SingleValue)
 
     def comparison(args) -> int:
         if not args.candidate_model:
