@@ -96,10 +96,9 @@ from sqlalchemy.orm import Session, aliased
 
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    release_candidate_preparation_event,
 )
 from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
 from corridor.follow_up_bundles import (
@@ -1647,29 +1646,27 @@ def emit_preparation(
     """
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.RELEASE_CANDIDATE_PREPARATION,
-            binding=bound.binding,
+        release_candidate_preparation_event(
+            bound.binding,
             occurred_at=bound.prepared_at,
-            payload={
-                "principal_subject": principal_subject,
-                "project_id": bound.project_id,
-                "source_cutoff": bound.source_cutoff.isoformat(),
-                "accepted_revision_id": bound.accepted_revision_id,
-                "previous_package_id": bound.previous_package_id,
-                "issue_profile_id": bound.inventory.profile_id,
-                "issue_profile_version": bound.inventory.profile_version,
-                "coverage_identity": bound.coverage.identity,
-                "configured_artifact_types": list(bound.artifact_types),
-                "candidate_identity": candidate_identity,
-                "content_sha256": content_sha256,
-                "readiness": bound.readiness,
-                "blocker_count": len(bound.blockers),
-                "exception_count": len(bound.disclosed_exceptions),
-                "refusal_code": refusal_code,
-            },
-            # Bounded shape only: the project and the person stay in the
-            # payload, never in an infrastructure label (#491, #522).
-            metric_labels={"surface": surface, "status": outcome},
+            # Bounded shape only: the surface and outcome become the labels;
+            # the project and the person stay in the payload (#491, #522).
+            surface=surface,
+            outcome=outcome,
+            principal_subject=principal_subject,
+            project_id=bound.project_id,
+            source_cutoff=bound.source_cutoff.isoformat(),
+            accepted_revision_id=bound.accepted_revision_id,
+            previous_package_id=bound.previous_package_id,
+            issue_profile_id=bound.inventory.profile_id,
+            issue_profile_version=bound.inventory.profile_version,
+            coverage_identity=bound.coverage.identity,
+            configured_artifact_types=list(bound.artifact_types),
+            candidate_identity=candidate_identity,
+            content_sha256=content_sha256,
+            readiness=bound.readiness,
+            blocker_count=len(bound.blockers),
+            exception_count=len(bound.disclosed_exceptions),
+            refusal_code=refusal_code,
         )
     )

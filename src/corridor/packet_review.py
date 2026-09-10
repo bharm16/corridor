@@ -116,10 +116,10 @@ from sqlalchemy.orm import Session
 from corridor import refusals
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    packet_opening_event,
+    packet_surfacing_event,
 )
 from corridor.baseline_adoption import effective_baseline_formats
 from corridor.baseline_workbook import BASELINE_FACT_FIELDS
@@ -1931,12 +1931,11 @@ def emit_packet_surfacing(
     """One event per item the Work List actually put in front of a person."""
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.PACKET_SURFACING,
-            binding=screen_binding(item, binding),
+        packet_surfacing_event(
+            screen_binding(item, binding),
             occurred_at=reading.as_of,
-            payload={**_item_payload(reading, item), "principal_subject": principal_subject},
-            metric_labels=_item_labels(item),
+            principal_subject=principal_subject,
+            **_item_payload(reading, item),
         )
     )
 
@@ -1951,12 +1950,11 @@ def emit_packet_opening(
     """The coordinator opened this item; surfacing alone is not opening."""
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.PACKET_OPENING,
-            binding=screen_binding(item, binding),
+        packet_opening_event(
+            screen_binding(item, binding),
             occurred_at=reading.as_of,
-            payload={**_item_payload(reading, item), "principal_subject": principal_subject},
-            metric_labels=_item_labels(item),
+            principal_subject=principal_subject,
+            **_item_payload(reading, item),
         )
     )
 
@@ -2025,13 +2023,4 @@ def _item_payload(reading: ReviewReading, item: ItemReading) -> dict[str, Any]:
             }
             for child in item.children
         ],
-    }
-
-
-def _item_labels(item: ItemReading) -> dict[str, str]:
-    return {
-        "grouping_key_kind": item.grouping_key_kind,
-        "band": item.band,
-        "held_out_reason": item.held_out_reason or "none",
-        "consequence_level": item.consequence or "none",
     }

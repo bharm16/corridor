@@ -71,8 +71,7 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
+    child_decision_event,
     default_binding,
     emit_event,
 )
@@ -1266,26 +1265,18 @@ def _emit_child_decision(
         return
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.CHILD_DECISION,
-            binding=binding or default_binding(),
+        child_decision_event(
+            binding or default_binding(),
             occurred_at=occurred_at,
-            payload={
-                "project_id": project_id,
-                "delta_id": delta_id,
-                "action": action,
-                "effect_kind": effect_kind,
-                "outcome": outcome,
-                "refusal_reason": reason,
-                "revision_id": revision_id,
-                "packet_owned": packet_owned,
-                "support_assessment_count": support_count,
-            },
-            metric_labels={
-                "action": action,
-                "outcome": outcome,
-                "refusal_reason": reason or "none",
-            },
+            project_id=project_id,
+            delta_id=delta_id,
+            action=action,
+            effect_kind=effect_kind,
+            outcome=outcome,
+            refusal_reason=reason,
+            revision_id=revision_id,
+            packet_owned=packet_owned,
+            support_assessment_count=support_count,
         )
     )
 

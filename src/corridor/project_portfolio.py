@@ -100,10 +100,10 @@ from sqlalchemy.orm import Session
 from corridor import access
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    portfolio_reading_event,
+    project_selection_event,
 )
 from corridor.baseline_adoption import effective_baseline_formats_by_project
 from corridor.follow_up_bundles import actionable_plan_count
@@ -656,34 +656,26 @@ def emit_portfolio_reading(
     """One event per presentation, naming every project shown and its state."""
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.PORTFOLIO_READING,
-            binding=portfolio_binding(binding),
+        portfolio_reading_event(
+            portfolio_binding(binding),
             occurred_at=reading.cutoff,
-            payload={
-                "principal_subject": reading.principal_subject,
-                "cutoff": reading.cutoff.isoformat(),
-                "project_count": len(reading.standings),
-                "projects": [
-                    {
-                        "project_id": row.project_id,
-                        "state": row.state,
-                        "landing": row.landing,
-                        "changes_to_review": row.changes_to_review,
-                        "follow_up_waiting": row.follow_up_waiting,
-                        "follow_up_overdue": row.follow_up_overdue,
-                        "follow_up_due": row.follow_up_due,
-                        "readiness_problems": row.readiness_problems,
-                        "preparing": row.preparing,
-                        "measurement_context": row.measurement_context,
-                    }
-                    for row in reading.standings
-                ],
-            },
-            metric_labels={
-                "surface": "portfolio",
-                "status": "presented",
-            },
+            principal_subject=reading.principal_subject,
+            cutoff=reading.cutoff.isoformat(),
+            projects=[
+                {
+                    "project_id": row.project_id,
+                    "state": row.state,
+                    "landing": row.landing,
+                    "changes_to_review": row.changes_to_review,
+                    "follow_up_waiting": row.follow_up_waiting,
+                    "follow_up_overdue": row.follow_up_overdue,
+                    "follow_up_due": row.follow_up_due,
+                    "readiness_problems": row.readiness_problems,
+                    "preparing": row.preparing,
+                    "measurement_context": row.measurement_context,
+                }
+                for row in reading.standings
+            ],
         )
     )
 
@@ -698,17 +690,13 @@ def emit_project_selection(
     """The coordinator opened this project from the portfolio; being shown is not."""
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.PROJECT_SELECTION,
-            binding=portfolio_binding(binding),
+        project_selection_event(
+            portfolio_binding(binding),
             occurred_at=at,
-            payload={
-                "principal_subject": principal_subject,
-                "project_id": standing.project_id,
-                "state": standing.state,
-                "landing": standing.landing,
-                **(standing.measurement_context or {}),
-            },
-            metric_labels={"surface": "portfolio", "state": standing.state},
+            principal_subject=principal_subject,
+            project_id=standing.project_id,
+            state=standing.state,
+            landing=standing.landing,
+            measurement_context=standing.measurement_context,
         )
     )
