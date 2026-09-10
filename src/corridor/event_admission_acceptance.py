@@ -15,8 +15,8 @@ from __future__ import annotations
 
 from collections import Counter
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timezone
-import hashlib
 import os
 from pathlib import Path
 import subprocess
@@ -71,12 +71,17 @@ from corridor.m8_acceptance_database import (
     read_migration_head,
 )
 from corridor.migrations.policy import CURRENT_HEAD, SUPPORTED_FROM_REVISION
-from corridor.rehearsal_environment import SealedRehearsalEnvironment
+from corridor.rehearsal_environment import (
+    RehearsedClone,
+    SealedRehearsalEnvironment,
+    rehearse_on_disposable_clone,
+)
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor.project_lock import lock_project
 from corridor.sh99_admission_acceptance import (
     REPO_ROOT,
     provision_acceptance_database,
+    read_rehearsal_project_state,
 )
 from corridor.supersession import actionable_candidate_query
 from corridor.work_list import build_work_list
@@ -91,6 +96,13 @@ RETIRED_PREDECESSOR_REFUSAL = "predecessor_outside_supported_migration_window"
 NO_MIGRATION_REHEARSAL = "no_migration_rehearsal_recorded"
 UNREHEARSED_MIGRATION_HEAD = "no_migration_head_rehearsed"
 FAILED_MIGRATION_REHEARSAL = "migration_rehearsal_did_not_pass"
+# What this acceptance's clone rehearsals claim, and what they do not. The
+# shared source receives only the immutable receipt and its activation history.
+CLAIM_BOUNDARY = {
+    "declared_population_policy_replay_only": True,
+    "shared_database_mutated": False,
+    "customer_usability_evidence": False,
+}
 PROMOTION_GATE_NAMES = frozenset(
     {
         "eligible_case_observed",
@@ -199,39 +211,42 @@ def run_event_admission_acceptance(
     migration_rehearsal = _rehearse_predecessor_upgrade(
         config.postgres_admin_url, expected_head=migration_head
     )
+    read_state = partial(
+        read_rehearsal_project_state, project_slug=config.project_slug
+    )
+
+    def rehearse_policy(
+        dump_path: Path, policy_version: str, *, repeat: bool
+    ) -> RehearsedClone:
+        """One policy version, on its own clone of the identical captured bytes."""
+
+        return rehearse_on_disposable_clone(
+            rehearsal,
+            postgres_admin_url=config.postgres_admin_url,
+            provision_database=provision,
+            dump_path=dump_path,
+            read_state=read_state,
+            operation=lambda clone: _run_policy_clone(
+                clone.database_url,
+                config.project_slug,
+                policy_version,
+                repeat=repeat,
+            ),
+            claim_boundary=CLAIM_BOUNDARY,
+        )
+
     with tempfile.TemporaryDirectory(prefix="corridor-event-admission-acceptance-") as parent:
         dump_path = Path(parent) / "source.dump"
-        rehearsal.capture(dump_path)
-        source_dump_sha256 = hashlib.sha256(dump_path.read_bytes()).hexdigest()
-        clone_names: list[str] = []
-
-        with provision(config.postgres_admin_url) as predecessor_database:
-            clone_names.append(predecessor_database.name)
-            if predecessor_database.migration_head != migration_head:
-                raise ValueError("predecessor clone migration head does not match source")
-            rehearsal.restore(dump_path, predecessor_database.name)
-            predecessor = _run_policy_clone(
-                rehearsal.clone_url(
-                    config.postgres_admin_url, predecessor_database.name
-                ),
-                config.project_slug,
-                EVENT_ADMISSION_POLICY_VERSION,
-                repeat=False,
-            )
-
-        with provision(config.postgres_admin_url) as opt_in_database:
-            clone_names.append(opt_in_database.name)
-            if opt_in_database.migration_head != migration_head:
-                raise ValueError("opt-in clone migration head does not match source")
-            rehearsal.restore(dump_path, opt_in_database.name)
-            opt_in = _run_policy_clone(
-                rehearsal.clone_url(
-                    config.postgres_admin_url, opt_in_database.name
-                ),
-                config.project_slug,
-                UNKNOWN_SCOPE_POLICY_VERSION,
-                repeat=True,
-            )
+        predecessor_clone = rehearse_policy(
+            dump_path, EVENT_ADMISSION_POLICY_VERSION, repeat=False
+        )
+        opt_in_clone = rehearse_policy(
+            dump_path, UNKNOWN_SCOPE_POLICY_VERSION, repeat=True
+        )
+        source_dump_sha256 = predecessor_clone.source_dump_sha256
+        predecessor = predecessor_clone.result
+        opt_in = opt_in_clone.result
+        clone_names = [predecessor_clone.database_name, opt_in_clone.database_name]
     migration_rehearsal = {
         **migration_rehearsal,
         "fresh_head": migration_head,

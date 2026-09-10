@@ -113,7 +113,7 @@ def freeze_project_reading(
                 raise NativeReadingRefused("native evaluation and publication are not the same frozen reading")
         else:
             population = read_accepted_field_population(session, project_id, revision_id=revision_id)
-            evaluation = evaluate_native_population(population, today=today,
+            evaluation = evaluate_native_population(session, population, today=today,
                 thresholds=effective_thresholds(session, project_id), document_only=document_only)
             statement_publication = evaluation.statement_publication
         validate_frozen_reading(project_id=project_id, evaluation=evaluation,

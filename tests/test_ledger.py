@@ -1,3 +1,4 @@
+from dataclasses import fields
 from datetime import date, datetime, timezone
 
 import pytest
@@ -14,10 +15,13 @@ from corridor.external_statements import (
 )
 from corridor.exceptions import evaluate_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
+from corridor.accepted_field_reading import NativeReadingRefused
+from corridor.constraint_reading import ConstraintReading, NotAvailable, available
 from corridor.ledger import (
     NoSuchEvidence,
     UnverifiedEvidence,
     browse,
+    browse_native_population,
     load_dependency,
     mark_satisfies,
     primary_evidence,
@@ -41,6 +45,7 @@ from corridor.operative_support import (
 )
 from corridor.principals import HumanPrincipal
 from access_support import seed_membership
+from adopted_reader_support import adopt_ucm_workbook
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 from corridor.web.app import app, get_human_principal, get_session
 
@@ -859,3 +864,155 @@ def test_the_constraint_log_reads_the_declared_review_instant_not_the_day(
         datetime(2099, 3, 2, tzinfo=timezone.utc)
     )
     assert overdue_state in client.get(f"/ledger/{project.slug}").text
+
+
+# --- One Constraint Log over both populations -------------------------------
+
+
+ADOPTED_TODAY = date(2026, 9, 9)
+
+
+def _adopted(session, tmp_path, monkeypatch):
+    project, _ = adopt_ucm_workbook(session, tmp_path, monkeypatch)
+    return project, evaluate_project(session, project.id, today=ADOPTED_TODAY)
+
+
+def test_the_constraint_log_filters_an_adopted_project_through_one_implementation(
+    session, tmp_path, monkeypatch
+):
+    """All six filters, over the accepted record, in the one `browse`.
+
+    They existed twice — SQL predicates for a legacy project and a hand-written
+    Python loop for the accepted record — so each population answered "critical"
+    and "unassigned" its own way and neither could be changed without changing
+    both. There is one filter implementation now, and it reads the Constraint
+    reading, so a filter whose fact the accepted record does not establish selects
+    nothing rather than selecting everything.
+    """
+    project, evaluation = _adopted(session, tmp_path, monkeypatch)
+    population = evaluation.native_population
+    everything = browse(session, project.id, evaluation=evaluation)
+    assert [row.reading.ref_code for row in everything] == [
+        record.ref_code for record in population.open_records
+    ]
+
+    # 1. organization — the accepted External Party value's own resolved
+    # identity, which this baseline's workbook does not carry, so no
+    # organization matches rather than every row matching.
+    assert {row.reading.external_org_id for row in everything} == {None}
+    assert browse(session, project.id, evaluation=evaluation, org_id=1234) == []
+
+    # 2. resolution strategy, and 3. its criticality reading. One workbook row
+    # states "Relocate"; the other states nothing, and nothing is not critical.
+    critical = browse(
+        session, project.id, evaluation=evaluation, resolution_strategy="critical"
+    )
+    assert [row.reading.ref_code for row in critical] == ["UC-1"]
+    assert (
+        browse(
+            session,
+            project.id,
+            evaluation=evaluation,
+            resolution_strategy="not_a_strategy",
+        )
+        == []
+    )
+
+    # 4. documentation review. The accepted record records no review outcome, so
+    # neither answer is a claim about it.
+    assert browse(session, project.id, evaluation=evaluation, ready=True) == []
+    assert browse(session, project.id, evaluation=evaluation, ready=False) == []
+
+    # 5. internal owner. A Work Decision assigns one and this project's accepted
+    # record holds none, so the question does not apply — it must not answer
+    # "nobody is assigned to any of these".
+    assert browse(session, project.id, evaluation=evaluation, owner="unassigned") == []
+    assert browse(session, project.id, evaluation=evaluation, owner="Bryce") == []
+    assert all(
+        isinstance(row.reading.internal_owner, NotAvailable) for row in everything
+    )
+
+    # 6. rule, read off the same evaluation every other surface reads.
+    (fired,) = {e.rule for e in evaluation.found if e.rule == "OVERDUE"}
+    by_rule = browse(session, project.id, evaluation=evaluation, rule=fired)
+    assert by_rule and all(
+        any(e.rule == fired for e in row.exceptions) for row in by_rule
+    )
+    assert browse(session, project.id, evaluation=evaluation, rule="MISSING_OWNER") == []
+
+    # And the limit.
+    assert len(browse(session, project.id, evaluation=evaluation, limit=1)) == 1
+
+
+def test_the_retained_native_browse_entry_point_is_one_delegation(
+    session, tmp_path, monkeypatch
+):
+    """`browse_native_population` may keep its name; it may not keep its copy."""
+    project, evaluation = _adopted(session, tmp_path, monkeypatch)
+    delegated = browse_native_population(session, evaluation, resolution_strategy="critical")
+    assert [row.reading.ref_code for row in delegated] == ["UC-1"]
+    assert delegated == browse(
+        session, project.id, evaluation=evaluation, resolution_strategy="critical"
+    )
+    empty = Project(slug="ledger-legacy-only", name="Legacy only", is_synthetic=True)
+    session.add(empty)
+    session.flush()
+    with pytest.raises(NativeReadingRefused):
+        browse_native_population(session, evaluate_project(session, empty.id))
+
+
+def test_a_legacy_row_and_an_accepted_record_read_as_the_same_shape(
+    session, tmp_path, monkeypatch, project
+):
+    """The two adapters produce one type, with the same declared field names.
+
+    That is the whole point of the reading: a section, a filter or a rule written
+    against it works for both populations, and the only difference it can see is a
+    declared marker rather than a missing attribute or an invented None.
+    """
+    adopted_project, evaluation = _adopted(session, tmp_path, monkeypatch)
+    accepted = browse(session, adopted_project.id, evaluation=evaluation)[0].reading
+
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="UC-1",
+        dep_type="utility_relocation",
+        title="Water — City Water",
+        source_ref="UC-1",
+        station_from="100+00",
+        station_to="101+00",
+        need_date=date(2026, 9, 20),
+        committed_date=date(2026, 8, 1),
+        resolution_strategy="relocate",
+    )
+    session.add(dependency)
+    session.flush()
+    legacy = browse(
+        session,
+        project.id,
+        evaluation=evaluate_project(session, project.id, today=ADOPTED_TODAY),
+    )[0].reading
+
+    assert type(legacy) is type(accepted) is ConstraintReading
+    assert {f.name for f in fields(legacy)} == {f.name for f in fields(accepted)}
+    shared = (
+        "ref_code",
+        "source_ref",
+        "station_from",
+        "station_to",
+        "need_date",
+        "committed_date",
+        "resolution_strategy",
+        "title",
+        "dep_type",
+    )
+    assert {name: getattr(legacy, name) for name in shared} == {
+        name: getattr(accepted, name) for name in shared
+    }
+    assert legacy.critical is accepted.critical is True
+    # Where the two genuinely differ, the accepted record says why rather than
+    # answering with a value it does not have.
+    for name in ("internal_owner", "next_action", "action_due_date", "milestone_id"):
+        assert available(getattr(legacy, name))
+        marker = getattr(accepted, name)
+        assert isinstance(marker, NotAvailable) and str(marker) != ""

@@ -46,6 +46,7 @@ from corridor.m8_acceptance import (
     verify_m8_acceptance_bundle,
 )
 from corridor.models import Candidate, DocPage
+from corridor.rehearsal_environment import CheckoutObservation
 from corridor.revision_comparison import DEFAULT_MATCHER_VERSION
 
 from pdf_fixture_support import PdfFixture
@@ -98,9 +99,12 @@ def _stub_capture_harness(
     monkeypatch.setattr(
         "corridor.m8_acceptance._load_source_chain", lambda _path: object()
     )
+    observed = git_state or {"revision": "test-revision", "status": "clean"}
     monkeypatch.setattr(
-        "corridor.m8_acceptance._git_state",
-        lambda: git_state or {"revision": "test-revision", "status": "clean"},
+        "corridor.m8_acceptance.observe_checkout",
+        lambda _repo_root: CheckoutObservation(
+            revision=observed["revision"], clean=observed["status"] == "clean"
+        ),
     )
     monkeypatch.setattr(
         "corridor.m8_acceptance._write_fixture_sources",

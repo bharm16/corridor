@@ -12,6 +12,8 @@ a controlled extraction route (no live model, ADR-0046).
 from __future__ import annotations
 
 import hashlib
+import io
+import zipfile
 from datetime import datetime, timezone
 from uuid import uuid4
 
@@ -30,6 +32,7 @@ from corridor.due_work import (
     run_due_work_once,
 )
 from corridor.extraction_runs import record_extraction_run
+from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
 from corridor.models import (
     AuditLog,
     Candidate,
@@ -143,7 +146,8 @@ def test_stage_refuses_foreign_content_that_lies_about_its_suffix(store):
     with pytest.raises(IntakeRefused) as excinfo:
         validate_and_stage(b"this is not really a pdf", "report.pdf")
 
-    assert excinfo.value.reason == "content_mismatch"
+    assert excinfo.value.reason == "magic_mismatch"
+    assert "do not match" in str(excinfo.value)
     assert _stored_files(store) == []
 
 
@@ -155,8 +159,63 @@ def test_stage_refuses_an_oversized_file_with_no_side_effects(store, monkeypatch
     with pytest.raises(IntakeRefused) as excinfo:
         validate_and_stage(body, "big.pdf")
 
-    assert excinfo.value.reason == "too_large"
+    assert excinfo.value.reason == "size_limit_exceeded"
+    assert "the limit is" in str(excinfo.value)
     assert _stored_files(store) == []
+
+
+def test_the_upload_channel_refuses_in_the_shared_byte_gate_vocabulary(store):
+    """One gate, one vocabulary, whatever transport carried the bytes.
+
+    The upload path enforced its own size limit and its own magic-byte check
+    beside the shared byte gate that already enforces both, so identical
+    hostile bytes were refused as ``too_large`` here and
+    ``size_limit_exceeded`` on the push and pull channels — the same refusal
+    under two names, in a record whose whole purpose is saying what was refused
+    and why.  The rule is now the gate's on every channel; the sentence a
+    person reads stays the upload's own.
+    """
+
+    cases = [
+        (b"", "empty.pdf", None),
+        (b"this is not really a pdf", "report.pdf", None),
+        (b"%PDF-" + b"x" * 4096, "big.pdf", 1024),
+    ]
+    for body, filename, limit in cases:
+        with pytest.raises(HostileContentRefused) as gate:
+            inspect_byte_gate(body, filename, **({} if limit is None else {"max_bytes": limit}))
+        with pytest.raises(IntakeRefused) as upload:
+            validate_and_stage(body, filename, max_bytes=limit)
+
+        assert upload.value.reason == gate.value.rule
+    assert _stored_files(store) == []
+
+
+def test_the_upload_keeps_its_own_extra_structural_stage(store):
+    """The gate composition is shared; the upload's extra stage is not dropped.
+
+    ``inspect_sandboxed_structure`` is stage 2 of #490 and the upload runs it
+    because an upload is the one channel that hands the bytes straight to a
+    rich parser on confirmation.  Collapsing the duplicated stage-1 checks must
+    not quietly collapse this one too.
+    """
+
+    bomb = _zip_with_xml_entity_bomb()
+    with pytest.raises(IntakeRefused) as excinfo:
+        validate_and_stage(bomb, "workbook.xlsx")
+
+    assert excinfo.value.reason == "xml_entity_bomb"
+    assert _stored_files(store) == []
+
+
+def _zip_with_xml_entity_bomb() -> bytes:
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        archive.writestr(
+            "xl/workbook.xml",
+            '<!DOCTYPE x [<!ENTITY a "aaaa">]><workbook/>',
+        )
+    return buffer.getvalue()
 
 
 def test_stage_reduces_a_path_like_name_to_a_safe_basename(store):

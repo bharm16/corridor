@@ -3,6 +3,13 @@
 This module owns synthetic scenario setup, exact comparison execution, policy
 exercise, and controlled evidence export.  It never calls a model and never
 operates on the captured real-project lane.
+
+It also owns the assertion vocabulary and the one narrow claim boundary both
+acceptance lanes publish.  Those declarations used to be a module of their own
+with no behavior and no tests; the replay lane already imports this module, so
+this is the only place both lanes reach without an import cycle.
+``CLAIM_BOUNDARY`` is what keeps the claims apart: what an acceptance receipt
+claims, and what it explicitly does not.
 """
 
 from __future__ import annotations
@@ -31,12 +38,6 @@ from corridor.extraction_errors import ExtractionFailed
 from corridor.extract_project import extract_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
-from corridor.m8_acceptance_contract import (
-    AcceptanceError,
-    AssertionResult,
-    CLAIM_BOUNDARY,
-    ControlledContradiction,
-)
 from corridor.models import (
     ActiveExtractionRun,
     Assertion,
@@ -68,6 +69,45 @@ from corridor.supersession import (
     register_supersessions,
 )
 from corridor.supersession_review import build_reviewer_worklist
+
+
+CLAIM_BOUNDARY = {
+    "mechanical_correctness_only": True,
+    "semantic_correctness": False,
+    "recall": False,
+    "human_review": False,
+    "production_readiness": False,
+    "independent_customer_validation": False,
+}
+
+
+class AcceptanceError(RuntimeError):
+    """The requested acceptance operation cannot be completed honestly."""
+
+
+@dataclass(frozen=True)
+class AssertionResult:
+    name: str
+    passed: bool
+    observed: Any = None
+    expected: Any = None
+    detail: str | None = None
+
+
+class ControlledContradiction(AcceptanceError):
+    """A controlled-lane claim failed after partial evidence existed."""
+
+    def __init__(
+        self,
+        assertion: AssertionResult,
+        *,
+        controlled_raw: dict[str, Any],
+        controlled_canonical: dict[str, Any],
+    ) -> None:
+        super().__init__(assertion.detail or assertion.name)
+        self.assertion = assertion
+        self.controlled_raw = controlled_raw
+        self.controlled_canonical = controlled_canonical
 
 
 _SIMULATED_PRINCIPAL = HumanPrincipal("local:m8-acceptance-fixture")

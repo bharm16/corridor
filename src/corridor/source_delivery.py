@@ -90,6 +90,13 @@ DISPOSITIONS = (
     DISPOSITION_TERMINALLY_REFUSED,
     DISPOSITION_TRANSIENT_FAILURE,
 )
+# ``quarantined`` is recorded by no intake path today, and that is the honest
+# state rather than a gap: ADR-0089 defines it as the gate having *held* the
+# bytes with a quarantine reference saying where they are, and every channel
+# gates before it stores anything, so a refused delivery is
+# ``terminally_refused`` with its exact digest and reason and no bytes to point
+# at.  A path that starts holding refused bytes records this disposition; one
+# that merely refuses them must not, because the reference would name nothing.
 # Which dispositions a checkpoint may advance past is asked once, by
 # ``enforce_checkpoint_advance_coverage`` on
 # ``connector_checkpoint_advance_deliveries``: a transient failure never, and a

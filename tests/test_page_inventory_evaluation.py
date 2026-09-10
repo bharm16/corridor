@@ -11,8 +11,8 @@ from corridor.page_inventory_evaluation import (
     RoutingObservation,
     RoutingRun,
     evaluate_stage1,
+    main,
 )
-from corridor.page_inventory_evaluation_cli import main
 from corridor.pdf_evaluation import load_gold_set
 
 

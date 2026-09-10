@@ -5,11 +5,27 @@ away from the facts that justify it — the same reasoning that makes
 readiness a derived predicate (ADR-0002). Ask the question when you need
 the answer and it cannot be stale.
 
-`MISSING_EVIDENCE` cannot fire on a ready Dependency, and that is true by
-construction rather than by a guard: readiness requires a supporting
-document whose Source Passage Check passed, so a ready record has one.
-There is a test asserting it anyway, because if it ever fails, readiness
+On a **legacy project** `MISSING_EVIDENCE` cannot fire on a ready Dependency,
+and that is true by construction rather than by a guard: readiness requires a
+supporting document whose Source Passage Check passed, so a ready record has
+one. There is a test asserting it anyway, because if it ever fails, readiness
 has become reachable some other way and that is worth hearing about loudly.
+
+The rules read one `ConstraintReading` and nothing else, and the two
+populations reach them through two adapters — `_gather_many` for a legacy
+`dependencies` row, `accepted_record_readings` for an accepted Project Record
+subject. That is what makes `_apply` one pure function for both instead of one
+function and a hand-written twin that hard-coded every fact it could not read.
+
+Which of the twelve rules can fire depends on the reading, not on a filter
+applied afterwards. An accepted record establishes no internal owner, no next
+action, no document dates and no key-date link, so its reading declares those
+facts unavailable and the six rules that read them skip explicitly — which is
+ADR-0090's four retirements and two of its three supersessions, held by the
+absence of an input rather than by a special case. `MISSING_EVIDENCE` there is
+re-based onto the Support Assessment relation and never onto locator
+validation (ADR-0082); `ACCEPTED_RECORD_RULES` is the resulting set, and it has
+to equal what `issue_rendering` declares it ran.
 """
 
 from __future__ import annotations
@@ -29,19 +45,30 @@ from corridor.dependency_events import (
     current_dependency_statements,
     published_dependency_statements,
 )
+from corridor.constraint_reading import (
+    ACCEPTED_RECORD,
+    ConstraintReading,
+    NotAvailable,
+    accepted_constraint_reading,
+    available,
+    legacy_constraint_reading,
+)
 from corridor.disputes import contradicted_fields
-from corridor.accepted_field_reading import AcceptedFieldPopulation, read_accepted_field_population, NativeReadingRefused
+from corridor.accepted_field_reading import (
+    AcceptedFieldPopulation,
+    accepted_population_support,
+    read_accepted_field_population,
+    NativeReadingRefused,
+)
 from corridor.operating_mode import is_adopted_baseline
 from corridor.models import (
     Dependency,
     is_critical,
 )
-from corridor.operative_support import (
-    SupersededOperativeScope,
-    resolve_operative_support,
-)
+from corridor.operative_support import resolve_operative_support
 from corridor.presentation import (
     CoordinationPlan,
+    accepted_record_exception_name as _display_accepted_record_name,
     exception_label as _display_exception_label,
     exception_name as _display_exception_name,
     read_coordination_residue,
@@ -92,6 +119,19 @@ RULES: tuple[str, ...] = (
 
 CUSTOMER_RULE_NAMES = {rule: _display_exception_name(rule) for rule in RULES}
 
+# The rules the accepted Project Record's own check set runs, and the seven it
+# does not (ADR-0090: keep three, port two, supersede three, retire four). The
+# declaration lives beside the engine as well as in
+# ``issue_rendering.ACCEPTED_RECORD_CHECK_RULES`` because the two have to agree,
+# and a test asserts that the set this engine can actually fire for an adopted
+# project is exactly this one. Nothing here is a filter applied after the fact:
+# the seven stay quiet because the facts they read are declared unavailable on an
+# accepted record's reading, which is what makes "we did not check this"
+# different from "this is empty".
+ACCEPTED_RECORD_RULES: frozenset[str] = frozenset(
+    {"OVERDUE", "DUE_SOON", "MISSING_DATE", "MISSING_EVIDENCE", "SUPERSEDED_CITATION"}
+)
+
 # The rules whose fact carries a number of days. The rest state absences,
 # and an absence has no quantity — inventing 0 or infinity for one would be
 # the scalar sneaking back in.
@@ -132,6 +172,12 @@ class Exception_:
     detail: str
     quantity_days: int | None
     critical: bool
+    # Which check set this finding came from. Two of the twelve rule names mean
+    # something different on the accepted record, and MISSING_EVIDENCE's released
+    # label states the predicate ADR-0090 removed there, so carrying the label
+    # over unaltered would tell a customer a quotation could not be located when
+    # the check no longer looks at that.
+    accepted_record: bool = False
 
     @property
     def label(self) -> str:
@@ -139,8 +185,10 @@ class Exception_:
         return format_exception_label(self)
 
 
-def format_exception_name(rule: str) -> str:
+def format_exception_name(rule: str, *, accepted_record: bool = False) -> str:
     """Name a rule without making provenance review look like lateness."""
+    if accepted_record:
+        return _display_accepted_record_name(rule)
     return _display_exception_name(rule)
 
 
@@ -169,19 +217,10 @@ class RuleFacet:
     count: int
     has_quantities: bool
 
-
-@dataclass
-class _Facts:
-    """Everything the rules need, gathered once per dependency."""
-
-    dependency: Dependency
-    is_ready: bool
-    readiness_lapsed: bool
-    has_verified_evidence: bool
-    last_evidenced_at: date | None
-    has_closure: bool
-    contradicted_fields: list[str]
-    superseded_scopes: tuple[SupersededOperativeScope, ...]
+    @property
+    def accepted_record(self) -> bool:
+        """Which check set this bucket's findings came from."""
+        return all(exception.accepted_record for exception in self.exceptions)
 
 
 def _is_dismissed(session: Session, dependency: Dependency) -> bool:
@@ -228,7 +267,11 @@ def evaluate(
     thresholds = thresholds or Thresholds()
 
     dependencies = session.scalars(
-        select(Dependency).where(
+        select(Dependency)
+        # Undeferred because the reading carries it: reading a deferred column
+        # per row costs one statement per record.
+        .options(undefer(Dependency.milestone_registration_id))
+        .where(
             Dependency.project_id == project_id,
             # A record nobody is working raises no exceptions about
             # nobody working it (ADR-0032).
@@ -272,21 +315,15 @@ def evaluate(
         )
         closed_by_dependency[dependency.id] = is_closed
 
-    facts_by_dependency = _gather_many(
+    readings = _gather_many(
         session,
         dependencies,
         closed_by_dependency=closed_by_dependency,
+        committed_dates=committed_dates_by_dependency,
     )
     found: list[Exception_] = []
     for dependency in dependencies:
-        found.extend(
-            _apply(
-                facts_by_dependency[dependency.id],
-                today,
-                thresholds,
-                committed_date=committed_dates_by_dependency[dependency.id],
-            )
-        )
+        found.extend(_apply(readings[dependency.id], today, thresholds))
     # A filing order, not a verdict: stable so two runs render identically,
     # and claiming nothing — "worst first" belongs to the facet view, where
     # the ordering fact is named (ADR-0010).
@@ -349,6 +386,16 @@ class Evaluation:
     def facets(self) -> list[RuleFacet]:
         return facets(list(self.found))
 
+    @property
+    def rules_fired(self) -> frozenset[str]:
+        """Which rules this reading actually produced a finding for.
+
+        The declared check set and the evaluator have to agree, and this is what
+        a test compares against ``ACCEPTED_RECORD_RULES`` /
+        ``issue_rendering.ACCEPTED_RECORD_CHECK_RULES``.
+        """
+        return frozenset(exception.rule for exception in self.found)
+
 
 def evaluate_project(
     session: Session,
@@ -361,14 +408,17 @@ def evaluate_project(
 ) -> Evaluation:
     """Evaluate a project once, and hand back the clock along with the facts."""
     if is_adopted_baseline(session, project_id):
-        return evaluate_native_population(read_accepted_field_population(session, project_id),
+        return evaluate_native_population(session, read_accepted_field_population(session, project_id),
             today=today, thresholds=thresholds, statement_publication=statement_publication,
             committed_dates=committed_dates)
     today = today or date.today()
     thresholds = thresholds or Thresholds()
     dependencies = session.scalars(
         select(Dependency)
-        .options(undefer(Dependency.cost_responsibility))
+        .options(
+            undefer(Dependency.cost_responsibility),
+            undefer(Dependency.milestone_registration_id),
+        )
         .where(
             Dependency.project_id == project_id,
             Dependency.dismissed_at.is_(None),
@@ -421,10 +471,18 @@ def evaluate_project(
     )
 
 
-def evaluate_native_population(population: AcceptedFieldPopulation, *, today=None,
+def evaluate_native_population(session: Session, population: AcceptedFieldPopulation, *, today=None,
                                thresholds=None, statement_publication=None, committed_dates=None,
                                document_only=False) -> Evaluation:
-    """Apply the existing deterministic rules to one native immutable population."""
+    """Apply the one ruleset to one accepted Project Record population.
+
+    ``session`` is required because the accepted record's own check set reads the
+    Support Assessment relation (ADR-0090's ported MISSING_EVIDENCE and
+    SUPERSEDED_CITATION). It used to hard-code every fact the rules needed —
+    ``is_ready=False``, ``contradicted_fields=[]``, ``superseded_scopes=()`` and
+    support taken from the Source Passage Check — which fired MISSING_EVIDENCE
+    from locator validation, exactly what ADR-0090 forbids.
+    """
     today = today or date.today()
     thresholds = thresholds or Thresholds()
     statements = {}
@@ -444,13 +502,9 @@ def evaluate_native_population(population: AcceptedFieldPopulation, *, today=Non
     if committed_dates is not None and dict(committed_dates) != expected.committed_dates:
         raise NativeReadingRefused("native accepted dates cannot be replaced by a caller's scalar overrides")
     found = []
+    readings = accepted_record_readings(session, population)
     for record in population.open_records:
-        dated = [source.document_date for source in record.checked_source_passages if source.document_date]
-        facts = _Facts(record, is_ready=False, readiness_lapsed=False,
-            has_verified_evidence=bool(record.checked_source_passages),
-            last_evidenced_at=max(dated) if dated else None, has_closure=record.is_closed,
-            contradicted_fields=[], superseded_scopes=())
-        found.extend(_apply(facts, today, thresholds, committed_date=publication.committed_dates[record.id]))
+        found.extend(_apply(readings[record.id], today, thresholds))
     return Evaluation(population.project_id, today, thresholds, RULESET_VERSION, tuple(found),
         publication.committed_dates, publication.fingerprint, publication, population)
 
@@ -508,10 +562,10 @@ def evaluate_dependency(
                         session,
                         dependency,
                         is_closed=statement.is_closed,
+                        committed_date=committed_date,
                     ),
                     today,
                     thresholds,
-                    committed_date=(committed_date),
                 )
             )
         ),
@@ -556,11 +610,18 @@ def facets(found: list[Exception_]) -> list[RuleFacet]:
     return view
 
 
-def _gather(session: Session, dependency: Dependency, *, is_closed: bool) -> _Facts:
+def _gather(
+    session: Session,
+    dependency: Dependency,
+    *,
+    is_closed: bool,
+    committed_date: date | None = None,
+) -> ConstraintReading:
     return _gather_many(
         session,
         (dependency,),
         closed_by_dependency={dependency.id: is_closed},
+        committed_dates={dependency.id: committed_date},
     )[dependency.id]
 
 
@@ -569,48 +630,77 @@ def _gather_many(
     dependencies: Iterable[Dependency],
     *,
     closed_by_dependency: Mapping[int, bool],
-) -> dict[int, _Facts]:
-    """Gather the project-wide inputs once before pure rule application."""
+    committed_dates: Mapping[int, date | None] | None = None,
+) -> dict[int, ConstraintReading]:
+    """The legacy adapter: one `dependencies` row becomes one reading.
+
+    Gathered project-wide once, before pure rule application, exactly as before.
+    What changed is the output type: the rules no longer see a Dependency row at
+    all, so the accepted-record adapter can hand them the same shape without
+    inventing a column.
+    """
     rows = tuple(dependencies)
     ids = tuple(dependency.id for dependency in rows)
     support_by_dependency = resolve_operative_support(session, ids)
     contradicted_by_dependency = contradicted_fields(session, ids)
+    dates = committed_dates or {}
 
     return {
-        dependency.id: _Facts(
-            dependency=dependency,
-            is_ready=support_by_dependency[dependency.id].is_ready,
-            readiness_lapsed=bool(
-                support_by_dependency[dependency.id].readiness
-                and not support_by_dependency[dependency.id].current_readiness
+        dependency.id: legacy_constraint_reading(
+            dependency,
+            support=support_by_dependency[dependency.id],
+            contradicted_fields=tuple(
+                contradicted_by_dependency.get(dependency.id, [])
             ),
-            has_verified_evidence=bool(
-                support_by_dependency[dependency.id].verified_evidence_count
-            ),
-            last_evidenced_at=support_by_dependency[dependency.id].last_evidenced_at,
             has_closure=closed_by_dependency.get(dependency.id, False),
-            contradicted_fields=contradicted_by_dependency.get(dependency.id, []),
-            superseded_scopes=support_by_dependency[dependency.id].superseded_scopes,
+            committed_date=dates.get(dependency.id),
         )
         for dependency in rows
     }
 
 
+def accepted_record_readings(
+    session: Session, population: AcceptedFieldPopulation
+) -> dict[str, ConstraintReading]:
+    """The accepted-record adapter: one accepted subject becomes one reading.
+
+    Nothing here is hard-coded. The readiness, contradiction and legacy-support
+    facts arrive as declared ``NotAvailable`` markers from the reading itself, and
+    the two facts the accepted record *can* answer — whether Supporting
+    Documentation is in use for its values, and whether that support still rests
+    on a replaced Document Revision — come from the one Support Assessment
+    resolver (ADR-0017, ADR-0082, ADR-0090). No Source Passage Check is consulted.
+    """
+    support = accepted_population_support(session, population)
+    return {
+        record.id: accepted_constraint_reading(record, support_in_use=support)
+        for record in population.open_records
+    }
+
+
 def _apply(
-    facts: _Facts,
+    reading: ConstraintReading,
     today: date,
     thresholds: Thresholds,
-    *,
-    committed_date: date | None = None,
 ) -> list[Exception_]:
-    dependency = facts.dependency
+    """One pure function over one reading, for both populations.
+
+    Every rule now states its own input requirement. Where the reading declares
+    a fact not available, the rule **skips explicitly** rather than reading a
+    hard-coded ``None`` as an absence — which is how MISSING_OWNER, MISSING_ACTION,
+    ACTION_DUE_SOON, ACTION_OVERDUE, STALE and ORPHAN used to fire on an accepted
+    record that has no owner field, no task field, no document dates and no key
+    date link to be missing. ADR-0090 retires those six for the accepted record;
+    they keep firing for a legacy project, whose rows do carry those columns.
+    """
     # "On track" for time-based rules means neither proven Ready nor closed
     # by an attributable External Party fact.
     # Supersession can lapse currency without changing the underlying
     # schedule fact. The record needs provenance review, but registration
     # alone must not manufacture new DUE_SOON/STALE/MISSING_OWNER findings
     # that were suppressed while the same proof was current (ADR-0016).
-    live = not facts.is_ready and not facts.readiness_lapsed and not facts.has_closure
+    live = reading.live
+    committed_date = reading.committed_date
 
     # (rule, detail, quantity_days) — the quantity is the rule's own
     # number, and None where the fact is an absence.
@@ -624,26 +714,35 @@ def _apply(
     # reading, so this ruleset and the Work List cannot disagree about which
     # half of a Follow-up Plan is missing; only the rule codes and the
     # detail sentences below are this engine's own.
-    residue = read_coordination_residue(
-        CoordinationPlan(dependency.internal_owner, dependency.next_action),
-        live=live,
-    )
-    if residue.missing_owner:
-        found.append(
-            ("MISSING_OWNER", "no Work Decision assigns an internal owner", None)
+    if available(reading.internal_owner) and available(reading.next_action):
+        residue = read_coordination_residue(
+            CoordinationPlan(reading.internal_owner, reading.next_action),
+            live=live,
         )
+        if residue.missing_owner:
+            found.append(
+                ("MISSING_OWNER", "no Work Decision assigns an internal owner", None)
+            )
 
-    if residue.missing_next_action:
-        found.append(("MISSING_ACTION", "no Work Decision sets a next action", None))
+        if residue.missing_next_action:
+            found.append(
+                ("MISSING_ACTION", "no Work Decision sets a next action", None)
+            )
 
-    if dependency.next_action and dependency.action_due_date and live:
-        days_until = (dependency.action_due_date - today).days
+    if (
+        available(reading.next_action)
+        and available(reading.action_due_date)
+        and reading.next_action
+        and reading.action_due_date
+        and live
+    ):
+        days_until = (reading.action_due_date - today).days
         if days_until < 0:
             found.append(
                 (
                     "ACTION_OVERDUE",
                     f"the project's own action was due "
-                    f"{dependency.action_due_date}, {-days_until} days ago",
+                    f"{reading.action_due_date}, {-days_until} days ago",
                     -days_until,
                 )
             )
@@ -652,7 +751,7 @@ def _apply(
                 (
                     "ACTION_DUE_SOON",
                     f"the project's own action is due in {days_until} days "
-                    f"({dependency.action_due_date})",
+                    f"({reading.action_due_date})",
                     days_until,
                 )
             )
@@ -662,42 +761,42 @@ def _apply(
             ("MISSING_DATE", "no committed date from the external party", None)
         )
 
-    if not facts.has_verified_evidence and not facts.has_closure:
-        found.append(
-            (
-                "MISSING_EVIDENCE",
-                "no supporting document on this record passed the source "
-                "passage check",
-                None,
+    if available(reading.has_supporting_documentation):
+        if not reading.has_supporting_documentation and not reading.has_closure:
+            found.append(
+                (
+                    "MISSING_EVIDENCE",
+                    _missing_evidence_detail(reading),
+                    None,
+                )
             )
-        )
 
-    if live:
-        if facts.last_evidenced_at is None:
+    if live and available(reading.last_evidenced_at):
+        if reading.last_evidenced_at is None:
             # An absence, not an age: an age would be measured from an
             # invented origin, which is how a scalar sneaks back in.
             found.append(("STALE", "no dated evidence at all", None))
         else:
-            age = (today - facts.last_evidenced_at).days
+            age = (today - reading.last_evidenced_at).days
             if age > thresholds.stale_days:
                 found.append(
                     (
                         "STALE",
                         f"no document has spoken to this in {age} days "
-                        f"(last {facts.last_evidenced_at})",
+                        f"(last {reading.last_evidenced_at})",
                         age,
                     )
                 )
 
-    if live and dependency.need_date:
-        days = (dependency.need_date - today).days
+    if live and reading.need_date:
+        days = (reading.need_date - today).days
         if 0 <= days <= thresholds.due_soon_days:
             found.append(
-                ("DUE_SOON", f"needed in {days} days ({dependency.need_date})", days)
+                ("DUE_SOON", f"needed in {days} days ({reading.need_date})", days)
             )
 
     if committed_date and committed_date < today:
-        if not facts.has_closure:
+        if not reading.has_closure:
             days = (today - committed_date).days
             found.append(
                 (
@@ -708,44 +807,19 @@ def _apply(
                 )
             )
 
-    if facts.contradicted_fields:
+    if available(reading.contradicted_fields) and reading.contradicted_fields:
         found.append(
             (
                 "CONTRADICTION",
-                "sources disagree on " + ", ".join(sorted(facts.contradicted_fields)),
+                "sources disagree on "
+                + ", ".join(sorted(reading.contradicted_fields)),
                 None,
             )
         )
 
-    if facts.superseded_scopes:
-        # Registry constraints require the authority's replacement date on
-        # every Supersession edge. Keep the fallback quantity absent rather
-        # than substituting a document, retrieval, or ingestion date if a
-        # pre-constraint row is ever encountered.
-        dates = tuple(
-            scope.evidence.superseded_on
-            for scope in facts.superseded_scopes
-            if scope.evidence.superseded_on is not None
-        )
-        superseded_on = min(dates) if dates else None
-        quantity = (today - superseded_on).days if superseded_on else None
-        scope_details = set()
-        for scope in facts.superseded_scopes:
-            replacement_date = scope.evidence.superseded_on or "unavailable"
-            scope_details.add(
-                f"{scope.label} (authority replacement date {replacement_date})"
-            )
-        scopes = "; ".join(sorted(scope_details))
-        found.append(
-            (
-                "SUPERSEDED_CITATION",
-                f"a supporting document was replaced by a newer revision and is "
-                f"no longer current: {scopes}",
-                quantity,
-            )
-        )
+    found.extend(_superseded_citation(reading, today))
 
-    if dependency.milestone_id is None and live:
+    if available(reading.milestone_id) and reading.milestone_id is None and live:
         found.append(("ORPHAN", "not linked to any milestone", None))
 
     # The Criticality reading rides along for filtering — a view slices on
@@ -753,18 +827,89 @@ def _apply(
     # asserts no strategy reads not-critical, which keeps Project A's
     # 3,235 silent rows out of the critical slice rather than tripling
     # them into it.
-    critical = is_critical(dependency.resolution_strategy)
     return [
         Exception_(
-            dependency_id=dependency.id,
-            ref_code=dependency.ref_code,
+            dependency_id=reading.id,
+            ref_code=reading.ref_code,
             rule=rule,
             detail=detail,
             quantity_days=quantity,
-            critical=critical,
+            critical=reading.critical,
+            accepted_record=reading.mode == ACCEPTED_RECORD,
         )
         for rule, detail, quantity in found
     ]
+
+
+def _missing_evidence_detail(reading: ConstraintReading) -> str:
+    """Say which predicate fired, because the two do not mean the same thing.
+
+    On a legacy project the rule counts supporting documents whose cited passage
+    was found in its source. On the accepted record ADR-0090 re-bases it: no
+    effective Supporting Documentation is in use for the accepted values, read
+    from the Support Assessment relation and never from locator validation
+    (ADR-0082).
+    """
+    if reading.mode == ACCEPTED_RECORD:
+        return (
+            "no effective Supporting Documentation is in use for this record's "
+            "accepted values"
+        )
+    return "no supporting document on this record passed the source passage check"
+
+
+def _superseded_citation(
+    reading: ConstraintReading, today: date
+) -> list[tuple[str, str, int | None]]:
+    """ADR-0016's predicate, from whichever carrier the reading has.
+
+    Never "a document has a successor": the support in use must still rest on the
+    replaced revision with nothing current beside it, or an alert could only be
+    cleared by deleting provenance.
+    """
+    if available(reading.superseded_scopes) and reading.superseded_scopes:
+        # Registry constraints require the authority's replacement date on
+        # every Supersession edge. Keep the fallback quantity absent rather
+        # than substituting a document, retrieval, or ingestion date if a
+        # pre-constraint row is ever encountered.
+        dates = tuple(
+            scope.evidence.superseded_on
+            for scope in reading.superseded_scopes
+            if scope.evidence.superseded_on is not None
+        )
+        superseded_on = min(dates) if dates else None
+        quantity = (today - superseded_on).days if superseded_on else None
+        scope_details = set()
+        for scope in reading.superseded_scopes:
+            replacement_date = scope.evidence.superseded_on or "unavailable"
+            scope_details.add(
+                f"{scope.label} (authority replacement date {replacement_date})"
+            )
+        scopes = "; ".join(sorted(scope_details))
+        return [
+            (
+                "SUPERSEDED_CITATION",
+                f"a supporting document was replaced by a newer revision and is "
+                f"no longer current: {scopes}",
+                quantity,
+            )
+        ]
+    if (
+        available(reading.depends_on_superseded_support)
+        and reading.depends_on_superseded_support
+    ):
+        replaced_on = reading.superseded_support_replaced_on
+        replaced_on = replaced_on if available(replaced_on) else None
+        return [
+            (
+                "SUPERSEDED_CITATION",
+                "the Supporting Documentation in use for an accepted value was "
+                "replaced by a newer revision and nothing current stands beside "
+                f"it (authority replacement date {replaced_on or 'unavailable'})",
+                (today - replaced_on).days if replaced_on else None,
+            )
+        ]
+    return []
 
 
 def main(argv: list[str]) -> int:

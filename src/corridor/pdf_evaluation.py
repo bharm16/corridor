@@ -21,8 +21,6 @@ from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     StringConstraints,
     computed_field,
@@ -30,15 +28,15 @@ from pydantic import (
 )
 from shapely.geometry import Polygon as ShapelyPolygon
 
+from corridor.typed_output import ClosedModel
+
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 NonEmpty = Annotated[str, StringConstraints(strip_whitespace=True, min_length=1)]
 
 
-class ContractModel(BaseModel):
+class ContractModel(ClosedModel):
     """Reject undeclared experiment fields so two receipts mean the same thing."""
-
-    model_config = ConfigDict(extra="forbid", frozen=True)
 
 
 class Split(StrEnum):

@@ -485,7 +485,7 @@ pdf-eval:
 # gold membership, alongside the retired character-count comparator:
 #   make page-inventory-eval ARGS="--gold=<stage1-gold.json> --run=<routing-run.json> --output=<receipt.json>"
 page-inventory-eval:
-	uv run python -m corridor.page_inventory_evaluation_cli $(ARGS)
+	uv run python -m corridor.page_inventory_evaluation $(ARGS)
 
 # Render corpus pages under both rasterizers and record the comparison with
 # its declared tolerances (#735). An explicit experiment outside pytest and
@@ -542,9 +542,11 @@ pdf-reader-node:
 # tally, and write a receipt carrying the configuration identity. An explicit
 # experiment outside pytest and CI (ADR-0008); needs the reference corpus at
 # TRUE_PAIRS_ROOT, `make pdf-reader-node`, and tens of minutes:
-#   make pdf-reader-reproduce ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain"
-# `--retain` copies the receipt set into src/corridor_pdf_reader/receipts/ and
-# appends the holdout access to bootstrap/LOOP-LOG.md (ADR-0008).
+#   make pdf-reader-reproduce ARGS="--output out/pdf-reader/reproduction-2026-09-06 --retain --holdout-actor local:<human>"
+# `--retain` copies the receipt set into src/corridor_pdf_reader/receipts/,
+# appends the holdout access to bootstrap/LOOP-LOG.md as prose and records the
+# same access in gold/pdf-pairs/v1/holdout-access.jsonl (ADR-0008); it needs
+# --holdout-actor.
 TRUE_PAIRS_ROOT ?= /Users/bryceharmon/Desktop/utility-conflict-matrices/PDF-Spreadsheet-Pairs/true-pairs/exact
 pdf-reader-reproduce:
 	mkdir -p src/corridor_pdf_reader/tmp

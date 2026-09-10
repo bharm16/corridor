@@ -399,7 +399,7 @@ def test_current_shared_seal_pins_are_exact_and_historical_receipt_is_guarded(
 
 def test_shared_seal_requires_the_exact_origin_main_revision(monkeypatch):
     monkeypatch.setattr(
-        "corridor.sh99_admission_acceptance._git",
+        "corridor.sh99_admission_acceptance.read_git_output",
         lambda *args: "a" * 40,
     )
     assert _require_origin_main_revision("a" * 40) == "a" * 40

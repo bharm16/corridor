@@ -59,7 +59,7 @@ def measure_current_record_view(
 
 def __getattr__(name):
     if name in {"ReaderEquivalence", "freeze_project_reading_from_current_view",
-                "prove_reader_equivalence", "_pdf_text", "_workbook_cells"}:
+                "prove_reader_equivalence", "_pdf_text"}:
         from corridor import reader_equivalence
         return getattr(reader_equivalence, name)
     raise AttributeError(name)

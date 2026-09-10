@@ -57,7 +57,9 @@ import statistics
 import secrets
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import Field
+
+from corridor.typed_output import ClosedModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -93,8 +95,8 @@ NATIVE_INTEGRATION_VERSION = "native-integration-v1"
 _NATIVE_READING_SEAL_KEY = secrets.token_bytes(32)
 
 
-class TokenModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class TokenModel(ClosedModel):
+    """Every retained reading shape whose engine identity is sealed."""
 
 
 class Token(TokenModel):

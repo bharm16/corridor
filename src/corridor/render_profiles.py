@@ -26,7 +26,9 @@ import subprocess
 from typing import Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from corridor.typed_output import ClosedModel
 from PIL import Image, ImageDraw
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -70,8 +72,8 @@ def selected_rasterizer() -> str:
     return REPLACEMENT_RASTERIZER
 
 
-class RenderModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class RenderModel(ClosedModel):
+    """Every render profile and derivative shape whose identity is sealed."""
 
 
 class PageBox(RenderModel):

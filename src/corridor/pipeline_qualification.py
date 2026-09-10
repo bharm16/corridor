@@ -6,6 +6,13 @@ limits. The two are written, stored and read back separately and never read
 alike; an incomplete or failed gate stays incomplete or failed in its own
 receipt whatever else is recorded beside it.
 
+Every function here is an operator maintenance act, driven from
+`pipeline_qualification_cli` by an attributable human. The one check the
+production extraction route makes while reading a Document -
+`selected_pipeline_configuration`, with the refusal type it raises and the
+receipt reader - is `pipeline_selection_readback`, so reaching the readback no
+longer means importing the commands that write.
+
 Completed challenger runs are deliberately ineligible for legacy declaration.
 This boundary adds a separate maintenance act after a concrete measured gate;
 it never invokes declaration, admission, reconciliation or accepted-value
@@ -26,22 +33,23 @@ from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
 from corridor.models import (
-    Document, PipelineAcceptance, PipelineComparison, PipelineConfiguration,
+    PipelineAcceptance, PipelineComparison, PipelineConfiguration,
     PipelineObservation, PipelineQualification, PipelineQualificationPolicy,
     PipelineSelection, Project,
 )
 from corridor.pipeline_comparison import compare_pipeline_outputs
 from corridor.pipeline_contracts import MaintainerAcceptance, MeasuredEvidence, PipelineScope, QualificationPolicy, canonical_text, content_digest
+from corridor.pipeline_selection_readback import (
+    PipelineQualificationRefused,
+    pipeline_receipt,
+    selected_pipeline_configuration,  # noqa: F401  re-exported: the production readback moved out, its importers did not
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.retention import register_processing_artifact
 
 
 POLICY_VERSION = "native-matrix-qualification-v1"
 _MEASUREMENT_ACTOR = re.compile(r"[a-z][a-z0-9._-]{1,31}:[^\s]+")
-
-
-class PipelineQualificationRefused(ValueError):
-    """Missing, stale, mismatched or unauthorized qualification evidence."""
 
 
 def _maintenance_capability(session: Session) -> None:
@@ -69,54 +77,6 @@ def _measurement_actor(session: Session, actor: HumanPrincipal | str) -> str:
     if not isinstance(actor, str) or _MEASUREMENT_ACTOR.fullmatch(actor) is None:
         raise PipelineQualificationRefused("measurement actor must be an explicit namespaced service or human identity")
     return actor
-
-
-def pipeline_receipt(row) -> dict:
-    record = json.loads(row.receipt_text)
-    if (sha256(row.receipt_text.encode()).hexdigest() != row.receipt_sha256
-            or record["project_id"] != row.project_id
-            or record["configuration_sha256"] != row.configuration_sha256
-            or record["scope_sha256"] != row.scope_sha256):
-        raise PipelineQualificationRefused("pipeline receipt bytes or scope binding differ")
-    if isinstance(row, (PipelineObservation, PipelineQualification, PipelineAcceptance, PipelineSelection)):
-        try:
-            scope = PipelineScope.model_validate(record["scope"])
-        except (KeyError, ValueError) as exc:
-            raise PipelineQualificationRefused("pipeline receipt has no valid declared scope") from exc
-        if scope.identity != row.scope_sha256:
-            raise PipelineQualificationRefused("parsed pipeline scope differs from its stored digest")
-        if "scope_text" in record and record["scope_text"] != canonical_text(scope.model_dump(mode="json")):
-            raise PipelineQualificationRefused("pipeline scope bytes differ from the parsed scope")
-    if isinstance(row, PipelineQualification):
-        if (record.get("status") != row.status
-                or any(not isinstance(record.get(name), list) or any(not isinstance(value, str) for value in record[name])
-                       for name in ("missing", "failed"))
-                or (row.status == "passed" and (record["missing"] or record["failed"]))):
-            raise PipelineQualificationRefused("pipeline gate requires typed missing/failed evidence lists and its exact status")
-    if isinstance(row, PipelineAcceptance):
-        # ADR-0095. The two bases must never read alike, so an acceptance may
-        # not carry a gate's vocabulary, and every field the decision requires
-        # is read back from the bytes rather than trusted from the writer.
-        if (record.get("schema") != "pipeline-acceptance-v1"
-                or record.get("basis") != "maintainer_acceptance"
-                or {"status", "missing", "failed"} & set(record)):
-            raise PipelineQualificationRefused("a maintainer acceptance is never recorded as a qualification gate")
-        if (record.get("actor") != row.actor
-                or record.get("implementation_revision") != row.implementation_revision
-                or not str(record.get("words", "")).strip()
-                or not str(record.get("decision", "")).strip()
-                or not str(record.get("accepted_at", "")).strip()
-                or not isinstance(record.get("limits"), list) or not record["limits"]
-                or any(not isinstance(value, str) or not value.strip() for value in record["limits"])
-                or not isinstance(record.get("evidence"), list) or not record["evidence"]
-                or any(not isinstance(item, dict)
-                       or any(not str(item.get(name, "")).strip() for name in ("name", "reference", "summary"))
-                       for item in record["evidence"])):
-            raise PipelineQualificationRefused(
-                "a maintainer acceptance needs its attributable principal, its own words, named reachable evidence and stated limits")
-    if isinstance(row, PipelineComparison) and (record.get("kind") != row.kind or type(record.get("passed")) is not bool):
-        raise PipelineQualificationRefused("pipeline comparison kind or result is malformed")
-    return record
 
 
 def register_qualification_policy(
@@ -486,47 +446,3 @@ def select_qualified_pipeline(
     return _append(session, PipelineSelection, record, deployment=scope.deployment,
                    previous_selection_id=expected_selection_id, actor=actor_subject,
                    reason=reason, enabled=enabled, **columns)
-
-
-def selected_pipeline_configuration(
-    session: Session, document: Document, *, deployment: str,
-    configuration_sha256: str,
-) -> PipelineScope:
-    """Require the selected source/deployment/configuration before future work."""
-    selection = session.scalar(select(PipelineSelection).where(
-        PipelineSelection.project_id == document.project_id, PipelineSelection.deployment == deployment,
-    ).order_by(PipelineSelection.id.desc()).limit(1))
-    if selection is None or not selection.enabled:
-        raise PipelineQualificationRefused("no enabled qualified pipeline selection for this deployment")
-    record = pipeline_receipt(selection)
-    # The readback refuses on either basis exactly as the selection command
-    # does: a gate that is not passing, or an acceptance that is not the one
-    # this selection names. What an acceptance settles is whether the
-    # configuration is good enough, never who may run it, on what, or what it
-    # may write, so every other check below is unchanged (ADR-0095).
-    basis = record.get("basis")
-    if basis == "qualification" and selection.qualification_id is not None and selection.acceptance_id is None:
-        basis_row: PipelineQualification | PipelineAcceptance = session.get_one(PipelineQualification, selection.qualification_id)
-        basis_record = pipeline_receipt(basis_row)
-        if (basis_row.status != "passed" or basis_record["status"] != "passed"
-                or basis_row.receipt_sha256 != record["qualification_sha256"]):
-            raise PipelineQualificationRefused("selected pipeline stands on a gate that is not complete and passing")
-    elif basis == "maintainer_acceptance" and selection.acceptance_id is not None and selection.qualification_id is None:
-        basis_row = session.get_one(PipelineAcceptance, selection.acceptance_id)
-        basis_record = pipeline_receipt(basis_row)
-        if basis_row.receipt_sha256 != record["acceptance_sha256"]:
-            raise PipelineQualificationRefused("selected pipeline stands on a different acceptance than the one it names")
-    else:
-        raise PipelineQualificationRefused("selected pipeline does not name exactly one recorded basis")
-    scope = PipelineScope.model_validate(record["scope"])
-    if (record["scope"] != basis_record["scope"] or basis_row.scope_sha256 != selection.scope_sha256
-            or basis_row.project_id != selection.project_id
-            or basis_row.configuration_sha256 != selection.configuration_sha256
-            or selection.configuration_sha256 != configuration_sha256
-            or document.sha256 not in scope.source_sha256s or document.doc_type != "matrix"
-            or (scope.purpose == "synthetic_validation" and not session.get_one(Project, document.project_id).is_synthetic)):
-        raise PipelineQualificationRefused("selected pipeline does not qualify this exact source/configuration/class")
-    configuration = session.get_one(PipelineConfiguration, configuration_sha256)
-    if sha256(configuration.configuration_text.encode()).hexdigest() != configuration_sha256:
-        raise PipelineQualificationRefused("selected configuration bytes differ")
-    return scope

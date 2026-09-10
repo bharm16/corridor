@@ -45,6 +45,7 @@ CHAIN_SOURCES = (
     "src/corridor/native_pipeline.py", "src/corridor/pipeline_contracts.py",
     "src/corridor/pipeline.py", "src/corridor/native_matrix_runtime.py",
     "src/corridor/pipeline_comparison.py", "src/corridor/pipeline_qualification.py",
+    "src/corridor/pipeline_selection_readback.py",
     "src/corridor/native_matrix.py", "src/corridor/native_matrix_bindings.py",
     "src/corridor/extractor_lineage.py", "src/corridor/extraction_runs.py",
     "src/corridor/extraction_run_queries.py", "src/corridor/token_layers.py",
@@ -55,6 +56,10 @@ CHAIN_SOURCES = (
     "src/corridor/source_append.py", "src/corridor/pdf_evaluation.py",
     "src/corridor/access.py",
     "src/corridor/migrations/baseline_versions/b2d5f8a1c4e7_source_append_commands.py",
+    *sorted(
+        str(path.relative_to(ROOT))
+        for path in (ROOT / "src/corridor/migrations/source_append_commands").glob("*.py")
+    ),
 )
 
 
@@ -467,7 +472,7 @@ def run_selected_native_matrix(
     relation chooses this source capture chain; accepted changes retain their
     existing human or released-policy authority boundary.
     """
-    from corridor.pipeline_qualification import PipelineQualificationRefused, selected_pipeline_configuration
+    from corridor.pipeline_selection_readback import PipelineQualificationRefused, selected_pipeline_configuration
 
     configuration = native_pipeline_configuration(client, plan)
     scope = selected_pipeline_configuration(

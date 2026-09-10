@@ -20,7 +20,6 @@ from datetime import date, datetime, timezone
 from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
-import subprocess
 from typing import Any, Protocol
 from uuid import uuid4
 
@@ -105,6 +104,7 @@ from corridor.product_proving_run import (
     compare_candidate_sets,
     verify_preflight,
 )
+from corridor.rehearsal_environment import observe_checkout, read_git_output
 from corridor.product_proving_database import (
     DatabaseFingerprint,
     VerifiedProductProvingDatabaseBaseline,
@@ -292,35 +292,25 @@ CommitOperation = Callable[[Session], None]
 
 
 def observe_git_checkout(repo_root: Path | str) -> GitCheckoutObservation:
-    """Read HEAD, origin/main, and porcelain status from the actual checkout."""
+    """Read HEAD, origin/main, and porcelain status from the actual checkout.
+
+    HEAD and the worktree come from ``rehearsal_environment.observe_checkout``,
+    the one reader every rehearsal shares.  Fetching and pinning ``origin/main``
+    stay here: this is the only observation that needs the remote.
+    """
 
     root = Path(repo_root).resolve()
-
-    def git(*arguments: str) -> str:
-        completed = subprocess.run(
-            ["git", *arguments],
-            cwd=root,
-            check=False,
-            capture_output=True,
-            text=True,
-        )
-        if completed.returncode != 0:
-            detail = completed.stderr.strip() or completed.stdout.strip()
-            raise ValueError(f"cannot observe Git checkout: {detail}")
-        return completed.stdout.strip()
-
-    git("fetch", "--quiet", "origin", "main")
-    source_revision = git("rev-parse", "HEAD")
-    origin_main_revision = git("rev-parse", "origin/main")
-    if not _is_git_revision(source_revision) or not _is_git_revision(
+    read_git_output(root, "fetch", "--quiet", "origin", "main")
+    checkout = observe_checkout(root)
+    origin_main_revision = read_git_output(root, "rev-parse", "origin/main")
+    if not _is_git_revision(checkout.revision) or not _is_git_revision(
         origin_main_revision
     ):
         raise ValueError("Git checkout did not produce exact commit revisions")
-    status = git("status", "--porcelain", "--untracked-files=normal")
     return GitCheckoutObservation(
-        source_revision=source_revision,
+        source_revision=checkout.revision,
         origin_main_revision=origin_main_revision,
-        clean_worktree=not status,
+        clean_worktree=checkout.clean,
     )
 
 

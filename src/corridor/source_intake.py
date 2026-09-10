@@ -37,6 +37,25 @@ Two acts, each honest on its own:
    size) and writes the exact bytes to the content-addressed store *before any
    model work*. An oversized, unsupported, or foreign file is refused here with an
    actionable reason and leaves nothing registered.
+What upload is *not* yet is a member of the delivery family. ADR-0078 lists
+manual upload among the connector kinds that enter under one contract and its own
+migration header records that this path is outstanding; ADR-0089 then made every
+delivery one persisted row whatever transport carried it. An upload belongs there
+— somebody hands Corridor bytes it never asked for, which is what push means —
+and it cannot be written there without a schema change, for reasons that are
+database constraints rather than preferences: ``ck_source_delivery_transport``
+admits only ``pull`` and ``push``, ``ck_source_delivery_push_credential`` makes a
+pushed delivery name a ``push_intake_credentials`` row that an authenticated
+*person* does not have, and ``ck_push_intake_credential_channel`` admits no
+upload channel one could be minted on. Recording it as a pull instead would state
+that a connector configuration fetched it on a cursor, which is the second
+definition of one identity ADR-0089 exists to remove. So the seam is left
+explicit and held by a test (``tests/test_source_delivery.py``): the gate
+composition and the refusal vocabulary here are already the shared ones, the
+arrival observation names the project, ``confirm_intake`` already takes the
+``source_delivery_id`` it will one day be given, and until the schema admits a
+human-carried delivery an upload honestly has none.
+
 2. ``preview_intake`` reads the current registry state and reports, read-only, what
    confirming would create or change — including that a genuinely unresolved fact
    (registry id, date, any relationship) stays unresolved rather than silently
@@ -101,19 +120,26 @@ ACCEPTED_SUFFIXES = frozenset({".pdf"}) | SPREADSHEET_SUFFIXES
 # ADR-0030). The full document vocabulary is offered; the model never classifies it.
 ACCEPTED_DOC_TYPES = frozenset(DOC_TYPES)
 
-# The first bytes each accepted format actually begins with, so a file whose name
-# claims one format but whose content is another is refused as foreign before it is
-# ever handed to a parser.
-_PDF_MAGIC = b"%PDF-"
-_ZIP_MAGIC = b"PK\x03\x04"  # xlsx / xlsm are Zip containers.
+# A file whose name claims one format but whose content is another is refused as
+# foreign before it is ever handed to a parser, and the size bound is enforced
+# before that. Both checks were written here as well as in
+# ``intake_hardening.inspect_byte_gate``, which every other channel uses, so the
+# same hostile bytes were refused as ``too_large``/``content_mismatch`` on an
+# upload and ``size_limit_exceeded``/``magic_mismatch`` on a push or a pull. The
+# gate owns the rule now; ``_upload_sentence`` owns the words a person reads.
 
 
 class IntakeRefused(ValueError):
     """A bounded, actionable refusal raised before any registration.
 
-    ``reason`` is a stable machine code (``too_large``, ``unsupported_type``,
-    ``content_mismatch``, ``empty_file``, ``unsafe_filename``, ``unknown_doc_type``)
-    so an adapter can branch on it; ``str(exc)`` is the human sentence.
+    ``reason`` is a stable machine code so an adapter can branch on it, and
+    ``str(exc)`` is the human sentence. The codes an upload adds of its own are
+    ``unsupported_type``, ``unsafe_filename``, ``unknown_doc_type``, and
+    ``content_mismatch`` for an attached message that is not readable MIME; every
+    other refusal carries the shared byte-gate or structural rule that refused
+    it (``empty_file``, ``size_limit_exceeded``, ``magic_mismatch``,
+    ``malware_detected``, ``xml_entity_bomb``, and the rest of #490's rules), so
+    a refusal reads the same here as it does on the push and pull channels.
     """
 
     def __init__(self, reason: str, message: str) -> None:
@@ -219,12 +245,19 @@ def validate_and_stage(
 ) -> StagedSource:
     """Enforce the bounded limits and stage exact bytes; refuse before model work.
 
-    Refuses an empty, oversized, wrong-suffix, or content-mismatched file with an
+    Refuses an empty, oversized, wrong-suffix, or foreign file with an
     ``IntakeRefused`` and writes nothing. Upload and email callers use the 64 MiB
     default; a connected location supplies its separately validated Gate-7 byte
     bound. On acceptance the exact bytes land in the content-addressed store keyed
     by their own hash — writing identical bytes twice is a no-op, so a re-uploaded
     file is never duplicated and an earlier file is never overwritten.
+
+    The gate composition is the accepted-format question, which only this
+    channel asks, and then #490's stages: ``inspect_byte_gate`` for the size
+    bound, the magic bytes and the malware seam — the same call the push and
+    pull channels make, so a refusal carries the same rule on every channel —
+    and ``inspect_sandboxed_structure``, which the upload adds because it is the
+    channel that hands accepted bytes straight to a rich parser on confirmation.
     """
 
     limit = MAX_UPLOAD_BYTES if max_bytes is None else max_bytes
@@ -238,26 +271,14 @@ def validate_and_stage(
             f"{safe!r} is not an accepted source file. Upload a PDF or an Excel "
             f"workbook (.xlsx/.xlsm).",
         )
-    if not body:
-        raise IntakeRefused("empty_file", f"{safe!r} is empty.")
-    if len(body) > limit:
-        raise IntakeRefused(
-            "too_large",
-            f"{safe!r} is {_mib(len(body))} MiB; the limit is "
-            f"{_mib(limit)} MiB.",
-        )
-    if not _content_matches_suffix(suffix, body):
-        raise IntakeRefused(
-            "content_mismatch",
-            f"{safe!r} does not contain {suffix} data. Its contents do not match "
-            f"its name, so it cannot be read as that kind of file.",
-        )
 
     try:
         inspect_byte_gate(body, safe, max_bytes=limit)
         inspect_sandboxed_structure(body, safe)
     except HostileContentRefused as exc:
-        raise IntakeRefused(exc.rule, exc.reason) from exc
+        raise IntakeRefused(
+            exc.rule, _upload_sentence(exc, safe, suffix, len(body), limit)
+        ) from exc
 
     if suffix == ".eml":
         from corridor.email_segments import read_mime_segments
@@ -402,8 +423,11 @@ def confirm_intake(
 
     ``source_delivery_id`` is the ledger row of the delivery these exact bytes
     arrived on, where the caller holds one (#687). An ordinary upload holds
-    none — paper handed over at a meeting arrived through no transport — and
-    leaves the link unknown rather than guessing one. `later_revision` and
+    none, and today that is two facts wearing one answer: paper handed over at a
+    meeting genuinely arrived through no transport, *and* a file handed over
+    through this form did arrive by one that the delivery family cannot yet
+    represent (see this module's docstring). Either way the link is left unknown
+    rather than guessed. `later_revision` and
     `key_date_table` do hold one: both refuse a capture whose bytes no *stored*
     delivery of this project holds, so the row they pass is proven before this
     is called, not inferred afterwards.
@@ -627,16 +651,35 @@ def _safe_filename(filename: str) -> str:
     return name
 
 
-def _content_matches_suffix(suffix: str, body: bytes) -> bool:
-    if suffix == ".eml":
-        # MIME has no magic prefix. Its bounded structural reader runs after
-        # the byte/malware gate above, like every other rich source parser.
-        return True
-    if suffix == ".pdf":
-        return body[: len(_PDF_MAGIC)] == _PDF_MAGIC
-    if suffix in SPREADSHEET_SUFFIXES:
-        return body[: len(_ZIP_MAGIC)] == _ZIP_MAGIC
-    return False
+def _upload_sentence(
+    exc: HostileContentRefused,
+    safe: str,
+    suffix: str,
+    size_bytes: int,
+    limit: int,
+) -> str:
+    """What a person handing over a file is told, for a shared gate rule.
+
+    The rule is the gate's, and it is the same rule on every channel. The
+    sentence is not: a connector writes its refusal into a ledger row an
+    operator reads, and this one is shown to somebody who is standing at an
+    upload form and can act on it, so it names their file, their limit, and
+    what to do. Anything the gate refuses for a reason an uploader cannot act
+    on keeps the gate's own wording rather than a guessed instruction.
+    """
+
+    if exc.rule == "empty_file":
+        return f"{safe!r} is empty."
+    if exc.rule == "size_limit_exceeded":
+        return (
+            f"{safe!r} is {_mib(size_bytes)} MiB; the limit is {_mib(limit)} MiB."
+        )
+    if exc.rule == "magic_mismatch":
+        return (
+            f"{safe!r} does not contain {suffix} data. Its contents do not match "
+            f"its name, so it cannot be read as that kind of file."
+        )
+    return exc.reason
 
 
 def _format_label(suffix: str) -> str:

@@ -5,7 +5,9 @@ import pytest
 from sqlalchemy import event, select
 
 from corridor.db import Session, engine
+from corridor.accepted_field_reading import read_accepted_field_population
 from corridor.exceptions import (
+    ACCEPTED_RECORD_RULES,
     DUE_SOON_DAYS,
     RULES,
     RULESET_VERSION,
@@ -17,9 +19,15 @@ from corridor.exceptions import (
     exceptions_for,
     format_exception_label,
 )
+from corridor.issue_rendering import (
+    ACCEPTED_RECORD_CHECK_RULES,
+    CHECKS_NOT_RUN,
+    CHECKS_RAISED_ELSEWHERE,
+)
 from corridor.models import (
     Assertion,
     Candidate,
+    Fact,
     Dependency,
     DependencyEvent,
     DependencyEventScope,
@@ -44,6 +52,8 @@ from corridor.operative_support import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.supersession import SupersessionDeclaration, register_supersessions
+
+from adopted_reader_support import adopt_ucm_workbook, withdraw_support
 
 TODAY = date(2026, 8, 3)
 TEST_PRINCIPAL = HumanPrincipal("local:exceptions-reviewer")
@@ -1367,3 +1377,121 @@ def test_project_evaluation_gathers_constraint_facts_in_bounded_queries(
 
     assert len(evaluation.committed_dates) == 25
     assert scaled_count <= baseline_count + 5
+
+
+# --- The accepted Project Record's own check set (ADR-0090) -----------------
+
+
+ADOPTED_TODAY = date(2026, 9, 9)
+
+
+def _adopted_evaluation(session, tmp_path, monkeypatch, **kwargs):
+    project, adoption = adopt_ucm_workbook(session, tmp_path, monkeypatch, **kwargs)
+    return project, adoption, evaluate_project(session, project.id, today=ADOPTED_TODAY)
+
+
+def test_missing_evidence_on_an_accepted_record_follows_its_support_assessment(
+    session, tmp_path, monkeypatch
+):
+    """The ported rule reads Supporting Documentation in Use, nothing else.
+
+    Adopt Baseline records one ``supported`` assessment per accepted value, so a
+    freshly adopted record stands on something and the alert stays quiet. Replace
+    one subject's assessments with ``contradicted`` — leaving every Source Segment
+    and every passing Source Passage Check exactly where it was — and the alert
+    fires for that subject alone.
+    """
+    project, _, before = _adopted_evaluation(session, tmp_path, monkeypatch)
+    assert "MISSING_EVIDENCE" not in before.rules_fired
+
+    population = read_accepted_field_population(session, project.id)
+    subject = population.open_records[0]
+    assert subject.checked_source_passages, "the locator check passes on this record"
+    for fact_id in {field.fact_id for field in subject.fields.values()}:
+        withdraw_support(session, project, session.get(Fact, fact_id))
+
+    after = evaluate_project(session, project.id, today=ADOPTED_TODAY)
+    fired = {
+        exception.ref_code
+        for exception in after.found
+        if exception.rule == "MISSING_EVIDENCE"
+    }
+    assert fired == {subject.ref_code}
+    (found,) = [e for e in after.found if e.rule == "MISSING_EVIDENCE"]
+    assert "Supporting Documentation" in found.detail
+    assert "source passage" not in found.detail
+
+    # And the locator is still valid, so nothing about the passage changed: only
+    # the assessment of whether it supports the value did.
+    reread = read_accepted_field_population(session, project.id)
+    still = next(r for r in reread.open_records if r.ref_code == subject.ref_code)
+    assert still.checked_source_passages
+
+
+def test_a_valid_locator_alone_never_satisfies_missing_evidence(
+    session, tmp_path, monkeypatch
+):
+    """ADR-0090 forbids inferring support from locator validation.
+
+    Every accepted value here has a Source Segment whose Source Passage Check
+    passes, and none has an effective supporting assessment. The old accepted-record
+    adapter read ``checked_source_passages`` and therefore reported the record as
+    evidenced; the rule now fires on every subject.
+    """
+    project, _, _ = _adopted_evaluation(session, tmp_path, monkeypatch)
+    population = read_accepted_field_population(session, project.id)
+    for record in population.open_records:
+        for fact_id in {field.fact_id for field in record.fields.values()}:
+            withdraw_support(session, project, session.get(Fact, fact_id), outcome="unclear")
+
+    evaluation = evaluate_project(session, project.id, today=ADOPTED_TODAY)
+    assert all(record.checked_source_passages for record in population.open_records)
+    assert {e.ref_code for e in evaluation.found if e.rule == "MISSING_EVIDENCE"} == {
+        record.ref_code for record in population.open_records
+    }
+
+
+def test_the_rules_an_adopted_project_can_fire_are_exactly_the_declared_set(
+    session, tmp_path, monkeypatch
+):
+    """The declaration and the evaluator have to agree, or the report lies.
+
+    ``issue_rendering`` publishes which checks it ran, which it raised elsewhere
+    and which it does not run at all. If this engine could fire one of the seven
+    it declares absent, an adopted-baseline project's report would state a
+    coverage it does not have.
+    """
+    project, _, evaluation = _adopted_evaluation(session, tmp_path, monkeypatch)
+    assert ACCEPTED_RECORD_RULES == frozenset(ACCEPTED_RECORD_CHECK_RULES)
+    declared_absent = {rule for rule, _ in CHECKS_RAISED_ELSEWHERE} | {
+        rule for rule, _ in CHECKS_NOT_RUN
+    }
+    assert ACCEPTED_RECORD_RULES | declared_absent == set(RULES)
+    assert not ACCEPTED_RECORD_RULES & declared_absent
+
+    # The three date checks and the two support checks all reachable on one
+    # seeded project: overdue against its own accepted Promised For, due soon
+    # against Required By, missing date where no Promised For was accepted.
+    population = read_accepted_field_population(session, project.id)
+    for fact_id in {
+        field.fact_id
+        for record in population.open_records
+        for field in record.fields.values()
+    }:
+        withdraw_support(session, project, session.get(Fact, fact_id))
+    widened = evaluate_project(session, project.id, today=ADOPTED_TODAY)
+    assert widened.rules_fired <= ACCEPTED_RECORD_RULES
+    assert {"OVERDUE", "DUE_SOON", "MISSING_EVIDENCE"} <= widened.rules_fired
+    assert not widened.rules_fired & declared_absent
+
+
+def test_the_four_retired_rules_still_fire_for_a_legacy_project(session, project):
+    """ADR-0090 retires them for the accepted record, not for a legacy one.
+
+    The released legacy ruleset keeps computing all twelve over ``dependencies``
+    until ADR-0081 stage 6 retires those tables. A reading whose owner, task,
+    document dates and key-date link are real columns still answers them.
+    """
+    make_dep(session, project, ref="DEP-legacy-retired", internal_owner=None)
+    fired = {exception.rule for exception in evaluate(session, project.id, today=TODAY)}
+    assert {"MISSING_OWNER", "MISSING_ACTION", "STALE", "ORPHAN"} <= fired

@@ -32,6 +32,7 @@ from corridor.pdf_evaluation import (
     evaluate,
     load_gold_set,
 )
+from corridor import holdout_ledger
 from corridor.pdf_evaluation_cli import main
 
 
@@ -401,7 +402,10 @@ def test_cli_requires_and_records_holdout_access(tmp_path, capsys):
     assert machine["overall"]["abstention_rate"] == 0
     assert "per page class" in output_markdown.read_text().lower()
     assert "Peak memory bytes" in output_markdown.read_text()
-    assert access["dataset_version"] == gold.dataset_version
-    assert access["document_sha256s"] == [held_out.document_sha256]
+    assert access["schema_version"] == holdout_ledger.SCHEMA
+    assert access["dataset"]["dataset_version"] == gold.dataset_version
+    assert access["holdout"]["document_sha256s"] == [held_out.document_sha256]
     assert access["actor"] == "checker@example.test"
     assert access["reason"] == "one predeclared release measurement"
+    assert access["result"]["receipt"] == str(output_json)
+    assert holdout_ledger.read(access_log) == [access]

@@ -54,14 +54,12 @@ from corridor.m8_acceptance_bundle import (
     verify_bundle as _verify_bundle,
     write_bundle as _write_bundle_impl,
 )
-from corridor.m8_acceptance_contract import (
+from corridor_pdf_reader.execution import pdfium_entry
+from corridor.m8_acceptance_controlled import (
     AcceptanceError,
     AssertionResult,
     CLAIM_BOUNDARY,
     ControlledContradiction,
-)
-from corridor_pdf_reader.execution import pdfium_entry
-from corridor.m8_acceptance_controlled import (
     run_controlled_lane,
     skipped_controlled_lane,
 )
@@ -70,7 +68,6 @@ from corridor.m8_acceptance_database import (
     ProvisionedDatabase,
     disposable_database_prefix,
     is_disposable_database_name,
-    provision_disposable_postgres as _provision_disposable_postgres_impl,
     require_local_postgres_host as _require_local_postgres_host_impl,
     require_postgres_16 as _require_postgres_16_impl,
 )
@@ -81,7 +78,7 @@ from corridor.m8_acceptance_fixture import (
     load_transformations as _load_transformations_impl,
 )
 from corridor.m8_acceptance_publication import publish_directory_once
-from corridor.m8_acceptance_projection import project_extraction_observation
+from corridor.rehearsal_environment import disposable_provisioner, observe_checkout
 from corridor.revision_comparison import (
     DEFAULT_MATCHER_CONFIG,
     DEFAULT_MATCHER_VERSION,
@@ -108,8 +105,7 @@ BUNDLE_SCHEMA_VERSION = "corridor.m8.acceptance-bundle.v1"
 DATABASE_LABEL = "m8_acceptance"
 DATABASE_PREFIX = disposable_database_prefix(DATABASE_LABEL)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_DEFAULT_PROVISIONER: DatabaseProvisioner = partial(
-    _provision_disposable_postgres_impl,
+_DEFAULT_PROVISIONER: DatabaseProvisioner = disposable_provisioner(
     repo_root=_REPO_ROOT,
     label=DATABASE_LABEL,
 )
@@ -345,7 +341,8 @@ def capture_m8_fixture(
 
     _validate_capture_config(config)
     chain = _load_source_chain(config.source_lock_path)
-    git_state = _git_state()
+    checkout = observe_checkout(_REPO_ROOT)
+    git_state = {"revision": checkout.revision, "status": checkout.status}
     if config.expected_clean_git_revision is not None:
         if git_state["revision"] != config.expected_clean_git_revision:
             raise AcceptanceError("capture Git revision does not match the pin")
@@ -1130,24 +1127,6 @@ def _ledger_counts(session: Session, project_id: int) -> dict[str, int]:
     }
 
 
-def _git_state() -> dict[str, str]:
-    revision = subprocess.run(
-        ["git", "rev-parse", "HEAD"],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.strip()
-    status_output = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=_REPO_ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout
-    return {"revision": revision, "status": "dirty" if status_output else "clean"}
-
-
 _canonical_json = digests.canonical_json
 _json_sha256 = digests.canonical_sha256
 _sha256 = digests.sha256_bytes
@@ -1168,7 +1147,8 @@ def run_m8_acceptance(
         config.transformations_path,
         expected_sha256=config.expected_transformations_sha256,
     )
-    git_state = _git_state()
+    checkout = observe_checkout(_REPO_ROOT)
+    git_state = {"revision": checkout.revision, "status": checkout.status}
     if config.expected_clean_git_revision is not None:
         if git_state["revision"] != config.expected_clean_git_revision:
             raise AcceptanceError("replay Git revision does not match the pin")
@@ -1307,6 +1287,40 @@ def verify_m8_acceptance_bundle(
         )
     except CorruptBundle as exc:
         raise CorruptAcceptanceBundle(str(exc)) from exc
+
+
+def project_extraction_observation(
+    *,
+    base_observation: dict[str, Any],
+    document,
+    stable_inputs: list[dict[str, Any]],
+    outcome: str,
+    candidate_count: int,
+) -> dict[str, Any]:
+    """Attach one stable extraction/layout summary to a document observation."""
+
+    observation = deepcopy(base_observation)
+    observation["extraction"] = {
+        "outcome": outcome,
+        "candidate_count": candidate_count,
+        "verified_candidates": sum(
+            1 for item in stable_inputs if item["citations_verified"]
+        ),
+        "unverified_candidates": sum(
+            1 for item in stable_inputs if not item["citations_verified"]
+        ),
+        "field_key_shapes": dict(
+            Counter(
+                ",".join(sorted((item["payload_json"].get("fields") or {})))
+                for item in stable_inputs
+            )
+        ),
+    }
+    observation["layout"] = {
+        "extraction_tier_pages": dict(document.extraction_tiers or {}),
+        "header_disagreements": document.header_disagreements or 0,
+    }
+    return observation
 
 
 def _load_captured_fixture(

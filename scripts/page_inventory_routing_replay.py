@@ -21,7 +21,8 @@ can, in the fields it writes; it never reclassifies one into a match because
 the explanation is good, and it applies no threshold of its own.
 
 The FDOT page is the spent holdout family (ADR-0008). Reading it requires an
-actor and a reason and appends the access to `gold/pdf/v1/holdout-access.jsonl`,
+actor and a reason and appends the access, through the one holdout ledger, to
+`gold/pdf/v1/holdout-access.jsonl`,
 exactly as `make pdf-eval` does; without them the command refuses the run
 rather than quietly measuring four pages.
 
@@ -41,6 +42,7 @@ import subprocess
 import sys
 import time
 
+from corridor import holdout_ledger
 from corridor.page_inventory import (
     READER_COORDINATE_FRAME,
     READER_ROUTER_VERSION,
@@ -91,33 +93,47 @@ def holdout_digests(dataset: Path, wanted: set[str]) -> list[str]:
 
 
 def record_holdout_access(
-    ledger: Path, dataset_version: str, digests: list[str], actor: str, reason: str
+    ledger: Path, dataset_version: str, digests: list[str], actor: str, reason: str,
+    *, run: str = "page-inventory-routing-replay", receipt: str | None = None,
 ) -> dict:
-    entry = {
-        "schema_version": "corridor.pdf-holdout-access.v1",
-        "accessed_at": datetime.now(timezone.utc).isoformat(),
-        "dataset_version": dataset_version,
-        "document_sha256s": digests,
-        "actor": actor,
-        "reason": reason,
+    """Append this access through the one holdout ledger (ADR-0008)."""
+    return holdout_ledger.append(
+        {
+            "run": run,
+            "accessed_at": datetime.now(timezone.utc).isoformat(),
+            "actor": actor,
+            "reason": reason,
+            "purpose": (
+                "replay the frozen Stage 1 routing pages from the reader-backed Page "
+                "Inventory and compare them with the labels and the incumbent run (#734)"
+            ),
+            "dataset": {"dataset_version": dataset_version},
+            "holdout": {"document_sha256s": digests, "documents": len(digests)},
+            "configuration": page_inventory_identity(),
+            # Recorded before the pages are read, so the receipt named here is
+            # where the result of this access has to be read from.
+            "result": {"status": "recorded_before_replay", "receipt": receipt},
+        },
+        ledger=ledger,
+    )
+
+
+def page_inventory_identity() -> dict:
+    """What decided a page's route, independent of who is asking."""
+    return {
+        "router_version": READER_ROUTER_VERSION,
+        "coordinate_frame": READER_COORDINATE_FRAME,
+        "ocr_engine_named_by_the_route": TEXTRACT_ENGINE,
+        "reader_engine": MEASURED_ENGINE,
+        "dpi": MEASURED_DPI,
+        "source_commit": provenance.SOURCE_COMMIT,
+        "package_digest": provenance.package_digest(),
     }
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    with ledger.open("a") as stream:
-        stream.write(json.dumps(entry, sort_keys=True) + "\n")
-    return entry
 
 
 def configuration_identity(executor: PdfiumExecutor) -> dict:
     return {
-        "page_inventory": {
-            "router_version": READER_ROUTER_VERSION,
-            "coordinate_frame": READER_COORDINATE_FRAME,
-            "ocr_engine_named_by_the_route": TEXTRACT_ENGINE,
-            "reader_engine": MEASURED_ENGINE,
-            "dpi": MEASURED_DPI,
-            "source_commit": provenance.SOURCE_COMMIT,
-            "package_digest": provenance.package_digest(),
-        },
+        "page_inventory": page_inventory_identity(),
         "execution_contract": executor.contract(),
         "python": platform.python_version(),
         "platform": platform.platform(),
@@ -169,6 +185,8 @@ def main(argv: list[str] | None = None) -> int:
             holdout,
             arguments.holdout_actor,
             arguments.holdout_reason,
+            run=arguments.output_dir.name,
+            receipt=_named(arguments.output_dir / "stage1-routing-replay.json"),
         )
 
     started = time.perf_counter()

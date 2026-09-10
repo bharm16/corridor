@@ -14,6 +14,8 @@ import importlib.util
 import json
 from pathlib import Path
 
+from corridor import holdout_ledger
+
 REPO_ROOT = Path(__file__).resolve().parents[1]
 # `scripts/` is a directory of commands, not an importable package, so the
 # module is loaded by path rather than made one for a test's convenience.
@@ -62,7 +64,10 @@ def test_a_recorded_access_names_the_document_the_actor_and_the_reason(tmp_path)
     )
 
     assert json.loads(ledger.read_text().strip()) == entry
-    assert entry["document_sha256s"] == [HOLDOUT]
+    assert holdout_ledger.read(ledger) == [entry]
+    assert entry["holdout"]["document_sha256s"] == [HOLDOUT]
     assert entry["actor"] == "an actor"
     assert entry["reason"] == "a reason"
-    assert entry["schema_version"] == "corridor.pdf-holdout-access.v1"
+    assert entry["dataset"]["dataset_version"] == "2026-08-31.2"
+    assert entry["configuration"] == _MODULE.page_inventory_identity()
+    assert entry["schema_version"] == holdout_ledger.SCHEMA

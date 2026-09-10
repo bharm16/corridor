@@ -276,7 +276,7 @@ def _workbook_field_rows(surface, cells, authority):
         record = expected_records.get(row[0])
         if record is None:
             continue
-        for index, expected in ((1, record.source_ref), (2, record.org_name),
+        for index, expected in ((1, record.value("utility_id")), (2, record.org_name),
             (5, record.station_from), (6, record.station_to),
             (7, record.value("resolution_strategy")), (10, record.need_date)):
             actual = row[index] if index < len(row) else None
@@ -593,6 +593,18 @@ def _check_citations(surface, report, inventory):
                     if len(matching) == 1:
                         for cell in row:
                             plan_inputs[id(cell)] = (matching[0].plan_id,)
+            elif section.title in (label("critical_items"), "Aging"):
+                # Both sections now run for an adopted project through the same
+                # builders the legacy report uses (#card 2). No legacy support
+                # registry designates a field-exact quote for an accepted value, so
+                # every cell is a Derivation over that record's own identity rather
+                # than a borrowed citation.
+                for row in section.rows:
+                    record = records.get(row[0].value) if row else None
+                    if record is None:
+                        continue
+                    for cell in row:
+                        derived(cell, (record.id,))
             elif section.title == label("constraint_alerts"):
                 facets = evaluation.facets()
                 if len(section.rows) == len(facets):
@@ -689,7 +701,13 @@ def _report(surface, session, reading, inventory, fixture_client, authority):
     surface.finish_kind("briefing", before)
 
 
-def _workbook_cells(content):
+def workbook_cells(content: bytes) -> dict[str, list[list]]:
+    """Every sheet's cell values, as the one reading of a rendered workbook.
+
+    Public because the equivalence report compares two workbooks for equality
+    and used to open them a second way of its own; two readings of the same
+    bytes are two answers to the same question.
+    """
     from io import BytesIO
     from openpyxl import load_workbook
     book = load_workbook(BytesIO(content), data_only=False)
@@ -716,7 +734,7 @@ def _workbooks(surface, session, reading, inventory, authority):
         path = to_xlsx(session, reading.project.id, Path(temporary)/"native.xlsx",
             evaluation=reading.evaluation, statement_publication=reading.statement_publication,
             frozen_reading=reading, internal_working_copy=True)
-        cells = _workbook_cells(path.read_bytes())
+        cells = workbook_cells(path.read_bytes())
     surface.outputs["internal_workbook"] = cells
     _workbook_field_rows(surface, cells, authority)
     surface.population("workbook", "actual internal workbook over frozen native records", list(population.record_ids))
@@ -749,7 +767,7 @@ def _workbooks(surface, session, reading, inventory, authority):
     if sha256(rendered.content).hexdigest() != rendered.output_sha256:
         surface.blockers.append("customer_format: rendered workbook does not match its declared digest")
     artifact = {field.name: _plain(getattr(rendered, field.name)) for field in fields(rendered) if field.name != "content"}
-    artifact["cells"] = _workbook_cells(rendered.content)
+    artifact["cells"] = workbook_cells(rendered.content)
     mapped = workbook_reader_input_manifest(rendered)
     artifact["mapped_input_manifest"] = mapped
     surface.outputs["customer_format"] = artifact

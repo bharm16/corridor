@@ -14,6 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
+from corridor.analytics import EventFamily, capture_events
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.models import Document, Project
@@ -244,3 +245,40 @@ def test_confirm_refuses_a_cross_project_binding(client, session, project, store
             )
             == 0
         )
+
+
+def test_an_upload_names_its_project_when_it_records_that_a_source_arrived(
+    client, project, store
+):
+    """The one arrival record an upload can make, and what it must carry.
+
+    An upload cannot yet record a row in the delivery ledger — see
+    ``tests/test_source_delivery.py`` for the exact constraints that stop it —
+    so the arrival observation is all the delivery reading has for this channel.
+    It was emitted with no customer and no project at all, because the route
+    knew both and passed neither, which made an uploaded source invisible in
+    every per-project reading of what arrived. The event now names the project
+    the person uploaded into and the customer this deployment serves.
+    """
+
+    body = _matrix_pdf()
+    with capture_events() as collector:
+        response = client.post(
+            f"/projects/{project.slug}/sources/upload",
+            data={"doc_type": "matrix"},
+            files={"upload": ("matrix.pdf", body, "application/pdf")},
+        )
+
+    assert response.status_code == 200
+    arrivals = [
+        event
+        for event in collector.events
+        if event.family == EventFamily.SOURCE_ARRIVAL
+    ]
+    assert len(arrivals) == 1
+    assert arrivals[0].payload["project_id"] == project.id
+    assert arrivals[0].payload["customer_id"] == settings.customer_id
+    assert arrivals[0].payload["channel"] == "upload"
+    assert arrivals[0].payload["content_sha256"] == hashlib.sha256(body).hexdigest()
+    # No transport carried it, so it names no delivery rather than a guessed one.
+    assert arrivals[0].payload["source_delivery_id"] is None

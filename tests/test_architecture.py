@@ -446,6 +446,63 @@ def _internal_dependencies() -> dict[str, set[str]]:
     return dependencies
 
 
+# The names the production extraction path may reach for on the pipeline
+# selection seam. `pipeline_qualification` is the operator's module: it records
+# gates, acceptances, policies and selections, every one of them an
+# attributable maintenance act. The readback is the only thing a Document read
+# runs, so it is its own module and the fact path imports nothing else.
+LIVE_SELECTION_NAMES = frozenset({"PipelineQualificationRefused", "selected_pipeline_configuration"})
+PRODUCTION_SELECTION_READERS = ("pipeline", "native_pipeline")
+
+
+def test_the_production_path_imports_only_the_selection_predicate():
+    """ADR-0095's receipts are untouched by the split.
+
+    "An acceptance is not a passing gate and is never recorded as one" -
+    ADR-0095. The readback still refuses on either basis exactly as the
+    selection command does; what moved is which module the fact path has to
+    import to ask. A recording function reachable from the extraction route is
+    the defect this test reports.
+    """
+    paths = {_module_name(path): path for path in _module_paths()}
+    reached: dict[str, set[str]] = {}
+    for name in PRODUCTION_SELECTION_READERS:
+        for node in ast.walk(_tree(paths[name])):
+            if isinstance(node, ast.ImportFrom) and node.module == "corridor.pipeline_qualification":
+                reached.setdefault(name, set()).update(alias.name for alias in node.names)
+            if isinstance(node, ast.ImportFrom) and node.module == "corridor.pipeline_selection_readback":
+                reached.setdefault(name, set()).update(alias.name for alias in node.names)
+
+    assert reached == {name: set(LIVE_SELECTION_NAMES) for name in PRODUCTION_SELECTION_READERS}
+    readback = read_python(paths["pipeline_selection_readback"]).tree
+    assert {node.name for node in readback.body if isinstance(node, (ast.FunctionDef, ast.ClassDef))} == {
+        "PipelineQualificationRefused", "pipeline_receipt", "selected_pipeline_configuration",
+    }
+    source = paths["pipeline_selection_readback"].read_text(encoding="utf-8")
+    assert "session.add" not in source and "_append(" not in source, (
+        "the live readback reads what was decided and records nothing"
+    )
+    assert '"an acceptance is not a passing gate"' not in source.lower(), (
+        "the readback quotes no verdict of its own; it reads the recorded basis"
+    )
+
+
+def test_the_extraction_route_turns_a_refused_selection_into_one_failure():
+    """One wording, so a refusal cannot be reported two ways by two handlers."""
+    route = next(
+        node for node in _tree(SOURCE_ROOT / "pipeline.py").body
+        if isinstance(node, ast.FunctionDef) and node.name == "extraction_route"
+    )
+    raises = [
+        node for node in ast.walk(route)
+        if isinstance(node, ast.ExceptHandler)
+        and "PipelineQualificationRefused" in ast.dump(node.type or ast.Constant(None))
+        and any(isinstance(inner, ast.Raise) and inner.exc is not None for inner in ast.walk(node))
+    ]
+
+    assert len(raises) == 1, "the refusal becomes an ExtractionFailed in exactly one place"
+
+
 def test_fact_path_modules_cannot_reach_a_model_client():
     """A model chooses a segment; it never supplies a value (#446).
 
@@ -782,7 +839,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "measurement_cases", "merge", "milestones", "notifications",
         "operative_support", "organization_identity", "product_proving_execution",
         "product_proving_frontend_capture", "project_contacts", "project_reading",
-        "prose_interpretation", "report", "report_diff_reference",
+        "prose_interpretation", "report_diff_reference",
         "revision_change_explanation", "schedule_linking",
         "sh99_admission_acceptance", "statement_coordination",
         "statement_matcher", "statement_matching", "statement_scope_matching",
@@ -1302,6 +1359,18 @@ def test_released_policy_sources_are_outside_executable_migration_history():
     assert len(executable) == 1 + policy.UNRELEASED_EDGES, (
         "the executable graph is one consolidated baseline plus the "
         "transitions src/corridor/migrations/policy.py records"
+    )
+    # The families folded into the unreleased transition live one per module in
+    # a package beside `baseline_versions`, not inside it. Alembic lists `*.py`
+    # in the version location and does not descend into directories, so a
+    # family module is not a revision candidate wherever it sits; keeping the
+    # package out of the version location keeps that true of the listing too,
+    # so the count above stays a count of revisions.
+    families = SOURCE_ROOT / "migrations" / "source_append_commands"
+    assert families.is_dir() and len(tuple(families.glob("*.py"))) > 1
+    assert families.parent.name == "migrations", (
+        "the family package belongs beside the executable version location, "
+        "never inside it"
     )
 
 

@@ -102,6 +102,7 @@ def _fingerprint(seed: str) -> DatabaseFingerprint:
 class _FakeEnvironment:
     head: str
     restore_targets: list[str]
+    source_database_url: str = SOURCE_URL
 
     @property
     def checkout_migration_head(self) -> str:

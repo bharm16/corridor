@@ -46,7 +46,6 @@ from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     disposable_database_prefix,
     ProvisionedDatabase,
-    provision_disposable_postgres,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -75,7 +74,14 @@ from corridor.models import (
     WorkDecision,
 )
 from corridor.m8_acceptance_publication import publish_directory_once
-from corridor.rehearsal_environment import SealedRehearsalEnvironment
+from corridor.rehearsal_environment import (
+    RehearsalClone,
+    SealedRehearsalEnvironment,
+    StateReader,
+    disposable_provisioner,
+    read_git_output,
+    rehearse_on_disposable_clone,
+)
 
 
 SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-real-admission-source-snapshot.v1"
@@ -109,6 +115,20 @@ HUMAN_APPROVAL_GATE = (
     "No shared SH 99 database was changed. A designated human must separately "
     "approve any shared-database Admission operation."
 )
+# What each rehearsal on a disposable clone claims, and what it does not. The
+# seam carries this so one harness can never publish another's boundary.
+CLAIM_BOUNDARY = {
+    "mechanical_policy_replay_only": True,
+    "shared_database_mutated": False,
+    "human_approval_required": True,
+    "customer_usability_evidence": False,
+}
+SHARED_SEAL_CLAIM_BOUNDARY = {
+    "exact_shared_operation_replay": True,
+    "shared_database_mutated": False,
+    "human_approval_required": True,
+    "customer_usability_evidence": False,
+}
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
@@ -166,8 +186,7 @@ def run_sh99_shared_admission_seal(
 ) -> SH99SharedAdmissionSealSummary:
     """Seal the exact ordinary shared Admission path on an isolated clone."""
     if provision_database is None:
-        provision_database = partial(
-            provision_disposable_postgres,
+        provision_database = disposable_provisioner(
             repo_root=REPO_ROOT,
             label=SHARED_SEAL_DATABASE_LABEL,
         )
@@ -184,18 +203,51 @@ def run_sh99_shared_admission_seal(
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-shared-seal-") as parent:
         dump_path = Path(parent) / "source.dump"
         evaluated_on = date.today()
-        source_state = _read_shared_seal_state(
-            config.source_database_url,
-            config.project_slug,
-            evaluated_on=evaluated_on,
+        pins: dict[str, Any] = {}
+
+        def require_pinned_source(state: dict[str, Any]) -> None:
+            pins.update(
+                _require_shared_seal_pins(
+                    state,
+                    config,
+                    source_revision=source["revision"],
+                    migration_head=source_head,
+                )
+            )
+
+        def replay_shared_operation_twice(clone: RehearsalClone) -> dict[str, Any]:
+            first_operation = _run_shared_operation(
+                clone.database_url, config.project_slug
+            )
+            after_first = clone.state()
+            second_operation = _run_shared_operation(
+                clone.database_url, config.project_slug
+            )
+            return {
+                "first_operation": first_operation,
+                "after_first": after_first,
+                "second_operation": second_operation,
+            }
+
+        rehearsed = rehearse_on_disposable_clone(
+            rehearsal,
+            postgres_admin_url=config.postgres_admin_url,
+            provision_database=provision_database,
+            dump_path=dump_path,
+            read_state=partial(
+                _read_shared_seal_state,
+                project_slug=config.project_slug,
+                evaluated_on=evaluated_on,
+            ),
+            operation=replay_shared_operation_twice,
+            claim_boundary=SHARED_SEAL_CLAIM_BOUNDARY,
+            require_source=require_pinned_source,
         )
-        pins = _require_shared_seal_pins(
-            source_state,
-            config,
-            source_revision=source["revision"],
-            migration_head=source_head,
-        )
-        rehearsal.capture(dump_path)
+        database_name = rehearsed.database_name
+        source_state = rehearsed.source_state
+        clone_before = rehearsed.before
+        after_first = rehearsed.result["after_first"]
+        after_second = rehearsed.after
         source_snapshot = {
             "schema_version": SHARED_SEAL_SCHEMA_VERSION,
             "source": {
@@ -206,49 +258,26 @@ def run_sh99_shared_admission_seal(
                 "postgres_version": source_state["postgres_version"],
             },
             "project_slug": config.project_slug,
-            "source_dump_sha256": _sha256(dump_path.read_bytes()),
+            "source_dump_sha256": rehearsed.source_dump_sha256,
             "source_state_sha256": _json_sha256(source_state),
             "pins": pins,
             "before": source_state,
         }
-
-        with provision_database(config.postgres_admin_url) as database:
-            database_name = database.name
-            if database.migration_head != source_head:
-                raise ValueError(
-                    "disposable database migration head does not match checked-out source"
-                )
-            rehearsal.restore(dump_path, database.name)
-            clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
-            clone_before = _read_shared_seal_state(
-                clone_url, config.project_slug, evaluated_on=evaluated_on
-            )
-            if clone_before != source_state:
-                raise ValueError("restored SH 99 clone does not match its pinned source state")
-
-            first_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_first = _read_shared_seal_state(
-                clone_url, config.project_slug, evaluated_on=evaluated_on
-            )
-            second_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_second = _read_shared_seal_state(
-                clone_url, config.project_slug, evaluated_on=evaluated_on
-            )
-            first_run = _shared_seal_run_receipt(
-                clone_before, after_first, first_operation
-            )
-            second_run = _shared_seal_run_receipt(
-                after_first, after_second, second_operation
-            )
-            exact_outcome = _require_shared_seal_outcomes(
-                clone_before,
-                after_first,
-                after_second,
-                first_run,
-                second_run,
-                project_slug=config.project_slug,
-                expected_candidate_id=config.expected_candidate_id,
-            )
+        first_run = _shared_seal_run_receipt(
+            clone_before, after_first, rehearsed.result["first_operation"]
+        )
+        second_run = _shared_seal_run_receipt(
+            after_first, after_second, rehearsed.result["second_operation"]
+        )
+        exact_outcome = _require_shared_seal_outcomes(
+            clone_before,
+            after_first,
+            after_second,
+            first_run,
+            second_run,
+            project_slug=config.project_slug,
+            expected_candidate_id=config.expected_candidate_id,
+        )
 
     canonical = {
         "schema_version": SHARED_SEAL_SCHEMA_VERSION,
@@ -310,12 +339,37 @@ def run_sh99_admission_acceptance(
     source_head = rehearsal.checkout_migration_head
     source_database = rehearsal.source_database
 
+    read_state = partial(
+        read_rehearsal_project_state, project_slug=config.project_slug
+    )
+
     with tempfile.TemporaryDirectory(prefix="corridor-sh99-real-admission-") as parent:
         dump_path = Path(parent) / "source.dump"
-        source_state = read_rehearsal_project_state(
-            config.source_database_url, config.project_slug
+
+        def replay_shared_operation_twice(clone: RehearsalClone) -> dict[str, Any]:
+            first_operation = _run_shared_operation(
+                clone.database_url, config.project_slug
+            )
+            after_first_run = clone.state()
+            second_operation = _run_shared_operation(
+                clone.database_url, config.project_slug
+            )
+            return {
+                "first_operation": first_operation,
+                "after_first_run": after_first_run,
+                "second_operation": second_operation,
+            }
+
+        rehearsed = rehearse_on_disposable_clone(
+            rehearsal,
+            postgres_admin_url=config.postgres_admin_url,
+            provision_database=provision_database,
+            dump_path=dump_path,
+            read_state=read_state,
+            operation=replay_shared_operation_twice,
+            claim_boundary=CLAIM_BOUNDARY,
         )
-        rehearsal.capture(dump_path)
+        database_name = rehearsed.database_name
         source_snapshot = {
             "schema_version": SNAPSHOT_SCHEMA_VERSION,
             "source": {
@@ -324,43 +378,26 @@ def run_sh99_admission_acceptance(
                 "database_name": source_database["database"],
             },
             "project_slug": config.project_slug,
-            "source_dump_sha256": _sha256(dump_path.read_bytes()),
-            "before": source_state,
+            "source_dump_sha256": rehearsed.source_dump_sha256,
+            "before": rehearsed.source_state,
         }
-
-        with provision_database(config.postgres_admin_url) as database:
-            database_name = database.name
-            if database.migration_head != source_head:
-                raise ValueError(
-                    "disposable database migration head does not match checked-out source"
-                )
-            rehearsal.restore(dump_path, database.name)
-            clone_before = read_rehearsal_project_state(
-                rehearsal.clone_url(config.postgres_admin_url, database.name),
-                config.project_slug,
-            )
-            if clone_before != source_state:
-                raise ValueError("restored SH 99 clone does not match its pinned source state")
-
-            clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
-            first_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_first_run = read_rehearsal_project_state(
-                clone_url, config.project_slug
-            )
-            second_operation = _run_shared_operation(clone_url, config.project_slug)
-            after_second_run = read_rehearsal_project_state(
-                clone_url, config.project_slug
-            )
-            first_run = _run_receipt(clone_before, after_first_run, first_operation)
-            second_run = _run_receipt(after_first_run, after_second_run, second_operation)
-            protected = _protected_cases(first_run, after_second_run)
-            _require_protected_outcomes(protected, second_run)
+        clone_before = rehearsed.before
+        after_first_run = rehearsed.result["after_first_run"]
+        after_second_run = rehearsed.after
+        first_run = _run_receipt(
+            clone_before, after_first_run, rehearsed.result["first_operation"]
+        )
+        second_run = _run_receipt(
+            after_first_run, after_second_run, rehearsed.result["second_operation"]
+        )
+        protected = _protected_cases(first_run, after_second_run)
+        _require_protected_outcomes(protected, second_run)
 
         late_refusal = _late_refusal_receipt(
             config=config,
             rehearsal=rehearsal,
-            source_head=source_head,
             dump_path=dump_path,
+            read_state=read_state,
             provision_database=provision_database,
         )
 
@@ -438,18 +475,8 @@ def verify_sh99_shared_admission_seal_bundle(
         raise CorruptSH99AdmissionBundle(str(exc)) from exc
 
 
-def _git(*args: str) -> str:
-    return subprocess.run(
-        ["git", *args],
-        cwd=REPO_ROOT,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.strip()
-
-
 def _require_origin_main_revision(source_revision: str) -> str:
-    origin_main_revision = _git("rev-parse", "origin/main")
+    origin_main_revision = read_git_output(REPO_ROOT, "rev-parse", "origin/main")
     if source_revision != origin_main_revision:
         raise ValueError("shared Admission seal requires HEAD to equal origin/main")
     return origin_main_revision
@@ -1401,36 +1428,45 @@ def _late_refusal_receipt(
     *,
     config: SH99AdmissionAcceptanceConfig,
     rehearsal: SealedRehearsalEnvironment,
-    source_head: str,
     dump_path: Path,
+    read_state: StateReader,
     provision_database: DatabaseProvisioner,
 ) -> dict[str, Any]:
-    """Prove an isolated late write refusal leaves Ledger and Candidates untouched."""
+    """Prove an isolated late write refusal leaves Ledger and Candidates untouched.
 
-    with provision_database(config.postgres_admin_url) as database:
-        if database.migration_head != source_head:
-            raise ValueError("disposable refusal database is not at the source migration head")
-        rehearsal.restore(dump_path, database.name)
-        clone_url = rehearsal.clone_url(config.postgres_admin_url, database.name)
-        before = read_rehearsal_project_state(clone_url, config.project_slug)
-        _install_dependency_refusal(clone_url)
-        operation = _run_shared_operation(
-            clone_url,
+    The refusal runs on a second clone of the identical captured bytes, so its
+    before state is the same pinned source state the first clone replayed.
+    """
+
+    def refuse_a_late_write(clone: RehearsalClone) -> dict[str, Any]:
+        _install_dependency_refusal(clone.database_url)
+        return _run_shared_operation(
+            clone.database_url,
             config.project_slug,
             expected_failure_marker="forced SH 99 acceptance dependency refusal",
         )
-        after = read_rehearsal_project_state(clone_url, config.project_slug)
-        unchanged = {
-            "candidates": before["candidates"] == after["candidates"],
-            "ledger": before["ledger"] == after["ledger"],
-        }
-        if not all(unchanged.values()):
-            raise ValueError("late refusal changed SH 99 Ledger or Candidate state")
-        return {
-            "operation": operation,
-            "ledger_and_candidate_state_unchanged": unchanged,
-            "policy_runs_created": _new_rows(before["policy_runs"], after["policy_runs"]),
-        }
+
+    rehearsed = rehearse_on_disposable_clone(
+        rehearsal,
+        postgres_admin_url=config.postgres_admin_url,
+        provision_database=provision_database,
+        dump_path=dump_path,
+        read_state=read_state,
+        operation=refuse_a_late_write,
+        claim_boundary=CLAIM_BOUNDARY,
+    )
+    before, after = rehearsed.before, rehearsed.after
+    unchanged = {
+        "candidates": before["candidates"] == after["candidates"],
+        "ledger": before["ledger"] == after["ledger"],
+    }
+    if not all(unchanged.values()):
+        raise ValueError("late refusal changed SH 99 Ledger or Candidate state")
+    return {
+        "operation": rehearsed.result,
+        "ledger_and_candidate_state_unchanged": unchanged,
+        "policy_runs_created": _new_rows(before["policy_runs"], after["policy_runs"]),
+    }
 
 
 def _install_dependency_refusal(database_url: str) -> None:
@@ -1466,8 +1502,8 @@ def _install_dependency_refusal(database_url: str) -> None:
 def provision_acceptance_database() -> DatabaseProvisioner:
     """The provisioner for this acceptance run's own disposable namespace."""
 
-    return partial(
-        provision_disposable_postgres, repo_root=REPO_ROOT, label=DATABASE_LABEL
+    return disposable_provisioner(
+        repo_root=REPO_ROOT, label=DATABASE_LABEL
     )
 
 

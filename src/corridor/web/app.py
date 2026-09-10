@@ -7167,7 +7167,17 @@ def source_upload_preview(
     # buffering all of it; the shared validator re-checks the true bound.
     body = upload.file.read(MAX_UPLOAD_BYTES + 1)
     try:
-        staged = validate_and_stage(body, upload.filename or "")
+        # The arrival observation is the only record this channel makes of a
+        # source having arrived — a human upload cannot yet be a row in the
+        # delivery ledger (see `source_intake`'s docstring for the exact
+        # constraints) — so it names the project it was uploaded into and the
+        # customer this deployment serves rather than leaving both unknown.
+        staged = validate_and_stage(
+            body,
+            upload.filename or "",
+            customer_id=settings.customer_id,
+            project_id=project.id,
+        )
         preview = preview_intake(session, project, staged, doc_type)
     except IntakeRefused as exc:
         return TEMPLATES.TemplateResponse(
