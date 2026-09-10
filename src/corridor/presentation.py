@@ -267,6 +267,10 @@ def accepted_record_exception_name(rule: str) -> str:
 class _ExceptionFact(Protocol):
     rule: str
     quantity_days: int | None
+    # Which check set produced this finding.  The two sets share every label but
+    # one, and that one changed predicate (ADR-0090), so a fact carries the set it
+    # came from rather than every renderer looking the words up twice.
+    accepted_record: bool
 
 
 def exception_label(exception: _ExceptionFact) -> str:
@@ -274,7 +278,12 @@ def exception_label(exception: _ExceptionFact) -> str:
     quantity = (
         f" {exception.quantity_days}d" if exception.quantity_days is not None else ""
     )
-    return f"{exception_name(exception.rule)}{quantity}"
+    name = (
+        accepted_record_exception_name(exception.rule)
+        if getattr(exception, "accepted_record", False)
+        else exception_name(exception.rule)
+    )
+    return f"{name}{quantity}"
 
 
 # --- The coordination authority rule, read once (ADR-0025, ADR-0042) --------

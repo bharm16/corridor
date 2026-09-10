@@ -5,11 +5,27 @@ away from the facts that justify it — the same reasoning that makes
 readiness a derived predicate (ADR-0002). Ask the question when you need
 the answer and it cannot be stale.
 
-`MISSING_EVIDENCE` cannot fire on a ready Dependency, and that is true by
-construction rather than by a guard: readiness requires a supporting
-document whose Source Passage Check passed, so a ready record has one.
-There is a test asserting it anyway, because if it ever fails, readiness
+On a **legacy project** `MISSING_EVIDENCE` cannot fire on a ready Dependency,
+and that is true by construction rather than by a guard: readiness requires a
+supporting document whose Source Passage Check passed, so a ready record has
+one. There is a test asserting it anyway, because if it ever fails, readiness
 has become reachable some other way and that is worth hearing about loudly.
+
+The rules read one `ConstraintReading` and nothing else, and the two
+populations reach them through two adapters — `_gather_many` for a legacy
+`dependencies` row, `accepted_record_readings` for an accepted Project Record
+subject. That is what makes `_apply` one pure function for both instead of one
+function and a hand-written twin that hard-coded every fact it could not read.
+
+Which of the twelve rules can fire depends on the reading, not on a filter
+applied afterwards. An accepted record establishes no internal owner, no next
+action, no document dates and no key-date link, so its reading declares those
+facts unavailable and the six rules that read them skip explicitly — which is
+ADR-0090's four retirements and two of its three supersessions, held by the
+absence of an input rather than by a special case. `MISSING_EVIDENCE` there is
+re-based onto the Support Assessment relation and never onto locator
+validation (ADR-0082); `ACCEPTED_RECORD_RULES` is the resulting set, and it has
+to equal what `issue_rendering` declares it ran.
 """
 
 from __future__ import annotations
@@ -52,6 +68,7 @@ from corridor.models import (
 from corridor.operative_support import resolve_operative_support
 from corridor.presentation import (
     CoordinationPlan,
+    accepted_record_exception_name as _display_accepted_record_name,
     exception_label as _display_exception_label,
     exception_name as _display_exception_name,
     read_coordination_residue,
@@ -155,6 +172,12 @@ class Exception_:
     detail: str
     quantity_days: int | None
     critical: bool
+    # Which check set this finding came from. Two of the twelve rule names mean
+    # something different on the accepted record, and MISSING_EVIDENCE's released
+    # label states the predicate ADR-0090 removed there, so carrying the label
+    # over unaltered would tell a customer a quotation could not be located when
+    # the check no longer looks at that.
+    accepted_record: bool = False
 
     @property
     def label(self) -> str:
@@ -162,8 +185,10 @@ class Exception_:
         return format_exception_label(self)
 
 
-def format_exception_name(rule: str) -> str:
+def format_exception_name(rule: str, *, accepted_record: bool = False) -> str:
     """Name a rule without making provenance review look like lateness."""
+    if accepted_record:
+        return _display_accepted_record_name(rule)
     return _display_exception_name(rule)
 
 
@@ -191,6 +216,11 @@ class RuleFacet:
     exceptions: tuple[Exception_, ...]
     count: int
     has_quantities: bool
+
+    @property
+    def accepted_record(self) -> bool:
+        """Which check set this bucket's findings came from."""
+        return all(exception.accepted_record for exception in self.exceptions)
 
 
 def _is_dismissed(session: Session, dependency: Dependency) -> bool:
@@ -805,6 +835,7 @@ def _apply(
             detail=detail,
             quantity_days=quantity,
             critical=reading.critical,
+            accepted_record=reading.mode == ACCEPTED_RECORD,
         )
         for rule, detail, quantity in found
     ]

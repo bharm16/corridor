@@ -58,11 +58,9 @@ from corridor.exceptions import (
 from corridor.operative_support import resolve_operative_support
 from corridor.ledger import Evidence, LedgerRow
 from corridor.models import (
-    Dependency,
     DependencyEvent,
     Milestone,
     Project,
-    is_critical,
 )
 from corridor.dependency_events import current_scope_decision_filter
 from corridor.project_reading import FrozenProjectReading, freeze_project_reading
@@ -565,7 +563,10 @@ def _accepted_follow_up(population, evaluation) -> Section:
         empty_message="No Follow-up Plans are recorded for open Proposed Deltas.",
         note=("These questions leave the proposed values unaccepted."
               if population.follow_up_scope == "current_open_deltas" else
-              "Plans recorded through this Project Record revision; source-workflow status is not inferred from the current reading."))
+              "Plans recorded through this Project Record revision; source-workflow status is not inferred from the current reading.")
+             # The same declaration the section above makes: what this section does
+             # *not* carry is stated here rather than shown as an empty column.
+             + " " + NOT_POPULATED_IN_THIS_MODE["coordination"])
     for plan in population.follow_up_plans:
         authority = WorkDecision((plan.plan_id,), plan.recorded_by, plan.recorded_at.date(), "delta_follow_up_plan")
         section.rows.append([Cell("Proposed Delta", str(plan.delta_id), authority),
@@ -922,7 +923,13 @@ def _exceptions_summary(evaluation: Evaluation) -> Section:
             )
         section.rows.append(
             [
-                _derived("Rule", format_exception_name(facet.rule), ids),
+                _derived(
+                    "Rule",
+                    format_exception_name(
+                        facet.rule, accepted_record=facet.accepted_record
+                    ),
+                    ids,
+                ),
                 _derived("Count", str(facet.count), ids),
                 most,
                 why,

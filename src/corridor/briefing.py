@@ -29,7 +29,7 @@ version: the proposing path is a deliberate later ticket.
 from __future__ import annotations
 
 from corridor.accepted_field_reading import accepted_field_text, visible_native_statements, native_field_visible
-from corridor.constraint_reading import legacy_constraint_reading
+from corridor.constraint_reading import ConstraintReading, legacy_constraint_reading
 from corridor.operative_support import resolve_operative_support
 from corridor.presentation import field_label
 
@@ -227,7 +227,7 @@ def brief_project(
 
 def _brief(
     session: Session,
-    dependencies: list[Dependency],
+    dependencies: list[ConstraintReading],
     *,
     ref_code: str,
     client,
@@ -312,7 +312,7 @@ def _brief(
 
 def _assemble(
     session: Session,
-    dependencies: list[Dependency],
+    dependencies: list[ConstraintReading],
     evaluation: Evaluation,
     publication: StatementPublication,
     *,
@@ -527,7 +527,7 @@ def assemble_native_citables(population, evaluation, publication, *, project_sco
 
 
 def _user_message(
-    dependencies: list[Dependency],
+    dependencies: list[ConstraintReading],
     citables: list[Citable],
     committed_dates: dict[int, date | None],
     floor: tuple[str, ...],

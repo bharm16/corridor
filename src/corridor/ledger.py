@@ -327,8 +327,12 @@ def _matches(
             return False
         elif reading.resolution_strategy != resolution_strategy:
             return False
-    if ready is not None and (reading.is_ready is True) is not ready:
-        return False
+    if ready is not None:
+        # Neither answer is a claim about a record with no documentation review
+        # outcome at all, so an accepted record matches neither "reviewed" nor
+        # "not reviewed" rather than silently filling the second bucket.
+        if not available(reading.is_ready) or reading.is_ready is not ready:
+            return False
     if rule and not any(exception.rule == rule for exception in exceptions):
         return False
     return True

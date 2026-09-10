@@ -9,6 +9,7 @@ here reads only.
 
 import hashlib
 from datetime import date, datetime, timedelta, timezone
+from html import escape
 from io import BytesIO
 
 import pytest
@@ -42,7 +43,12 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.verbal import record_verbal
+from corridor.constraint_reading import NO_DOCUMENTATION_REVIEW
+from corridor.presentation import documentation_review_label, label
+from corridor.project_reading import freeze_project_reading
+from corridor.report import NOT_POPULATED_IN_THIS_MODE, build_report, render
 from access_support import seed_membership
+from adopted_reader_support import adopt_ucm_workbook
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
 
@@ -661,3 +667,124 @@ def test_one_projects_alert_population_excludes_another_projects_constraints(
     for dependency in foreign:
         assert dependency.ref_code not in page
         assert f"/ledger/{project.slug}/{dependency.id}" not in page
+
+
+# --- One Coordination Report over both populations ---------------------------
+
+
+ADOPTED_TODAY = date(2026, 9, 9)
+
+
+def _adopted_report(session, tmp_path, monkeypatch):
+    project, _ = adopt_ucm_workbook(session, tmp_path, monkeypatch)
+    reading = freeze_project_reading(session, project.id, today=ADOPTED_TODAY)
+    return project, reading, build_report(session, project.id, frozen_reading=reading)
+
+
+def test_the_adopted_report_declares_the_sections_it_cannot_populate(
+    session, tmp_path, monkeypatch
+):
+    """A section the accepted record cannot fill says so, in the customer's words.
+
+    The adopted-baseline report used to emit the key-dates section with the
+    message "No key dates are linked to these Constraints" for every project. That
+    is a finding about the project, and the fact is about the reader: the accepted
+    record carries no key-date link to read. Three sections are in that position,
+    and each of them now states its own reason — the same discipline the alert
+    section already applies when it declares which checks it did not run.
+    """
+    _, _, report = _adopted_report(session, tmp_path, monkeypatch)
+    declared = {
+        section.title: section
+        for section in report.sections
+        if section.title
+        in {
+            label("milestone_readiness"),
+            label("organization_commitments"),
+        }
+    }
+    assert set(declared) == {
+        label("milestone_readiness"),
+        label("organization_commitments"),
+    }
+    for section in declared.values():
+        assert section.rows == []
+        assert section.note == section.empty_message
+        assert "not" in section.empty_message.lower()
+        assert "No key dates are linked to these Constraints." != section.empty_message
+
+    body = render(report)
+    for reason in NOT_POPULATED_IN_THIS_MODE.values():
+        assert escape(reason) in body
+    assert "No key dates are linked to these Constraints." not in body
+
+    # The documentation-review tile is the same failure one line up: "0" reads as
+    # "none of your constraints is reviewed" when no review outcome exists at all.
+    (tile,) = [
+        cell
+        for cell in report.summary
+        if cell.label == documentation_review_label(True)
+    ]
+    assert tile.value == str(NO_DOCUMENTATION_REVIEW)
+    assert tile.provenance is not None and tile.provenance.resolves
+
+
+def test_the_adopted_report_populates_the_shared_sections_through_one_builder(
+    session, tmp_path, monkeypatch
+):
+    """Five sections the accepted record can supply, through the legacy builders.
+
+    ``_critical_items`` and ``_aging`` were never called for an adopted project at
+    all, so a late critical conflict on the accepted record appeared in no section
+    of its own report while the alert list said it was overdue.
+    """
+    _, reading, report = _adopted_report(session, tmp_path, monkeypatch)
+    titles = [section.title for section in report.sections]
+    assert titles.index(label("critical_items")) < titles.index(label("constraint_alerts"))
+
+    critical = next(s for s in report.sections if s.title == label("critical_items"))
+    assert [row[0].value for row in critical.rows] == ["UC-1"]
+
+    aging = next(s for s in report.sections if s.title == "Aging")
+    overdue = {e.ref_code for e in reading.evaluation.found if e.rule == "OVERDUE"}
+    assert overdue, "the seeded accepted Promised For is in the past"
+    assert {row[0].value for row in aging.rows} == overdue
+    assert [row[3].value for row in aging.rows] == [
+        str(e.quantity_days)
+        for e in sorted(reading.evaluation.found, key=lambda e: e.ref_code)
+        if e.rule == "OVERDUE"
+    ]
+
+    alerts = next(s for s in report.sections if s.title == label("constraint_alerts"))
+    assert alerts.rows
+    # The alert names are the accepted record's own check set, so MISSING_EVIDENCE
+    # cannot be shown under the Source Passage Check wording its predicate no
+    # longer reads (ADR-0090).
+    assert all(
+        "source passage check" not in row[0].value.lower() for row in alerts.rows
+    )
+    appendix = next(s for s in report.sections if s.title == "Appendix — constraint log")
+    assert {row[0].value for row in appendix.rows} == {
+        record.ref_code for record in reading.native_population.open_records
+    }
+    assert report.coverage_note.startswith("Project Record revision ")
+
+
+def test_the_legacy_report_still_calls_every_section_it_always_did(session, project):
+    """The collapse may not quietly drop a legacy project's section."""
+    report = build_report(session, project.id, today=ADOPTED_TODAY)
+    titles = [section.title for section in report.sections]
+    assert titles == [
+        label("milestone_readiness"),
+        label("critical_items"),
+        label("follow_up_plan"),
+        label("organization_commitments"),
+        label("constraint_alerts"),
+        "Changes since last report",
+        "Aging",
+        "Appendix — constraint log",
+    ]
+    assert (
+        NOT_POPULATED_IN_THIS_MODE["milestone_readiness"]
+        not in {section.empty_message for section in report.sections}
+    )

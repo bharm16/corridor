@@ -839,7 +839,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "measurement_cases", "merge", "milestones", "notifications",
         "operative_support", "organization_identity", "product_proving_execution",
         "product_proving_frontend_capture", "project_contacts", "project_reading",
-        "prose_interpretation", "report", "report_diff_reference",
+        "prose_interpretation", "report_diff_reference",
         "revision_change_explanation", "schedule_linking",
         "sh99_admission_acceptance", "statement_coordination",
         "statement_matcher", "statement_matching", "statement_scope_matching",
