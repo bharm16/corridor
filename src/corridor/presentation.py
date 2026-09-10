@@ -381,8 +381,8 @@ _ATTENTION_REASON_SENTENCES: dict[str, str] = {
         "the stated requirement."
     ),
     "support_failed_citation": (
-        "A newer document's supporting passage could not be verified — check the "
-        "citation."
+        "A newer document's supporting passage was not found at its cited location "
+        "— check the citation."
     ),
     "support_uncertain_match": (
         "A newer document has more than one row that could replace this "
@@ -489,8 +489,8 @@ _DEPENDENCY_ADMISSION_GAP_WORDS: dict[str, AuthorityGapWords] = {
     reason: AuthorityGapWords(title=title, detail=detail, label=title)
     for reason, (title, detail) in {
         "citations_unverified": (
-            "Source citation not verified",
-            "Dependency Admission could not verify this proposal against its cited source.",
+            "Source citation not found at cited location",
+            "Dependency Admission could not find this proposal's cited passage in its source.",
         ),
         "no_utility_id": (
             "Dependency identifier not established",
@@ -627,7 +627,7 @@ RESIDUAL_NEXT_ACTION = "next_action"
 RESIDUAL_BLOCKED = "blocked"
 
 ADMITTED_EVIDENCE_UNAVAILABLE_GAP = (
-    "Verified statement Evidence is unavailable; residual decisions remain pending."
+    "Statement evidence is unavailable; residual decisions remain pending."
 )
 ADMITTED_ROSTER_UNAVAILABLE_GAP = (
     "No active project roster choices are available; Internal Owner remains pending."
