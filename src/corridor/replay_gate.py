@@ -349,6 +349,15 @@ def _append(
     model = ledger_model(family)
     if not reason or not reason.strip():
         raise ReplayGateRefusal("an activation ledger entry must state a reason")
+    # ``ck_policy_activation_event_admission_reason`` is the authority: the
+    # relation refuses a reason this family's restored predecessor column cannot
+    # hold, so a downgrade can never truncate an operator's words. It is said
+    # here too because this family's reason is typed by a person at a suspension
+    # command, and they get a stated refusal rather than a database error.
+    if family == FAMILY_EVENT_ADMISSION and len(reason.strip()) > 128:
+        raise ReplayGateRefusal(
+            "an Event Admission ledger reason is at most 128 characters"
+        )
     if not recorded_by or not recorded_by.strip():
         raise ReplayGateRefusal("an activation ledger entry names who recorded it")
     entry = model(

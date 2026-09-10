@@ -70,8 +70,10 @@ SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
     # One `policy_activations` relation replaces the four per-family ADR-0050
-    # activation ledgers (-4 tables and -4 sequences, +1 of each).
-    "9269030c91eb9d46834ed8c5774b3286c88c84206e4cae4e0b36dbd00487748c"
+    # activation ledgers (-4 tables and -4 sequences, +1 of each), and its
+    # `ck_policy_activation_event_admission_reason` check keeps that family's
+    # reason inside the 128 characters its restored predecessor column holds.
+    "c17eb72aaeab0e65c8e52c21a1a963f7533cf28f5d7b9826e01e514f2c11bb89"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -2272,3 +2274,95 @@ def _assert_history_downgrade_refuses_data_on_this_transition(session_factory, p
                 assert read_history(session, project_id, batch.id).content_sha256 == batch.content_sha256
         finally:
             rollback_scope.rollback()
+
+
+def test_the_activation_ledger_carries_an_event_admission_reason_back_unchanged():
+    """The fold widened ``reason`` to 160; the shape it restores holds 128.
+
+    ``event_admission_activations.reason`` is ``character varying(128)`` in the
+    released schema, and the consolidated ``policy_activations.reason`` is 160
+    because the three fingerprint-bound families used that width. The downgrade
+    therefore wrote ``left(reason, 128)``, so a suspension reason an operator
+    typed after the fold came back with its tail cut off — a silently edited
+    human attribution, in the one family whose docstring promises that "a round
+    trip loses no row and no attribution".
+
+    The schema keeps that promise rather than the callers: the relation refuses
+    an Event Admission reason wider than the column its own downgrade restores,
+    and the downgrade copies the reason exactly.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        label="baseline_activation",
+        migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+
+        at_the_limit = "why this admission class was suspended: " + "e" * 88
+        assert len(at_the_limit) == 128
+        with database.session_factory.begin() as session:
+            project_id = session.scalar(text(
+                "insert into projects (slug, name, is_synthetic) values "
+                "('activation-round-trip', 'Activation round trip', true) returning id"
+            ))
+            receipt_id = session.scalar(text(
+                "insert into event_admission_acceptance_receipts (project_id, status, "
+                " source_revision, migration_head, predecessor_policy_version, "
+                " policy_version, policy_sha256, reason_version, selection_rule, "
+                " receipt_json, receipt_sha256) values "
+                "(:project_id, 'passed', 'rev-1', :head, 'event-admission-v1', "
+                " 'unknown-scope-v1', :digest, 'reason-v1', 'unknown-scope', "
+                " '{}', :digest) returning id"
+            ), {"project_id": project_id, "head": CURRENT_HEAD, "digest": "a" * 64}) 
+            session.execute(text(
+                "insert into policy_activations (project_id, family, action, "
+                " policy_version, policy_sha256, replay_case_count, "
+                " acceptance_receipt_id, reason, recorded_by) values "
+                "(:project_id, 'event_admission', 'suspend', 'unknown-scope-v1', "
+                " null, null, :receipt_id, :reason, 'local:operator')"
+            ), {"project_id": project_id, "receipt_id": receipt_id, "reason": at_the_limit})
+            # The three fingerprint-bound families keep the full 160: their own
+            # predecessor columns hold it, and nothing about them truncates.
+            session.execute(text(
+                "insert into policy_activations (project_id, family, action, "
+                " policy_version, policy_sha256, replay_case_count, "
+                " acceptance_receipt_id, reason, recorded_by) values "
+                "(:project_id, 'schedule_link', 'suspend', 'schedule-link-v1', "
+                " :digest, null, null, :reason, 'local:operator')"
+            ), {"project_id": project_id, "digest": "b" * 64, "reason": "s" * 160})
+
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError) as refused:
+                with session.begin():
+                    session.execute(text(
+                        "insert into policy_activations (project_id, family, action, "
+                        " policy_version, policy_sha256, replay_case_count, "
+                        " acceptance_receipt_id, reason, recorded_by) values "
+                        "(:project_id, 'event_admission', 'suspend', "
+                        " 'unknown-scope-v1', null, null, :receipt_id, :reason, "
+                        " 'local:operator')"
+                    ), {"project_id": project_id, "receipt_id": receipt_id,
+                        "reason": "t" * 129})
+        assert "ck_policy_activation_event_admission_reason" in str(refused.value)
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        with database.session_factory() as session:
+            restored = session.execute(text(
+                "select reason, recorded_by, acceptance_receipt_id, action "
+                "from event_admission_activations"
+            )).one()
+            assert restored.reason == at_the_limit
+            assert restored.recorded_by == "local:operator"
+            assert restored.acceptance_receipt_id == receipt_id
+            assert restored.action == "suspend"
+            assert session.scalar(text(
+                "select reason from schedule_link_activations"
+            )) == "s" * 160

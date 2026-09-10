@@ -328,6 +328,15 @@ class PolicyActivation(Base):
             "action <> 'suspend' or replay_case_count is null",
             name="ck_policy_activation_case_count",
         ),
+        # ``reason`` is 160 characters because three families' predecessor
+        # ledgers were. The Event Admission predecessor is 128, and the
+        # migration's downgrade restores it at that width, so a longer reason in
+        # that family could only be carried back truncated -- a silently edited
+        # human attribution. The relation refuses one.
+        CheckConstraint(
+            "family <> 'event_admission' or length(reason) <= 128",
+            name="ck_policy_activation_event_admission_reason",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
