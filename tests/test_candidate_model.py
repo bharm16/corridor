@@ -176,7 +176,7 @@ def candidate_route(*uids, model=CANDIDATE_MODEL):
 
 
 def failing_candidate_route():
-    from corridor.extract_matrix import ExtractionFailed
+    from corridor.extraction_errors import ExtractionFailed
 
     def select_route(document):
         def extract(session, target):

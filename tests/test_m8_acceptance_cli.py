@@ -13,7 +13,24 @@ from corridor.m8_acceptance import (
     CaptureSummary,
     VerificationResult,
 )
-from corridor.m8_acceptance_cli import main
+from corridor.m8_acceptance_cli import ProductionExtractor, main
+
+
+def _extractor(prompt_version, schema_version, extract_document=None):
+    """One stated extractor identity for a capture test.
+
+    The default read must never run: every test that leaves it out asserts
+    capture stops before extraction.
+    """
+
+    def unreached(*_args, **_kwargs):
+        raise AssertionError("capture reached the extractor")
+
+    return ProductionExtractor(
+        prompt_version=prompt_version,
+        schema_version=schema_version,
+        extract_document=extract_document or unreached,
+    )
 
 
 def _json_output(capsys) -> dict:
@@ -133,14 +150,7 @@ def test_live_capture_constructs_one_client_routes_the_production_extractor_and_
             candidate_count=18,
         )
 
-    monkeypatch.setattr("corridor.extract_matrix.PROMPT_VERSION", "matrix-v9")
-    monkeypatch.setattr(
-        "corridor.extract_matrix.SCHEMA_VERSION", "matrix-candidate-shape-v3"
-    )
     monkeypatch.setattr("corridor.llm.OpenAIClient", Client)
-    monkeypatch.setattr(
-        "corridor.extract_matrix.extract_document", production_extract
-    )
     monkeypatch.setattr("corridor.m8_acceptance_cli.capture_m8_fixture", capture)
 
     assert main(
@@ -161,7 +171,8 @@ def test_live_capture_constructs_one_client_routes_the_production_extractor_and_
             "matrix-candidate-shape-v3",
             "--expected-clean-git-revision",
             "abc123",
-        ]
+        ],
+        extractor=_extractor("matrix-v9", "matrix-candidate-shape-v3", production_extract),
     ) == 0
 
     assert len(clients) == 1
@@ -200,10 +211,6 @@ def test_live_capture_rejects_model_drift_and_still_closes(
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr("corridor.extract_matrix.PROMPT_VERSION", "matrix-v9")
-    monkeypatch.setattr(
-        "corridor.extract_matrix.SCHEMA_VERSION", "matrix-candidate-shape-v3"
-    )
     monkeypatch.setattr("corridor.llm.OpenAIClient", Client)
     monkeypatch.setattr(
         "corridor.m8_acceptance_cli.capture_m8_fixture",
@@ -230,7 +237,8 @@ def test_live_capture_rejects_model_drift_and_still_closes(
                 "matrix-candidate-shape-v3",
                 "--expected-clean-git-revision",
                 "abc123",
-            ]
+            ],
+        extractor=_extractor("matrix-v9", "matrix-candidate-shape-v3"),
     )
 
     assert status == 1
@@ -245,7 +253,6 @@ def test_live_capture_rejects_prompt_drift_before_constructing_client(
     def must_not_construct_client(*_args, **_kwargs):
         raise AssertionError("prompt drift must be rejected before client construction")
 
-    monkeypatch.setattr("corridor.extract_matrix.PROMPT_VERSION", "matrix-production")
     monkeypatch.setattr("corridor.llm.OpenAIClient", must_not_construct_client)
     monkeypatch.setattr(
         "corridor.m8_acceptance_cli.capture_m8_fixture",
@@ -272,7 +279,8 @@ def test_live_capture_rejects_prompt_drift_before_constructing_client(
             "candidate-shape-v2",
             "--expected-clean-git-revision",
             "abc123",
-        ]
+        ],
+        extractor=_extractor("matrix-production", "candidate-shape-v2"),
     )
 
     assert status == 1
@@ -287,11 +295,6 @@ def test_live_capture_rejects_schema_drift_before_constructing_client(
     def must_not_construct_client(*_args, **_kwargs):
         raise AssertionError("schema drift must be rejected before client construction")
 
-    monkeypatch.setattr("corridor.extract_matrix.PROMPT_VERSION", "matrix-production")
-    monkeypatch.setattr(
-        "corridor.extract_matrix.SCHEMA_VERSION",
-        "matrix-candidate-shape-production",
-    )
     monkeypatch.setattr("corridor.llm.OpenAIClient", must_not_construct_client)
     monkeypatch.setattr(
         "corridor.m8_acceptance_cli.capture_m8_fixture",
@@ -318,7 +321,10 @@ def test_live_capture_rejects_schema_drift_before_constructing_client(
             "matrix-candidate-shape-stale",
             "--expected-clean-git-revision",
             "abc123",
-        ]
+        ],
+        extractor=_extractor(
+            "matrix-production", "matrix-candidate-shape-production"
+        ),
     )
 
     assert status == 1
@@ -342,10 +348,6 @@ def test_live_capture_closes_the_client_when_capture_fails(
         def close(self):
             self.closed = True
 
-    monkeypatch.setattr("corridor.extract_matrix.PROMPT_VERSION", "matrix-v9")
-    monkeypatch.setattr(
-        "corridor.extract_matrix.SCHEMA_VERSION", "matrix-candidate-shape-v3"
-    )
     monkeypatch.setattr("corridor.llm.OpenAIClient", Client)
     monkeypatch.setattr(
         "corridor.m8_acceptance_cli.capture_m8_fixture",
@@ -372,7 +374,8 @@ def test_live_capture_closes_the_client_when_capture_fails(
                 "matrix-candidate-shape-v3",
                 "--expected-clean-git-revision",
                 "abc123",
-            ]
+            ],
+        extractor=_extractor("matrix-v9", "matrix-candidate-shape-v3"),
     )
 
     assert status == 1

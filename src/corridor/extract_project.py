@@ -37,12 +37,12 @@ from sqlalchemy.orm import Session
 
 from corridor.extract_batch import already_extracted
 from corridor.extractor_lineage import usage_snapshot
-from corridor.extract_matrix import (
+from corridor.extraction_errors import (
     ExtractionFailed,
-    PROMPT_VERSION,
+    NoMatrixFound,
     SequencingSemanticsDetected,
 )
-from corridor.extraction_errors import NoMatrixFound
+from corridor.native_matrix import PROMPT_VERSION
 from corridor.ingest import SPREADSHEET_SUFFIXES
 from corridor.models import (
     Candidate,

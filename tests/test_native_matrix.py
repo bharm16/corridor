@@ -843,7 +843,6 @@ def test_semantic_or_malformed_mapping_never_enters_an_ocr_fallback(
         pytest.fail("native semantic refusal attempted an incumbent or OCR fallback")
 
     monkeypatch.setattr("corridor.scanned_reading.read_routed_page", forbidden)
-    monkeypatch.setattr("corridor.extract_matrix.extract_document", forbidden)
     document = _document(session, project, matrix_source)
     answer = _answer()
     if case == "semantic_refusal":
