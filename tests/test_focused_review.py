@@ -32,6 +32,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.models import (
+    PREDATES_OBSERVATION_BINDING,
     DeltaDisposition,
     DeltaFollowUpPlan,
     Fact,
@@ -1041,6 +1042,9 @@ def test_a_low_confidence_extraction_failure_never_reaches_the_work_list(
             value="ductile iron",
             origin="harness",
             policy_version="unreadable-cell-v1",
+            # A hand-built row stands in for a reading recorded before #809
+            # bound every new one to its observation; it must say so.
+            observation_unbound_reason=PREDATES_OBSERVATION_BINDING,
         )
     )
     session.flush()

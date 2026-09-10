@@ -122,6 +122,22 @@ them; ``evidence_links.quote`` stays, readable and unrewritten, because
 proving a cited segment and a stored quote equivalent is a separate piece of
 work with its own corpus.
 
+The transition then binds every new Unconfirmed reading to the processing
+observation that produced it (#809), once more because the window holds one
+unreleased transition.  #804 recorded a Textract-only cell as an
+``unreadable_cell_resolutions`` row with no durable link to the provider
+observation behind it; the request identity, the submitted raster, the response
+and reading digests and the authorization record lived only in Class B files.
+``scanned_page_observations`` is that observation as a row — one per
+``analyze_page`` binding ingest consumed, identified by its references rather
+than by a copy of any of them — and the resolution names it by id, beside the
+routed region the cell fell in.  ``run_id`` keeps meaning the reading harness's
+run and stays null on the scanned route; the rejected alternative was an
+``extraction_run_id`` column, which would have needed a placeholder Extraction
+Run to point at.  Readings that already existed are marked as predating the
+binding rather than bound to a guess, and the downgrade refuses while an
+observation exists.
+
 Every family above except this revision's own append commands now lives in
 ``corridor.migrations.source_append_commands`` — one module per family, each
 opening with the block comment that used to sit above its constants, each
@@ -164,6 +180,7 @@ from corridor.migrations.source_append_commands import (
     report_revision_binding,
     resolve_delta,
     review_packets,
+    scanned_observations,
     unified_delivery,
     web_capability,
 )
@@ -1464,6 +1481,12 @@ def upgrade() -> None:
     # --- #652 Retained outgoing requests ----------------------------------
     outgoing_requests.upgrade(op)
 
+    # --- #809 The observation an Unconfirmed reading was read out of -------
+    # After every block that creates a relation it could bind to and before
+    # the sibling transitions: it alters `unreadable_cell_resolutions`, which
+    # the baseline created, and nothing later in the revision names its table.
+    scanned_observations.upgrade(op)
+
     from corridor.migrations import email_spine
 
     email_spine.upgrade(op, APPEND_NATIVE_SOURCE_SEGMENTS, APPEND_FACT)
@@ -1522,6 +1545,10 @@ def downgrade() -> None:
     minutes_spine.downgrade(op)
     project_contacts.downgrade(op)
     email_spine.downgrade(op)
+
+    # --- #809 The observation an Unconfirmed reading was read out of -------
+    # First among the feature reversals, because the upgrade added it last.
+    scanned_observations.downgrade(op)
 
     # --- The bound customer environment (#656) ---------------------------
     environment_binding.downgrade(op)

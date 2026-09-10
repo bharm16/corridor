@@ -45,8 +45,10 @@ __all__ = [
     "ExtractionRun",
     "ExtractionRunCandidate",
     "ExtractorConfiguration",
+    "PREDATES_OBSERVATION_BINDING",
     "RevisionComparisonFinding",
     "RevisionComparisonRun",
+    "ScannedPageObservation",
     "UnreadableCellReadingProfile",
     "UnreadableCellReadingRun",
     "UnreadableCellReadingStep",
@@ -903,6 +905,92 @@ class UnreadableCellReadingStep(Base):
     result_sha256: Mapped[str] = mapped_column(String(64))
 
 
+class ScannedPageObservation(Base):
+    """One processing observation of one page by the OCR provider (#809).
+
+    The row is the ``analyze_page`` binding ingest consumed for a page of a
+    Document rendition, as references rather than copies: the authorization
+    record by id; the cache scope by digest (the request boundary, operation
+    and feature types, request configuration and adapter and rasterizer
+    identities — the reader/configuration identity); the submitted raster, the
+    raw response exactly as retained and the normalized reading, each by
+    digest; and the model version and request id the provider reported. Its
+    identity is those references together, so a page re-read out of the same
+    retained response converges on the row it already has and a different
+    response, raster, scope or record is a new observation beside it.
+
+    It exists because the observation used to live only in Class B files —
+    the adapter's identity file, the raw OCR receipt, the cost receipt — which
+    retention deletes; a resolution could name none of them. An Extraction
+    Run foreign key was rejected: no run exists on the scanned route (ingest
+    hands the adapter the source digest under that name), and a placeholder
+    run to satisfy a key would make the run table lie. The token layer
+    manifest was rejected as the owner because it is de-duplicated on layer
+    content and carries neither the raster, the scope nor the record.
+    """
+
+    __tablename__ = "scanned_page_observations"
+    __table_args__ = (
+        UniqueConstraint(
+            "document_id",
+            "page_no",
+            "authorization_record_id",
+            "scope_digest",
+            "raster_sha256",
+            "raw_response_sha256",
+            "reading_sha256",
+            name="uq_scanned_page_observation_identity",
+        ),
+        CheckConstraint("page_no > 0", name="ck_scanned_page_observation_page"),
+        CheckConstraint(
+            "length(btrim(authorization_record_id)) > 0",
+            name="ck_scanned_page_observation_record",
+        ),
+        CheckConstraint(
+            "rendition_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_scanned_page_observation_rendition",
+        ),
+        CheckConstraint(
+            "scope_digest ~ '^[0-9a-f]{64}$'",
+            name="ck_scanned_page_observation_scope",
+        ),
+        CheckConstraint(
+            "raster_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_scanned_page_observation_raster",
+        ),
+        CheckConstraint(
+            "raw_response_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_scanned_page_observation_response",
+        ),
+        CheckConstraint(
+            "reading_sha256 ~ '^[0-9a-f]{64}$'",
+            name="ck_scanned_page_observation_reading",
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
+    document_id: Mapped[int] = mapped_column(ForeignKey("documents.id"))
+    rendition_sha256: Mapped[str] = mapped_column(String(64))
+    page_no: Mapped[int] = mapped_column(Integer)
+    authorization_record_id: Mapped[str] = mapped_column(String(128))
+    scope_digest: Mapped[str] = mapped_column(String(64))
+    raster_sha256: Mapped[str] = mapped_column(String(64))
+    raw_response_sha256: Mapped[str] = mapped_column(String(64))
+    reading_sha256: Mapped[str] = mapped_column(String(64))
+    provider_model_version: Mapped[str | None] = mapped_column(String(64))
+    provider_request_id: Mapped[str | None] = mapped_column(String(128))
+    observed_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# The one reason a scanned reading may carry no observation: it was written
+# before the binding existed (#809), and nothing retained binds it to one.
+PREDATES_OBSERVATION_BINDING = "predates_observation_binding"
+
+
 class UnreadableCellResolution(Base):
     """Append-only three-state value for one unreadable cell (ADR-0064).
 
@@ -915,6 +1003,16 @@ class UnreadableCellResolution(Base):
     gated cross-document admission class has promoted to record-contributing).
     ``origin`` says which pass appended it; a corroboration that arrives later
     upgrades an ``unconfirmed`` row automatically without any human step.
+
+    What read the cell is one of two things, never both: ``run_id`` names the
+    reading harness's run, and ``observation_id`` names the provider
+    observation a scanned reading was read out of (#809), with
+    ``source_region_id`` the routed region the cell fell in. A corroboration
+    or admission appended over a row carries that row's observation forward,
+    because it corroborates *that* observation's value; a new observation of
+    the same cell key is a new ``unconfirmed`` row bound to its own
+    observation, and inherits nothing. A scanned reading written before the
+    binding existed carries ``observation_unbound_reason`` instead of a guess.
     """
 
     __tablename__ = "unreadable_cell_resolutions"
@@ -943,6 +1041,16 @@ class UnreadableCellResolution(Base):
             "length(trim(cell_key)) > 0",
             name="ck_unreadable_cell_resolution_cell_key",
         ),
+        CheckConstraint(
+            "(run_id is null or observation_id is null) "
+            "and (observation_id is null or observation_unbound_reason is null) "
+            "and (observation_unbound_reason is null "
+            f"or observation_unbound_reason = '{PREDATES_OBSERVATION_BINDING}') "
+            "and (origin <> 'harness' or run_id is not null "
+            "or observation_id is not null "
+            "or observation_unbound_reason is not null)",
+            name="ck_unreadable_cell_resolution_observation",
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
@@ -955,6 +1063,11 @@ class UnreadableCellResolution(Base):
     run_id: Mapped[int | None] = mapped_column(
         ForeignKey("unreadable_cell_reading_runs.id")
     )
+    observation_id: Mapped[int | None] = mapped_column(
+        ForeignKey("scanned_page_observations.id"), index=True
+    )
+    source_region_id: Mapped[str | None] = mapped_column(String(64))
+    observation_unbound_reason: Mapped[str | None] = mapped_column(String(48))
     corroboration_document_id: Mapped[int | None] = mapped_column(
         ForeignKey("documents.id")
     )

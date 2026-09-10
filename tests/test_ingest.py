@@ -1100,6 +1100,30 @@ def test_a_textract_only_value_lands_as_an_unconfirmed_reading_the_upgrade_pass_
     assert (row.state, row.value, row.origin) == ("unconfirmed", "SCANNED", "harness")
     assert row.policy_version == UNCONFIRMED_READING_POLICY_VERSION
     assert contributes_to_ready(row) is False
+    # The row resolves to the observation that produced it (#809): the same
+    # request identity, response digest and authorization identity the receipt
+    # and the token-layer manifest recorded, held once as a row and named by
+    # id. `run_id` is the harness's and stays null on this route.
+    from corridor.models import ScannedPageObservation
+
+    processing = value["provenance"]["processing"]
+    [layer] = _ocr_layers(session, doc.id)
+    observation = session.get(ScannedPageObservation, row.observation_id)
+    assert row.run_id is None
+    assert row.observation_unbound_reason is None
+    assert row.source_region_id == value["region_id"] == value["provenance"]["source"]["region_id"]
+    assert (observation.document_id, observation.page_no) == (doc.id, 1)
+    assert observation.rendition_sha256 == doc.sha256
+    assert observation.authorization_record_id == "exp-741" == processing["authorization_record_id"]
+    assert observation.scope_digest == processing["scope_digest"]
+    assert observation.raster_sha256 == processing["raster_sha256"]
+    assert observation.raw_response_sha256 == processing["raw_response_digest"]
+    assert observation.raw_response_sha256 == layer.engine_json["raw_response_sha256"]
+    assert observation.reading_sha256 == processing["normalized_reading_digest"]
+    assert observation.reading_sha256 == layer.engine_json["reading_sha256"]
+    assert observation.provider_request_id == processing["request_identity"]["request_id"]
+    assert observation.provider_request_id == layer.engine_json["provider_request_id"]
+    assert observation.provider_model_version == processing["provider_model_version"]
 
     readable = Document(
         project_id=project.id,
@@ -1127,6 +1151,9 @@ def test_a_textract_only_value_lands_as_an_unconfirmed_reading_the_upgrade_pass_
     assert (upgraded.state, upgraded.origin) == ("corroborated", "corroboration_upgrade")
     assert upgraded.corroboration_document_id == readable.id
     assert contributes_to_ready(upgraded) is False
+    # The corroboration is of this observation's value, and says so.
+    assert upgraded.observation_id == row.observation_id
+    assert upgraded.source_region_id == row.source_region_id
 
 
 def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(

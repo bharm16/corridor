@@ -184,6 +184,13 @@ def reconsider_unconfirmed_cell_readings(
     corroborating document lands (ADR-0064's living-document upgrade). No human
     step, no ceremony. Idempotent: an upgraded cell's latest state is no longer
     unconfirmed, so a repeat pass finds nothing.
+
+    Observation versus resolution (#809): the upgrade row is bound to the same
+    observation as the unconfirmed row it upgrades, never to the cell key
+    alone. A new provider observation of a cell whose earlier observation was
+    corroborated appends a new unconfirmed row bound to its own observation;
+    that row earns its own corroboration here, and the earlier corroboration
+    stays where it was, bound to the observation it was checked against.
     """
     machine = _machine_latest(session, project_id)
     unconfirmed = [
@@ -212,6 +219,11 @@ def reconsider_unconfirmed_cell_readings(
             state="corroborated",
             value=row.value,
             run_id=row.run_id,
+            # The corroboration is of *this* observation's value (#809): the
+            # upgrade carries the reading's observation and region forward, so
+            # a later observation of the same cell key cannot inherit it.
+            observation_id=row.observation_id,
+            source_region_id=row.source_region_id,
             corroboration_document_id=hit.document_id,
             corroboration_page_no=hit.page_no,
             corroboration_quote=hit.quote,
@@ -331,6 +343,8 @@ def admit_corroborated_cell_values(
             state="admitted",
             value=admit_value,
             run_id=resolution.run_id,
+            observation_id=resolution.observation_id,
+            source_region_id=resolution.source_region_id,
             corroboration_document_id=resolution.corroboration_document_id,
             corroboration_page_no=resolution.corroboration_page_no,
             corroboration_quote=resolution.corroboration_quote,
