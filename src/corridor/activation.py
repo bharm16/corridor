@@ -14,15 +14,14 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-import os
 import re
-import tempfile
 from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import text
 
 from corridor.db_roles import WEB_CAPABILITY_LOGIN
+from corridor.receipts import ArtifactCollision, write_sealed
 from corridor.web_boundary import PILOT_ROUTES, PROTECTED_RELATIONS
 
 VERSION = "activation-v1"
@@ -187,25 +186,11 @@ def activate(configuration: ActivationConfiguration, *, evidence: dict[str, Evid
     path = custody / (_digest({"environment": configuration.environment,
         "project": configuration.project_id, "revision": revision}) + ".json")
     body = _bytes(payload)
-    # Publish only a complete fsynced object. A crash before link leaves an
-    # unreferenced temporary file; a crash after link leaves a complete receipt.
-    descriptor, temporary_name = tempfile.mkstemp(prefix=".activation-", dir=custody)
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(descriptor, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            previous = json.loads(path.read_bytes())
-            if any(previous.get(key) != payload[key] for key in payload if key != "activated_at"):
-                raise ActivationRefused("activation revision already binds different evidence or configuration")
-            return EvidenceArtifact(path, sha256(path.read_bytes()).hexdigest())
-        return EvidenceArtifact(path, sha256(body).hexdigest())
-    finally:
-        temporary.unlink(missing_ok=True)
+        created = write_sealed(path, body, volatile=("activated_at",))
+    except ArtifactCollision as exc:
+        raise ActivationRefused("activation revision already binds different evidence or configuration") from exc
+    return EvidenceArtifact(path, sha256(body if created else path.read_bytes()).hexdigest())
 
 
 def validate_activation_evidence(configuration: ActivationConfiguration, *,

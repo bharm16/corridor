@@ -23,11 +23,11 @@ from corridor.pipeline_contracts import (
     QualificationPolicy, canonical_text, content_digest,
 )
 from corridor.principals import HumanPrincipal
+from corridor.receipts import write_sealed
 
 
 def _write_new(path: Path, value: dict):
-    with path.open("x") as output:
-        output.write(json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
+    write_sealed(path, json.dumps(value, indent=2, ensure_ascii=False, allow_nan=False) + "\n")
 
 
 def _retained_client(case, historical):

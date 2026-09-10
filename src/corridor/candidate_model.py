@@ -24,7 +24,6 @@ practice, documented in docs/operations/candidate-model-comparison.md, not code.
 
 from __future__ import annotations
 
-import hashlib
 import json
 import sys
 from dataclasses import dataclass
@@ -52,6 +51,7 @@ from corridor.experimental_database import (
 from corridor.extract_project import RouteSelector, extract_project
 from corridor.measurement_cases import CasePredictionError
 from corridor.models import Document, ExtractionRun, Project
+from corridor.receipts import identity
 
 COMPARISON_SCHEMA = "corridor.extraction-measurement-comparison.v1"
 
@@ -394,9 +394,7 @@ def comparison_artifact(
         "current_configuration": written["current_configuration"],
         "candidate_configuration": written["candidate_configuration"],
     }
-    written["comparison_identity"] = hashlib.sha256(
-        json.dumps(identity_material, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
+    written["comparison_identity"] = identity(identity_material)
     return written
 
 

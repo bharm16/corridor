@@ -18,6 +18,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.evidence_investigator_runtime import sha256_json
+from corridor.receipts import write_sealed
 from corridor.models import (
     Dependency,
     EvidenceInvestigationEvaluationReceipt,
@@ -385,8 +386,11 @@ def evaluate_shadow_runs(
     output_dir.mkdir(parents=True, exist_ok=True)
     machine_path = output_dir / f"{EVALUATION_VERSION}-{receipt.public_id}.json"
     summary_path = output_dir / f"{EVALUATION_VERSION}-{receipt.public_id}.md"
-    machine_path.write_text(json.dumps(machine, indent=2, sort_keys=True) + "\n")
-    summary_path.write_text(summary)
+    # The receipt gates promotion and its digest is the database row's, so
+    # the file and its Markdown twin are sealed: a rerun into the same
+    # directory can repeat them but never replace them.
+    write_sealed(machine_path, json.dumps(machine, indent=2, sort_keys=True) + "\n")
+    write_sealed(summary_path, summary)
     return EvaluationArtifact(receipt, machine_path, summary_path)
 
 

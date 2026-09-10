@@ -118,7 +118,6 @@ PRIVATE_JSON_DIGESTS = {
     # Stored fingerprints and identity columns on domain readings.
     "accepted_field_reading.py": "AcceptedFieldPopulation fingerprint",
     "baseline_adoption.py": "baseline binding and preview fingerprints",
-    "candidate_model.py": "comparison_identity column",
     "coordination_summary.py": "publication fingerprint",
     "facts.py": "fact digest input",
     "follow_up_bundles.py": "bundle body content_sha256",
@@ -126,7 +125,6 @@ PRIVATE_JSON_DIGESTS = {
     "key_date_table.py": "key-date reader identity",
     "later_revision.py": "importer reading identity",
     "measurement_collection.py": "customer-database identity",
-    "native_segment_measurement.py": "identity_sha256 field",
     "release_candidate.py": "release-candidate state_sha256",
     "release_preparation_supervisor.py": "supervised occurrence identity",
     "report_release.py": "released report snapshot_sha256",
@@ -149,7 +147,6 @@ PRIVATE_JSON_DIGESTS = {
     "workbook_render.py": "retirement content_sha256",
     # Provider and evaluation receipts.
     "connectors/microsoft365.py": "replay transport content_sha256",
-    "eval.py": "artifact_identity over evaluation material",
     "m365_replay.py": "Graph replay configuration digest",
     "render_profiles.py": "routed render identity in an output filename",
     # Retained released migration bytes; Alembic never loads this directory

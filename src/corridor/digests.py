@@ -112,7 +112,11 @@ def ascii_escaped_json(value: object) -> bytes:
     deduplication key), email and minutes spine delivery identities
     (`email_spine.py`, `minutes_spine.py`, stored idempotency keys over
     customer text that routinely carries non-ASCII), native reader-coverage
-    authority digests, and disposition/inventory receipts.
+    authority digests, disposition/inventory receipts, and measurement receipt
+    identities (`receipts.identity`: Extraction Measurement
+    `artifact_identity`, candidate `comparison_identity`, and the native
+    segment reader `identity_sha256`, each carried in a filename or a
+    retained receipt).
     """
     return json.dumps(
         value,

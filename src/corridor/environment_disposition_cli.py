@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import re
 import sys
-import tempfile
 from types import SimpleNamespace
 
 from corridor.aws_environment_disposition import AwsStackEnvironmentDestroyer, observe_stack_inventory
@@ -30,6 +29,7 @@ from corridor.environment_disposition import (
 from corridor.environment_export import export_environment_archive, transfer_export_custody
 from corridor.environment_rehearsal import AwsRestoreRehearsal, RestoreRehearsal, sql_restore_probe
 from corridor.principals import HumanPrincipal
+from corridor.receipts import write_private_snapshot
 
 
 _COMMANDS = ("inventory", "export", "custody", "plan", "execute", "status",
@@ -43,19 +43,8 @@ def _environment_reference(name):
 
 
 def _write_private_json(path, payload):
-    path = Path(path)
-    descriptor, temporary = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".partial", dir=path.parent)
-    try:
-        with os.fdopen(descriptor, "w") as stream:
-            json.dump(payload, stream, sort_keys=True, indent=2,
-                      default=lambda value: value.isoformat() if isinstance(value, datetime) else str(value))
-            stream.write("\n")
-            stream.flush()
-            os.fchmod(stream.fileno(), 0o600)
-            os.fsync(stream.fileno())
-        os.replace(temporary, path)
-    finally:
-        Path(temporary).unlink(missing_ok=True)
+    write_private_snapshot(Path(path), json.dumps(payload, sort_keys=True, indent=2,
+        default=lambda value: value.isoformat() if isinstance(value, datetime) else str(value)) + "\n")
 
 
 def _provider_clients(resources, *, source_profile, custody_profile, authorized):

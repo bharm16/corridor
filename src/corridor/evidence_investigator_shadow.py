@@ -36,6 +36,7 @@ from corridor.evidence_investigator_runtime import (
     sha256_json,
     run_receipted_investigation,
 )
+from corridor.receipts import write_sealed
 from corridor.models import (
     Candidate,
     CandidateDisposition,
@@ -373,15 +374,12 @@ async def run_v2_shadow_cohort(
 
 
 def write_shadow_cohort_manifest(cohort: V2ShadowCohort, path: Path) -> None:
-    """Create one local manifest without overwriting an earlier cohort receipt."""
+    """Seal one local manifest: a repeated write is accepted, a different cohort refused."""
     manifest = asdict(cohort.manifest)
     content = {key: value for key, value in manifest.items() if key != "manifest_sha256"}
     if sha256_json(content) != cohort.manifest.manifest_sha256:
         raise ValueError("shadow cohort manifest changed after it was sealed")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("x", encoding="utf-8") as stream:
-        json.dump(manifest, stream, indent=2, sort_keys=True)
-        stream.write("\n")
+    write_sealed(path, json.dumps(manifest, indent=2, sort_keys=True) + "\n")
 
 
 def observe_shadow_review(
