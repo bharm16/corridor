@@ -54,9 +54,12 @@ predecessor the caller read was superseded first.  ``fact_decisions`` and
 ``support_assessments`` each matched the substring ``"predecessor is stale"``
 at their own catch site, so a reworded RAISE would have turned a STALE refusal
 into a generic ``DBAPIError`` with nothing failing first.
-``database_refusal_kind`` is the one translator, its sentences are declared
-beside it, and ``tests/test_refusals.py`` reads each one back out of the
-migration source that defines the command.
+``database_refusal_kind`` is the one translator for these sentence-matched
+refusals; its sentences are declared beside it, and ``tests/test_refusals.py``
+reads each one back out of the migration source that defines the command.
+Commands that raise a stable leading token (``resolve_delta:``,
+``review_packet:``) are read by ``delta_refusals.database_refusal_code``
+instead, because a token names its code and needs no sentence table.
 """
 
 STALE = "stale"
