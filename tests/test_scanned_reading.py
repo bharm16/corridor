@@ -17,7 +17,7 @@ import pytest
 
 from corridor.admission import load_project
 from corridor.config import settings
-from corridor.models import DocPage, Document, Project
+from corridor.models import DocPage, Document, Project, ScannedPageObservation, UnreadableCellResolution
 from corridor.page_inventory import (
     OCR_ENGINES,
     TEXTRACT_ENGINE,
@@ -718,6 +718,26 @@ def test_a_textract_only_value_is_recorded_as_an_unconfirmed_reading(session, pr
     assert [row.value for row in appended] == ["PLACEHOLDER", "42"]
     assert {row.state for row in appended} == {"unconfirmed"}
     assert {row.policy_version for row in appended} == {"scanned-textract-reading-v1"}
+    # Each row resolves to the observation that produced it (#809): the
+    # adapter's binding, held as references, and the routed region the cell
+    # fell in. `run_id` is the harness's and stays null on this route.
+    [observation] = session.scalars(select(ScannedPageObservation)).all()
+    assert {row.observation_id for row in appended} == {observation.id}
+    assert {row.source_region_id for row in appended} == {"image-1"}
+    assert {row.run_id for row in appended} == {None}
+    assert {row.observation_unbound_reason for row in appended} == {None}
+    binding = reading.provenance
+    assert observation.document_id == document.id
+    assert observation.page_no == 1
+    assert observation.rendition_sha256 == RENDITION_SHA == binding["rendition_sha256"]
+    assert observation.authorization_record_id == "exp-0001" == binding["record_id"]
+    assert observation.scope_digest == binding["scope_digest"]
+    assert observation.raster_sha256 == binding["raster_sha256"]
+    assert observation.raw_response_sha256 == binding["raw_response_digest"]
+    assert observation.reading_sha256 == binding["normalized_reading_digest"]
+    assert observation.provider_model_version == binding["model_version"]
+    assert observation.provider_request_id == binding["request_identity"]["request_id"]
+    assert observation.observed_at.isoformat(timespec="seconds") == binding["recorded_at"]
 
 
 def test_an_unconfirmed_reading_displays_flagged(session, project, tmp_path):
@@ -829,6 +849,91 @@ def test_re_reading_the_same_page_does_not_bury_an_upgraded_cell(session, projec
             session, document_id=document.id, page_no=1, cell_key=cell_key
         ).state
         == "corroborated"
+    )
+
+
+def _second_observation_response() -> dict[str, Any]:
+    """The same cell, read differently: Textract reused row 1, column 1."""
+    page = Page()
+    word = page.word("CenterPoynt", (100, 100, 190, 112))
+    page.line([word])
+    cell = page.cell(1, 1, (90, 95, 200, 118), [word])
+    page.table((90, 95, 200, 118), [cell])
+    return page.response()
+
+
+def test_a_new_observation_of_a_cell_appends_beside_a_corroboration_and_inherits_nothing(
+    session, project, tmp_path
+):
+    """Observation versus resolution (#809).
+
+    A second provider observation of the same cell key is a new observation.
+    It does not overwrite the first, it does not erase the corroboration the
+    first earned — that row stays bound to the observation it was checked
+    against — and it does not inherit that corroboration because Textract
+    reused a row and column index. The new reading is unconfirmed until it
+    earns its own.
+    """
+    document = _document(session, project, filename="matrix/scan.pdf", text="", text_source="ocr")
+    first = _scanned_reading(tmp_path, _corroborating_response())
+    record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=first
+    )
+    cell_key = scanned_cell_key(first.unconfirmed_readings[0], page_no=1)
+    _document(
+        session,
+        project,
+        filename="sue/level-a.xlsx",
+        text="SUE Level A\nOwner: CenterPoint",
+        text_source="cells",
+    )
+    load_project(session, project.id)
+    corroborated = current_resolution(
+        session, document_id=document.id, page_no=1, cell_key=cell_key
+    )
+    assert corroborated.state == "corroborated"
+
+    # A different response for the same raster, read under its own scope
+    # directory so the retained first response is not what answers.
+    second = _scanned_reading(tmp_path / "again", _second_observation_response())
+    assert scanned_cell_key(second.unconfirmed_readings[0], page_no=1) == cell_key
+    [appended] = record_unconfirmed_readings(
+        session, project_id=project.id, document_id=document.id, reading=second
+    )
+    load_project(session, project.id)
+
+    observations = session.scalars(
+        select(ScannedPageObservation).order_by(ScannedPageObservation.id)
+    ).all()
+    assert len(observations) == 2
+    assert observations[0].raw_response_sha256 != observations[1].raw_response_sha256
+    assert corroborated.observation_id == observations[0].id
+    assert appended.observation_id == observations[1].id
+    assert (appended.state, appended.value) == ("unconfirmed", "CenterPoynt")
+    assert appended.corroboration_document_id is None
+    # The earlier corroboration is untouched, and still the only one.
+    rows = session.scalars(
+        select(UnreadableCellResolution)
+        .where(
+            UnreadableCellResolution.document_id == document.id,
+            UnreadableCellResolution.cell_key == cell_key,
+        )
+        .order_by(UnreadableCellResolution.id)
+    ).all()
+    assert [(row.state, row.observation_id) for row in rows] == [
+        ("unconfirmed", observations[0].id),
+        ("corroborated", observations[0].id),
+        ("unconfirmed", observations[1].id),
+    ]
+    assert current_resolution(
+        session, document_id=document.id, page_no=1, cell_key=cell_key
+    ).id == appended.id
+    # Recording the second observation again is idempotent per observation.
+    assert (
+        record_unconfirmed_readings(
+            session, project_id=project.id, document_id=document.id, reading=second
+        )
+        == ()
     )
 
 

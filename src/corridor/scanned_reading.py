@@ -50,12 +50,14 @@ from __future__ import annotations
 
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Literal, Protocol
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.models import UnreadableCellResolution
+from corridor.models import ScannedPageObservation, UnreadableCellResolution
 from corridor.page_inventory import FIXED_POINT_SCALE, PageRoutingDecision, PdfRect
 from corridor.token_layers import (
     READER_ENGINE,
@@ -64,7 +66,7 @@ from corridor.token_layers import (
     provider_confidence,
     textract_token_layer,
 )
-from corridor.unreadable_cells import CellReadingRefused, current_resolution
+from corridor.unreadable_cells import CellReadingRefused
 from corridor.verify import normalize
 
 # The adapter package, and only through its boundary. The rung underneath it —
@@ -581,6 +583,71 @@ def scanned_cell_key(value: ScannedCellValue, *, page_no: int) -> str:
     return f"scan:p{page_no}:t{value.table}:r{value.row}:c{value.column}"
 
 
+def record_page_observation(
+    session: Session,
+    *,
+    project_id: int,
+    document_id: int,
+    reading: ScannedPageReading,
+) -> ScannedPageObservation:
+    """The observation this reading was read out of, as a row: found or appended.
+
+    Every field is a reference the adapter's binding already carries (#732):
+    the authorization record by id, the cache scope and the raster, response
+    and reading by digest, and what the provider reported about itself. The
+    observation's identity is those references together, so the same page
+    re-read out of the same retained response returns the row it already has,
+    and a different response, raster, scope or record appends a new one beside
+    it — never over it. A reading whose binding is missing any of them cannot
+    be recorded, because a resolution bound to a partial observation would be
+    the unbound row #809 exists to end.
+    """
+
+    binding = reading.provenance
+    required = {
+        "record_id": binding.get("record_id"),
+        "rendition_sha256": binding.get("rendition_sha256"),
+        "scope_digest": binding.get("scope_digest"),
+        "raster_sha256": binding.get("raster_sha256"),
+        "raw_response_digest": binding.get("raw_response_digest"),
+        "normalized_reading_digest": binding.get("normalized_reading_digest"),
+        "recorded_at": binding.get("recorded_at"),
+    }
+    missing = sorted(name for name, value in required.items() if not value)
+    if missing:
+        raise ValueError(
+            f"page {reading.page_no}: the reading's binding lacks "
+            f"{', '.join(missing)}; an Unconfirmed reading cannot be recorded "
+            "without the observation that produced it"
+        )
+    identity = dict(
+        document_id=document_id,
+        page_no=reading.page_no,
+        authorization_record_id=str(required["record_id"]),
+        scope_digest=required["scope_digest"],
+        raster_sha256=required["raster_sha256"],
+        raw_response_sha256=required["raw_response_digest"],
+        reading_sha256=required["normalized_reading_digest"],
+    )
+    existing = session.scalar(
+        select(ScannedPageObservation).filter_by(**identity)
+    )
+    if existing is not None:
+        return existing
+    request_identity = binding.get("request_identity") or {}
+    observation = ScannedPageObservation(
+        project_id=project_id,
+        rendition_sha256=required["rendition_sha256"],
+        provider_model_version=binding.get("model_version"),
+        provider_request_id=request_identity.get("request_id"),
+        observed_at=datetime.fromisoformat(str(required["recorded_at"])),
+        **identity,
+    )
+    session.add(observation)
+    session.flush([observation])
+    return observation
+
+
 def record_unconfirmed_readings(
     session: Session,
     *,
@@ -600,21 +667,39 @@ def record_unconfirmed_readings(
 
     Only the unconfirmed values are recorded. A cell whose characters came from
     the document's own glyphs is on the ordinary source-verification path and
-    has no business in this class. Appending is idempotent per cell: a cell that
-    already carries a resolution is left alone, so re-reading a page does not
-    bury a corroboration under a fresh unconfirmed row.
+    has no business in this class.
+
+    Observation versus resolution (#809). Every row is bound to the processing
+    observation it was read out of (`record_page_observation`) and to the
+    routed region the cell fell in. Appending is idempotent per cell *per
+    observation*: a cell this observation already has a row for is left alone,
+    so re-reading a page out of the same retained response does not bury a
+    corroboration under a fresh unconfirmed row. A different observation of a
+    cell key that already has rows appends a new unconfirmed row bound to the
+    new observation. It does not overwrite the earlier observation, it does not
+    erase the earlier corroboration — that row stays bound to its own
+    observation — and it inherits nothing from it merely because Textract
+    reused a row and column index.
     """
 
+    unconfirmed = reading.unconfirmed_readings
+    if not unconfirmed:
+        return ()
+    observation = record_page_observation(
+        session, project_id=project_id, document_id=document_id, reading=reading
+    )
     appended: list[UnreadableCellResolution] = []
-    for value in reading.unconfirmed_readings:
+    for value in unconfirmed:
         cell_key = scanned_cell_key(value, page_no=reading.page_no)
-        existing = current_resolution(
-            session,
-            document_id=document_id,
-            page_no=reading.page_no,
-            cell_key=cell_key,
+        already = session.scalar(
+            select(UnreadableCellResolution.id).where(
+                UnreadableCellResolution.document_id == document_id,
+                UnreadableCellResolution.page_no == reading.page_no,
+                UnreadableCellResolution.cell_key == cell_key,
+                UnreadableCellResolution.observation_id == observation.id,
+            ).limit(1)
         )
-        if existing is not None:
+        if already is not None:
             continue
         row = UnreadableCellResolution(
             project_id=project_id,
@@ -625,6 +710,8 @@ def record_unconfirmed_readings(
             value=value.value,
             origin="harness",
             policy_version=UNCONFIRMED_READING_POLICY_VERSION,
+            observation_id=observation.id,
+            source_region_id=value.region_id,
         )
         session.add(row)
         appended.append(row)

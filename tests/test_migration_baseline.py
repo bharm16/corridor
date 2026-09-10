@@ -73,7 +73,10 @@ EXPECTED_SCHEMA_SHA256 = (
     # activation ledgers (-4 tables and -4 sequences, +1 of each), and its
     # `ck_policy_activation_event_admission_reason` check keeps that family's
     # reason inside the 128 characters its restored predecessor column holds.
-    "c17eb72aaeab0e65c8e52c21a1a963f7533cf28f5d7b9826e01e514f2c11bb89"
+    # #809 adds `scanned_page_observations` (+1 table, +1 sequence, its own
+    # partition policy) and gives `unreadable_cell_resolutions` the three
+    # binding columns and `ck_unreadable_cell_resolution_observation`.
+    "30fdf9341a96875b20c41904fb7c51ed1db06bbf2355d1e498059e1268f7b565"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -187,6 +190,7 @@ COMPOSED_UPGRADE = (
     "native_segments",
     "environment_binding",
     "outgoing_requests",
+    "scanned_observations",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -211,6 +215,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "scanned_observations",
     "environment_binding",
     "native_segments",
     "public_privileges",
@@ -2274,6 +2279,151 @@ def _assert_history_downgrade_refuses_data_on_this_transition(session_factory, p
                 assert read_history(session, project_id, batch.id).content_sha256 == batch.content_sha256
         finally:
             rollback_scope.rollback()
+
+
+def test_a_scanned_reading_binds_to_its_observation_and_an_earlier_one_says_it_cannot(tmp_path):
+    """#809, on exact rows: the binding, the declared unknown, and the refusals.
+
+    A scanned reading #804 wrote before the binding existed comes through the
+    transition marked ``predates_observation_binding`` and otherwise untouched;
+    a human decision beside it, which no observation read, carries no reason. A
+    new scanned reading is refused unless it names an observation or the one
+    reason; an observation is one row per identity; a reason beside a binding
+    is refused. With no observation recorded the downgrade hands the earlier
+    rows back exactly, without the three columns and without the relation; the
+    relation is append-only, so the round trip is proved before an observation
+    is written, and the downgrade refuses once one is.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        label="baseline_observation",
+        migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        with database.session_factory.begin() as session:
+            project_id = session.scalar(text(
+                "insert into projects (slug, name, is_synthetic) values "
+                "('observation-binding', 'Observation binding', true) returning id"
+            ))
+            document_id = session.scalar(text(
+                "insert into documents (project_id, sha256, filename, doc_type, parse_status) "
+                "values (:project_id, :digest, 'matrix/scan.pdf', 'matrix', 'parsed') returning id"
+            ), {"project_id": project_id, "digest": "e" * 64})
+            legacy_id = session.scalar(text(
+                "insert into unreadable_cell_resolutions (project_id, document_id, page_no, "
+                " cell_key, state, value, origin, policy_version) values "
+                "(:project_id, :document_id, 1, 'scan:p1:t0:r1:c1', 'unconfirmed', 'SCANNED', "
+                " 'harness', 'scanned-textract-reading-v1') returning id"
+            ), {"project_id": project_id, "document_id": document_id})
+            human_id = session.scalar(text(
+                "insert into unreadable_cell_resolutions (project_id, document_id, page_no, "
+                " cell_key, state, value, origin, recorded_by) values "
+                "(:project_id, :document_id, 1, 'scan:p1:t0:r1:c1', 'corroborated', 'SCANNED', "
+                " 'human_decision', 'local:person') returning id"
+            ), {"project_id": project_id, "document_id": document_id})
+
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+        with database.session_factory() as session:
+            carried = session.execute(text(
+                "select id, run_id, observation_id, source_region_id, "
+                "observation_unbound_reason from unreadable_cell_resolutions order by id"
+            )).all()
+        assert [tuple(row) for row in carried] == [
+            (legacy_id, None, None, None, "predates_observation_binding"),
+            (human_id, None, None, None, None),
+        ]
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        with database.session_factory() as session:
+            restored = session.execute(text(
+                "select id, project_id, document_id, page_no, cell_key, state, value, "
+                "origin, policy_version, recorded_by from unreadable_cell_resolutions order by id"
+            )).all()
+            columns = set(session.scalars(text(
+                "select column_name from information_schema.columns "
+                "where table_schema = 'public' and table_name = 'unreadable_cell_resolutions'"
+            )).all())
+            relation = session.scalar(text(
+                "select to_regclass('public.scanned_page_observations')"
+            ))
+        assert [tuple(row) for row in restored] == [
+            (legacy_id, project_id, document_id, 1, "scan:p1:t0:r1:c1", "unconfirmed",
+             "SCANNED", "harness", "scanned-textract-reading-v1", None),
+            (human_id, project_id, document_id, 1, "scan:p1:t0:r1:c1", "corroborated",
+             "SCANNED", "human_decision", None, "local:person"),
+        ]
+        assert not columns & {"observation_id", "source_region_id", "observation_unbound_reason"}
+        assert relation is None
+
+        again = _alembic(database_url, "upgrade", "head")
+        assert again.returncode == 0, again.stderr
+        scanned_row = (
+            "insert into unreadable_cell_resolutions (project_id, document_id, page_no, "
+            " cell_key, state, value, origin, policy_version, observation_id, "
+            " source_region_id, observation_unbound_reason) values "
+            "(:project_id, :document_id, 1, 'scan:p1:t0:r1:c1', 'unconfirmed', 'SCANNED', "
+            " 'harness', 'scanned-textract-reading-v1', :observation_id, :region, :reason) "
+            "returning id"
+        )
+        cell = {"project_id": project_id, "document_id": document_id}
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError) as unbound:
+                with session.begin():
+                    session.execute(text(scanned_row), {
+                        **cell, "observation_id": None, "region": None, "reason": None,
+                    })
+        assert "ck_unreadable_cell_resolution_observation" in str(unbound.value)
+
+        observation = (
+            "insert into scanned_page_observations (project_id, document_id, "
+            " rendition_sha256, page_no, authorization_record_id, scope_digest, "
+            " raster_sha256, raw_response_sha256, reading_sha256, "
+            " provider_model_version, provider_request_id, observed_at) values "
+            "(:project_id, :document_id, :rendition, 1, 'exp-0001', :scope, :raster, "
+            " :response, :reading, '1.0', 'req-1', '2026-09-10T12:00:00Z') returning id"
+        )
+        identity = {
+            **cell, "rendition": "e" * 64, "scope": "1" * 64, "raster": "2" * 64,
+            "response": "3" * 64, "reading": "4" * 64,
+        }
+        with database.session_factory.begin() as session:
+            observation_id = session.scalar(text(observation), identity)
+            bound_id = session.scalar(text(scanned_row), {
+                **cell, "observation_id": observation_id, "region": "image-1", "reason": None,
+            })
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError) as duplicate:
+                with session.begin():
+                    session.execute(text(observation), identity)
+        assert "uq_scanned_page_observation_identity" in str(duplicate.value)
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError) as contradictory:
+                with session.begin():
+                    session.execute(text(scanned_row), {
+                        **cell, "observation_id": observation_id, "region": "image-1",
+                        "reason": "predates_observation_binding",
+                    })
+        assert "ck_unreadable_cell_resolution_observation" in str(contradictory.value)
+        with database.session_factory() as session:
+            bound = session.execute(text(
+                "select observation_id, source_region_id, observation_unbound_reason, run_id "
+                "from unreadable_cell_resolutions where id = :id"
+            ), {"id": bound_id}).one()
+        assert tuple(bound) == (observation_id, "image-1", None, None)
+
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert refused.returncode != 0
+        assert "scanned page observations cannot be represented" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
 
 
 def test_the_activation_ledger_carries_an_event_admission_reason_back_unchanged():
