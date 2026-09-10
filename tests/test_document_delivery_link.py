@@ -604,3 +604,30 @@ def test_the_backfill_stays_inside_the_project_it_was_given(session, tmp_path):
         )
     ).all()
     assert unlinked
+
+
+def test_the_backfill_is_reachable_as_the_operator_command_it_is():
+    """A one-shot historical pass is still an operator entry point, not dead code.
+
+    This module lives in the application package with no caller in `src`, which
+    is what an operator command looks like here: a `main` and a `make` target,
+    the same shape as every `*_cli`. It stays reachable that way rather than
+    moving under `scripts/`, because the pass reads customer relations through
+    the ordinary session factory and an operator runs it once per deployment
+    that registered Documents before #687 — after which the intake paths write
+    the link themselves and this has nothing left to find.
+    """
+
+    from corridor import document_delivery_backfill
+
+    recipe = (
+        (Path(__file__).parents[1] / "Makefile")
+        .read_text(encoding="utf-8")
+        .split("\nlink-deliveries:\n", 1)[1]
+        .split("\n\n", 1)[0]
+    )
+    assert "python -m corridor.document_delivery_backfill" in recipe
+    assert callable(document_delivery_backfill.main)
+    # Anything but the one documented invocation is a usage error, not a sweep.
+    assert document_delivery_backfill.main(["sweep-everything"]) == 2
+    assert document_delivery_backfill.main([]) == 2
