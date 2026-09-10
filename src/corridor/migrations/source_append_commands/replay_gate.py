@@ -420,6 +420,10 @@ def upgrade(op) -> None:
         "alter table public.policy_activations "
         "enable trigger policy_activations_require_passing_receipt"
     )
+    # `cascade` takes each relation's own triggers, indexes and sequence. The
+    # two guard *functions* the dropped triggers called stay: the downgrade
+    # re-attaches them, and three of the four are still in use by the receipt and
+    # derivation relations beside them.
     for table, _family in (RECEIPT_BOUND_LEDGER, *REPLACED_LEDGERS):
         op.execute(f"drop table public.{table} cascade")
     # No enabled live-pilot route reads an activation ledger (#680), and a new
