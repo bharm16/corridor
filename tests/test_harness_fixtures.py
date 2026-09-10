@@ -16,6 +16,7 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+import conftest as harness
 from harness_support import as_record_decision_role
 
 from corridor.db import capability_engine
@@ -50,18 +51,20 @@ def test_a_write_in_the_shared_session_reaches_no_other_connection(session):
         assert _slugs(independent, slug) == 0
 
 
-def test_the_shared_session_writes_a_row_the_next_test_must_not_see(session):
-    session.add(Project(slug=LEFTOVER, name="Leftover", is_synthetic=True))
-    session.flush()
-    assert session.scalar(
-        text("select count(*) from projects where slug = :slug"), {"slug": LEFTOVER}
-    ) == 1
-
-
-def test_the_next_test_sees_none_of_the_previous_write(session):
-    assert session.scalar(
-        text("select count(*) from projects where slug = :slug"), {"slug": LEFTOVER}
-    ) == 0
+def test_a_write_in_the_shared_session_is_gone_once_the_session_ends():
+    """One test proves the rollback: the pair form let worksteal split it across workers."""
+    with harness.rollback_scoped_session() as scoped:
+        scoped.add(Project(slug=LEFTOVER, name="Leftover", is_synthetic=True))
+        scoped.flush()
+        assert scoped.scalar(
+            text("select count(*) from projects where slug = :slug"), {"slug": LEFTOVER}
+        ) == 1
+    with capability_engine("owner").connect() as independent:
+        assert _slugs(independent, LEFTOVER) == 0
+    with harness.rollback_scoped_session() as later:
+        assert later.scalar(
+            text("select count(*) from projects where slug = :slug"), {"slug": LEFTOVER}
+        ) == 0
 
 
 def test_the_project_fixture_is_a_flushed_synthetic_row(session, project):
@@ -72,13 +75,13 @@ def test_the_project_fixture_is_a_flushed_synthetic_row(session, project):
         assert _slugs(independent, project.slug) == 0
 
 
-def test_each_test_receives_its_own_project_slug(project):
-    assert project.slug.startswith("project-")
-    assert project.slug != test_each_test_receives_its_own_project_slug.seen
-    test_each_test_receives_its_own_project_slug.seen = project.slug
-
-
-test_each_test_receives_its_own_project_slug.seen = None
+def test_every_synthetic_project_carries_a_fresh_slug(session, project):
+    """Two projects from the one generator in one session never share a slug."""
+    second = harness.synthetic_project(session)
+    assert project.slug.startswith("project-") and second.slug.startswith("project-")
+    assert project.slug != second.slug
+    assert second.id is not None and second.id != project.id
+    assert session.get(Project, second.id) is second
 
 
 def test_the_role_context_manager_borrows_and_returns_the_role(session):
