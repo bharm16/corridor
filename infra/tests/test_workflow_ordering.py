@@ -32,8 +32,14 @@ INSTALLERS = (
 CREDENTIAL_ACTION = "aws-actions/configure-aws-credentials"
 
 # Every workflow in the repository, so a new one is covered the day it lands
-# rather than the day someone remembers to add it to a list.
-WORKFLOW_FILES = sorted(path.name for path in WORKFLOWS.glob("*.yml"))
+# rather than the day someone remembers to add it to a list. GitHub reads both
+# suffixes; collecting only one would leave the same silent hole as a job-name
+# list. An empty list would parametrize the credential guard into nothing, so
+# it fails collection rather than reporting a sweep it never ran.
+WORKFLOW_FILES = sorted(
+    path.name for path in WORKFLOWS.iterdir() if path.suffix in (".yml", ".yaml")
+)
+assert WORKFLOW_FILES, f"no workflows found under {WORKFLOWS}"
 
 
 def _workflow(name: str) -> dict:
