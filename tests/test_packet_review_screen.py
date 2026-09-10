@@ -459,7 +459,7 @@ def test_an_unselected_child_stays_open_and_is_never_implied(
     )
 
     remaining = read_review_items(session, project_id=project.id, as_of=NOW)
-    assert sorted(remaining.actionable_delta_ids) == sorted(ids[1:])
+    assert sorted(remaining.reading.actionable_delta_ids) == sorted(ids[1:])
 
 
 def test_deferring_needs_a_date_and_says_so_in_an_error_summary(
@@ -545,7 +545,7 @@ def test_a_stale_child_refuses_the_save_and_keeps_the_selections(
     assert f'id="child-{ids[1]}" name="child"' in response.text
     assert f'value="{ids[1]}" checked' in response.text
     remaining = read_review_items(session, project_id=project.id, as_of=NOW)
-    assert remaining.actionable_delta_ids == (ids[1],)
+    assert remaining.reading.actionable_delta_ids == (ids[1],)
     assert ids[0] in [row.delta_id for row in remaining.reading.stale]
     assert not [
         row for row in remaining.reading.standings if row.standing == "resolved"

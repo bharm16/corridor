@@ -104,7 +104,7 @@ produced a receipt claiming a rule that never ran.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, replace
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -308,7 +308,31 @@ KEY_REASONS: Mapping[str, str] = {
 
 
 class ReviewPacketReadingRefused(ValueError):
-    """A caller cannot build this reading, or cannot act on it as asked."""
+    """A caller cannot build this reading, or cannot act on it as asked.
+
+    One class covers both halves of ADR-0085's Work List, because the
+    exactly-once rule is one rule: a delta an item does not offer is refused the
+    same way whether the screen noticed it or the binding did.  ``packet_review``
+    exports it under its own screen-facing name, and the review routes catch
+    that name, so two classes meant a refusal from the binding reached a route
+    that was only prepared for the screen's.
+
+    A refusal about one child's own answer carries which child and which
+    control, so the screen can link the message to the input that holds it
+    without deciding anything a second time.  The rule lives in these modules;
+    the screen only renders what they said.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        delta_id: int | None = None,
+        control: str | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.delta_id = delta_id
+        self.control = control
 
 
 # --- what the reading returns ---------------------------------------------
@@ -356,6 +380,28 @@ class ActionableItem:
         """Why the rule keyed this item this way, in one sentence."""
 
         return KEY_REASONS[self.key_reason]
+
+    @property
+    def offer_identity(self) -> tuple[Any, ...]:
+        """Everything the partition decided about this item, in one value.
+
+        A presentation layer extends this item rather than wrapping it, so "is
+        this the item the reading offered?" cannot be answered by comparing
+        objects that also carry a headline and a customer's words.  It is
+        answered here, over the partition's own fields alone.
+        """
+
+        return tuple(getattr(self, field.name) for field in fields(ActionableItem))
+
+    def as_fields(self) -> dict[str, Any]:
+        """This item's own fields, for a layer that adds presentation to them.
+
+        Deliberately unnamed one by one: ``packet_review`` copies whatever the
+        partition decided without spelling a grouping field itself, so the rule
+        that only this module decides grouping survives the extension.
+        """
+
+        return {field.name: getattr(self, field.name) for field in fields(ActionableItem)}
 
 
 @dataclass(frozen=True, slots=True)
@@ -941,7 +987,7 @@ def bind_child_decision(
     well as of the reading.
     """
 
-    _require_offered(reading, item, (request.delta_id,))
+    require_offered(reading, item, (request.delta_id,))
     if request.project_id != reading.project_id:
         raise ReviewPacketReadingRefused(
             "a decision belongs to the project its reading was taken for"
@@ -969,7 +1015,7 @@ def bind_packet_request(
 
     if not children:
         raise ReviewPacketReadingRefused("a packet act names at least one child")
-    _require_offered(reading, item, tuple(child.delta_id for child in children))
+    require_offered(reading, item, tuple(child.delta_id for child in children))
     return ReviewPacketRequest(
         project_id=reading.project_id,
         grouping_rule_version=item.grouping_rule_version,
@@ -1303,10 +1349,18 @@ def _as_date(value: Any) -> date | None:
         return None
 
 
-def _require_offered(
+def require_offered(
     reading: DeltaReading, item: ActionableItem, delta_ids: Sequence[int]
 ) -> None:
-    if item not in reading.items:
+    """Refuse a delta this item does not offer: ADR-0085's exactly-once rule.
+
+    Public because the review screen refuses the same thing before it indexes
+    its own children, and one rule with two implementations is how a delta ends
+    up refused by one and not the other.  #526 re-checks it in SQL, which is the
+    authority; these are the readable halves.
+    """
+
+    if item.offer_identity not in {other.offer_identity for other in reading.items}:
         raise ReviewPacketReadingRefused(
             "the item is not part of this reading; take the reading again"
         )
