@@ -5,6 +5,7 @@ from types import SimpleNamespace
 import pytest
 
 from corridor.product_proving_database import (
+    BACKUP_DATABASE_PREFIX,
     DatabaseFingerprint,
     SharedDevelopmentRestoreSummary,
 )
@@ -65,7 +66,7 @@ def _inputs(pass_number=1):
         manifest_sha256=baseline.manifest_sha256,
         dump_sha256=baseline.dump_sha256,
         verification_database_name="corridor_pp_restore_test",
-        backup_database_name="corridor_pre_proving_test",
+        backup_database_name=f"{BACKUP_DATABASE_PREFIX}test",
         operation_id="11111111-1111-4111-8111-111111111111",
         started_at="2026-08-26T12:00:00+00:00",
         completed_at="2026-08-26T12:00:01+00:00",

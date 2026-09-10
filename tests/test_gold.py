@@ -16,7 +16,7 @@ import json
 import pytest
 
 from corridor.db import Session, engine
-from corridor.gold import WORKSHEET_COLUMNS, prepare, render, worksheet
+from corridor.gold import WORKSHEET_COLUMNS, prepare, render, row_quote, worksheet
 from corridor.models import Candidate, DocPage, Document, Project
 
 from pdf_fixture_support import PdfFixture, TextOverflow
@@ -519,3 +519,9 @@ def test_partial_machine_reference_publication_refuses_divergent_existing_bytes(
         publish_machine_reference(project.slug, gold, directory=tmp_path)
 
     assert csv_path.read_text() == "divergent bytes\n"
+
+
+def test_the_row_quote_is_the_whole_row():
+    """A citation of a whole row is its non-empty cells in reading order."""
+    row = ["FOC1-1", "AT&T Texas (SWBT)", "Telecom", "", "FOC", "UG"]
+    assert row_quote(row) == "FOC1-1 AT&T Texas (SWBT) Telecom FOC UG"

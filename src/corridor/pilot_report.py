@@ -9,12 +9,11 @@ cohort boundaries for the pilot checkpoint. No function writes project state.
 
 from collections import defaultdict
 from datetime import datetime, timedelta, timezone
-from hashlib import sha256
-import json
 import math
 from statistics import median
 from zoneinfo import ZoneInfo
 
+from corridor import digests
 from corridor.shadow_comparison import ComparisonPolicy, assess_material_sample
 
 
@@ -25,8 +24,9 @@ OPERATIONS_CATEGORIES = ("operations_setup", "operations_triage", "connector_mai
 VOLUME_STRATA = ("quiet", "ordinary", "burst")
 
 
-def digest(value):
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode()).hexdigest()
+# Retained encoding: pilot evidence digests were sealed with non-ASCII
+# escaped.
+digest = digests.ascii_escaped_sha256
 
 
 def instant(value):

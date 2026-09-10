@@ -49,8 +49,8 @@ from corridor.proposed_deltas import (
     ProposedSubjectTarget,
     create_proposed_delta_group,
     record_delta_deferral,
-    record_delta_supersession,
 )
+from delta_supersession_support import record_delta_supersession
 from corridor.review_packet_reading import (
     ACTIONABLE,
     APPARENT_REMOVAL_BAND,

@@ -185,14 +185,16 @@ and detects authority drift during collection. The comparison entry point
 every collection blocker. Its reference readings still require independent
 retained custody; matching a native reading against itself proves no migration.
 
-`legacy_cutover.assess_cutover` evaluates declared start/end, cohort, traffic
-owner, decision authority, zero-divergence threshold and maximum observation gap.
-Missing cohort samples, duplicate/out-of-window observations and divergence fail
-closed. Elapsed time alone cannot establish a completed shadow window. Retirement
-also needs the named decision, removed compatibility writes, readable history,
-no hold, verified expired backups and an external disposition receipt. It changes
-no traffic or database writer permissions; real observations and the owner's live
-decision remain customer-specific gates.
+No cutover evaluator ships yet. A `legacy_cutover` module was written ahead of
+the decision it was meant to serve, and nothing ever called it, so it is
+retired rather than left as a second unexercised statement of the rule.
+[ADR-0083](../adr/0083-corrections-to-the-consolidation-set-after-the-realignment-review.md)
+still governs what a cutover must declare before the writer switch: stage 5
+declares the window start and end, the allowed customer cohort, the divergence
+thresholds that trigger rollback, the traffic owner, and the decision
+authority. Whatever evaluates that declaration must be built against the real
+customer plan, with the observations and the owner's live decision that only
+that plan supplies.
 
 ## Operator entry point and validation
 
@@ -209,7 +211,7 @@ Publication uses an owner-only temporary file and atomic replacement. Symlink
 destinations are refused; a failed publication preserves the previous export.
 
 Validation seams are `test_legacy_history.py`, `test_legacy_history_readings.py`,
-`test_reader_coverage.py`, `test_legacy_cutover.py`, `test_current_record.py`, and
+`test_reader_coverage.py`, `test_current_record.py`, and
 `test_evidence_citations.py`, followed by CI migration/authority/release gates.
 The coordinator alone runs them. Storage reduction is **not claimed**: this
 rehearsal retains originals and custody payloads, increasing retained bytes until

@@ -13,6 +13,7 @@ from hashlib import sha256
 import json
 from typing import Any
 
+from corridor import digests
 from corridor.control_plane import EnvironmentRegistration
 
 
@@ -60,8 +61,9 @@ class AwsDispositionResources:
         return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
-def json_digest(value) -> str:
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+# Retained encoding: disposition inventory receipts were sealed with
+# non-ASCII escaped.
+json_digest = digests.ascii_escaped_sha256
 
 
 def provider_rows(client, operation, field, **parameters):

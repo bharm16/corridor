@@ -79,8 +79,8 @@ from corridor.proposed_deltas import (
     ProposedDeltaValues,
     ProposedSubjectTarget,
     create_proposed_delta_group,
-    record_delta_supersession,
 )
+from delta_supersession_support import record_delta_supersession
 from corridor.support_assessments import FactProposition, record_support_assessment
 
 

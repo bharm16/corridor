@@ -11,10 +11,10 @@ reasons, and durable receipt rows remain domain-specific.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from hashlib import sha256
-import json
 import time
 from typing import Any, Callable
+
+from corridor import digests
 
 
 @dataclass(frozen=True)
@@ -56,17 +56,15 @@ def sanitize_text(value: object, *, max_len: int = 2_000) -> str:
 
 
 def canonical_json(payload: object) -> str:
-    return json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        default=str,
-    )
+    """The retained serialization of a receipt or an untrusted snapshot.
+
+    `corridor.digests.coerced_json` owns the encoding; explanation callers
+    hand the result to a model and to a receipt column as text.
+    """
+    return digests.coerced_json(payload).decode()
 
 
-def content_sha256(payload: object) -> str:
-    return sha256(canonical_json(payload).encode("utf-8")).hexdigest()
+content_sha256 = digests.coerced_sha256
 
 
 def budget_snapshot(configuration: object) -> dict:

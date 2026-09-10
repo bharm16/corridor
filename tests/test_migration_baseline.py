@@ -156,8 +156,7 @@ def test_fresh_database_matches_the_released_schema_exactly():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_fresh_",
+        label="baseline_fresh",
         reuse_migrated_template=False,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
@@ -207,8 +206,7 @@ def test_the_supported_database_upgrades_to_the_current_head_and_back(tmp_path):
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_transition_",
+        label="baseline_transition",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -425,8 +423,7 @@ def test_downgrade_across_the_consolidated_baseline_is_unsupported():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_downgrade_",
+        label="baseline_downgrade",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1205,8 +1202,7 @@ def test_the_recorded_verbal_backfill_reconciles_one_to_one(tmp_path):
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_verbal_",
+        label="baseline_verbal",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1371,8 +1367,7 @@ def test_the_recorded_verbal_backfill_refuses_an_unreconcilable_fact(tmp_path):
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_verbal_bad_",
+        label="baseline_verbal_bad",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1522,8 +1517,7 @@ def test_the_deduplication_transition_carries_identified_rows_across_unchanged()
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_dedup_",
+        label="baseline_dedup",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1660,8 +1654,7 @@ def test_the_deduplication_transition_refuses_a_fact_with_no_identity():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_dedup_bad_",
+        label="baseline_dedup_bad",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1761,8 +1754,7 @@ def test_the_delivery_family_transition_refuses_a_downgrade_that_would_lose_a_pu
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_delivery_",
+        label="baseline_delivery",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -1903,8 +1895,7 @@ def test_the_stored_mapping_revision_refuses_a_downgrade_that_would_lose_it():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_mapping_",
+        label="baseline_mapping",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:
@@ -2024,8 +2015,7 @@ def test_the_report_revision_binding_refuses_a_downgrade_that_would_lose_it():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_baseline_binding_",
+        label="baseline_binding",
         migration_revision=SUPPORTED_HEAD,
         reuse_migrated_template=True,
     ) as database:

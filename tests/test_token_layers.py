@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -13,10 +14,12 @@ from corridor.models import Document, Project, TokenLayerManifest
 from corridor.render_profiles import render_page_derivative
 from corridor.token_layers import (
     EngineIdentity,
+    NATIVE_INTEGRATION_VERSION,
     READER_ENGINE,
     READER_NATIVE_ADAPTER_VERSION,
     Token,
     TokenLayer,
+    native_integration_digest,
     page_text_projection,
     persist_token_layer,
     read_native_token_layers,
@@ -252,3 +255,69 @@ def test_a_reader_layer_is_written_beside_the_earlier_layer_not_over_it(tmp_path
         session.close()
         transaction.rollback()
         connection.close()
+
+
+def test_the_native_assembly_digest_is_declared_and_not_hashed_source_text(
+    monkeypatch,
+):
+    """A comment may not retire a customer's citation.
+
+    ``integration_sha256`` is recorded on every ``pdf_span`` and ``pdf_cell``
+    reading and has to match on replay, so whatever it is computed from decides
+    which edits make retained citations unreplayable. It used to be
+    ``inspect.getsource`` of ten functions in ``token_layers``, which is the
+    source text as written: a reflow or a corrected comment changed it and the
+    Source Passage Check then reported *Cited location cannot be re-read* for
+    every retained native citation, over a change that altered no behaviour.
+    So the digest is now exactly a declared version for this module's half plus
+    the bytes of the two files that own the segment and prose projections, and
+    this test is what says so -- the expected value is recomputed here from
+    those three inputs and nothing else.
+    """
+
+    root = Path(page_text_projection.__code__.co_filename).parent
+    expected_inputs = {
+        "native_integration_version": NATIVE_INTEGRATION_VERSION,
+        "native_modules": {
+            name: hashlib.sha256((root / name).read_bytes()).hexdigest()
+            for name in ("reader_segments.py", "prose_spans.py")
+        },
+    }
+    canonical = json.dumps(
+        expected_inputs, sort_keys=True, separators=(",", ":"), ensure_ascii=False
+    )
+    assert native_integration_digest() == hashlib.sha256(
+        canonical.encode("utf-8")
+    ).hexdigest()
+
+    # The declared half is load-bearing: a behaviour change to the page-text
+    # projection is pinned by bumping it, and the digest must move when it does.
+    before = native_integration_digest()
+    monkeypatch.setattr(
+        "corridor.token_layers.NATIVE_INTEGRATION_VERSION", "native-integration-v2"
+    )
+    assert native_integration_digest() != before
+
+
+def test_the_native_assembly_digest_follows_the_projection_modules(monkeypatch):
+    """The two files that turn a reading into segments are still pinned by bytes."""
+
+    original = Path.read_bytes
+    read = []
+
+    def watched(self):
+        read.append(self.name)
+        content = original(self)
+        if self.name == "prose_spans.py":
+            return content + b"\n# a projection change\n"
+        return content
+
+    monkeypatch.setattr(Path, "read_bytes", watched)
+    changed = native_integration_digest()
+    monkeypatch.undo()
+
+    assert changed != native_integration_digest()
+    # Only the two projection files are read. This module's own bytes stay out:
+    # it also carries the OCR layers, the Textract reading and retention, and a
+    # change to any of those must not invalidate a native locator.
+    assert sorted(read) == ["prose_spans.py", "reader_segments.py"]

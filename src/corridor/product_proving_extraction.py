@@ -143,7 +143,7 @@ def _extract_matrix_document(
 ) -> None:
     """Run the current sealed Matrix route for one exact registered file."""
 
-    from corridor import extract_matrix
+    from corridor import native_matrix
     from corridor.extract_project import extract_project
     from corridor.pipeline import ExtractionRoute, extraction_route
 
@@ -154,8 +154,8 @@ def _extract_matrix_document(
         route = extraction_route(target, client=client)
         config = route.extractor_config
         if (
-            route.effective_prompt_version != extract_matrix.PROMPT_VERSION
-            or route.schema_version != extract_matrix.SCHEMA_VERSION
+            route.effective_prompt_version != native_matrix.PROMPT_VERSION
+            or route.schema_version != native_matrix.SCHEMA_VERSION
             or config is None
             or config.config_json.get("extractor") != "native_matrix"
         ):

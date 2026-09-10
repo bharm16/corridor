@@ -362,7 +362,6 @@ def match_constraint(
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     """The deployed bytes that decide a link — the fingerprint's ground truth."""
     from corridor import milestones as milestones_module
-    from corridor import geometry as geometry_module
     from corridor import merge as merge_module
     from corridor import models as models_module
     from corridor import principals as principals_module
@@ -372,7 +371,6 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
         ("corridor.schedule_linking", Path(__file__).read_bytes()),
         ("corridor.milestones", Path(milestones_module.__file__).read_bytes()),
         ("corridor.merge", Path(merge_module.__file__).read_bytes()),
-        ("corridor.geometry", Path(geometry_module.__file__).read_bytes()),
         ("corridor.audit", Path(audit.__file__).read_bytes()),
         ("corridor.policy", Path(policy.__file__).read_bytes()),
         ("corridor.principals", Path(principals_module.__file__).read_bytes()),

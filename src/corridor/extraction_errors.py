@@ -6,6 +6,14 @@ sequencing document, without importing any extraction implementation.
 """
 
 
+class NoMatrixFound(Exception):
+    """No table or sheet in the document had recognizable utility-matrix headers.
+
+    Raised rather than returning an empty list, because those two outcomes
+    mean completely different things and only one of them is a bug.
+    """
+
+
 class ExtractionFailed(RuntimeError):
     """The extractor could not complete the read; no partial result is usable."""
 

@@ -24,6 +24,12 @@ from typing import Iterable
 
 from corridor.merge import parse_station
 from corridor.models import Dependency
+from corridor.statement_matching import (
+    dependency_haystack,
+    dependency_station_contains,
+    match_score,
+    normalize_match_text,
+)
 from corridor.verify import normalize
 
 
@@ -120,36 +126,33 @@ def shortlist_dependencies(
     casefold normalization, the same score, the same (score, ref_code, id)
     ordering — so extraction changed no reader-visible result.  Exact
     admission never consults the rank or any threshold.
+
+    The normalizer, the station test, the row-text haystack and the weight
+    come from ``corridor.statement_matching``, which is where the guided
+    statement screen gets them too.  This function used to hold its own copy
+    of all four.
     """
     source_station = parse_station(station_text)
     term_keys = tuple(
-        key for key in (_casefold(term) for term in terms) if key
+        key for key in (normalize_match_text(term) for term in terms) if key
     )
     ranked: list[tuple[int, str, int, DependencyShortlistSignal]] = []
     for dependency in dependencies:
         signals: list[str] = []
-        if source_station is not None and _station_contains(
+        if source_station is not None and dependency_station_contains(
             dependency, source_station
         ):
             signals.append("station_containment")
-        haystack = _casefold(
-            " ".join(
-                value
-                for value in (
-                    dependency.ref_code,
-                    dependency.source_ref,
-                    dependency.title,
-                    dependency.location_desc,
-                )
-                if value
-            )
-        )
+        haystack = dependency_haystack(dependency)
         term_hits = 0
         for term in term_keys:
             if term in haystack:
                 term_hits += 1
                 signals.append(f"term:{term}")
-        rank = (10 if source_station is not None and "station_containment" in signals else 0) + term_hits
+        rank = match_score(
+            station_containment="station_containment" in signals,
+            term_hits=term_hits,
+        )
         ranked.append(
             (
                 rank,
@@ -214,7 +217,8 @@ def match_statement_scope(
     station_hits = {
         dependency.id
         for dependency in active
-        if source_station is not None and _station_contains(dependency, source_station)
+        if source_station is not None
+        and dependency_station_contains(dependency, source_station)
     }
     has_identifying_language = bool(
         references or station_hits or any(term_hits.values())
@@ -378,25 +382,8 @@ def _dependency_terms_in_wording(
     )
 
 
-def _casefold(value: object) -> str:
-    """The assistant scorer's original normalization, preserved verbatim."""
-    return " ".join(str(value or "").casefold().split())
-
-
 def _normal_phrase(value: str | None) -> str:
     return " ".join(normalize((value or "").replace("-", " ")).split())
-
-
-def _station_contains(dependency: Dependency, station: float) -> bool:
-    values = [
-        parsed
-        for parsed in (
-            parse_station(dependency.station_from),
-            parse_station(dependency.station_to),
-        )
-        if parsed is not None
-    ]
-    return bool(values) and min(values) <= station <= max(values)
 
 
 def _is_relocation_promise(wording: str) -> bool:

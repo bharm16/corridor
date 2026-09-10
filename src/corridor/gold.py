@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -32,7 +33,6 @@ from corridor.eval import (
 from corridor.reference_methods import (
     LEGACY_METHOD, NATIVE_METHOD, SPENT_SOURCE_HASHES, is_digest, reference_method,
 )
-from corridor.geometry import row_quote
 from corridor.token_layers import read_native_pdf
 from corridor.models import Candidate, DocPage, Document, Project
 from corridor.storage import stored_file
@@ -60,9 +60,23 @@ WORKSHEET_COLUMNS = (*REQUIRED_COLUMNS, "page", "critical")
 from corridor.vocabulary import RETIREMENT_PHRASES, is_retired_row  # noqa: E402
 
 # Below this many populated cells, a row is an identifier and little else.
-# Matches `extract_matrix.MIN_ROW_FIELDS`'s reasoning without importing
-# it: the guard there is about mapped fields, this is about printed cells.
+# The guard on the reader's side is about mapped fields; this is about
+# printed cells.
 IDENTIFIER_ONLY_CELLS = 2
+
+_WS = re.compile(r"\s+")
+
+
+def row_quote(row: list[str | None]) -> str:
+    """The whole grid row as one line: non-empty cells joined by spaces.
+
+    This report matches what an extractor cited against what the grid
+    prints, and a citation of a whole row is the cells in reading order
+    with single spaces between them. Only this report needs the form now,
+    so it lives here.
+    """
+    cells = [_WS.sub(" ", (c or "").replace("\n", " ")).strip() for c in row]
+    return " ".join(c for c in cells if c)
 
 
 @dataclass(frozen=True)
@@ -217,10 +231,11 @@ def prepare(session: Session, project_id: int) -> Preparation:
 def _quotes_by_page(session: Session, document: Document) -> dict[int, list[str]]:
     """What the extractor cited, per page, normalised for containment.
 
-    Containment rather than equality: a citation is the whole row where
-    that verifies and the longest verifiable window where it does not
-    (`geometry.best_verifiable_quote`), so an equality test would report
-    every fallback row as unextracted.
+    Containment rather than equality. A citation is normally the whole row,
+    but retained candidates from the page reader that #766 retired cite the
+    longest window that verified where the assembled row was not contiguous
+    on the page, so an equality test would report every one of those rows as
+    unextracted.
     """
     quotes: dict[int, list[str]] = {}
     for candidate in session.scalars(

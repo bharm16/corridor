@@ -68,8 +68,7 @@ def _shadow(args) -> int:
     outcomes, observation_ids, repeatability_ids = [], [], []
     actor = args.actor
     with provision_disposable_postgres(
-        admin_url, repo_root=REPO_ROOT, error_cls=RuntimeError,
-        database_prefix="corridor_pipeline_shadow_",
+        admin_url, repo_root=REPO_ROOT, label="pipeline_shadow",
     ) as database:
         database_record = {"postgres_version": database.postgres_version,
                            "migration_head": database.migration_head, "disposable": True}

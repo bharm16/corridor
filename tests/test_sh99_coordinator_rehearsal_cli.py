@@ -28,7 +28,7 @@ def test_replay_pins_the_prior_admission_receipt_and_shared_operations_time(
                 integrity_manifest_sha256="11" * 32,
                 canonical_content_sha256="22" * 32,
             ),
-            database_name="corridor_sh99_coordinator_rehearsal_test",
+            database_name="corridor_disposable_sh99_coordinator_1234_0123456789ab",
             status="failed",
         )
 
@@ -76,7 +76,7 @@ def test_replay_pins_the_prior_admission_receipt_and_shared_operations_time(
         "bundle_dir": str(bundle),
         "canonical_content_sha256": "22" * 32,
         "command": "replay",
-        "database_name": "corridor_sh99_coordinator_rehearsal_test",
+        "database_name": "corridor_disposable_sh99_coordinator_1234_0123456789ab",
         "integrity_manifest_sha256": "11" * 32,
         "status": "failed",
     }

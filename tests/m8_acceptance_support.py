@@ -140,7 +140,7 @@ def _stub_capture_harness(
             "FakeDatabase",
             (),
             {
-                "name": "corridor_m8_acceptance_" + "0" * 32,
+                "name": "corridor_disposable_m8_acceptance_1234_000000000000",
                 "session_factory": lambda self=None: session_factory(),
                 "postgres_version": "16.10",
                 "migration_head": "head",

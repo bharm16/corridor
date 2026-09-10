@@ -26,8 +26,7 @@ def disposable_database():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=Path(__file__).resolve().parents[1],
-        error_cls=RuntimeError,
-        database_prefix="corridor_experimental_guard_",
+        label="experimental_guard",
     ) as database:
         yield database
 

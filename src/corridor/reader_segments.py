@@ -1,16 +1,21 @@
 """One versioned native reading supplies page text, tokens and PDF segments.
 
-The first disabled adapter wrote reader page text beside incumbent prose
-offsets. Cells also had page-local IDs which could be mistaken for cells in
-another rendition. This boundary (#736) runs the imported reader once and
-binds every projection to its exact result and configuration. Neither a new
-configuration nor a replay can update an existing Source Segment.
+The first adapter for this reader, written while the reader was still an
+unreleased alternative to the incumbent parser, wrote reader page text beside
+incumbent prose offsets. Cells also had page-local IDs which could be mistaken
+for cells in another rendition. This boundary (#736) runs the imported reader
+once and binds every projection to its exact result and configuration. That
+reader is now the only one in the product (ADR-0094, ADR-0095, #741); neither
+a new configuration nor a replay can update an existing Source Segment.
 
-Historical ``prose_span`` locators remain in source_segments.py. These new
-``pdf_span`` and ``pdf_cell`` locators replay only with the recorded reader;
-unavailable versions fail closed. Clipped glyphs have a separate span stream,
-so hidden text is citable without presenting it as visible page text. Cell
-IDs select values; there is deliberately no model-supplied text argument.
+Historical ``prose_span`` locators remain in source_segments.py. These
+``pdf_span`` and ``pdf_cell`` locators replay only with the recorded reader and
+only inside the recorded reading. An unavailable reader configuration and a
+reading that no longer reproduces both fail closed as availability refusals,
+never as a claim that the passage left the page. Clipped glyphs have a separate
+span stream, so hidden text is citable without presenting it as visible page
+text. Cell IDs select values; there is deliberately no model-supplied text
+argument.
 """
 
 from __future__ import annotations
@@ -29,6 +34,8 @@ from corridor.models import Document, SourceSegment
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.prose_spans import page_prose_ranges
 from corridor.source_segment_errors import (
+    NativeReaderUnavailable,
+    RecordedReadingNotReproduced,
     SourceDocumentDigestMismatch,
     SourceSegmentLocatorMismatch,
 )
@@ -212,7 +219,21 @@ def append_native_segments(
 def replay_native_segment(
     document: Document, segment: SourceSegment, path: Path | str
 ) -> str:
-    """Only the same reader/configuration/result may answer a native locator."""
+    """Only the same reader/configuration/result may answer a native locator.
+
+    Three different refusals, because the Source Passage Check tells the
+    customer three different things. The recorded reader or configuration not
+    being installed here is ``NativeReaderUnavailable``; the recorded reader
+    running and not returning the reading the locator indexes is
+    ``RecordedReadingNotReproduced``; both are availability, feed
+    ``locator_validation.NOT_RE_READABLE``, and say *Cited location cannot be
+    re-read*. Only a locator that was actually followed into the recorded
+    reading and reached different content is ``SourceSegmentLocatorMismatch``,
+    which is the integrity failure that says *Not found at cited location*.
+    All three refuse without returning text; a reader identity too incomplete
+    to name any reader stays an integrity failure, because the row cannot
+    describe a cited location at all.
+    """
 
     identity = segment.reader_identity or {}
     try:
@@ -229,9 +250,13 @@ def replay_native_segment(
         raise SourceSegmentLocatorMismatch(
             "native segment reader identity is incomplete"
         ) from exc
-    if identity != reading.identity or segment.reading_sha256 != reading.reading_sha256:
-        raise SourceSegmentLocatorMismatch(
-            "recorded native reader/configuration/result is unavailable"
+    if identity != reading.identity:
+        raise NativeReaderUnavailable(
+            PDF_SEGMENT_SCHEME, "the recorded native reader configuration"
+        )
+    if segment.reading_sha256 != reading.reading_sha256:
+        raise RecordedReadingNotReproduced(
+            PDF_SEGMENT_SCHEME, "the recorded native reading"
         )
     for candidate in native_segment_values(reading):
         if candidate.kind == segment.kind and candidate.ordinal == segment.ordinal:

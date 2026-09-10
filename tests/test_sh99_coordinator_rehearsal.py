@@ -12,6 +12,7 @@ import pytest
 import corridor.sh99_coordinator_rehearsal as rehearsal
 from corridor.sh99_coordinator_rehearsal import (
     BUNDLE_SCHEMA_VERSION,
+    DATABASE_PREFIX,
     BUNDLE_FILES,
     LEGACY_BUNDLE_SCHEMA_VERSION,
     CoordinatorRehearsalCapture,
@@ -223,7 +224,7 @@ def _v3_operations(**overrides) -> dict:
         "source_scenario_receipts_sha256_before": "2" * 64,
         "source_scenario_receipts_sha256_after": "2" * 64,
         "clone_upgrade": {
-            "database_name": "corridor_sh99_coordinator_rehearsal_test",
+            "database_name": f"{DATABASE_PREFIX}1234_0123456789ab",
             "from_revision": "e255a7c4d9e2",
             "to_revision": "f255b7c4d9e3",
             "verified_revision": "f255b7c4d9e3",

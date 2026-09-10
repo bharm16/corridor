@@ -8,11 +8,11 @@ It never sends anything or grants accepted-record authority to a contact source.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections import Counter
 from dataclasses import asdict, dataclass, replace
 import csv
 from datetime import date, datetime
-from hashlib import sha256
 from io import StringIO
 import json
 import re
@@ -385,5 +385,6 @@ def _json(value):
     return cast(bindparam(None, json.dumps(value)), JSONB)
 
 
-def _digest(value):
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+# Retained encoding: a stored delivery/identity key computed with non-ASCII
+# escaped; see `corridor.digests.ascii_escaped_json`.
+_digest = digests.ascii_escaped_sha256

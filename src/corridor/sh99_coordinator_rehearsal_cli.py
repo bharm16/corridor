@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import sys
 
+from corridor import digests
 from corridor.sh99_coordinator_rehearsal import (
     SH99CoordinatorRehearsalConfig,
     run_sh99_coordinator_rehearsal,
@@ -15,12 +16,11 @@ from corridor.sh99_coordinator_rehearsal import (
 )
 
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 _MIGRATION_REVISION = re.compile(r"^[0-9a-f]{12}$")
 
 
 def _sha256(value: str) -> str:
-    if _SHA256.fullmatch(value) is None:
+    if not digests.is_digest(value):
         raise argparse.ArgumentTypeError("must be exactly 64 lowercase hexadecimal characters")
     return value
 

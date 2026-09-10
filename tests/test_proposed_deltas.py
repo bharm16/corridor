@@ -3,12 +3,16 @@
 from datetime import datetime, timezone
 from uuid import uuid4
 import pytest
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import AnalyticsBinding, default_binding
 from corridor.db import engine
 from corridor.models import (
+    DeltaDeferral,
+    DeltaDisposition,
     DeltaGroup,
+    DeltaSupersession,
     Project,
     ProposedDelta,
 )
@@ -16,17 +20,19 @@ from corridor.proposed_deltas import (
     ApparentRemovalRefused,
     ExistingSubjectTarget,
     ImpactDerivation,
-    LiveDeltaState,
     ProposedDeltaValues,
     ProposedSubjectTarget,
     create_proposed_delta_group,
-    derive_live_delta_state,
-    query_live_deltas,
     record_delta_deferral,
-    record_delta_supersession,
 )
-from corridor.delta_resolution import ChildDecisionRequest, resolve_delta
+from corridor.delta_resolution import (
+    ChildDecisionRequest,
+    live_delta_status,
+    resolve_delta,
+)
 from corridor.principals import HumanPrincipal
+from corridor.review_packet_reading import open_deltas
+from delta_supersession_support import record_delta_supersession
 
 
 @pytest.fixture
@@ -127,8 +133,7 @@ def test_immutable_occurrence_and_derived_live_state(
     delta = created[0]
 
     # Initial state is open
-    state = derive_live_delta_state(session, delta.id)
-    assert state.status == "open"
+    assert live_delta_status(session, delta.id) == "open"
 
     # Deferral marks state as deferred while leaving occurrence immutable
     record_delta_deferral(
@@ -141,9 +146,10 @@ def test_immutable_occurrence_and_derived_live_state(
         reason="Awaiting city confirmation",
     )
 
-    state = derive_live_delta_state(session, delta.id)
-    assert state.status == "deferred"
-    assert state.wake_condition == "next_monthly_utility_meeting"
+    assert live_delta_status(session, delta.id) == "deferred"
+    assert session.scalar(
+        select(DeltaDeferral.wake_condition).where(DeltaDeferral.delta_id == delta.id)
+    ) == "next_monthly_utility_meeting"
 
     # A semantic disposition marks state as resolved. It is written only by
     # the record-decision role's command (#519), never from this module.
@@ -161,9 +167,10 @@ def test_immutable_occurrence_and_derived_live_state(
     )
     assert outcome.status == "resolved"
 
-    state = derive_live_delta_state(session, delta.id)
-    assert state.status == "resolved"
-    assert state.disposition == "reject"
+    assert live_delta_status(session, delta.id) == "resolved"
+    assert session.scalar(
+        select(DeltaDisposition.disposition).where(DeltaDisposition.delta_id == delta.id)
+    ) == "reject"
 
 
 def test_coalescing_follows_source_lineage(
@@ -212,17 +219,20 @@ def test_coalescing_follows_source_lineage(
         reason="newer_source_revision",
     )
 
-    state1 = derive_live_delta_state(session, delta1.id)
-    assert state1.status == "superseded"
-    assert state1.superseded_by_delta_id == delta2.id
+    assert live_delta_status(session, delta1.id) == "superseded"
+    assert session.scalar(
+        select(DeltaSupersession.superseding_delta_id).where(
+            DeltaSupersession.prior_delta_id == delta1.id
+        )
+    ) == delta2.id
+    assert live_delta_status(session, delta2.id) == "open"
 
-    state2 = derive_live_delta_state(session, delta2.id)
-    assert state2.status == "open"
-
-    # Querying live deltas returns only delta2
-    live = query_live_deltas(session, project_id=test_project.id, target_subject_identity="UTL-003")
-    assert len(live) == 1
-    assert live[0].id == delta2.id
+    # The open reading returns only delta2
+    assert [
+        delta.id
+        for delta in open_deltas(session, project_id=test_project.id)
+        if delta.target_subject_identity == "UTL-003"
+    ] == [delta2.id]
 
 
 def test_apparent_removal_requires_complete_sealed_source(

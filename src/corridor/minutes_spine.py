@@ -8,6 +8,7 @@ One declared source family supplies revision lineage; content never selects it.
 
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import dataclass
 from datetime import date
 from hashlib import sha256
@@ -369,5 +370,6 @@ def _append(session, document, run, subject, value, *, canonical=None, **satelli
         content_sha256=digest, value=value, **satellites)
 
 
-def _digest(value):
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+# Retained encoding: a stored delivery/identity key computed with non-ASCII
+# escaped; see `corridor.digests.ascii_escaped_json`.
+_digest = digests.ascii_escaped_sha256

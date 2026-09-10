@@ -16,6 +16,7 @@ source has passed its final fingerprint check.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
@@ -36,6 +37,8 @@ from sqlalchemy.pool import NullPool
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     ProvisionedDatabase,
+    disposable_database_name,
+    disposable_database_prefix,
     provision_disposable_postgres,
     require_local_postgres_host,
     require_postgres_16,
@@ -50,8 +53,10 @@ BASELINE_FILENAME = "baseline.json"
 DUMP_FILENAME = "baseline.dump"
 MANIFEST_FILENAME = "manifest.json"
 BASELINE_FILES = (BASELINE_FILENAME, DUMP_FILENAME)
-DISPOSABLE_DATABASE_PREFIX = "corridor_proving_restore_"
-BACKUP_DATABASE_PREFIX = "corridor_pre_proving_"
+DISPOSABLE_DATABASE_LABEL = "proving_restore"
+BACKUP_DATABASE_LABEL = "pre_proving"
+DISPOSABLE_DATABASE_PREFIX = disposable_database_prefix(DISPOSABLE_DATABASE_LABEL)
+BACKUP_DATABASE_PREFIX = disposable_database_prefix(BACKUP_DATABASE_LABEL)
 
 _DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
 _SHARED_DEVELOPMENT_DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -1053,7 +1058,7 @@ def stage_local_database_replacement(
     set_connections = set_connections or _set_database_connections
     source_name = request.source_database_name
     replacement_name = request.replacement_database_name
-    backup_name = _bounded_database_name(f"corridor_pre_proving_{uuid4().hex}")
+    backup_name = disposable_database_name(BACKUP_DATABASE_LABEL)
     guarded_names = {source_name, replacement_name, backup_name}
     initial_catalog = read_catalog(request.postgres_admin_url, guarded_names)
     if set(initial_catalog) != {
@@ -1652,6 +1657,13 @@ def _database_provisioner(
     *,
     migration_head: str,
 ) -> DatabaseProvisioner:
+    """Provision from the maintenance database rather than the caller's own.
+
+    The only thing this still adds over the module provisioner is that
+    redirection to ``postgres``; the label, the name and the refusal all belong
+    to ``m8_acceptance_database``.
+    """
+
     @contextmanager
     def provision(admin_url: str) -> Iterator[ProvisionedDatabase]:
         maintenance_url = (
@@ -1662,8 +1674,7 @@ def _database_provisioner(
         with provision_disposable_postgres(
             maintenance_url,
             repo_root=repo_root,
-            error_cls=ProductProvingDatabaseError,
-            database_prefix=DISPOSABLE_DATABASE_PREFIX,
+            label=DISPOSABLE_DATABASE_LABEL,
             migration_revision=migration_head,
         ) as database:
             yield database
@@ -1868,18 +1879,6 @@ def _strict_bool(value: object) -> bool:
     return value
 
 
-def _canonical_json(value: object) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-    ).encode("utf-8")
-
-
-def _json_sha256(value: object) -> str:
-    return _sha256(_canonical_json(value))
-
-
-def _sha256(value: bytes) -> str:
-    return sha256(value).hexdigest()
+_canonical_json = digests.canonical_json
+_json_sha256 = digests.canonical_sha256
+_sha256 = digests.sha256_bytes

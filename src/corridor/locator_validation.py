@@ -55,6 +55,16 @@ NOT_CHECKED = "not_checked"
 # truthful answer is that the check could not be run, which is also not
 # ``not_checked``: there is a cited location, it is recorded, and the reason it
 # was not replayed is that its reader is gone (ADR-0094, ADR-0095).
+#
+# A retired reader is not the only way a recorded location becomes unreachable,
+# and the state covers the others by covering the whole ``FreshReadingUnavailable``
+# family. A live ``pdf_span``/``pdf_cell`` locator names a position inside one
+# exact reading, so it is equally unreachable when the recorded reader
+# configuration is not installed here (``NativeReaderUnavailable``) and when
+# that reader runs and returns a different reading (``RecordedReadingNotReproduced``).
+# Both used to be raised as ``SourceSegmentLocatorMismatch``, which is how a
+# reader upgrade could relabel retained native citations *Not found at cited
+# location* without any reader having opened a page.
 NOT_RE_READABLE = "not_re_readable"
 LOCATOR_VALIDATION_STATUSES = (VALID, INVALID, NOT_CHECKED, NOT_RE_READABLE)
 
@@ -75,10 +85,15 @@ def source_segment_locator_validation_status(
     exists, a moved span, or a digest that disagrees is ``invalid``.  The
     answer is mechanical: the same bytes and the same locator always give it.
 
-    ``not_re_readable`` when the reader that established the locator is no
-    longer in the product (#741).  That is not ``invalid``: nothing opened the
-    page, so nothing can say the passage is not at its cited location.  What a
-    retained citation is verified by instead is
+    ``not_re_readable`` whenever the recorded location could not be reached at
+    all: the reader that established the locator is no longer in the product
+    (#741), the recorded native reader configuration is not installed here, or
+    that reader ran on the registered bytes and returned a different reading
+    from the one the locator indexes.  None of those is ``invalid``: nothing
+    opened the page, so nothing can say the passage is not at its cited
+    location.  Every check that needs no reader still runs first, so a changed
+    Document digest or a stored text that disagrees with its own digest is
+    still ``invalid``.  What a retained citation is verified by instead is
     ``retained_history.replay_retained_reading``, which proves its words and
     its registered bytes from their own digests.
     """

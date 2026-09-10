@@ -90,7 +90,8 @@ from corridor import audit
 from corridor.analytics import AnalyticsBinding
 from corridor.measurement_collection import binding_for_source
 from corridor.connectors.pull_connector import SourceEnvelope
-from corridor.delta_generation import accepted_values, fact_value, revision_label
+from corridor.delta_generation import accepted_values, revision_label
+from corridor.fact_values import scalar_fact_value
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
 from corridor.fact_types import FACT_TYPE_CONTRACTS
@@ -1019,7 +1020,7 @@ def _proposals(
         fact = captured.get(item.subject_identity)
         if fact is None:
             continue
-        stated = fact_value(fact)
+        stated = scalar_fact_value(fact)
         key = (item.subject_identity, SCHEDULED_DATE_FIELD)
         if item.disposition == COMPARED:
             if key in accepted:

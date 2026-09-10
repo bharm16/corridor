@@ -17,6 +17,14 @@ is no sweep at all:
 - a name is a candidate only when it matches a known scratch pattern, so an
   unrecognised database is kept rather than guessed at.
 
+The first and now authoritative rule is
+`corridor.m8_acceptance_database.is_disposable_database_name`: the module that
+mints a disposable database exports the predicate for recognising one, so a new
+workflow's databases are swept the day it is written. The hand-written patterns
+below stay because names produced *before* that namespace existed are still on
+disk, and because a hand-made verification copy has no minting module at all.
+They are history, not the place to add a new harness.
+
 Age is deliberately *not* a rule.  A database directory's modification time
 tracks the last checkpoint that touched it, not when it was created, so on a
 running server every database looks recently modified and the signal says
@@ -41,6 +49,9 @@ from sqlalchemy.engine import URL, make_url
 # A name is swept only when it matches one of these.  Each is a prefix a test
 # harness or a documented manual verification actually produced; the trailing
 # `.+` keeps a bare prefix from matching a database someone meant to keep.
+#
+# Everything named `corridor_disposable_<label>_<pid>_<hex>` is recognised by
+# the minting module's own predicate instead; nothing new belongs in this list.
 SCRATCH_PATTERNS = (
     r"corridor_pytest_.+",
     r"corridor_due_work_test_.+",
@@ -73,9 +84,15 @@ NEVER_SWEEP = frozenset({"postgres", "template0", "template1"})
 
 
 def is_scratch_name(name: str) -> bool:
-    """Whether a database name is one a harness or verification copy produced."""
+    """Whether a database name is one a harness or verification copy produced.
 
-    return bool(_SCRATCH.fullmatch(name))
+    The minted namespace is asked first, so a workflow that adds a label is
+    swept without editing this file.
+    """
+
+    from corridor.m8_acceptance_database import is_disposable_database_name
+
+    return is_disposable_database_name(name) or bool(_SCRATCH.fullmatch(name))
 
 
 def sweepable(

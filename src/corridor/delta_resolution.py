@@ -68,6 +68,7 @@ from corridor.analytics import (
     default_binding,
     emit_event,
 )
+from corridor.fact_values import read_fact_value
 from corridor.models import (
     DELTA_EFFECT_KINDS,
     DELTA_ORGANIZATION_CHANGE_KINDS,
@@ -865,8 +866,8 @@ def _validate_edit_basis(
             return _edit_basis_refusal(
                 session, delta, "a composed edit resolves to a captured Source Fact"
             )
-        replayed = composition([_fact_value(session, fact) for fact in inputs])
-        if replayed != _fact_value(session, result):
+        replayed = composition([read_fact_value(session, fact) for fact in inputs])
+        if replayed != read_fact_value(session, result):
             return _edit_basis_refusal(
                 session,
                 delta,
@@ -896,8 +897,8 @@ def _validate_edit_basis(
             return _edit_basis_refusal(
                 session, delta, "a normalized edit reads only this project's Source Facts"
             )
-        original = _fact_value(session, source)
-        normalized = _fact_value(session, result)
+        original = read_fact_value(session, source)
+        normalized = read_fact_value(session, result)
         # Lossless means the two differ only in what this normalization
         # canonicalizes, and that the canonical form is already canonical.
         if (
@@ -953,12 +954,6 @@ def _project_fact(
     if fact.subject_key != delta.target_subject_identity:
         return None
     return fact
-
-
-def _fact_value(session: Session, fact: Fact) -> Any:
-    from corridor.source_fact_values import source_fact_value
-
-    return source_fact_value(session, fact)
 
 
 def _edit_basis_refusal(

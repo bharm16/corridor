@@ -8,8 +8,17 @@ that an unrecognised name is kept rather than swept.
 
 from __future__ import annotations
 
+import ast
 import importlib.util
 from pathlib import Path
+import re
+
+from corridor.m8_acceptance_database import disposable_database_name
+from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+
+_ROOT = Path(__file__).resolve().parents[1]
+HARNESS_PREFIX = "corridor_pytest_"
+_LABEL_SHAPE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
 
 # `scripts/` is a directory of commands, not an importable package, so the
 # module is loaded by path rather than made one for a test's convenience.
@@ -109,3 +118,94 @@ def test_a_bare_prefix_is_not_a_scratch_name():
 
     assert not is_scratch_name("corridor_consol")
     assert not is_scratch_name("corridor_baseline")
+
+
+# --- The minted namespace ------------------------------------------------
+#
+# Twenty-two hand-written patterns could not keep up with eight modules that
+# each invented a prefix: `corridor_sh99_real_admission_acceptance_*`,
+# `corridor_pipeline_shadow_*`, `corridor_native_matrix_measurement_*` and
+# `corridor_migrated_template_*` were never listed at all, and
+# `corridor_proving_restore_._.+` matched a single-digit pid only. The sweeper
+# now asks the minting module, so these prove the two ends meet: every label
+# the source declares mints a name the sweep collects, and the pytest harness's
+# own scheme is still collected by the historical patterns that own it.
+
+
+_NAMING_FUNCTIONS = frozenset({
+    "disposable_database_name",
+    "disposable_database_prefix",
+    "provision_disposable_postgres",
+    "reclaim_abandoned_database_copies",
+    "upgrade_provisioned_postgres",
+})
+
+
+def _declared_labels() -> set[str]:
+    """Every disposable-database label the source declares, read from the source.
+
+    A registry inside the provisioner would list its own callers. Reading the
+    labels back out of the call sites means a new workflow cannot be added
+    without this test seeing it.
+    """
+
+    labels: set[str] = set()
+    for path in (*python_files(_ROOT / "src"), *python_files(_ROOT / "tests")):
+        source = read_python(path)
+        constants = {
+            target.id: node.value.value
+            for node in source.tree.body
+            if isinstance(node, ast.Assign)
+            and isinstance(node.value, ast.Constant)
+            and isinstance(node.value.value, str)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        for node in source.nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            function = node.func
+            name = (
+                function.attr if isinstance(function, ast.Attribute)
+                else function.id if isinstance(function, ast.Name)
+                else ""
+            )
+            if name not in _NAMING_FUNCTIONS:
+                continue
+            arguments = [
+                keyword.value for keyword in node.keywords if keyword.arg == "label"
+            ]
+            if name in {"disposable_database_name", "disposable_database_prefix"}:
+                arguments.extend(node.args[:1])
+            for argument in arguments:
+                if isinstance(argument, ast.Constant) and isinstance(
+                    argument.value, str
+                ):
+                    labels.add(argument.value)
+                elif isinstance(argument, ast.Name) and argument.id in constants:
+                    labels.add(constants[argument.id])
+    return {label for label in labels if _LABEL_SHAPE.fullmatch(label)}
+
+
+def test_every_declared_label_mints_a_name_the_sweep_collects():
+    labels = _declared_labels()
+
+    assert len(labels) >= 12, sorted(labels)
+    for label in sorted(labels):
+        name = disposable_database_name(label)
+
+        assert len(name.encode()) <= 63, name
+        assert is_scratch_name(name), name
+        assert sweepable({name: 0}, protected=PROTECTED) == [name]
+        assert sweepable({name: 1}, protected=PROTECTED) == []
+
+
+def test_the_pytest_harness_databases_are_still_collected():
+    """The harness keeps its own scheme; the historical patterns still own it."""
+
+    for name in (
+        f"{HARNESS_PREFIX}20260909a_120000_gw0",
+        f"{HARNESS_PREFIX}20260909a_120000_tmpl",
+    ):
+        assert is_scratch_name(name), name
+        assert sweepable({name: 0}, protected=PROTECTED) == [name]

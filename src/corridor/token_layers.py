@@ -51,7 +51,6 @@ from hashlib import sha256
 from importlib.metadata import version as distribution_version
 import json
 import hmac
-import inspect
 import math
 from pathlib import Path
 import statistics
@@ -86,6 +85,11 @@ TEXTRACT_OCR_ADAPTER_VERSION = "ocr-textract-v1"
 READER_ENGINE = "corridor-pdf-reader"
 READER_NATIVE_ADAPTER_VERSION = "native-reader-v2"
 PDF_SEGMENT_SCHEME = "corridor.pdf-segments.v1"
+# The declared version of this module's half of the native reading assembly:
+# the page-text projection and the word/line rules it is built from. Bump it in
+# the same change as any behaviour change to ``page_text_projection``,
+# ``_reader_word_lines`` or ``_line_words``. See ``native_integration_digest``.
+NATIVE_INTEGRATION_VERSION = "native-integration-v1"
 _NATIVE_READING_SEAL_KEY = secrets.token_bytes(32)
 
 
@@ -264,7 +268,7 @@ def read_native_pdf(
     engine: str = MEASURED_ENGINE,
     dpi: int = MEASURED_DPI,
 ) -> NativePdfReading:
-    """Execute the explicit challenger, including for previously ingested bytes."""
+    """Execute the native reader explicitly, including previously ingested bytes."""
 
     original = Path(path)
     if sha256(original.read_bytes()).hexdigest() != source_sha256:
@@ -284,9 +288,10 @@ def read_native_pdf(
             for name in ("reader.py", "layout.py", "table_structure.py", "tags.py", "text_layout.py")
         })),
         "pypdf_version": distribution_version("pypdf"),
-        # A version label alone cannot distinguish an accidentally changed
-        # projection. Pin the application assembly alongside the untouched
-        # imported reader; an unavailable earlier assembly refuses replay.
+        # Pin the application assembly alongside the untouched imported
+        # reader, so a projection change cannot silently retarget an earlier
+        # stored locator; an unavailable earlier assembly refuses replay as an
+        # availability refusal, never as a missing passage.
         "integration_sha256": native_integration_digest(),
     }
     # Timing, wall-clock and diagnostic raster artifacts are not reading
@@ -313,16 +318,38 @@ def _native_reading_seal(rendition_sha256: str, identity_json: str, pages_json: 
 
 
 def native_integration_digest() -> str:
-    """Pin the native assembly without coupling replay to unrelated rollback code."""
+    """Pin the native assembly without coupling replay to unrelated rollback code.
+
+    **Why this no longer hashes source text.** It used to hash
+    ``inspect.getsource`` of ten functions in this module. ``getsource``
+    returns the text as written, so a reflow, a renamed local, or a corrected
+    comment changed ``integration_sha256`` while the projection it was meant to
+    pin behaved identically. Every retained ``pdf_span`` and ``pdf_cell``
+    citation is bound to the assembly digest recorded with it, so an edit of
+    that kind made all of them unreplayable: ``replay_native_segment`` saw a
+    reader identity it could not obtain and the Source Passage Check reported
+    *Cited location cannot be re-read* for a change that altered nothing a
+    customer could see. A digest that fires on comments is not a proof of the
+    projection; it is a scheduled loss of every citation.
+
+    What replaces it is what the second half of this dictionary already did:
+    module bytes for the two files that own the segment and prose projections,
+    plus ``NATIVE_INTEGRATION_VERSION`` for this module's half. This module's
+    own bytes deliberately stay out -- it also carries the OCR layers, the
+    Textract reading, retention and persistence, and a change to any of those
+    must not invalidate a native locator; ``test_reader_segments`` asserts that
+    those bytes are never read here.
+
+    The cost is that the version constant is declared rather than derived: a
+    behaviour change to ``page_text_projection``, ``_reader_word_lines`` or
+    ``_line_words`` must bump it in the same change, exactly as a migration
+    revision or a prompt version must be advanced deliberately. Nothing else in
+    the identity weakens: ``reading_sha256`` still covers the reader's actual
+    result and ``reader_runtime_sha256`` still covers the imported reader's own
+    files, byte for byte.
+    """
     return _digest(_canonical({
-        "native_code": {
-            target.__name__: _digest(inspect.getsource(target))
-            for target in (
-                NativePdfReading, read_native_pdf, reader_native_engine_identity,
-                reader_native_token_layer, page_text_projection, _reader_word_lines,
-                _line_words, _canonical, _digest, _native_reading_seal,
-            )
-        },
+        "native_integration_version": NATIVE_INTEGRATION_VERSION,
         "native_modules": {
             name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
             for name in ("reader_segments.py", "prose_spans.py")

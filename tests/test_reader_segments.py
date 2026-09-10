@@ -33,11 +33,16 @@ from corridor.reader_segments import (
 from corridor.render_profiles import render_page_derivative
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.locator_validation import (
+    INVALID,
     NOT_RE_READABLE,
     source_segment_locator_validation_status,
 )
 from corridor.retained_history import FreshReadingUnavailable
-from corridor.source_segment_errors import SourceSegmentIntegrityError
+from corridor.source_segment_errors import (
+    NativeReaderUnavailable,
+    RecordedReadingNotReproduced,
+    SourceSegmentIntegrityError,
+)
 from corridor.source_segments import (
     SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
@@ -346,7 +351,6 @@ def test_native_deref_refuses_wrong_digest_reader_or_location(
     good = detached(doc, value)
     assert dereference_source_segment(doc, good, path) == value.exact_text
     for changed in (
-        replace(value, reading_sha256="f" * 64),
         replace(value, table_index=99),
         replace(
             value, location_json={**value.location_json, "table_box": [0, 0, 1, 1]}
@@ -361,6 +365,60 @@ def test_native_deref_refuses_wrong_digest_reader_or_location(
     with pytest.raises(SourceDocumentDigestMismatch):
         dereference_source_segment(
             doc, good, native_pdf(tmp_path, name="other.pdf", rotation=90)
+        )
+
+
+def test_native_replay_separates_an_unavailable_reading_from_a_missing_passage(
+    session, project, tmp_path
+):
+    """Three outcomes, three answers: two availability refusals and one integrity.
+
+    All three used to raise ``SourceSegmentLocatorMismatch``, so a reader
+    configuration this build does not have, and a reading that no longer
+    reproduces, both reported *Not found at cited location* -- an assertion
+    that a reader went to the customer's page and the passage was not there.
+    Neither of them opened a page. Only the third did.
+    """
+
+    path = native_pdf(tmp_path)
+    doc = registered(session, project, path)
+    value = next(v for v in native_segment_values(reading(path)) if v.kind == "pdf_cell")
+    assert dereference_source_segment(doc, detached(doc, value), path) == value.exact_text
+
+    # 1. The recorded reader configuration is not the one installed here.
+    elsewhere = detached(doc, replace(
+        value, reader_identity={**value.reader_identity, "pypdf_version": "0.0.0"}
+    ))
+    with pytest.raises(NativeReaderUnavailable) as unavailable:
+        dereference_source_segment(doc, elsewhere, path)
+    assert not isinstance(unavailable.value, SourceSegmentIntegrityError)
+    assert (
+        source_segment_locator_validation_status(doc, elsewhere, path) == NOT_RE_READABLE
+    )
+
+    # 2. That reader is installed and ran, and did not return the reading these
+    # offsets are positions inside.
+    superseded = detached(doc, replace(value, reading_sha256="f" * 64))
+    with pytest.raises(RecordedReadingNotReproduced) as stale:
+        dereference_source_segment(doc, superseded, path)
+    assert not isinstance(stale.value, SourceSegmentIntegrityError)
+    assert (
+        source_segment_locator_validation_status(doc, superseded, path) == NOT_RE_READABLE
+    )
+
+    # 3. The recorded reading reproduced, the locator was followed into it, and
+    # it reached different content. That is a statement about the source.
+    moved = detached(doc, replace(value, table_index=99))
+    with pytest.raises(SourceSegmentLocatorMismatch) as mismatch:
+        dereference_source_segment(doc, moved, path)
+    assert isinstance(mismatch.value, SourceSegmentIntegrityError)
+    assert source_segment_locator_validation_status(doc, moved, path) == INVALID
+
+    # Nothing an unavailable reading excuses: the registered bytes are proved
+    # before any reader is asked, so a changed source still fails on its digest.
+    with pytest.raises(SourceDocumentDigestMismatch):
+        dereference_source_segment(
+            doc, superseded, native_pdf(tmp_path, name="other.pdf", rotation=90)
         )
 
 
@@ -820,9 +878,17 @@ def test_changed_clipped_projection_cannot_rebind_a_stored_reading(
         1, stream="clipped"
     )
     assert alternate.reading_sha256 != original.reading_sha256
+    # The reader is here and it ran; what is gone is the reading these offsets
+    # index, so this is an availability refusal and the Source Passage Check
+    # says the location cannot be re-read rather than that the passage is not
+    # at it.
     with pytest.raises(
-        SourceSegmentLocatorMismatch,
-        match="recorded native reader/configuration/result is unavailable",
-    ):
+        RecordedReadingNotReproduced, match="the recorded native reading is not available"
+    ) as refusal:
         dereference_source_segment(document, hidden, path)
+    assert not isinstance(refusal.value, SourceSegmentIntegrityError)
+    assert (
+        source_segment_locator_validation_status(document, hidden, path)
+        == NOT_RE_READABLE
+    )
     assert (hidden.exact_text, hidden.content_sha256, hidden.reading_sha256) == stored

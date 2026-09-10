@@ -9,6 +9,7 @@ an authoritative source, and after every configuration change.
 """
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -35,12 +36,8 @@ class ActivationRefused(ValueError):
     """A frozen deployment is missing successful, matching activation evidence."""
 
 
-def _bytes(value):
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-
-
-def _digest(value):
-    return sha256(_bytes(value)).hexdigest()
+_bytes = digests.canonical_json
+_digest = digests.canonical_sha256
 
 
 def route_manifest_digest():

@@ -10,7 +10,7 @@ All provider behavior is injectable; fixtures and deployment use the same seam.
 
 from __future__ import annotations
 
-from hashlib import sha256
+from corridor import digests
 from email.utils import getaddresses
 import json
 from pathlib import Path
@@ -269,5 +269,6 @@ def _append_value(session, document, run, subject, value):
         subject_key=subject, recorded_by=PROMPT_VERSION, content_sha256=_digest(identity), value=value)
 
 
-def _digest(value):
-    return sha256(json.dumps(value, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+# Retained encoding: a stored delivery/identity key computed with non-ASCII
+# escaped; see `corridor.digests.ascii_escaped_json`.
+_digest = digests.ascii_escaped_sha256

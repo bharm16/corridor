@@ -9,13 +9,13 @@ a model/provider by default. Rendering uses temporary private local files only.
 """
 from __future__ import annotations
 
+from corridor import digests
 from collections.abc import Mapping
 from dataclasses import dataclass, fields, is_dataclass
 from datetime import date, datetime
 from hashlib import sha256
 from pathlib import Path
 from tempfile import TemporaryDirectory
-import json
 
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import SQLAlchemyError
@@ -56,11 +56,13 @@ def _plain(value):
 
 
 def _encoded(value):
-    return json.dumps(_plain(value), sort_keys=True, separators=(",", ":"), allow_nan=False)
+    # Retained encoding: authority digests recorded in native-reader coverage
+    # evidence were computed with non-ASCII escaped.
+    return digests.ascii_escaped_json(_plain(value)).decode()
 
 
 def _digest(value):
-    return sha256(_encoded(value).encode()).hexdigest()
+    return digests.ascii_escaped_sha256(_plain(value))
 
 
 @dataclass(frozen=True)
@@ -194,6 +196,8 @@ def _fact_payload(inventory, fact):
     if fact["fact_type"] == "closure_result":
         return {"closure_kind": next((row["closure_kind"] for row in inventory["fact_closure_results"]
                                        if row["fact_id"] == fact["id"]), None)}
+    if fact["document_value_id"] is not None:
+        return {"document_id": fact["document_value_id"]}
     return fact["date_value"] or fact["text_value"]
 
 

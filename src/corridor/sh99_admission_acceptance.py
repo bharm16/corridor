@@ -19,10 +19,10 @@ comparable in name while proving different operations.
 
 from __future__ import annotations
 
+from corridor import digests
+from functools import partial
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
-import hashlib
-import json
 import os
 from pathlib import Path
 import subprocess
@@ -36,9 +36,15 @@ from sqlalchemy.pool import NullPool
 from corridor import audit
 from corridor.check_configuration import effective_thresholds
 from corridor.exceptions import evaluate
-from corridor.m8_acceptance_bundle import VerificationResult, publish_verified_bundle, verify_bundle
+from corridor.m8_acceptance_bundle import (
+    CorruptBundle,
+    VerificationResult,
+    publish_verified_bundle,
+    verify_bundle,
+)
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
+    disposable_database_prefix,
     ProvisionedDatabase,
     provision_disposable_postgres,
 )
@@ -74,8 +80,10 @@ from corridor.rehearsal_environment import SealedRehearsalEnvironment
 
 SNAPSHOT_SCHEMA_VERSION = "corridor.sh99-real-admission-source-snapshot.v1"
 BUNDLE_SCHEMA_VERSION = "corridor.sh99-real-admission-bundle.v1"
-DATABASE_PREFIX = "corridor_sh99_real_admission_acceptance_"
-SHARED_SEAL_DATABASE_PREFIX = "corridor_sh99_shared_admission_seal_"
+DATABASE_LABEL = "sh99_real_admission"
+SHARED_SEAL_DATABASE_LABEL = "sh99_shared_seal"
+DATABASE_PREFIX = disposable_database_prefix(DATABASE_LABEL)
+SHARED_SEAL_DATABASE_PREFIX = disposable_database_prefix(SHARED_SEAL_DATABASE_LABEL)
 BUNDLE_FILES = ("receipt.json", "canonical-content.json", "environment.json")
 SHARED_SEAL_SCHEMA_VERSION = "corridor.sh99-shared-admission-seal.v1"
 SHARED_SEAL_BUNDLE_FILES = (
@@ -158,7 +166,11 @@ def run_sh99_shared_admission_seal(
 ) -> SH99SharedAdmissionSealSummary:
     """Seal the exact ordinary shared Admission path on an isolated clone."""
     if provision_database is None:
-        provision_database = _provision_shared_seal_database
+        provision_database = partial(
+            provision_disposable_postgres,
+            repo_root=REPO_ROOT,
+            label=SHARED_SEAL_DATABASE_LABEL,
+        )
     rehearsal = SealedRehearsalEnvironment.open(
         source_database_url=config.source_database_url,
         expected_checkout_revision=config.expected_clean_git_revision,
@@ -288,7 +300,7 @@ def run_sh99_admission_acceptance(
     """Pin and replay the shared SH 99 operation without mutating its database."""
 
     if provision_database is None:
-        provision_database = provision_acceptance_database
+        provision_database = provision_acceptance_database()
     rehearsal = SealedRehearsalEnvironment.open(
         source_database_url=config.source_database_url,
         expected_checkout_revision=config.expected_clean_git_revision,
@@ -400,48 +412,30 @@ def verify_sh99_admission_bundle(
 ) -> VerificationResult:
     """Verify a closed real-SH-99 receipt export without opening PostgreSQL."""
 
-    return verify_bundle(
-        bundle_dir,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=BUNDLE_SCHEMA_VERSION,
-        bundle_files=BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        return verify_bundle(
+            bundle_dir,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+            bundle_files=BUNDLE_FILES,
+        )
+    except CorruptBundle as exc:
+        raise CorruptSH99AdmissionBundle(str(exc)) from exc
 
 
 def verify_sh99_shared_admission_seal_bundle(
     bundle_dir: Path, *, expected_integrity_manifest_sha256: str
 ) -> VerificationResult:
     """Verify a shared-operation seal without opening PostgreSQL."""
-    return verify_bundle(
-        bundle_dir,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=SHARED_SEAL_SCHEMA_VERSION,
-        bundle_files=SHARED_SEAL_BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
-
-
-def provision_acceptance_database(admin_url: str):
-    return provision_disposable_postgres(
-        admin_url,
-        repo_root=REPO_ROOT,
-        error_cls=ValueError,
-        database_prefix=DATABASE_PREFIX,
-    )
-
-
-def _provision_shared_seal_database(admin_url: str):
-    return provision_disposable_postgres(
-        admin_url,
-        repo_root=REPO_ROOT,
-        error_cls=ValueError,
-        database_prefix=SHARED_SEAL_DATABASE_PREFIX,
-    )
+    try:
+        return verify_bundle(
+            bundle_dir,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=SHARED_SEAL_SCHEMA_VERSION,
+            bundle_files=SHARED_SEAL_BUNDLE_FILES,
+        )
+    except CorruptBundle as exc:
+        raise CorruptSH99AdmissionBundle(str(exc)) from exc
 
 
 def _git(*args: str) -> str:
@@ -1469,6 +1463,14 @@ def _install_dependency_refusal(database_url: str) -> None:
         engine.dispose()
 
 
+def provision_acceptance_database() -> DatabaseProvisioner:
+    """The provisioner for this acceptance run's own disposable namespace."""
+
+    return partial(
+        provision_disposable_postgres, repo_root=REPO_ROOT, label=DATABASE_LABEL
+    )
+
+
 def _write_bundle(
     output_dir: Path,
     *,
@@ -1486,11 +1488,6 @@ def _write_bundle(
         canonical_content=canonical_content,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         bundle_files=BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
         temp_prefix="corridor-sh99-real-admission-bundle",
         self_verification_failure="new real SH 99 Admission bundle failed self-verification",
     )
@@ -1515,11 +1512,6 @@ def _write_shared_seal_bundle(
         canonical_content=canonical_content,
         bundle_schema_version=SHARED_SEAL_SCHEMA_VERSION,
         bundle_files=SHARED_SEAL_BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptSH99AdmissionBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
         temp_prefix="corridor-sh99-shared-admission-seal",
         self_verification_failure="new shared Admission seal failed self-verification",
     )
@@ -1558,13 +1550,6 @@ def _shared_seal_markdown(canonical: dict[str, Any]) -> bytes:
     return "\n".join(lines).encode()
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
-
-
-def _sha256(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _json_sha256(value: Any) -> str:
-    return _sha256(_canonical_json(value))
+_canonical_json = digests.canonical_json
+_sha256 = digests.sha256_bytes
+_json_sha256 = digests.canonical_sha256

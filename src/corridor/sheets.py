@@ -31,7 +31,7 @@ from pathlib import Path
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.vocabulary import (
     REQUIRED,
     STRUCTURED_RECORD_HEADINGS,

@@ -13,6 +13,7 @@ cannot erase either the failure or the exact reviewed PDF bytes.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections import Counter
 from dataclasses import asdict, dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ from typing import Any, Literal, Mapping, Sequence
 from uuid import UUID
 
 from corridor.m8_acceptance_bundle import (
+    CorruptBundle,
     VerificationResult,
     publish_verified_bundle,
     verify_bundle,
@@ -857,11 +859,7 @@ def publish_product_proving_bundle(
         canonical_content=canonical,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         bundle_files=BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptProductProvingBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
+        encoding="ascii-escaped",
         temp_prefix="corridor-product-proving-run",
         self_verification_failure="new Product Proving bundle failed self-verification",
     )
@@ -924,11 +922,7 @@ def publish_product_proving_failure_bundle(
         canonical_content=canonical,
         bundle_schema_version=BUNDLE_FAILURE_SCHEMA_VERSION,
         bundle_files=FAILURE_BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptProductProvingBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
+        encoding="ascii-escaped",
         temp_prefix="corridor-product-proving-failure",
         self_verification_failure="new Product Proving failure bundle is invalid",
     )
@@ -949,15 +943,16 @@ def verify_product_proving_bundle(
 ) -> VerificationResult:
     """Verify a closed receipt without PostgreSQL or the original checkout."""
 
-    verified = verify_bundle(
-        Path(bundle_dir),
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=BUNDLE_SCHEMA_VERSION,
-        bundle_files=BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptProductProvingBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        verified = verify_bundle(
+            Path(bundle_dir),
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=BUNDLE_SCHEMA_VERSION,
+            bundle_files=BUNDLE_FILES,
+            encoding="ascii-escaped",
+        )
+    except CorruptBundle as exc:
+        raise CorruptProductProvingBundle(str(exc)) from exc
     try:
         canonical = json.loads((Path(bundle_dir) / "canonical-content.json").read_bytes())
         receipt = json.loads((Path(bundle_dir) / "receipt.json").read_bytes())
@@ -1176,15 +1171,16 @@ def verify_product_proving_failure_bundle(
 ) -> VerificationResult:
     """Verify a terminal failure and refuse any success-shaped receipt."""
 
-    verified = verify_bundle(
-        Path(bundle_dir),
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=BUNDLE_FAILURE_SCHEMA_VERSION,
-        bundle_files=FAILURE_BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptProductProvingBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        verified = verify_bundle(
+            Path(bundle_dir),
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=BUNDLE_FAILURE_SCHEMA_VERSION,
+            bundle_files=FAILURE_BUNDLE_FILES,
+            encoding="ascii-escaped",
+        )
+    except CorruptBundle as exc:
+        raise CorruptProductProvingBundle(str(exc)) from exc
     try:
         canonical = json.loads((Path(bundle_dir) / "canonical-content.json").read_bytes())
         receipt = json.loads((Path(bundle_dir) / "receipt.json").read_bytes())
@@ -1675,8 +1671,9 @@ def _failure_markdown(canonical: Mapping[str, Any]) -> str:
     )
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
+# Retained encoding: published product-proving bundle manifests and their
+# `canonical_content_sha256` were computed with non-ASCII escaped.
+_canonical_json = digests.ascii_escaped_json
 
 
 def _is_sha256(value: object) -> bool:

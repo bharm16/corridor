@@ -315,7 +315,7 @@ def test_acceptance_assertions_enforce_fan_in_ambiguous_abstention(
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
-        name="corridor_m8_acceptance_" + "0" * 32,
+        name="corridor_disposable_m8_acceptance_1234_000000000000",
         session_factory=None,  # type: ignore[arg-type]
         postgres_version="16.10",
         migration_head="head",
@@ -339,7 +339,7 @@ def test_acceptance_assertions_enforce_real_fan_out_ambiguous_abstention(
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
-        name="corridor_m8_acceptance_" + "0" * 32,
+        name="corridor_disposable_m8_acceptance_1234_000000000000",
         session_factory=None,  # type: ignore[arg-type]
         postgres_version="16.10",
         migration_head="head",
@@ -365,7 +365,7 @@ def test_acceptance_assertions_enforce_no_automated_record_origination(
     real = _read_export(summary, "real-chain.json")
     controlled = _read_export(summary, "controlled-lane.json")
     database = ProvisionedDatabase(
-        name="corridor_m8_acceptance_" + "0" * 32,
+        name="corridor_disposable_m8_acceptance_1234_000000000000",
         session_factory=None,  # type: ignore[arg-type]
         postgres_version="16.10",
         migration_head="head",

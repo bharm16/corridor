@@ -7,7 +7,7 @@ that ADR is that those are one document in two forms — so a field means the
 same thing whichever way it arrived.
 
 The two readers use these differently, and the difference is the point.
-`extract_matrix` shows the model the field *names* and asks which printed
+The page reader shows the model the field *names* and asks which printed
 column holds each, because a printout does not carry the form's own names.
 `sheets` looks the *column names* up directly, because a worksheet does.
 One table, read from both ends.
@@ -15,7 +15,41 @@ One table, read from both ends.
 
 from __future__ import annotations
 
-from corridor.geometry import normalize_header
+import re
+
+from corridor.candidates import dedupe_hint as join_hint
+
+_WS = re.compile(r"\s+")
+
+
+def normalize_header(header: str | None) -> str:
+    """One printed column heading, reduced to the form the tables are keyed by.
+
+    Defined here because this module is the single home of these names.
+    `corridor_pdf_reader/replacement/vocabulary.py` carries a deliberate copy
+    of this function and of `SEQUENCING_HEADERS`: its own docstring says it
+    was copied from here so the semantics tier could be exercised before the
+    port, and that on the port it is replaced by Corridor's. ADR-0094 freezes
+    that package, so the copy stays until the port removes it, and this
+    definition does not import from it - that would invert the ownership the
+    copy itself declares.
+    """
+    return _WS.sub(" ", (header or "").replace("\n", " ")).strip().upper()
+
+
+def dedupe_hint(fields: dict[str, str]) -> str:
+    """What discriminates one matrix row from another: party, kind, where.
+
+    The join itself is `candidates.dedupe_hint`, shared with the extractors
+    that read prose and discriminate on different parts. `merge` blocks on
+    the result, so the separator is one rule even where the parts are not.
+    """
+    return join_hint(
+        fields.get("external_org", ""),
+        fields.get("utility_type", ""),
+        f"{fields.get('station_from', '')}-{fields.get('station_to', '')}",
+    )
+
 
 # The canonical vocabulary, and where each field comes from.
 #
@@ -312,7 +346,7 @@ def is_retired_row(fields: dict[str, str]) -> bool:
 # relationship into `unmapped_columns`: rows ingested, sequencing dropped.
 # Out of scope must mean unsupported, never lossy, so a reader that meets
 # one of these refuses the document whole. Normalized form (see
-# `geometry.normalize_header`).
+# `normalize_header` above).
 SEQUENCING_HEADERS = frozenset({"DEPENDENT ACTIVITY"})
 
 

@@ -55,8 +55,7 @@ def identity_isolated_database():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=Path(__file__).resolve().parents[1],
-        error_cls=RuntimeError,
-        database_prefix="corridor_organization_identity_",
+        label="organization_identity",
     ) as database:
         yield database
 
