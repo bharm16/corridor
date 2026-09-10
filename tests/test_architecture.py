@@ -33,6 +33,82 @@ def _module_name(path: Path) -> str:
     return ".".join(path.relative_to(SOURCE_ROOT).with_suffix("").parts)
 
 
+# Every absolute import form that names a Corridor module. Three forms reach
+# one, and the guards below used to see only the first: `from corridor.x import
+# y`, `from corridor import x` (104 sites, and the form that hides most of the
+# graph), and `import corridor.x`. `from corridor.pkg import module` names a
+# module too, so each imported name is offered as a submodule candidate and the
+# module table decides. Relative imports do not occur in this tree and are
+# skipped rather than guessed at.
+def _imported_module_names(nodes: tuple[ast.AST, ...]) -> tuple[tuple[str, int], ...]:
+    """(dotted module candidate, line) for every absolute import in one file."""
+    names: list[tuple[str, int]] = []
+    for node in nodes:
+        if isinstance(node, ast.ImportFrom):
+            if node.level or not node.module:
+                continue
+            names.append((node.module, node.lineno))
+            names.extend(
+                (f"{node.module}.{imported.name}", node.lineno)
+                for imported in node.names
+            )
+        elif isinstance(node, ast.Import):
+            names.extend((alias.name, node.lineno) for alias in node.names)
+    return tuple(names)
+
+
+def _corridor_import_edges() -> dict[tuple[str, str], tuple[int, ...]]:
+    """Every import edge between two source modules, with the lines that make it."""
+    paths = {_module_name(path): path for path in _module_paths()}
+    edges: dict[tuple[str, str], set[int]] = {}
+    for name, path in paths.items():
+        for imported, lineno in _imported_module_names(read_python(path).nodes):
+            if not imported.startswith("corridor."):
+                continue
+            dependency = imported.removeprefix("corridor.")
+            if dependency in paths and dependency != name:
+                edges.setdefault((name, dependency), set()).add(lineno)
+    return {edge: tuple(sorted(lines)) for edge, lines in sorted(edges.items())}
+
+
+def _module_dependencies() -> dict[str, set[str]]:
+    """The source import graph: every module, and the modules it imports."""
+    dependencies: dict[str, set[str]] = {
+        _module_name(path): set() for path in _module_paths()
+    }
+    for source, target in _corridor_import_edges():
+        dependencies[source].add(target)
+    return dependencies
+
+
+def _edges_on_a_cycle(dependencies: dict[str, set[str]]) -> tuple[tuple[str, str], ...]:
+    """Exactly the edges a cycle runs through: ones whose target reaches back.
+
+    This is the canonical answer, not one arbitrary feedback arc set, so the
+    declared list below can be compared for equality. An edge inside a
+    strongly connected component qualifies; every other edge does not.
+    """
+
+    reachable: dict[str, set[str]] = {}
+    for start in dependencies:
+        seen: set[str] = set()
+        frontier = [start]
+        while frontier:
+            for dependency in dependencies[frontier.pop()]:
+                if dependency not in seen:
+                    seen.add(dependency)
+                    frontier.append(dependency)
+        reachable[start] = seen
+    return tuple(
+        sorted(
+            (source, target)
+            for source, targets in dependencies.items()
+            for target in targets
+            if source in reachable[target]
+        )
+    )
+
+
 def test_every_source_module_opens_with_its_reason_for_existing():
     missing = [
         path.name for path in _module_paths() if ast.get_docstring(_tree(path)) is None
@@ -78,35 +154,177 @@ def test_no_module_silently_replaces_a_top_level_interface_name():
 
 
 def test_source_modules_do_not_import_another_module_private_implementation():
+    """Every import form, so `from corridor import _x` cannot slip past."""
     private_imports: list[str] = []
     for path in _module_paths():
-        for node in read_python(path).nodes:
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            if not node.module or not node.module.startswith("corridor."):
-                continue
-            for imported in node.names:
-                if imported.name.startswith("_"):
-                    private_imports.append(
-                        f"{path.name}:{node.lineno} imports "
-                        f"{node.module}.{imported.name}"
-                    )
+        for imported, lineno in _imported_module_names(read_python(path).nodes):
+            if imported.startswith("corridor.") and imported.split(".")[-1].startswith("_"):
+                private_imports.append(f"{path.name}:{lineno} imports {imported}")
 
-    assert private_imports == []
+    assert sorted(set(private_imports)) == []
+
+
+# The import cycles that exist today, edge by edge (ADR-0081).
+#
+# Teaching the guard `from corridor import x` made two strongly connected
+# components visible — 25 modules across the legacy record path and 11 across
+# the release readers — that a `corridor.x`-only scan never saw. The cycles are
+# real, they are the work of later cards in this audit, and this list is the
+# ratchet that holds them still meanwhile: the same "may fall and may never
+# rise" shape the unpartitioned-relation list uses (#548). Every edge a cycle
+# runs through must be named here, and an edge that stops closing a cycle must
+# be deleted from the list, so an added cycle fails the build and a repaired
+# seam cannot pay for it. The reason on each edge names the seam that removes
+# it; the import statement lives in the source module, so the source module's
+# seam owns the edge.
+_EXTRACTION_LINEAGE = (
+    "extractor lineage and run recording import the extractors and admission "
+    "they record, which import them back; the extraction-lineage card leaves "
+    "recording downstream of the run that produced it"
+)
+_STATEMENT_ADMISSION = (
+    "statement admission, the external-statement reader and the scope matcher "
+    "all reach into each other and into dependency_events; the statement-spine "
+    "card leaves admission depending on the spine alone"
+)
+_LEGACY_RECORD_READERS = (
+    "legacy Constraint Record modules read each other's projections in both "
+    "directions; ADR-0081 stage 4 moves each reader onto the spine projection "
+    "and deletes the legacy import"
+)
+_SUPPORT_TRANSFER = (
+    "supersession review, support transfer and its lineage recorder import "
+    "each other, operative_support and revision_comparison; the support-"
+    "assessment card gives that group one downward direction"
+)
+_NATIVE_READER_COVERAGE = (
+    "the native-coverage and equivalence reports import the readers they "
+    "measure while those readers import current_record; the reader-equivalence "
+    "card measures through a declared registry instead"
+)
+_RELEASE_ASSEMBLY = (
+    "release candidate assembly, packet review and the issue renderers import "
+    "each other; the release-assembly card separates assembling a release from "
+    "rendering one"
+)
+
+CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
+    # extraction lineage
+    ("admission", "dependency_admission", _EXTRACTION_LINEAGE),
+    ("admission", "event_admission", _EXTRACTION_LINEAGE),
+    ("admission", "extraction_runs", _EXTRACTION_LINEAGE),
+    ("dependency_admission", "adjudicate", _EXTRACTION_LINEAGE),
+    ("dependency_admission", "extraction_runs", _EXTRACTION_LINEAGE),
+    ("extract_agreement", "extract_batch", _EXTRACTION_LINEAGE),
+    ("extract_batch", "admission", _EXTRACTION_LINEAGE),
+    ("extract_batch", "extraction_runs", _EXTRACTION_LINEAGE),
+    ("extract_batch", "extractor_lineage", _EXTRACTION_LINEAGE),
+    ("extraction_runs", "extractor_lineage", _EXTRACTION_LINEAGE),
+    ("extractor_lineage", "extract_agreement", _EXTRACTION_LINEAGE),
+    ("extractor_lineage", "key_date_table", _EXTRACTION_LINEAGE),
+    ("key_date_table", "extraction_runs", _EXTRACTION_LINEAGE),
+    ("key_date_table", "extractor_lineage", _EXTRACTION_LINEAGE),
+    # statement admission
+    ("event_admission", "dependency_events", _STATEMENT_ADMISSION),
+    ("event_admission", "external_statements", _STATEMENT_ADMISSION),
+    ("event_admission", "statement_scope_matching", _STATEMENT_ADMISSION),
+    ("external_statements", "dependency_events", _STATEMENT_ADMISSION),
+    ("statement_scope_matching", "dependency_events", _STATEMENT_ADMISSION),
+    ("statement_scope_matching", "external_statements", _STATEMENT_ADMISSION),
+    # legacy record readers
+    ("accepted_field_reading", "adjudicate", _LEGACY_RECORD_READERS),
+    ("adjudicate", "disputes", _LEGACY_RECORD_READERS),
+    ("adjudicate", "operative_support", _LEGACY_RECORD_READERS),
+    ("adjudicate", "supersession_review", _LEGACY_RECORD_READERS),
+    ("check_configuration", "exceptions", _LEGACY_RECORD_READERS),
+    ("condition_tracking", "dependency_events", _LEGACY_RECORD_READERS),
+    ("dependency_events", "work_decisions", _LEGACY_RECORD_READERS),
+    ("disputes", "notifications", _LEGACY_RECORD_READERS),
+    ("disputes", "work_decisions", _LEGACY_RECORD_READERS),
+    ("documentation_checklist", "condition_tracking", _LEGACY_RECORD_READERS),
+    ("documentation_checklist", "work_decisions", _LEGACY_RECORD_READERS),
+    ("exceptions", "accepted_field_reading", _LEGACY_RECORD_READERS),
+    ("exceptions", "dependency_events", _LEGACY_RECORD_READERS),
+    ("exceptions", "disputes", _LEGACY_RECORD_READERS),
+    ("exceptions", "operative_support", _LEGACY_RECORD_READERS),
+    ("notifications", "check_configuration", _LEGACY_RECORD_READERS),
+    ("notifications", "dependency_events", _LEGACY_RECORD_READERS),
+    ("notifications", "exceptions", _LEGACY_RECORD_READERS),
+    ("operative_support", "dependency_events", _LEGACY_RECORD_READERS),
+    ("operative_support", "documentation_checklist", _LEGACY_RECORD_READERS),
+    ("work_decisions", "notifications", _LEGACY_RECORD_READERS),
+    # support transfer
+    ("revision_comparison", "extraction_runs", _SUPPORT_TRANSFER),
+    ("supersession_review", "extraction_runs", _SUPPORT_TRANSFER),
+    ("supersession_review", "operative_support", _SUPPORT_TRANSFER),
+    ("supersession_review", "revision_comparison", _SUPPORT_TRANSFER),
+    ("supersession_review", "support_transfer", _SUPPORT_TRANSFER),
+    ("supersession_review", "support_transfer_lineage", _SUPPORT_TRANSFER),
+    ("support_transfer", "extraction_runs", _SUPPORT_TRANSFER),
+    ("support_transfer", "operative_support", _SUPPORT_TRANSFER),
+    ("support_transfer", "revision_comparison", _SUPPORT_TRANSFER),
+    ("support_transfer", "support_transfer_lineage", _SUPPORT_TRANSFER),
+    ("support_transfer_lineage", "extraction_runs", _SUPPORT_TRANSFER),
+    ("support_transfer_lineage", "operative_support", _SUPPORT_TRANSFER),
+    ("support_transfer_lineage", "revision_comparison", _SUPPORT_TRANSFER),
+    # native reader coverage
+    ("current_record", "reader_equivalence", _NATIVE_READER_COVERAGE),
+    ("native_reader_coverage", "packet_review", _NATIVE_READER_COVERAGE),
+    ("native_reader_coverage", "release_authorization", _NATIVE_READER_COVERAGE),
+    ("native_reader_coverage", "release_candidate", _NATIVE_READER_COVERAGE),
+    ("native_reader_coverage", "workbook_render", _NATIVE_READER_COVERAGE),
+    ("reader_equivalence", "native_reader_coverage", _NATIVE_READER_COVERAGE),
+    ("workbook_render", "current_record", _NATIVE_READER_COVERAGE),
+    # release assembly
+    ("follow_up_bundles", "project_workflow", _RELEASE_ASSEMBLY),
+    ("issue_coverage", "issue_rendering", _RELEASE_ASSEMBLY),
+    ("issue_rendering", "current_record", _RELEASE_ASSEMBLY),
+    ("packet_review", "issue_coverage", _RELEASE_ASSEMBLY),
+    ("project_workflow", "packet_review", _RELEASE_ASSEMBLY),
+    ("release_authorization", "release_candidate", _RELEASE_ASSEMBLY),
+    ("release_candidate", "follow_up_bundles", _RELEASE_ASSEMBLY),
+    ("release_candidate", "issue_coverage", _RELEASE_ASSEMBLY),
+    ("release_candidate", "issue_rendering", _RELEASE_ASSEMBLY),
+    ("release_candidate", "workbook_render", _RELEASE_ASSEMBLY),
+)
+
+
+def test_the_import_scanner_sees_every_form_of_dependency():
+    """The graph is only as honest as the scanner behind it (#548 shape).
+
+    `from corridor import x` is how most of this codebase imports a sibling,
+    and a scanner that only understood `from corridor.x import y` reported an
+    acyclic graph that was not one.
+    """
+
+    cases = {
+        "from corridor.exceptions import review\n": {"corridor.exceptions", "corridor.exceptions.review"},
+        "from corridor import disputes, notifications\n": {"corridor", "corridor.disputes", "corridor.notifications"},
+        "import corridor.work_decisions\n": {"corridor.work_decisions"},
+        "from corridor.web import app\n": {"corridor.web", "corridor.web.app"},
+        "from . import sibling\n": set(),
+        "import httpx\n": {"httpx"},
+    }
+
+    assert {
+        source: {name for name, _ in _imported_module_names(tuple(ast.walk(ast.parse(source))))}
+        for source in cases
+    } == cases
 
 
 def test_source_module_dependencies_are_acyclic():
-    paths = {_module_name(path): path for path in _module_paths()}
-    dependencies: dict[str, set[str]] = {name: set() for name in paths}
-    for name, path in paths.items():
-        for node in read_python(path).nodes:
-            if not isinstance(node, ast.ImportFrom):
-                continue
-            if not node.module or not node.module.startswith("corridor."):
-                continue
-            dependency = node.module.removeprefix("corridor.")
-            if dependency in paths:
-                dependencies[name].add(dependency)
+    """Acyclic once the declared cycle edges are set aside, and only those.
+
+    The allowlist above is the measured remainder; every other cycle is a
+    defect this test reports as the path that closes it.
+    """
+
+    dependencies = _module_dependencies()
+    declared = {(source, target) for source, target, _ in CYCLE_EDGE_ALLOWLIST}
+    remaining = {
+        name: {target for target in targets if (name, target) not in declared}
+        for name, targets in dependencies.items()
+    }
 
     visiting: list[str] = []
     visited: set[str] = set()
@@ -118,7 +336,7 @@ def test_source_module_dependencies_are_acyclic():
         if name in visited:
             return None
         visiting.append(name)
-        for dependency in sorted(dependencies[name]):
+        for dependency in sorted(remaining[name]):
             cycle = visit(dependency)
             if cycle is not None:
                 return cycle
@@ -127,13 +345,71 @@ def test_source_module_dependencies_are_acyclic():
         return None
 
     cycles = []
-    for name in sorted(paths):
+    for name in sorted(remaining):
         cycle = visit(name)
         if cycle is not None:
             cycles.append(" -> ".join(cycle))
             visiting.clear()
 
     assert cycles == []
+
+
+def test_the_declared_cycle_edges_are_exactly_the_cycles_that_exist():
+    """The ratchet, exact in both directions.
+
+    An import that closes a new cycle fails here rather than hiding inside a
+    component that was already tangled, and an edge that stops closing one has
+    to leave the list, so the list can only shrink and only honestly.
+    """
+
+    edges = [(source, target) for source, target, _ in CYCLE_EDGE_ALLOWLIST]
+    assert len(set(edges)) == len(edges), "the allowlist names each edge once"
+    # One contiguous run per seam, sorted inside it, so a diff reads as a seam
+    # rather than as scattered lines.
+    groups: list[tuple[str, list[tuple[str, str]]]] = []
+    for source, target, reason in CYCLE_EDGE_ALLOWLIST:
+        if not groups or groups[-1][0] != reason:
+            groups.append((reason, []))
+        groups[-1][1].append((source, target))
+    assert len(groups) == len({reason for reason, _ in groups}), (
+        "every edge of one seam is listed together"
+    )
+    assert all(members == sorted(members) for _, members in groups), (
+        "each seam lists its edges in sorted order"
+    )
+    vague = sorted(
+        f"{source} -> {target}"
+        for source, target, reason in CYCLE_EDGE_ALLOWLIST
+        if len(reason.split()) < 8
+    )
+    assert vague == [], "each declared cycle edge says which seam removes it"
+
+    dependencies = _module_dependencies()
+    unknown = sorted(
+        f"{source} -> {target}"
+        for source, target in edges
+        if source not in dependencies or target not in dependencies
+    )
+    assert unknown == [], "the allowlist names modules that no longer exist"
+
+    declared = set(edges)
+    found = set(_edges_on_a_cycle(dependencies))
+    sites = _corridor_import_edges()
+    problems: dict[str, str] = {}
+    for source, target in sorted(declared | found):
+        if (source, target) not in declared:
+            lines = ", ".join(str(line) for line in sites[(source, target)])
+            problems[f"{source} -> {target}"] = (
+                f"closes an import cycle, imported at {source}.py:{lines}; break "
+                "the cycle instead of widening the list"
+            )
+        elif (source, target) not in found:
+            problems[f"{source} -> {target}"] = (
+                "no longer lies on a cycle; delete its allowlist line to hold "
+                "the gain"
+            )
+
+    assert problems == {}
 
 
 # The modules between a Source Segment and a Source Fact value, and the
@@ -152,25 +428,19 @@ MODEL_CLIENT_PACKAGES = frozenset({"httpx", "openai"})
 
 
 def _internal_dependencies() -> dict[str, set[str]]:
-    paths = {_module_name(path): path for path in _module_paths()}
-    dependencies: dict[str, set[str]] = {name: set() for name in paths}
-    for name, path in paths.items():
-        for node in read_python(path).nodes:
-            if isinstance(node, ast.ImportFrom) and node.module:
-                if node.module.startswith("corridor."):
-                    dependency = node.module.removeprefix("corridor.")
-                    if dependency in paths:
-                        dependencies[name].add(dependency)
-                elif node.module.split(".")[0] in MODEL_CLIENT_PACKAGES:
-                    dependencies[name].add(f"<{node.module.split('.')[0]}>")
-            elif isinstance(node, ast.Import):
-                for imported in node.names:
-                    if imported.name.startswith("corridor."):
-                        dependency = imported.name.removeprefix("corridor.")
-                        if dependency in paths:
-                            dependencies[name].add(dependency)
-                    elif imported.name.split(".")[0] in MODEL_CLIENT_PACKAGES:
-                        dependencies[name].add(f"<{imported.name.split('.')[0]}>")
+    """The source import graph plus a `<package>` node per model-client package.
+
+    Built on the same scanner the acyclicity guard uses, so a `from corridor
+    import x` edge cannot hide a path from a fact module to a model client.
+    """
+
+    dependencies = _module_dependencies()
+    for path in _module_paths():
+        name = _module_name(path)
+        for imported, _ in _imported_module_names(read_python(path).nodes):
+            package = imported.split(".")[0]
+            if package in MODEL_CLIENT_PACKAGES:
+                dependencies[name].add(f"<{package}>")
     return dependencies
 
 
@@ -469,6 +739,195 @@ def test_adr_index_matches_frontmatter():
     assert adr_index.INDEX_PATH.read_text(encoding="utf-8") == expected, (
         "docs/adr/INDEX.md is stale; run `make adr-index`"
     )
+
+
+# ADR-0081 stage 4 exit criterion: "no reader imports a legacy table module;
+# the architecture test enforces it." Nothing enforced it, so the census below
+# is the enforcement, held as a ratchet rather than as a wish: every module that
+# consumes a legacy ORM class today is named, the guard asserts the set exactly,
+# and stage 4 finishes when the list is empty.
+#
+# Which classes count as legacy was checked against ADR-0081 rather than assumed
+# from a name. Six are named outright: the stage 1 exit criterion and the freeze
+# both list `dependencies`, `dependency_events`, `work_decisions`,
+# `operative_support` and the dispute tables. Four more are not named by any one
+# sentence of the ADR but retire with those tables — each is keyed to a legacy
+# row and `corridor.legacy_history_inventory.HISTORY_CLASSES`, the stage 2
+# retention inventory, records each as a `compatibility` class rather than
+# native lineage.
+#
+# `ExtractedProposal` (`extracted_proposals`) was considered and deliberately
+# left out. ADR-0081 names it nowhere as retiring, the same stage 2 inventory
+# records it as `native_lineage`, and the target architecture keeps it —
+# extractors only ever produce Extracted Proposals. Listing it would forbid
+# `source_append`, `facts` and `fact_decisions` from touching the spine's own
+# proposal record, which is the opposite of stage 4.
+#
+# A legacy module reading its own class is on the list like any other consumer:
+# the criterion is that no module imports one, and stage 6 deletes the modules
+# themselves.
+LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
+    # Named by ADR-0081 stage 1's exit criterion and by its freeze.
+    # dependencies
+    "Dependency": (
+        "adjudicate", "baseline_adoption", "briefing", "condition_tracking",
+        "demo", "dependency_admission", "dependency_events", "dispute_timeline",
+        "disputes", "document_notifications", "documentation_checklist",
+        "email_intake", "event_admission", "event_admission_acceptance",
+        "evidence_investigator", "evidence_investigator_evaluation", "exceptions",
+        "external_statements", "facts", "identity", "ledger",
+        "legacy_ledger_archive", "m8_acceptance", "m8_acceptance_controlled",
+        "measurement_cases", "merge", "milestones", "notifications",
+        "operative_support", "organization_identity", "product_proving_execution",
+        "product_proving_frontend_capture", "project_contacts", "project_reading",
+        "prose_interpretation", "report", "report_diff_reference",
+        "revision_change_explanation", "schedule_linking",
+        "sh99_admission_acceptance", "statement_coordination",
+        "statement_matcher", "statement_matching", "statement_scope_matching",
+        "statement_suggestions", "subject_resolution", "supersession_review",
+        "support_transfer", "support_transfer_lineage", "verbal", "web.app",
+        "web.queue", "work_decisions", "work_list",
+    ),
+    # dependency_events
+    "ExternalPartyStatement": (
+        "dependency_events", "document_notifications", "external_statements",
+        "measurement_cases", "product_proving_execution",
+        "product_proving_frontend_capture", "review_packet_reading",
+        "statement_coordination", "statement_lifecycle", "work_list",
+    ),
+    # work_decisions
+    "WorkDecision": (
+        "dependency_events", "event_admission_acceptance", "external_statements",
+        "notifications", "product_proving_execution",
+        "product_proving_frontend_capture", "sh99_admission_acceptance",
+        "statement_lifecycle", "work_decisions", "work_list",
+    ),
+    # operative_support
+    "OperativeSupport": (
+        "adjudicate", "demo", "legacy_ledger_archive", "m8_acceptance",
+        "m8_acceptance_controlled", "operative_support",
+        "product_proving_execution", "support_history",
+    ),
+    # dispute_settlements
+    "DisputeSettlement": (
+        "audit", "disputes", "measurement_cases", "product_proving_execution",
+    ),
+    # dispute_history_resolutions
+    "DisputeHistoryResolution": (
+        "disputes",
+    ),
+    # Retiring with the tables above: keyed to a legacy row, and recorded as
+    # a `compatibility` class by the stage 2 retention inventory.
+    # candidates
+    "Candidate": (
+        "adjudicate", "candidate_statement_facts", "candidates", "cohort", "demo",
+        "dependency_admission", "disputes", "eval", "event_admission",
+        "event_admission_acceptance", "evidence_investigator",
+        "evidence_investigator_capture", "evidence_investigator_runtime",
+        "evidence_investigator_shadow", "external_statements",
+        "extract_agreement", "extract_batch", "extract_minutes",
+        "extract_minutes_v4", "extract_minutes_v5", "extract_project",
+        "extract_sheet", "extraction_runs", "fact_decisions", "facts", "gold",
+        "identity", "lane", "legacy_ledger_archive", "m8_acceptance",
+        "m8_acceptance_controlled", "measurement_cases", "native_matrix",
+        "native_matrix_measurement", "organization_identity", "pipeline",
+        "product_proving_execution", "product_proving_extraction",
+        "product_proving_frontend_capture", "prose_interpretation", "report",
+        "revision_comparison", "sh99_admission_acceptance",
+        "sh99_coordinator_rehearsal", "statement_coordination",
+        "statement_scope_matching", "statement_spine", "statement_suggestions",
+        "supersession", "supersession_review", "support_transfer",
+        "support_transfer_lineage", "thread_reading", "web.app", "web.queue",
+        "web.statement_forms", "work_list",
+    ),
+    # commitment_lineages
+    "CommitmentLineage": (
+        "dependency_events", "document_notifications",
+        "event_admission_acceptance", "external_statements", "notifications",
+        "product_proving_execution", "sh99_admission_acceptance",
+        "sh99_coordinator_rehearsal", "statement_coordination", "verbal",
+        "web.app", "work_decisions", "work_list",
+    ),
+    # dependency_dismissals
+    "DependencyDismissal": (
+        "adjudicate", "audit", "changes", "product_proving_execution",
+    ),
+    # retired_dependency_statuses
+    "RetiredDependencyStatus": (
+        "product_proving_execution",
+    ),
+}
+
+
+def _legacy_table_consumers() -> dict[str, tuple[str, ...]]:
+    """Every source module that names one of the legacy ORM classes.
+
+    Two forms count as consuming: importing the class from `corridor.models`,
+    and reaching it as `models.X` off an imported module. `models.py` declares
+    them and is not a consumer of them.
+    """
+
+    consumers: dict[str, list[str]] = {name: [] for name in LEGACY_TABLE_CONSUMERS}
+    for path in _module_paths():
+        if path.name == "models.py":
+            continue
+        found: set[str] = set()
+        for node in read_python(path).nodes:
+            if isinstance(node, ast.ImportFrom) and node.module == "corridor.models":
+                found.update(
+                    imported.name
+                    for imported in node.names
+                    if imported.name in consumers
+                )
+            elif (
+                isinstance(node, ast.Attribute)
+                and isinstance(node.value, ast.Name)
+                and node.value.id == "models"
+                and node.attr in consumers
+            ):
+                found.add(node.attr)
+        for name in found:
+            consumers[name].append(_module_name(path))
+    return {name: tuple(sorted(modules)) for name, modules in consumers.items()}
+
+
+def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
+    """ADR-0081 stage 4's exit criterion, made executable (#548 ratchet shape).
+
+    The criterion is "no reader imports a legacy table module"; the list above
+    is how far that is from true, and this test holds it exact in both
+    directions. A module that starts consuming a legacy class fails here, so a
+    new feature cannot be built on a frozen table; a module that stops
+    consuming one has to be deleted from the list, so a repaired reader cannot
+    pay for a new consumer somewhere else. Stage 4 exits when every tuple is
+    empty.
+    """
+
+    listed = {name: tuple(sorted(modules)) for name, modules in LEGACY_TABLE_CONSUMERS.items()}
+    assert listed == LEGACY_TABLE_CONSUMERS, "each class lists its consumers sorted and once"
+
+    from corridor import models
+
+    unknown = sorted(name for name in listed if not hasattr(models, name))
+    assert unknown == [], "the list names classes corridor.models no longer defines"
+
+    found = _legacy_table_consumers()
+    problems: dict[str, str] = {}
+    for name in sorted(listed):
+        added = sorted(set(found[name]) - set(listed[name]))
+        gone = sorted(set(listed[name]) - set(found[name]))
+        if added:
+            problems[name] = (
+                f"new consumers of this legacy class: {', '.join(added)}; "
+                "write through the spine instead of adding one"
+            )
+        elif gone:
+            problems[name] = (
+                f"no longer consumers: {', '.join(gone)}; delete those names "
+                "from LEGACY_TABLE_CONSUMERS to hold the gain"
+            )
+
+    assert problems == {}
 
 
 def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanup():
