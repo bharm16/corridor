@@ -42,7 +42,7 @@ from corridor.extract_matrix import (
     PROMPT_VERSION,
     SequencingSemanticsDetected,
 )
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES
 from corridor.models import (
     Candidate,

@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from corridor.db import Session, engine
 from corridor.extract_sheet import PROMPT_VERSION, TIER_NATIVE, extract_document
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.ingest import ingest_document
 from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.row_accounting import RowAccounting, RowAccountingFailure

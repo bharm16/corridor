@@ -90,7 +90,6 @@ _POSTPROCESSOR_SOURCES = {
         "src/corridor/pipeline.py",
         "src/corridor/sheets.py",
         "src/corridor/vocabulary.py",
-        "src/corridor/geometry.py",
         "src/corridor/verify.py",
         "src/corridor/candidates.py",
         "src/corridor/models.py",

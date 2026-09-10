@@ -17,7 +17,7 @@ from corridor.extraction_runs import (
     extractor_configuration,
     record_extraction_run,
 )
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.extract_project import (
     Outcome,
     UnextractableDocument,

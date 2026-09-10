@@ -728,11 +728,11 @@ def _citation_text_source(session: Session, citation: dict) -> str | None:
 def _transcribes_cells(payload: dict) -> bool:
     """Does this proposal claim its values are printed where it cites?
 
-    `whole_row` was standing in for this question and is not it.
-    `geometry.best_verifiable_quote` returns `whole_row=False` whenever the
-    assembled row is not contiguous on the page — two tables printed side
-    by side, or a leading `Data Source` column that lands elsewhere in
-    reading order — and those rows are still transcribed cells whose
+    `whole_row` was standing in for this question and is not it. The page
+    reader that #766 retired recorded `whole_row=False` whenever the
+    assembled row was not contiguous on the page — two tables printed side
+    by side, or a leading `Data Source` column that landed elsewhere in
+    reading order — and those retained rows are still transcribed cells whose
     `unverified_fields` means exactly what it means everywhere else. 79
     live rows are in that state, and an edit to one kept the extractor's
     reading of the values the reviewer had just replaced: a value typed in
