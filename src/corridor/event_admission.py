@@ -1617,55 +1617,23 @@ def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     the party match — and keep running under an authorization no one
     re-read. The authorization covers the rules, and the rules are code.
     """
-    from pathlib import Path
-
-    from corridor import models as models_module
-    from corridor import principals as principals_module
-    from corridor import external_statements as external_statements_module
-    from corridor import statement_lifecycle as statement_lifecycle_module
-    from corridor import verify as verify_module
-
-    paths = (
-        ("corridor.event_admission", Path(__file__)),
-        ("corridor.dependency_events", Path(dependency_events.__file__)),
-        ("corridor.external_statements", Path(external_statements_module.__file__)),
-        ("corridor.audit", Path(audit.__file__)),
-        ("corridor.identity", Path(identity.__file__)),
-        ("corridor.policy", Path(policy.__file__)),
-        ("corridor.models", Path(models_module.__file__)),
-        ("corridor.principals", Path(principals_module.__file__)),
-        (
-            "corridor.statement_lifecycle",
-            Path(statement_lifecycle_module.__file__),
-        ),
-        ("corridor.verify", Path(verify_module.__file__)),
-        (
-            "corridor.migrations.c7d2f5a83b46",
-            Path(__file__).parent
-            / "migrations/versions/c7d2f5a83b46_add_event_admission.py",
-        ),
-        (
-            "corridor.migrations.a217e4f3a2b1",
-            Path(__file__).parent
-            / "migrations/versions/a217e4f3a2b1_external_party_statement_shape.py",
-        ),
-        (
-            "corridor.migrations.b257d0f7a315",
-            Path(__file__).parent
-            / "migrations/versions/b257d0f7a315_unknown_scope_event_admission.py",
-        ),
-        (
-            "corridor.migrations.c257e1a8b426",
-            Path(__file__).parent
-            / "migrations/versions/c257e1a8b426_seal_event_admission_acceptance.py",
-        ),
-        (
-            "corridor.migrations.d257f2b9c537",
-            Path(__file__).parent
-            / "migrations/versions/d257f2b9c537_guard_event_admission_activation.py",
-        ),
+    return policy.pinned_sources(
+        "corridor.event_admission",
+        "corridor.dependency_events",
+        "corridor.external_statements",
+        "corridor.audit",
+        "corridor.identity",
+        "corridor.policy",
+        "corridor.models",
+        "corridor.principals",
+        "corridor.statement_lifecycle",
+        "corridor.verify",
+        "corridor.migrations.c7d2f5a83b46",
+        "corridor.migrations.a217e4f3a2b1",
+        "corridor.migrations.b257d0f7a315",
+        "corridor.migrations.c257e1a8b426",
+        "corridor.migrations.d257f2b9c537",
     )
-    return tuple((name, path.read_bytes()) for name, path in paths)
 
 
 

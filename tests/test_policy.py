@@ -14,17 +14,37 @@ from corridor import (
     automatic_carry_forward,
     dependency_admission,
     event_admission,
+    models,
+    organization_identity,
     policy,
+    schedule_linking,
+    statement_scope_matching,
 )
 
 FAMILY = (event_admission, dependency_admission, automatic_carry_forward)
+EVERY_FAMILY = FAMILY + (
+    organization_identity,
+    schedule_linking,
+    statement_scope_matching,
+)
+FAMILIES_PINNING_THE_SCHEMA = FAMILY + (organization_identity, schedule_linking)
+# Read from the package directory rather than declared, so the next split of
+# the schema is caught here instead of narrowing five digests silently.
+SCHEMA_MEMBERS = {
+    f"corridor.models.{path.stem}"
+    for path in Path(models.__file__).parent.glob("*.py")
+    if path.stem != "__init__"
+}
+
+
+def _rule_sources(module) -> tuple[tuple[str, bytes], ...]:
+    if module is automatic_carry_forward:
+        return module.AutomaticCarryForwardRuntime.deployed().safety_sources
+    return module._rule_source_bytes()
 
 
 def _rule_source_names(module) -> list[str]:
-    if module is automatic_carry_forward:
-        runtime = module.AutomaticCarryForwardRuntime.deployed()
-        return [name for name, _ in runtime.safety_sources]
-    return [name for name, _ in module._rule_source_bytes()]
+    return [name for name, _ in _rule_sources(module)]
 
 
 def test_the_digest_does_not_depend_on_who_computed_it():
@@ -97,3 +117,60 @@ def test_editing_a_check_still_moves_every_family_digest():
         return tuple((name, body + b"\n# widened\n") for name, body in real())
 
     assert policy.digest_of_sources(real) != policy.digest_of_sources(edited)
+
+
+@pytest.mark.parametrize(
+    "module", EVERY_FAMILY, ids=lambda m: m.__name__.split(".")[-1]
+)
+def test_every_declared_pin_resolves_to_deployed_bytes(module):
+    """A wrong path used to raise only at first use; the resolver refuses
+    a name that resolves to nothing, so calling it is the proof."""
+    sources = _rule_sources(module)
+
+    assert sources
+    assert all(body for _, body in sources)
+    assert len({name for name, _ in sources}) == len(sources)
+
+
+@pytest.mark.parametrize(
+    "module", FAMILIES_PINNING_THE_SCHEMA, ids=lambda m: m.__name__.split(".")[-1]
+)
+def test_a_package_pin_covers_every_member_module(module):
+    """#797 turned `corridor.models` into a package, and a pin through
+    `models_module.__file__` then covered only `models/__init__.py`, the
+    re-export list, while every column, CHECK and relationship lived in
+    submodules outside the digest. A package pin resolves to its members."""
+    names = set(_rule_source_names(module))
+
+    assert len(SCHEMA_MEMBERS) > 1
+    assert "corridor.models" in names
+    assert SCHEMA_MEMBERS <= names
+
+
+def test_a_pin_that_resolves_to_nothing_is_refused():
+    with pytest.raises(LookupError):
+        policy.pinned_sources("corridor.no_such_module")
+
+    with pytest.raises(LookupError):
+        policy.pinned_sources("corridor.migrations.000000000000")
+
+
+def test_a_package_pin_lists_its_members_in_a_stable_order():
+    names = [name for name, _ in policy.pinned_sources("corridor.models")]
+
+    assert names[0] == "corridor.models"
+    assert names[1:] == sorted(names[1:])
+    assert set(names[1:]) == SCHEMA_MEMBERS
+
+
+def test_an_inert_migration_pin_reads_the_retained_bytes():
+    """The 13 files under `migrations/versions` are not loaded by Alembic;
+    they exist only so released fingerprints keep their exact bytes."""
+    [(name, body)] = policy.pinned_sources("corridor.migrations.e9a4b7c2d158")
+    retained = (
+        Path(policy.__file__).parent
+        / "migrations/versions/e9a4b7c2d158_add_dependency_admission.py"
+    )
+
+    assert name == "corridor.migrations.e9a4b7c2d158"
+    assert body == retained.read_bytes()

@@ -1511,44 +1511,20 @@ def _abstention_input_receipt(
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     """The deployed bytes of the code that decides admission (ADR-0022)."""
-    from pathlib import Path
-
-    from corridor import adjudicate as adjudicate_module
-    from corridor import extraction_runs as extraction_runs_module
-    from corridor import models as models_module
-    from corridor import principals as principals_module
-
-    paths = (
-        ("corridor.dependency_admission", Path(__file__)),
-        ("corridor.adjudicate", Path(adjudicate_module.__file__)),
-        ("corridor.audit", Path(audit.__file__)),
-        ("corridor.extraction_runs", Path(extraction_runs_module.__file__)),
-        ("corridor.identity", Path(identity.__file__)),
-        ("corridor.policy", Path(policy.__file__)),
-        ("corridor.models", Path(models_module.__file__)),
-        ("corridor.principals", Path(principals_module.__file__)),
-        (
-            "corridor.migrations.e9a4b7c2d158",
-            Path(__file__).parent
-            / "migrations/versions/e9a4b7c2d158_add_dependency_admission.py",
-        ),
-        (
-            "corridor.migrations.e314a3d8c6f2",
-            Path(__file__).parent
-            / "migrations/versions/e314a3d8c6f2_dependency_abstention_inputs.py",
-        ),
-        (
-            "corridor.migrations.e6f2a9c7d481",
-            Path(__file__).parent
-            / "migrations/versions/e6f2a9c7d481_add_revision_comparisons.py",
-        ),
-        (
-            "corridor.migrations.b317c5d7e9f2",
-            Path(__file__).parent
-            / "migrations/versions/b317c5d7e9f2_seal_extractor_configuration.py",
-        ),
+    return policy.pinned_sources(
+        "corridor.dependency_admission",
+        "corridor.adjudicate",
+        "corridor.audit",
+        "corridor.extraction_runs",
+        "corridor.identity",
+        "corridor.policy",
+        "corridor.models",
+        "corridor.principals",
+        "corridor.migrations.e9a4b7c2d158",
+        "corridor.migrations.e314a3d8c6f2",
+        "corridor.migrations.e6f2a9c7d481",
+        "corridor.migrations.b317c5d7e9f2",
     )
-    return tuple((name, path.read_bytes()) for name, path in paths)
 
 
 

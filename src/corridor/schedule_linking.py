@@ -42,7 +42,6 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import date
-from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -361,26 +360,15 @@ def match_constraint(
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     """The deployed bytes that decide a link — the fingerprint's ground truth."""
-    from corridor import milestones as milestones_module
-    from corridor import merge as merge_module
-    from corridor import models as models_module
-    from corridor import principals as principals_module
-
-    here = Path(__file__).parent
-    return (
-        ("corridor.schedule_linking", Path(__file__).read_bytes()),
-        ("corridor.milestones", Path(milestones_module.__file__).read_bytes()),
-        ("corridor.merge", Path(merge_module.__file__).read_bytes()),
-        ("corridor.audit", Path(audit.__file__).read_bytes()),
-        ("corridor.policy", Path(policy.__file__).read_bytes()),
-        ("corridor.principals", Path(principals_module.__file__).read_bytes()),
-        ("corridor.models", Path(models_module.__file__).read_bytes()),
-        (
-            "corridor.migrations.d3f9a71c2b84",
-            (
-                here / "migrations/versions/d3f9a71c2b84_add_schedule_conflict_linking.py"
-            ).read_bytes(),
-        ),
+    return policy.pinned_sources(
+        "corridor.schedule_linking",
+        "corridor.milestones",
+        "corridor.merge",
+        "corridor.audit",
+        "corridor.policy",
+        "corridor.principals",
+        "corridor.models",
+        "corridor.migrations.d3f9a71c2b84",
     )
 
 
