@@ -270,7 +270,14 @@ def replay_native_segment(
 
 
 def replay_native_segments(document, segments, path):
-    """Verify one coherent prose reading once, including every retained locator."""
+    """Verify one coherent prose reading once, including every retained locator.
+
+    Refusals keep the families ``replay_native_segment`` separates: a missing
+    reader configuration and a reading the installed reader does not reproduce
+    are ``FreshReadingUnavailable``, since nothing opened a page; only a
+    locator followed into the reproduced reading may report a mismatch against
+    the source.
+    """
     segments = tuple(segments)
     if sha256(Path(path).read_bytes()).hexdigest() != document.sha256:
         raise SourceDocumentDigestMismatch("prose rendition bytes changed")
@@ -286,8 +293,17 @@ def replay_native_segments(document, segments, path):
             engine=config["configuration"]["reader_engine"], dpi=config["dpi"])
     except (KeyError, TypeError) as exc:
         raise SourceSegmentLocatorMismatch("prose reader identity is incomplete") from exc
-    if reading.identity != identity or reading.reading_sha256 != first.reading_sha256:
-        raise SourceSegmentLocatorMismatch("prose reading does not reproduce")
+    # Neither of these opened a page, so neither may speak about the source:
+    # the reader this batch was captured with is absent, or it ran and did not
+    # return the reading these offsets are positions inside.
+    if reading.identity != identity:
+        raise NativeReaderUnavailable(
+            PDF_SEGMENT_SCHEME, "the recorded native reader configuration"
+        )
+    if reading.reading_sha256 != first.reading_sha256:
+        raise RecordedReadingNotReproduced(
+            PDF_SEGMENT_SCHEME, "the recorded native reading"
+        )
     expected = {(item.kind, item.ordinal): item for item in native_segment_values(reading)}
     result = {}
     for segment in segments:
