@@ -2,7 +2,8 @@
 
 Every DB-backed test drives a disposable control-plane PostgreSQL database (the
 harness fixtures), a fake ``EnvironmentDestroyer`` and an in-process object
-store. Nothing here touches AWS, the customer Alembic history, or the 149
+store; the one resume proof also runs the AWS adapter against SDK response
+stubs. Nothing here touches AWS, the customer Alembic history, or the 149
 Project Record tables: disposition operates in whole-environment units only,
 and its receipts and plan live in the separate control-plane store (ADR-0083).
 """
@@ -184,6 +185,38 @@ def test_the_pitr_rehearsal_is_a_definition_with_a_validated_receipt_shape():
     definition.validate_rehearsal_receipt(receipt)
     with pytest.raises(DispositionRefused, match="rehearsal receipt"):
         definition.validate_rehearsal_receipt({})
+
+
+def test_every_destroyer_implements_the_interface_the_executor_calls():
+    from corridor.aws_environment_disposition import AwsStackEnvironmentDestroyer
+    from corridor.environment_disposition import (
+        AwsEnvironmentDestroyer,
+        EnvironmentDestroyer,
+    )
+
+    declared = set(EnvironmentDestroyer.__protocol_attrs__)
+    # Plan verification, the operator's binding and freeze guards, hold
+    # cancellation, execution-boundary preparation, the four provider
+    # components and the whole-environment verification: nothing the executor
+    # or the CLI calls is outside the declared interface.
+    assert declared == {
+        "verify_plan",
+        "require_bound",
+        "require_frozen",
+        "cancel_pending_deletions_for_hold",
+        "prepare_execution",
+        "delete_database",
+        "delete_object_namespace",
+        "destroy_encryption_key",
+        "expire_backups",
+        "delete_environment",
+    }
+    for adapter in (
+        SyntheticEnvironmentDestroyer(),
+        AwsEnvironmentDestroyer(),
+        AwsStackEnvironmentDestroyer(),
+    ):
+        assert isinstance(adapter, EnvironmentDestroyer)
 
 
 def test_the_real_aws_destroyer_is_human_gated_and_never_runs_here():
@@ -391,64 +424,204 @@ def test_a_hold_placed_mid_sequence_suspends_and_the_disposition_resumes(
     assert registry.disposition_plan(manifest.plan_id).status == "executed"
 
 
-def test_a_partial_component_failure_is_reported_and_resumable(
-    customer_environment_databases,
+class _SyntheticResume:
+    """The hermetic adapter's side of the resume proof."""
+
+    name = "synthetic"
+    resumed = ("executed", None)
+
+    def __init__(self):
+        self.registration = _registration("env-resume-synthetic")
+        self.provider_resources = None
+        self.destroyer = SyntheticEnvironmentDestroyer(fail_components={"backups"})
+
+    def clear_failure(self):
+        self.destroyer.fail_components = set()
+
+    def evidence(self, component, manifest, operation_id):
+        environment_id = self.registration.environment_id
+        return {
+            "postgresql": f"synthetic:{environment_id}/postgresql-removed",
+            "object_namespace": f"synthetic:{environment_id}/object-namespace-removed",
+            "encryption_key": f"synthetic:{environment_id}/encryption-key-destroyed",
+            "backups": f"synthetic:{environment_id}/backups-expire-scheduled",
+            "environment": f"receipt:{operation_id}/environment-destroyed",
+        }[component]
+
+    def close(self):
+        # The three completed components were not destroyed a second time.
+        assert self.destroyer.attempts.count("postgresql") == 1
+        assert self.destroyer.attempts.count("object_namespace") == 1
+        assert self.destroyer.attempts.count("encryption_key") == 1
+
+
+class _AwsResume:
+    """The declared-component AWS adapter driven by SDK response stubs, never a
+    live resource. Its stubs queue exactly the calls each pass may make, so a
+    component destroyed twice, or a mutation without the guard, fails the stub."""
+
+    name = "aws"
+    # Declared components alone never prove the whole environment is gone.
+    resumed = ("partial", "environment")
+
+    def __init__(self):
+        import boto3
+        from botocore.stub import Stubber
+        from corridor.environment_disposition import (
+            AwsDispositionResources, AwsEnvironmentDestroyer,
+        )
+
+        self.registration = replace(
+            _registration("env-resume-aws"),
+            enabled=False,
+            object_namespace_ref="s3:customer-bucket/data/",
+        )
+        registration = self.registration
+        self.provider_resources = AwsDispositionResources(
+            registration.customer_id, registration.environment_id, registration.deployment_id,
+            "123456789012", "us-east-1", registration.database_host, registration.database_port,
+            registration.database_name, "customer-instance",
+            "arn:aws:rds:us-east-1:123456789012:db:customer-instance", "db-CUSTOMERRESOURCE",
+            registration.object_namespace_ref, "customer-final",
+            ("arn:aws:kms:us-east-1:123456789012:key/customer-key",),
+        )
+        self.clients = {name: boto3.client(name, region_name="us-east-1", aws_access_key_id="fixture",
+            aws_secret_access_key="fixture", endpoint_url="http://127.0.0.1:9") for name in ("sts", "rds", "s3", "kms")}
+        self.stubs = {name: Stubber(client) for name, client in self.clients.items()}
+        for stub in self.stubs.values():
+            stub.activate()
+        self.destroyer = AwsEnvironmentDestroyer(live_activation="live-aws-535", clients=self.clients,
+            resources=self.provider_resources, approved_resource_sha256=self.provider_resources.sha256)
+        self._queue_first_pass()
+
+    def _identity(self):
+        self.stubs["sts"].add_response("get_caller_identity", {"Account": "123456789012", "UserId": "fixture",
+            "Arn": "arn:aws:iam::123456789012:role/fixture"}, {})
+
+    def _queue_first_pass(self):
+        resource = self.provider_resources
+        by_instance = {"Filters": [{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}]}
+        self._identity()
+        self.stubs["rds"].add_response("describe_db_instances", {"DBInstances": []}, by_instance)
+        self._identity()
+        namespace = {"Bucket": "customer-bucket", "Prefix": "data/", "ExpectedBucketOwner": "123456789012"}
+        for operation in ("list_object_versions", "list_multipart_uploads", "list_object_versions",
+                          "list_objects_v2", "list_multipart_uploads"):
+            self.stubs["s3"].add_response(operation, {}, namespace)
+        self._identity()
+        self.stubs["kms"].add_client_error("describe_key", "NotFoundException",
+            expected_params={"KeyId": resource.kms_key_arns[0]})
+        # backups: a manual snapshot is still present, so the pass requests its
+        # deletion under the freeze guard and reports the component pending.
+        self._identity()
+        self.stubs["rds"].add_response("describe_db_snapshots", {"DBSnapshots": [{"DBSnapshotIdentifier": "customer-final",
+            "DbiResourceId": resource.db_resource_id, "Status": "available"}]}, {"SnapshotType": "manual", **by_instance})
+        self.stubs["rds"].add_response("delete_db_snapshot", {}, {"DBSnapshotIdentifier": "customer-final"})
+        self.stubs["rds"].add_response("describe_db_instance_automated_backups", {"DBInstanceAutomatedBackups": []},
+            {"DbiResourceId": resource.db_resource_id})
+
+    def clear_failure(self):
+        resource = self.provider_resources
+        by_instance = {"Filters": [{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}]}
+        self._identity()
+        self.stubs["rds"].add_response("describe_db_snapshots", {"DBSnapshots": []}, {"SnapshotType": "manual", **by_instance})
+        self.stubs["rds"].add_response("describe_db_instance_automated_backups", {"DBInstanceAutomatedBackups": []},
+            {"DbiResourceId": resource.db_resource_id})
+
+    def evidence(self, component, manifest, operation_id):
+        kind = {"postgresql": "rds-absent", "object_namespace": "s3-namespace-empty",
+                "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent"}[component]
+        return (f"aws:{self.registration.environment_id}/{kind}/{self.provider_resources.sha256}"
+                f"/{manifest.content_sha256}")
+
+    def close(self):
+        for stub in self.stubs.values():
+            stub.assert_no_pending_responses()
+            stub.deactivate()
+        for client in self.clients.values():
+            client.close()
+
+
+@pytest.mark.parametrize("make_case", [_SyntheticResume, _AwsResume], ids=["synthetic", "aws"])
+def test_a_partial_component_failure_is_reported_and_resumable_through_the_destroyer_interface(
+    customer_environment_databases, make_case
 ):
+    """One resume proof, one executor path, both adapters.
+
+    The executor never inspects the adapter's class: it calls the declared
+    interface, and each adapter answers honestly, including the terminal
+    ``environment`` marker, which only a whole-environment inventory can
+    complete on AWS.
+    """
     owner, _, _ = customer_environment_databases
     initialize_control_plane(owner)
     registry = ControlPlane(owner)
-    registry.register(_registration("env-partial"))
-    manifest = plan_environment_disposition(
-        registry,
-        environment_id="env-partial",
-        schedules=(),
-        referential=ReferentialRetention(),
-        principal=HumanPrincipal("local:operator"),
-        as_of=_utc(2026, 9, 8),
-    )
+    case = make_case()
+    try:
+        registry.register(case.registration)
+        environment_id = case.registration.environment_id
+        manifest = plan_environment_disposition(
+            registry,
+            environment_id=environment_id,
+            schedules=(),
+            referential=ReferentialRetention(),
+            principal=HumanPrincipal("local:operator"),
+            as_of=_utc(2026, 9, 8),
+            provider_resources=case.provider_resources,
+        )
+        # Receipt ids derive from the operation id, and both cases share the
+        # module's control-plane store, so each case owns its operation.
+        operation_id = f"op-resume-{case.name}"
+        arguments = dict(
+            plan_id=manifest.plan_id,
+            expected_sha256=manifest.content_sha256,
+            destroyer=case.destroyer,
+            operation_id=operation_id,
+            recorded_by="local:operator",
+            referential=ReferentialRetention(),
+        )
+        partial = execute_environment_disposition(
+            registry, clock=FixedClock(_utc(2026, 9, 8, 12)), **arguments
+        )
+        assert partial.status == "partial"
+        assert partial.failed_component == "backups"
+        assert partial.completed_components == (
+            "postgresql",
+            "object_namespace",
+            "encryption_key",
+        )
+        receipts = registry.destruction_receipts(environment_id)
+        assert receipts[-1].component == "backups"
+        assert receipts[-1].outcome == "failed"
+        assert registry.disposition_plan(manifest.plan_id).status == "partial"
 
-    failing = SyntheticEnvironmentDestroyer(fail_components={"backups"})
-    partial = execute_environment_disposition(
-        registry,
-        plan_id=manifest.plan_id,
-        expected_sha256=manifest.content_sha256,
-        destroyer=failing,
-        operation_id="op-partial",
-        recorded_by="local:operator",
-        referential=ReferentialRetention(),
-        clock=FixedClock(_utc(2026, 9, 8, 12)),
-    )
-    assert partial.status == "partial"
-    assert partial.failed_component == "backups"
-    assert partial.completed_components == (
-        "postgresql",
-        "object_namespace",
-        "encryption_key",
-    )
-    receipts = registry.destruction_receipts("env-partial")
-    assert receipts[-1].component == "backups"
-    assert receipts[-1].outcome == "failed"
-    assert registry.disposition_plan(manifest.plan_id).status == "partial"
-
-    # Resume with the failure cleared: completed components are skipped and the
-    # sequence finishes. The plan is never silently re-planned.
-    failing.fail_components = set()
-    resumed = execute_environment_disposition(
-        registry,
-        plan_id=manifest.plan_id,
-        expected_sha256=manifest.content_sha256,
-        destroyer=failing,
-        operation_id="op-partial",
-        recorded_by="local:operator",
-        referential=ReferentialRetention(),
-        clock=FixedClock(_utc(2026, 9, 8, 13)),
-    )
-    assert resumed.status == "executed"
-    # The three already-completed components were not destroyed a second time.
-    assert failing.attempts.count("postgresql") == 1
-    assert failing.attempts.count("object_namespace") == 1
-    assert failing.attempts.count("encryption_key") == 1
-    assert registry.disposition_plan(manifest.plan_id).status == "executed"
+        # Resume with the failure cleared: completed components are skipped and
+        # the sequence continues. The plan is never silently re-planned.
+        case.clear_failure()
+        resumed = execute_environment_disposition(
+            registry, clock=FixedClock(_utc(2026, 9, 8, 13)), **arguments
+        )
+        assert (resumed.status, resumed.failed_component) == case.resumed
+        receipts = registry.destruction_receipts(environment_id)
+        terminal = "completed" if case.resumed[0] == "executed" else "failed"
+        assert [(r.component, r.outcome) for r in receipts] == [
+            ("postgresql", "completed"),
+            ("object_namespace", "completed"),
+            ("encryption_key", "completed"),
+            ("backups", "failed"),
+            ("backups", "completed"),
+            ("environment", terminal),
+        ]
+        # Every evidence reference is the adapter's own, bound to this plan;
+        # the failure reference is the executor's.
+        for receipt in receipts:
+            if receipt.outcome == "completed":
+                assert receipt.evidence_ref == case.evidence(receipt.component, manifest, operation_id)
+            else:
+                assert receipt.evidence_ref == f"failure:{operation_id}/{receipt.component}/{manifest.content_sha256}"
+        assert registry.disposition_plan(manifest.plan_id).status == case.resumed[0]
+    finally:
+        case.close()
 
 
 def test_execution_refuses_before_the_retention_obligation_ends(

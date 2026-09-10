@@ -103,12 +103,9 @@ def _run(arguments, configuration, control_plane, clients):
         resources=resources, approved_resource_sha256=resources.sha256, clients=clients)
     clock = SimpleNamespace(now=lambda: datetime.now(timezone.utc))
     def freeze_guard():
-        current = control_plane.inspect(resources.environment_id)
-        destroyer._binding(current)
-        destroyer._require_quiescent()
-        destroyer._verify_stack_membership()
+        destroyer.require_frozen(control_plane.inspect(resources.environment_id))
     if command == "inventory":
-        destroyer._binding(registration)
+        destroyer.require_bound(registration)
         inventory = observe_stack_inventory(clients, resources,
             application_stack_id=configuration["application_stack_id"], data_stack_id=configuration["data_stack_id"])
         result["resources"] = asdict(replace(resources, whole_environment=inventory))
@@ -123,7 +120,7 @@ def _run(arguments, configuration, control_plane, clients):
     elif command == "custody":
         if "custody_s3" not in clients:
             raise DispositionRefused("custody transfer requires an explicit separate --custody-profile")
-        destroyer._binding(registration)
+        destroyer.require_bound(registration)
         destination = configuration["custody_destination"]
         if destination["owner"] == resources.account_id:
             raise DispositionRefused("custody destination must have a separate owner")

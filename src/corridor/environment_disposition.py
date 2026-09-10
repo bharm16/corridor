@@ -26,10 +26,22 @@ Two invariants come straight from ADR-0083 and are enforced here:
   plan.
 
 The provider-native destruction is expressed behind the ``EnvironmentDestroyer``
-protocol. ``SyntheticEnvironmentDestroyer`` is the hermetic test double that
-operates on in-process state and a local object store. ``AwsEnvironmentDestroyer``
-is exercised with SDK response stubs and requires a persisted, approved provider
-inventory before any real call. Pending deletion never means completion. As the
+protocol, and that protocol is the whole surface the executor and the operator
+CLI call: plan verification, the binding and freeze guards, hold cancellation,
+execution-boundary preparation (which hands the adapter the executor's
+per-mutation guard), the four provider components and the terminal
+whole-environment verification, each returning its own evidence reference. The
+first version declared four methods and then branched on the adapter's class
+for everything else, spelling the AWS evidence format in the executor and
+setting the mutation guard on the adapter from outside; the synthetic double
+therefore ran a different path from the AWS adapter, and its resume proof did
+not prove the AWS one. Each adapter now implements every call, answering "not
+applicable" honestly where a step has nothing to do for it, so one executor
+path serves both. ``SyntheticEnvironmentDestroyer`` is the hermetic test double
+that operates on in-process state and a local object store.
+``AwsEnvironmentDestroyer`` is exercised with SDK response stubs and requires a
+persisted, approved provider inventory before any real call. Pending deletion
+never means completion. As the
 non-production runbook states, definitions and synthetic tests are
 implementation evidence, not evidence that a deployment occurred; actually
 destroying a running AWS environment, and the live point-in-time-restore
@@ -44,7 +56,7 @@ from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 from uuid import uuid4
 
 from corridor.control_plane import (
@@ -84,6 +96,7 @@ _PROVIDER_METHOD = {
     "object_namespace": "delete_object_namespace",
     "encryption_key": "destroy_encryption_key",
     "backups": "expire_backups",
+    "environment": "delete_environment",
 }
 _PLAN_STATUSES = frozenset({"dry_run", "executed", "refused", "partial"})
 
@@ -212,9 +225,48 @@ class DispositionOutcome:
 # --------------------------------------------------------------------------
 
 
+@runtime_checkable
 class EnvironmentDestroyer(Protocol):
-    """Provider-native whole-environment destruction. Each call returns a bounded
-    evidence reference for the resulting ``DestructionReceipt``."""
+    """Provider-native whole-environment destruction, as the executor calls it.
+
+    Every method has a defined not-applicable behaviour so an adapter with
+    nothing to do for a step still implements it honestly, and the executor
+    never inspects the adapter's class. Each destruction call returns the
+    adapter's own bounded evidence reference for the resulting
+    ``DestructionReceipt``; once ``prepare_execution`` has bound a plan, that
+    reference binds the plan too.
+    """
+
+    def verify_plan(self, registration: EnvironmentRegistration) -> None:
+        """Re-observe the provider before the dry run is persisted; refuse drift."""
+
+    def require_bound(self, registration: EnvironmentRegistration) -> None:
+        """Refuse unless this adapter is activated and bound to ``registration``."""
+
+    def require_frozen(self, registration: EnvironmentRegistration) -> None:
+        """The operator's freeze guard: bound, quiescent, and unchanged inventory."""
+
+    def cancel_pending_deletions_for_hold(
+        self, control_plane: ControlPlane, plan: DispositionPlan, *, observed_at: datetime
+    ) -> Any:
+        """Under a fresh hold, cancel cancellable recovery-window deletions and
+        return the recorded observation, or ``None`` when nothing is cancellable."""
+
+    def prepare_execution(
+        self,
+        control_plane: ControlPlane,
+        plan: DispositionPlan,
+        referential: ReferentialRetention,
+        operation_id: str,
+        *,
+        observed_at: datetime,
+        before_delete: Any,
+    ) -> None:
+        """Bind this adapter to one persisted, unchanged plan before any deletion.
+
+        ``before_delete`` is the executor's guard, run by the adapter before
+        every provider mutation. The adapter also checks that the receipts it
+        would resume from bind this plan and inventory."""
 
     def delete_database(self, registration: EnvironmentRegistration) -> str: ...
 
@@ -227,6 +279,10 @@ class EnvironmentDestroyer(Protocol):
     ) -> str: ...
 
     def expire_backups(self, registration: EnvironmentRegistration) -> str: ...
+
+    def delete_environment(self, registration: EnvironmentRegistration) -> str:
+        """The terminal marker: verify the whole environment is gone, or raise
+        ``EnvironmentDestructionError`` while any declared population remains."""
 
 
 @dataclass
@@ -246,6 +302,7 @@ class SyntheticEnvironmentDestroyer:
     encryption_key_present: bool = True
     backup_expiration: datetime | None = None
     attempts: list[str] = field(default_factory=list)
+    operation_id: str | None = None
 
     def _run(self, component: str) -> None:
         self.attempts.append(component)
@@ -253,6 +310,39 @@ class SyntheticEnvironmentDestroyer:
             raise EnvironmentDestructionError(
                 f"synthetic provider failed destroying {component}"
             )
+
+    def verify_plan(self, registration: EnvironmentRegistration) -> None:
+        """Not applicable: there is no provider inventory to re-observe."""
+
+    def require_bound(self, registration: EnvironmentRegistration) -> None:
+        """Not applicable: in-process state binds any registration."""
+
+    def require_frozen(self, registration: EnvironmentRegistration) -> None:
+        """Not applicable: nothing runs against the in-process state but this."""
+
+    def cancel_pending_deletions_for_hold(
+        self, control_plane: ControlPlane, plan: DispositionPlan, *, observed_at: datetime
+    ) -> None:
+        """Not applicable: synthetic destruction has no recovery window."""
+        return None
+
+    def prepare_execution(
+        self,
+        control_plane: ControlPlane,
+        plan: DispositionPlan,
+        referential: ReferentialRetention,
+        operation_id: str,
+        *,
+        observed_at: datetime,
+        before_delete: Any,
+    ) -> None:
+        """A synthetic destroyer never executes a plan pinned to a provider
+        inventory. Its destruction is one in-process step per component with
+        no provider call between the executor's per-component guard and the
+        effect, so ``before_delete`` has nothing to guard here."""
+        if plan.provider_resources_sha256 is not None:
+            raise DispositionRefused("a provider-bound plan cannot be executed by a synthetic destroyer")
+        self.operation_id = operation_id
 
     def delete_database(self, registration: EnvironmentRegistration) -> str:
         self._run("postgresql")
@@ -279,6 +369,12 @@ class SyntheticEnvironmentDestroyer:
         )
         return f"synthetic:{registration.environment_id}/backups-expire-{stamp}"
 
+    def delete_environment(self, registration: EnvironmentRegistration) -> str:
+        # The terminal marker: the whole environment is gone once the four
+        # provider components are. Its evidence is the control-plane operation.
+        self._run("environment")
+        return f"receipt:{self.operation_id}/environment-destroyed"
+
 
 class AwsEnvironmentDestroyer:
     """Verified AWS deletion, with pending work returned as resumable failure.
@@ -290,6 +386,15 @@ class AwsEnvironmentDestroyer:
     """
 
     _LIVE_ACTIVATION = "live-aws-535"
+    # The completion evidence kind per component. The reference format is this
+    # adapter's own; the executor records what the adapter returns.
+    _EVIDENCE = {
+        "postgresql": "rds-absent",
+        "object_namespace": "s3-namespace-empty",
+        "encryption_key": "declared-customer-keys-absent",
+        "backups": "declared-rds-backups-absent",
+        "environment": "whole-environment-absent",
+    }
 
     def __init__(self, *, live_activation: str | None = None, clients: Any = None,
                  resources: AwsDispositionResources | None = None,
@@ -299,6 +404,7 @@ class AwsEnvironmentDestroyer:
         self.resources = resources
         self.approved_resource_sha256 = approved_resource_sha256
         self.before_delete = before_delete
+        self._plan: DispositionPlan | None = None
 
     def _require_activation(self, component: str) -> None:
         if not self._activated:
@@ -329,7 +435,73 @@ class AwsEnvironmentDestroyer:
         return method(**parameters)
 
     def _evidence(self, component: str) -> str:
-        return f"aws:{self.resources.environment_id}/{component}/{self.resources.sha256}"
+        reference = f"aws:{self.resources.environment_id}/{self._EVIDENCE[component]}/{self.resources.sha256}"
+        if self._plan is None:
+            return reference
+        return f"{reference}/{self._plan.manifest_sha256}"
+
+    def verify_plan(self, registration: EnvironmentRegistration) -> None:
+        """The declared-component adapter has no inventory to re-observe; the
+        approved resource digest binds its plan."""
+        self._binding(registration)
+
+    def require_bound(self, registration: EnvironmentRegistration) -> None:
+        self._binding(registration)
+
+    def require_frozen(self, registration: EnvironmentRegistration) -> None:
+        """Binding is the whole freeze check here: no application tasks or
+        stack membership are declared to this adapter."""
+        self._binding(registration)
+
+    def cancel_pending_deletions_for_hold(
+        self, control_plane: ControlPlane, plan: DispositionPlan, *, observed_at: datetime
+    ) -> None:
+        """Not applicable: this adapter holds no inventory of cancellable
+        recovery windows; the stack adapter does."""
+        return None
+
+    def prepare_execution(
+        self,
+        control_plane: ControlPlane,
+        plan: DispositionPlan,
+        referential: ReferentialRetention,
+        operation_id: str,
+        *,
+        observed_at: datetime,
+        before_delete: Any,
+    ) -> None:
+        self._require_persisted_plan(plan)
+        self._prepare_execution_boundary(
+            control_plane, plan, referential, operation_id, observed_at=observed_at
+        )
+        self._plan = plan
+        self.before_delete = before_delete
+        self._verify_resume_receipts(
+            control_plane.destruction_receipts(plan.environment_id), plan, operation_id
+        )
+
+    def _require_persisted_plan(self, plan: DispositionPlan) -> None:
+        if self.resources is None or plan.provider_resources_sha256 != self.resources.sha256:
+            raise DispositionRefused("AWS resource inventory differs from the persisted dry-run plan")
+        if self.resources.whole_environment is not None:
+            if plan.provider_resources != json.loads(json.dumps(asdict(self.resources))):
+                raise DispositionRefused("provider inventory bytes differ from the persisted plan")
+
+    def _prepare_execution_boundary(self, control_plane, plan, referential, operation_id, *, observed_at) -> None:
+        """No boundary to persist without a whole-environment inventory."""
+
+    def _verify_resume_receipts(self, receipts, plan: DispositionPlan, operation_id: str) -> None:
+        for receipt in receipts:
+            if receipt.operation_id != operation_id:
+                continue
+            expected = (self._evidence(receipt.component) if receipt.outcome == "completed"
+                        else failure_evidence(operation_id, receipt.component, plan))
+            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed" and self.resources.whole_environment is None):
+                raise DispositionRefused("AWS resume receipts do not bind this plan and provider inventory")
+
+    def delete_environment(self, registration: EnvironmentRegistration) -> str:
+        """Declared components alone never prove the whole environment is gone."""
+        raise EnvironmentDestructionError("declared AWS components are gone; complete stack, logs, secrets and remote-copy disposal still require verified inventory coverage")
 
     def delete_database(self, registration: EnvironmentRegistration) -> str:
         resource = self._binding(registration)
@@ -338,7 +510,7 @@ class AwsEnvironmentDestroyer:
             Filters=[{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}])
             for row in page.get("DBInstances", [])]
         if not rows:
-            return self._evidence("rds-absent")
+            return self._evidence("postgresql")
         if len(rows) != 1:
             raise EnvironmentDestructionError("RDS did not identify exactly one approved instance")
         row = rows[0]
@@ -387,7 +559,7 @@ class AwsEnvironmentDestroyer:
             for page in client.get_paginator(operation).paginate(**parameters):
                 if any(page.get(field) for field in fields):
                     raise EnvironmentDestructionError("S3 namespace is not yet empty")
-        return self._evidence("s3-namespace-empty")
+        return self._evidence("object_namespace")
 
     def destroy_encryption_key(self, registration: EnvironmentRegistration) -> str:
         resource = self._binding(registration)
@@ -407,7 +579,7 @@ class AwsEnvironmentDestroyer:
                 self._mutate(client.schedule_key_deletion, KeyId=arn, PendingWindowInDays=30)
         if pending:
             raise EnvironmentDestructionError("KMS deletion is pending; scheduled deletion is not completion")
-        return self._evidence("declared-customer-keys-absent")
+        return self._evidence("encryption_key")
 
     def expire_backups(self, registration: EnvironmentRegistration) -> str:
         resource = self._binding(registration)
@@ -428,7 +600,7 @@ class AwsEnvironmentDestroyer:
             self._mutate(client.delete_db_instance_automated_backup, DbiResourceId=resource.db_resource_id)
         if pending:
             raise EnvironmentDestructionError("RDS backup expiration requested; verify absence on retry")
-        return self._evidence("declared-rds-backups-absent")
+        return self._evidence("backups")
 
 
 # --------------------------------------------------------------------------
@@ -594,40 +766,25 @@ def execute_environment_disposition(
         raise DispositionRefused(
             "the environment or plan changed after the dry run; re-plan before executing"
         )
-    if (registration.hold and isinstance(destroyer, AwsEnvironmentDestroyer)
-            and destroyer.resources is not None and destroyer.resources.whole_environment is not None):
+    if registration.hold:
         destroyer.cancel_pending_deletions_for_hold(control_plane, plan, observed_at=now)
     _guard_before_step(control_plane, plan, referential, now)
-    if isinstance(destroyer, AwsEnvironmentDestroyer):
-        if destroyer.resources is None or plan.provider_resources_sha256 != destroyer.resources.sha256:
-            raise DispositionRefused("AWS resource inventory differs from the persisted dry-run plan")
-        if destroyer.resources.whole_environment is not None:
-            if plan.provider_resources != json.loads(json.dumps(asdict(destroyer.resources))):
-                raise DispositionRefused("provider inventory bytes differ from the persisted plan")
-            destroyer.prepare_execution(control_plane, plan, referential, operation_id, observed_at=now)
-        def before_aws_delete():
-            current = control_plane.inspect(plan.environment_id)
-            _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)
-            if current.enabled or manifest_digest(environment_id=plan.environment_id,
-                    binding=environment_binding(current), resolved_retain_until=plan.resolved_retain_until,
-                    provider_resources_sha256=plan.provider_resources_sha256) != expected_sha256:
-                raise DispositionRefused("AWS environment was enabled or its disposition binding changed")
-        destroyer.before_delete = before_aws_delete
-    elif plan.provider_resources_sha256 is not None:
-        raise DispositionRefused("a provider-bound plan cannot be executed by a synthetic destroyer")
+
+    def before_delete():
+        # The adapter runs this before every provider mutation: a fresh hold,
+        # retention and referential guard, and an unchanged, disabled binding.
+        current = control_plane.inspect(plan.environment_id)
+        _guard_before_step(control_plane, plan, referential, _aware_utc(clock.now()), current)
+        if current.enabled or manifest_digest(environment_id=plan.environment_id,
+                binding=environment_binding(current), resolved_retain_until=plan.resolved_retain_until,
+                provider_resources_sha256=plan.provider_resources_sha256) != expected_sha256:
+            raise DispositionRefused("AWS environment was enabled or its disposition binding changed")
+
+    destroyer.prepare_execution(
+        control_plane, plan, referential, operation_id, observed_at=now, before_delete=before_delete
+    )
 
     receipts = list(control_plane.destruction_receipts(plan.environment_id))
-    if isinstance(destroyer, AwsEnvironmentDestroyer):
-        evidence_kinds = {"postgresql": "rds-absent", "object_namespace": "s3-namespace-empty",
-                          "encryption_key": "declared-customer-keys-absent", "backups": "declared-rds-backups-absent", "environment": "whole-environment-absent"}
-        for receipt in receipts:
-            if receipt.operation_id != operation_id:
-                continue
-            expected = (f"aws:{plan.environment_id}/{evidence_kinds.get(receipt.component)}/{plan.provider_resources_sha256}/{plan.manifest_sha256}"
-                        if receipt.outcome == "completed" else
-                        f"failure:{operation_id}/{receipt.component}/{plan.manifest_sha256}")
-            if receipt.evidence_ref != expected or (receipt.component == "environment" and receipt.outcome == "completed" and destroyer.resources.whole_environment is None):
-                raise DispositionRefused("AWS resume receipts do not bind this plan and provider inventory")
     completed = {
         receipt.component
         for receipt in receipts
@@ -654,7 +811,7 @@ def execute_environment_disposition(
         )
         receipt_id = _receipt_id(operation_id, component, attempt)
         try:
-            evidence = _destroy(component, destroyer, registration, operation_id)
+            evidence = _destroy(component, destroyer, registration)
         except DispositionRefused:
             control_plane.set_disposition_plan_status(plan_id, "partial")
             raise
@@ -665,7 +822,7 @@ def execute_environment_disposition(
                 operation_id=operation_id,
                 component=component,
                 outcome="failed",
-                evidence_ref=f"failure:{operation_id}/{component}/{plan.manifest_sha256}",
+                evidence_ref=failure_evidence(operation_id, component, plan),
                 recorded_by=recorded_by,
                 observed_at=now,
             )
@@ -681,8 +838,6 @@ def execute_environment_disposition(
                 observed_at=now,
                 receipts=tuple(receipts),
             )
-        if isinstance(destroyer, AwsEnvironmentDestroyer):
-            evidence = evidence + "/" + plan.manifest_sha256
         receipt = DestructionReceipt(
             receipt_id=receipt_id,
             environment_id=plan.environment_id,
@@ -782,25 +937,20 @@ def _destroy(
     component: str,
     destroyer: EnvironmentDestroyer,
     registration: EnvironmentRegistration,
-    operation_id: str,
 ) -> str:
-    if component == "environment":
-        if isinstance(destroyer, AwsEnvironmentDestroyer):
-            if destroyer.resources is not None and destroyer.resources.whole_environment is not None:
-                from botocore.exceptions import BotoCoreError, ClientError
-                try:
-                    return destroyer.delete_environment(registration)
-                except (BotoCoreError, ClientError) as exc:
-                    raise EnvironmentDestructionError("AWS final verification failed; no completion is established") from exc
-            raise EnvironmentDestructionError("declared AWS components are gone; complete stack, logs, secrets and remote-copy disposal still require verified inventory coverage")
-        # The terminal marker: the whole environment is gone once the four
-        # provider components are. Its evidence is the control-plane operation.
-        return f"receipt:{operation_id}/environment-destroyed"
     from botocore.exceptions import BotoCoreError, ClientError
     try:
         return getattr(destroyer, _PROVIDER_METHOD[component])(registration)
     except (BotoCoreError, ClientError) as exc:
+        if component == "environment":
+            raise EnvironmentDestructionError("AWS final verification failed; no completion is established") from exc
         raise EnvironmentDestructionError("AWS provider operation failed; no completion is established") from exc
+
+
+def failure_evidence(operation_id: str, component: str, plan: DispositionPlan) -> str:
+    # The executor's own reference for a failed component; the adapters check
+    # resume receipts against the same spelling.
+    return f"failure:{operation_id}/{component}/{plan.manifest_sha256}"
 
 
 def _receipt_id(operation_id: str, component: str, attempt: int) -> str:
