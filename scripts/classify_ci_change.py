@@ -23,8 +23,8 @@ both checks match exact outcomes rather than accepting `success or skipped`:
 **Documentation is a narrow allowlist, not a `**.md` wildcard.** The
 predecessor filter ignored every Markdown file, and Corridor loads executable
 model prompts from Markdown at runtime: `src/corridor/extract_agreement.py`
-reads `prompts/agreement_v3.md`, `extract_minutes_v4.py` and
-`extract_minutes_v5.py` read theirs, and `extractor_lineage.py` names more. A
+reads `prompts/agreement_v3.md`, `extract_minutes_v5.py` reads its own, and
+`extractor_lineage.py` names more. A
 prompt-only pull request changes extraction behavior and skipped every
 behavior suite. Only the files listed in ``DOCUMENTATION_PATHS`` are
 documentation; everything else runs the behavior suites.

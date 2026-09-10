@@ -54,23 +54,6 @@ _POSTPROCESSOR_SOURCES = {
     "minutes": (
         "src/corridor/extract_minutes_v5.py",
         "src/corridor/statement_timing_parser.py",
-        "src/corridor/extract_minutes_v4.py",
-        "src/corridor/extract_batch.py",
-        "src/corridor/verify.py",
-        "src/corridor/candidates.py",
-        "src/corridor/models.py",
-        "src/corridor/llm.py",
-    ),
-    "minutes_v4": (
-        "src/corridor/extract_minutes_v4.py",
-        "src/corridor/extract_batch.py",
-        "src/corridor/verify.py",
-        "src/corridor/candidates.py",
-        "src/corridor/models.py",
-        "src/corridor/llm.py",
-    ),
-    "minutes_v3": (
-        "src/corridor/extract_minutes.py",
         "src/corridor/extract_batch.py",
         "src/corridor/verify.py",
         "src/corridor/candidates.py",
@@ -193,13 +176,9 @@ def deployed_extractor_config(
 
     if extractor in {"matrix", "native_matrix"}:
         return deployed_native_matrix_config(client=client)
-    if extractor in {"minutes", "minutes_v4", "minutes_v3"}:
-        module_name = {
-            "minutes": "corridor.extract_minutes_v5",
-            "minutes_v4": "corridor.extract_minutes_v4",
-            "minutes_v3": "corridor.extract_minutes",
-        }[extractor]
-        module = __import__(module_name, fromlist=["*"])
+    if extractor == "minutes":
+        from corridor import extract_minutes_v5 as module
+
         return _deployed_config(
             extractor=extractor,
             prompt_version=module.PROMPT_VERSION,

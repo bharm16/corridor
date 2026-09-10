@@ -208,22 +208,27 @@ def test_deployed_registry_refuses_a_provider_url_that_contains_credentials():
         deployed_extractor_config("agreement", client=Client())
 
 
-def test_deployed_registry_retains_historical_minutes_v4():
+def test_the_deployed_minutes_registry_seals_the_current_version_only():
+    """The registry seals what is deployed; history lives in stored receipts.
+
+    Retired versions had entries here purely so a test could ask for them.
+    This module's contract is that a reader compares the receipt it stored
+    and never reopens today's files, so an unreachable branch could only
+    reconstruct a configuration that never ran.
+    """
+
     class Client:
         model = "gpt-fixture"
         effort = "low"
         flex = False
         base_url = "https://provider.example/v1"
 
-    config = deployed_extractor_config("minutes_v4", client=Client())
     current = deployed_extractor_config("minutes", client=Client())
-
-    assert config.prompt_version == "minutes_v4"
-    assert config.schema_version == "minutes_v4"
-    assert config.config_json["extractor"] == "minutes_v4"
     assert current.prompt_version == "minutes_v5"
-    assert current.postprocessor_sha256 != config.postprocessor_sha256
-    assert current.config_sha256 != config.config_sha256
+    assert current.config_json["extractor"] == "minutes"
+
+    with pytest.raises(ValueError):
+        deployed_extractor_config("minutes_v4", client=Client())
 
 
 def test_injected_configuration_refuses_unverifiable_runtime_identity():
