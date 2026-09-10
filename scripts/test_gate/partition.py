@@ -1,40 +1,44 @@
-"""Split the test files into balanced shards for parallel CI runners.
+"""The test files, the bootstrap weights that balance them, and the split.
 
 #548 found the required gate CPU-bound: the GitHub runner has four cores, so
 redistributing work between xdist workers on one runner cannot help, however
 uneven the files are.  More actual CPU can, and GitHub runs matrix jobs on
 separate runners.
 
-Balance uses the recorded per-file seconds in ``tests/durations.json``, which
-`make test-timing` and ``scripts/test_timing.py --write`` produce together.  A file with no recorded duration is
-treated as average rather than free, so a newly added file cannot silently
-land in an already-full shard.  Shards are filled longest-first onto whichever
-shard is currently smallest, which keeps the slowest file from deciding the
-wall clock on its own.
+Balance uses per-file seconds: the previous run's validated CI receipts when
+the classifier can supply them, otherwise the recorded bootstrap weights in
+``tests/durations.json`` and ``tests/durations-slow.json`` that
+``scripts/test_timing.py --write`` produces through `write_durations` below.
+Producer and consumer of that file used to live in different scripts with no
+shared shape; here the writer records exactly the files `test_files` names,
+zero included, and the reader hands them back.  A file with no recorded
+duration is treated as average rather than free, so a newly added file cannot
+silently land in an already-full shard.  Shards are filled longest-first onto
+whichever shard is currently smallest, which keeps the slowest file from
+deciding the wall clock on its own.
 
 Every named file also costs its shard ``COLLECTION_SECONDS`` whether or not
 the gate selects a test from it, because each xdist worker imports every
 module named on the command line.  Measured by collecting the whole tests
 directory against three files: 4.6s for 183 extra files, so 0.025s each, and
-0.05s allowed for a CI runner.  It is a small term and it is meant to be —
+0.05s allowed for a CI runner.  It is a small term and it is meant to be --
 an earlier revision set it to 0.5s from a CI shard that held 166 files and
 ran 79s while running two tests, which turned out to be the render worker
 building its environment over a saturated network, not collection at all.
 
-Usage:
-    uv run python scripts/test_shard.py --shards 4 --shard 1
+`tests/test_ci_policy.py` proves that each gate's partition covers the suite
+exactly; the former `scripts/test_shard.py` command that printed one shard
+was invoked by nothing else and is retired.
 """
 
 from __future__ import annotations
 
-import argparse
 import json
 import math
 from pathlib import Path
-import sys
 
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 DURATIONS = ROOT / "tests" / "durations.json"
 SLOW_DURATIONS = ROOT / "tests" / "durations-slow.json"
 # What one named test file costs a CI shard in import and collection, before
@@ -49,6 +53,7 @@ SLOW_MINIMUM_FILE_SECONDS = 0.5
 
 
 def test_files() -> list[str]:
+    """Every top-level test module, as the repository-relative path the gate uses."""
     return sorted(
         str(path.relative_to(ROOT))
         for path in (ROOT / "tests").glob("test_*.py")
@@ -67,6 +72,24 @@ def recorded_seconds(path: Path = DURATIONS) -> dict[str, float]:
     if not path.exists():
         return {}
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def write_durations(totals: dict[str, float], destination: Path) -> None:
+    """Record per-file seconds for every test file, zero included.
+
+    `shard` treats a file with no recorded duration as *average*, so an
+    omitted file is not free -- it is imaginary work that unbalances the
+    partition. Ten files added after the last hand-written recording were
+    each counted as 52.8 imaginary slow seconds, which is how one slow shard
+    ended up running no tests at all (#548). `junit.measured_cases` already
+    names every assigned file and refuses one outside the suite, so what
+    arrives here is recorded as it is, rounded to the tenth of a second.
+    """
+
+    recorded = {name: round(seconds, 1) for name, seconds in totals.items()}
+    destination.write_text(
+        json.dumps(recorded, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+    )
 
 
 def shard(
@@ -94,31 +117,3 @@ def shard(
         buckets[target].append(name)
         totals[target] += seconds
     return buckets
-
-
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--shards", type=int, required=True)
-    parser.add_argument("--shard", type=int, required=True, help="1-based")
-    parser.add_argument(
-        "--slow",
-        action="store_true",
-        help="balance by the slow gate's recorded seconds",
-    )
-    arguments = parser.parse_args(argv)
-
-    if arguments.shards < 1 or not 1 <= arguments.shard <= arguments.shards:
-        print("shard must be within 1..shards", file=sys.stderr)
-        return 2
-
-    durations = recorded_seconds(
-        SLOW_DURATIONS if arguments.slow else DURATIONS
-    )
-    buckets = shard(test_files(), durations, arguments.shards,
-                    minimum_file_seconds=SLOW_MINIMUM_FILE_SECONDS if arguments.slow else 0.0)
-    print(" ".join(buckets[arguments.shard - 1]))
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

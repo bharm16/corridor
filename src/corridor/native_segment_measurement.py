@@ -27,7 +27,9 @@ import time
 import traceback
 from typing import Any
 
+from corridor import digests
 from corridor.reader_segments import native_segment_values
+from corridor.receipts import write_sealed
 from corridor.source_append import SegmentValues
 from corridor.token_layers import (
     NativePdfReading,
@@ -86,9 +88,7 @@ def configuration_identity() -> dict[str, Any]:
     }
     return {
         **identity,
-        "identity_sha256": sha256(
-            json.dumps(identity, sort_keys=True, separators=(",", ":")).encode()
-        ).hexdigest(),
+        "identity_sha256": digests.ascii_escaped_sha256(identity),
     }
 
 
@@ -245,7 +245,7 @@ def read_one(task: tuple[Pair, Path, str]) -> dict[str, Any]:
     try:
         reading = read_native_pdf(pair.pdf_path, source_sha256=pair.pdf_sha256, engine=engine, dpi=MEASURED_DPI)
         result = segment_reading(reading, key=pair.key, pdf=pair.pdf)
-        (output / f"{pair.key}.json").write_text(json.dumps(result) + "\n", encoding="utf-8")
+        write_sealed(output / f"{pair.key}.json", json.dumps(result) + "\n")
         return {
             "key": pair.key, "pages": len(result["pages"]),
             "seconds": round(time.perf_counter() - started, 2),
@@ -294,7 +294,7 @@ def main(argv: list[str] | None = None) -> int:
         "receipts": receipts, "source_segment_scope": SCOPE,
         "source_segment_metrics": dict(metrics),
     }
-    (args.output / "read-receipts.json").write_text(json.dumps(result, indent=1) + "\n", encoding="utf-8")
+    write_sealed(args.output / "read-receipts.json", json.dumps(result, indent=1) + "\n", volatile=("seconds",))
     print(f"{len(receipts)} documents, {metrics['pages']} pages, "
           f"{sum('error' in receipt for receipt in receipts)} failed -> {args.output}")
     return 0

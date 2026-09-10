@@ -36,15 +36,17 @@ import argparse
 import json
 import os
 import re
-import runpy
 import shutil
 import subprocess
 import sys
-import xml.etree.ElementTree as ET
 from datetime import UTC, datetime
 from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+from scripts.run_local_tests import run_test_command
+from scripts.test_gate.junit import case_counts
 
 # The two engines' identity is data, not source.  `tests/test_architecture.py`
 # reads a string literal naming an engine as a dependency on it -- which is
@@ -358,14 +360,9 @@ def run_pytest(env: dict[str, str], arguments: list[str]) -> dict[str, object]:
     junit.unlink(missing_ok=True)
     command = [uv, "run", "--no-sync", "pytest", *arguments, f"--junitxml={junit}"]
     lifecycle = result_dir / "engine-absent.json"
-    run_test_command = runpy.run_path(str(REPO_ROOT / "scripts/run_local_tests.py"))["run_test_command"]
     returncode = run_test_command(command, suite="engine-absent", receipt_path=lifecycle,
         timeout_seconds=float(os.environ.get("TEST_TIMEOUT_SECONDS", "600")), environment=env)
-    counts = None
-    if junit.exists():
-        suites = ET.parse(junit).getroot()
-        counts = {name: sum(int(suite.get(name, "0")) for suite in suites.iter("testsuite"))
-                  for name in ("tests", "failures", "errors", "skipped")}
+    counts = case_counts(junit) if junit.exists() else None
     return {
         "command": " ".join(command),
         "returncode": returncode,

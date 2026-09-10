@@ -9,13 +9,11 @@ rates. They cannot resolve a Proposed Delta or change a Reference Dataset.
 
 from collections import defaultdict
 from datetime import datetime
-from hashlib import sha256
-import os
 from pathlib import Path
-import tempfile
 
 from corridor import digests
 from corridor.principals import HumanPrincipal
+from corridor.receipts import ArtifactCollision, write_sealed
 
 
 CLASSIFICATIONS = frozenset({"matched", "corridor_only", "customer_only", "ambiguous"})
@@ -32,23 +30,12 @@ def retain_private_artifact(directory, payload):
     directory = Path(directory)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     body = canonical_json(payload)
-    digest = sha256(body).hexdigest()
+    digest = digests.sha256_bytes(body)
     target = directory / f"{digest}.json"
-    fd, temporary = tempfile.mkstemp(prefix=".shadow-artifact-", dir=directory)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, target)
-        except FileExistsError:
-            if target.is_symlink() or target.read_bytes() != body:
-                raise ValueError("retained artifact has conflicting bytes")
-            if target.stat().st_mode & 0o077:
-                raise ValueError("retained artifact is not private")
-    finally:
-        os.unlink(temporary)
+        write_sealed(target, body)
+    except ArtifactCollision as exc:
+        raise ValueError(f"retained artifact refused: {exc}") from exc
     return {"sha256": digest, "path": str(target.resolve())}
 
 

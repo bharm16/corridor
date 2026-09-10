@@ -11,22 +11,12 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from dataclasses import dataclass
-from pathlib import Path
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
 from corridor import policy
-from corridor import extraction_runs as extraction_runs_module
-from corridor import models as models_module
-from corridor import operative_support as operative_support_module
-from corridor import principals as principals_module
-from corridor import project_lock as project_lock_module
-from corridor import revision_comparison as revision_comparison_module
-from corridor import supersession as supersession_module
-from corridor import supersession_review as supersession_review_module
-from corridor import support_transfer as support_transfer_module
 from corridor.models import (
     AutomaticCarryForwardOutcome,
     AutomaticCarryForwardReceipt,
@@ -202,8 +192,10 @@ class AutomaticCarryForwardRuntime:
         overrides = dict(source_overrides or {})
         return cls(
             safety_sources=tuple(
-                (module_name, overrides.get(module_name, path.read_bytes()))
-                for module_name, path in _safety_source_paths()
+                (module_name, overrides.get(module_name, deployed_bytes))
+                for module_name, deployed_bytes in policy.pinned_sources(
+                    *_SAFETY_SOURCE_PINS
+                )
             ),
             matcher_version=matcher_version,
             matcher_config=(
@@ -445,35 +437,25 @@ def _canonical_policy_json(
     return runtime.canonical_policy_json()
 
 
-def _safety_source_paths() -> tuple[tuple[str, Path], ...]:
-    """Files whose deployed bytes define machine eligibility and mutation."""
-
-    return (
-        ("corridor.automatic_carry_forward", Path(__file__)),
-        ("corridor.audit", Path(audit.__file__)),
-        ("corridor.extraction_runs", Path(extraction_runs_module.__file__)),
-        ("corridor.models", Path(models_module.__file__)),
-        ("corridor.operative_support", Path(operative_support_module.__file__)),
-        ("corridor.policy", Path(policy.__file__)),
-        ("corridor.principals", Path(principals_module.__file__)),
-        ("corridor.project_lock", Path(project_lock_module.__file__)),
-        ("corridor.revision_comparison", Path(revision_comparison_module.__file__)),
-        ("corridor.supersession", Path(supersession_module.__file__)),
-        ("corridor.supersession_review", Path(supersession_review_module.__file__)),
-        ("corridor.support_transfer", Path(support_transfer_module.__file__)),
-        ("corridor.support_history", Path(__file__).with_name("support_history.py")),
-        ("corridor.migrations.support_history", Path(__file__).parent / "migrations/support_history.py"),
-        (
-            "corridor.migrations.9d4f2a7c1e83",
-            Path(__file__).parent
-            / "migrations/versions/9d4f2a7c1e83_add_automatic_carry_forward.py",
-        ),
-        (
-            "corridor.migrations.f315b4c6d8e0",
-            Path(__file__).parent
-            / "migrations/versions/f315b4c6d8e0_carry_forward_is_corridor_managed.py",
-        ),
-    )
+# Modules whose deployed bytes define machine eligibility and mutation.
+_SAFETY_SOURCE_PINS = (
+    "corridor.automatic_carry_forward",
+    "corridor.audit",
+    "corridor.extraction_runs",
+    "corridor.models",
+    "corridor.operative_support",
+    "corridor.policy",
+    "corridor.principals",
+    "corridor.project_lock",
+    "corridor.revision_comparison",
+    "corridor.supersession",
+    "corridor.supersession_review",
+    "corridor.support_transfer",
+    "corridor.support_history",
+    "corridor.migrations.support_history",
+    "corridor.migrations.9d4f2a7c1e83",
+    "corridor.migrations.f315b4c6d8e0",
+)
 
 
 def _durable_outcome_counts(

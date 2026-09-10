@@ -7,18 +7,10 @@ task-definition responses without starting AWS resources or a database.
 from __future__ import annotations
 
 import copy
-import importlib.util
-import pathlib
 
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "verify_release",
-    pathlib.Path(__file__).parents[1] / "scripts" / "verify_ecs_release.py",
-)
-release = importlib.util.module_from_spec(_SPEC)
-assert _SPEC.loader is not None
-_SPEC.loader.exec_module(release)
+from scripts import verify_ecs_release as release
 
 REPO = "810100779593.dkr.ecr.us-east-2.amazonaws.com/corridor"
 DIGEST = "sha256:" + "ab" * 32

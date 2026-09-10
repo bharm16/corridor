@@ -10,12 +10,11 @@ from __future__ import annotations
 import argparse
 from dataclasses import replace
 import json
-import os
 from pathlib import Path
-import tempfile
 
 from corridor.analytics import AnalyticsEvent
 from corridor.pilot_measurement import MeasurementPeriod, derive_measurement
+from corridor.receipts import write_private_snapshot
 
 
 INPUT_VERSION = "pilot-measurement-input-v1"
@@ -39,16 +38,9 @@ def read_event_log(path: Path) -> list[AnalyticsEvent]:
 
 def write_private_json(path: Path, value: object) -> None:
     """Atomically write a customer-data artifact with owner-only permissions."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            json.dump(value, stream, indent=2, sort_keys=True, default=str)
-            stream.write("\n")
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+    write_private_snapshot(
+        path, json.dumps(value, indent=2, sort_keys=True, default=str) + "\n"
+    )
 
 
 def main(argv: list[str] | None = None) -> int:

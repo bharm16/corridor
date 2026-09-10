@@ -6,6 +6,7 @@ import json
 from dataclasses import fields as dataclass_fields
 from datetime import date, datetime, timezone
 from pathlib import Path
+import stat
 
 import pytest
 import httpx
@@ -1730,8 +1731,9 @@ def test_v2_cohort_freezes_an_explicit_hidden_reproducible_manifest(
     assert len(manifest["manifest_sha256"]) == 64
     assert all(item["hidden"] for item in manifest["dataset_membership"])
     assert session.query(EvidenceInvestigationShadowOutcome).count() == outcome_count
-    with pytest.raises(FileExistsError):
-        write_shadow_cohort_manifest(cohort, path)
+    first_bytes = path.read_bytes()
+    write_shadow_cohort_manifest(cohort, path)
+    assert path.read_bytes() == first_bytes
 
 
 def test_v2_cohort_refuses_implicit_cross_project_or_mixed_configuration(
@@ -1960,6 +1962,11 @@ def test_shadow_evaluation_writes_reproducible_machine_and_human_receipts(
     assert evaluation.receipt.identity_json["ui_enabled"] is False
     assert json.loads(evaluation.machine_path.read_text())["status"] == "passed"
     assert "No coordinator UI was enabled" in evaluation.summary_path.read_text()
+    # Both files went through the sealed receipt writer: owner-only, and a
+    # repeated write of the same receipt is accepted while a different one is
+    # refused (proved at the writer's own seam in tests/test_receipts.py).
+    assert stat.S_IMODE(evaluation.machine_path.stat().st_mode) == 0o600
+    assert stat.S_IMODE(evaluation.summary_path.stat().st_mode) == 0o600
     assert (
         session.query(EvidenceInvestigationEvaluationReceipt).count()
         == evaluation_count + 1

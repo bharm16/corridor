@@ -17,7 +17,6 @@ replay.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from pathlib import Path
 import re
 
 from sqlalchemy import select, text
@@ -300,14 +299,11 @@ def resolve_candidate_identity(
 
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
-    from corridor import models as models_module
-
-    here = Path(__file__).parent
-    return (
-        ("corridor.organization_identity", Path(__file__).read_bytes()),
-        ("corridor.policy", Path(policy.__file__).read_bytes()),
-        ("corridor.models", Path(models_module.__file__).read_bytes()),
-        ("corridor.migrations.c345a9f1d2e3", (here / "migrations/versions/c345a9f1d2e3_add_organization_identity_receipts.py").read_bytes()),
+    return policy.pinned_sources(
+        "corridor.organization_identity",
+        "corridor.policy",
+        "corridor.models",
+        "corridor.migrations.c345a9f1d2e3",
     )
 
 

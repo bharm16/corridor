@@ -7,18 +7,9 @@ password into a subprocess, is pure logic and deserves fast, direct tests.
 
 from __future__ import annotations
 
-import importlib.util
-import pathlib
-
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "container_entrypoint",
-    pathlib.Path(__file__).parents[1] / "scripts" / "container_entrypoint.py",
-)
-entrypoint = importlib.util.module_from_spec(_SPEC)
-assert _SPEC.loader is not None
-_SPEC.loader.exec_module(entrypoint)
+from scripts import container_entrypoint as entrypoint
 
 
 BASE = {

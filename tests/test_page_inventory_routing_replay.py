@@ -10,21 +10,13 @@ and a reason, and that the access it records says which document was read
 
 from __future__ import annotations
 
-import importlib.util
 import json
 from pathlib import Path
 
 from corridor import holdout_ledger
+from scripts import page_inventory_routing_replay as _MODULE
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-# `scripts/` is a directory of commands, not an importable package, so the
-# module is loaded by path rather than made one for a test's convenience.
-_SPEC = importlib.util.spec_from_file_location(
-    "page_inventory_routing_replay",
-    REPO_ROOT / "scripts" / "page_inventory_routing_replay.py",
-)
-_MODULE = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_MODULE)
 
 HOLDOUT = "5b9c39bf570447c23e4e4ad2e02629576005697d39b8e52f1083b5fe10e2c1be"
 

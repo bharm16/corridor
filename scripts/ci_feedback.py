@@ -21,8 +21,11 @@ import sys
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.test_feedback import EvidenceError, aggregate_receipts, assess, read_json, validate_report
-from scripts.test_shard import test_files
+from scripts.test_gate.contract import REPORT_MARKER, job_name, latest_jobs, output_slot
+from scripts.test_gate.evidence import EvidenceError, loads, read_json
+from scripts.test_gate.feedback import aggregate_receipts, assess, validate_report
+from scripts.test_gate.partition import test_files
+from scripts.test_gate.receipt import ShardReceipt
 
 
 WORKFLOW = ".github/workflows/release-gate.yml"
@@ -57,10 +60,6 @@ def _attempt_start(run: dict) -> str:
     return run["created_at"] if run["run_attempt"] == 1 else run["run_started_at"]
 
 
-RECEIPT_MARKER = "CORRIDOR_TEST_RECEIPT"
-REPORT_MARKER = "CORRIDOR_TEST_FEEDBACK"
-
-
 def logged_json(log: bytes, marker: str) -> dict | None:
     """Read the final machine record, never pytest's human summary text."""
     if len(log) > 20_000_000:
@@ -73,16 +72,7 @@ def logged_json(log: bytes, marker: str) -> dict | None:
             payload = line.split(" " + marker + " ", 1)[1]
     if payload is None:
         return None
-    def pairs(items):
-        value = {}
-        for key, item in items:
-            if key in value:
-                raise EvidenceError("duplicate field in logged timing record")
-            value[key] = item
-        return value
-    def invalid(_value):
-        raise EvidenceError("non-finite logged timing value")
-    return json.loads(payload, object_pairs_hook=pairs, parse_constant=invalid)
+    return loads(payload, "logged timing record")
 
 
 def run_jobs(repository: str, run_id: str) -> list[dict]:
@@ -153,13 +143,10 @@ def verified_gate_seconds(receipts: list[dict], run: dict, jobs: list[dict], now
     turn a slow suite into a ten-second measurement. Reconstruct its required
     critical path from GitHub's job timings as a floor on the current attempt.
     """
-    latest = {}
-    for job in jobs:
-        if job["name"] not in latest or job["run_attempt"] > latest[job["name"]]["run_attempt"]:
-            latest[job["name"]] = job
+    latest = latest_jobs(jobs)
     required = ["check"]
     for receipt in receipts:
-        name = f"{receipt['suite']} ({receipt['shard']})" if receipt["suite"] in ("pytest", "slow") else receipt["suite"]
+        name = job_name(receipt["suite"], receipt["shard"])
         job = latest.get(name)
         if job is None or job["conclusion"] != "success":
             raise EvidenceError(f"receipt does not match the successful GitHub job: {name}")
@@ -196,17 +183,14 @@ def receipts_from_outputs(suites: dict[str, int]) -> list[dict]:
     receipts = []
     for suite, shards in suites.items():
         supplied = json.loads(os.environ[f"CORRIDOR_{suite.upper()}_RECEIPTS"])
-        slots = {f"{suite}_{number}" for number in range(1, shards + 1)}
+        slots = {output_slot(suite, number) for number in range(1, shards + 1)}
         if not isinstance(supplied, dict) or set(supplied) != slots:
             raise EvidenceError(f"{suite} job outputs do not cover the exact partition")
         for number in range(1, shards + 1):
-            encoded = supplied[f"{suite}_{number}"]
+            encoded = supplied[output_slot(suite, number)]
             if not isinstance(encoded, str) or not encoded:
                 raise EvidenceError(f"{suite}/{number} has no receipt output")
-            receipt = logged_json((RECEIPT_MARKER + " " + encoded).encode(), RECEIPT_MARKER)
-            if not isinstance(receipt, dict) or receipt.get("suite") != suite or receipt.get("shard") != number:
-                raise EvidenceError("receipt is bound to the wrong output slot")
-            receipts.append(receipt)
+            receipts.append(ShardReceipt.from_output(encoded, suite, number))
     return receipts
 
 
@@ -229,11 +213,8 @@ def finish(repository: str, run_id: str) -> int:
         history = history_future.result()
     if run["status"] != "in_progress" or run["run_attempt"] != expected["run_attempt"]:
         raise EvidenceError("feedback is not observing the current running attempt")
-    latest = {}
-    for job in jobs:
-        if job["name"] not in latest or job["run_attempt"] > latest[job["name"]]["run_attempt"]:
-            latest[job["name"]] = job
-    names = [f"{suite} ({number})" if suite in ("pytest", "slow") else suite for suite, shards in suites.items() for number in range(1, shards + 1)]
+    latest = latest_jobs(jobs)
+    names = [job_name(suite, number) for suite, shards in suites.items() for number in range(1, shards + 1)]
     if any(name not in latest or latest[name]["conclusion"] != "success" for name in names):
         raise EvidenceError("required test jobs did not all succeed")
     receipts = receipts_from_outputs(suites)

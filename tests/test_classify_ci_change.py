@@ -9,12 +9,13 @@ directly; they add coverage without repeating Git setup for every filename.
 
 from __future__ import annotations
 
-import importlib.util
 from pathlib import Path
 import subprocess
 import sys
 
 import pytest
+
+from scripts import classify_ci_change
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -22,16 +23,7 @@ CLASSIFIER = ROOT / "scripts" / "classify_ci_change.py"
 
 
 def _module():
-    if "classify_ci_change" in sys.modules:
-        return sys.modules["classify_ci_change"]
-    spec = importlib.util.spec_from_file_location("classify_ci_change", CLASSIFIER)
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    # Registered before execution: the module's dataclass resolves its own
-    # string annotations through sys.modules.
-    sys.modules["classify_ci_change"] = module
-    spec.loader.exec_module(module)
-    return module
+    return classify_ci_change
 
 
 def _git(repository: Path, *arguments: str) -> str:

@@ -49,6 +49,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+from functools import partial
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -72,7 +73,10 @@ from corridor.revision_comparison import (
     RevisionComparisonError,
 )
 from corridor.revision_processing import obtain_verified_revision_pair
-from corridor.revision_reconciliation_request import revision_reconciliation_pending
+from corridor.revision_reconciliation_request import (
+    REVISION_RECONCILIATION,
+    revision_reconciliation_pending,
+)
 
 
 class RevisionReconciliationRefused(ValueError):
@@ -251,78 +255,93 @@ def reconcile_project_revisions(
 
     # Then do the work in one transaction: obtain each permitted exact comparison,
     # integrity-read it, apply the released rules, hand off the downstream load,
-    # and advance the watermark — atomically, so a crash leaves none of it.
+    # and advance the watermark — atomically, so a crash leaves none of it. The
+    # watermark's loop runs the pass even when the row is clean, because this
+    # pass was chosen from committed state (eligible support); it advances the
+    # row only when it was pending.
     with session_factory() as session:
         with session.begin():
             lock_project(session, project_id)
-            row = session.scalar(
-                select(RevisionReconciliationRequest)
-                .where(RevisionReconciliationRequest.project_id == project_id)
-                .with_for_update()
+            passed = REVISION_RECONCILIATION.reconcile(
+                session,
+                project_id,
+                partial(_revise_project, matcher_version=matcher_version),
+                run_when_clean=True,
+                now=_aware_utc(clock.now()),
             )
-            was_pending = row is not None and row.dirty_seq > row.reconciled_seq
-            snapshot = row.dirty_seq if row is not None else 0
-
-            pairs = discover_revision_pairs(session, project_id)
-            created = 0
-            reused = 0
-            failures: list[RevisionComparisonFailure] = []
-            for pair in pairs:
-                try:
-                    verified = obtain_verified_revision_pair(
-                        session,
-                        predecessor_extraction_run_id=(
-                            pair.predecessor_extraction_run_id
-                        ),
-                        successor_extraction_run_id=(
-                            pair.successor_extraction_run_id
-                        ),
-                        matcher_version=matcher_version,
-                    )
-                except RevisionComparisonError as exc:
-                    failures.append(
-                        RevisionComparisonFailure(
-                            predecessor_extraction_run_id=(
-                                pair.predecessor_extraction_run_id
-                            ),
-                            successor_extraction_run_id=(
-                                pair.successor_extraction_run_id
-                            ),
-                            error_code=type(exc).__name__,
-                        )
-                    )
-                    continue
-                if verified.created:
-                    created += 1
-                else:
-                    reused += 1
-
-            carry = run_automatic_carry_forward(session, project_id)
-            requested_record_inclusion = bool(carry.carried)
-            if requested_record_inclusion:
-                # The moved support is a committed change to the Project Record;
-                # its downstream reconciliation continues through the same durable
-                # handoff #342 owns, inside this transaction so a rollback leaves
-                # no load request.
-                request_record_inclusion(
-                    session, project_id, "revision_reconciliation"
-                )
-
-            if was_pending:
-                row.reconciled_seq = snapshot
-                row.reconciled_at = _aware_utc(clock.now())
-            reconciled_seq = row.reconciled_seq if row is not None else 0
+            revised = passed.outcome
 
     return RevisionReconciliationResult(
         project_id=project_id,
         did_reconcile=True,
-        pairs_discovered=len(pairs),
-        comparisons_created=created,
-        comparisons_reused=reused,
-        comparison_failures=tuple(failures),
-        carry_forward=carry,
+        pairs_discovered=len(revised.pairs),
+        comparisons_created=revised.created,
+        comparisons_reused=revised.reused,
+        comparison_failures=revised.failures,
+        carry_forward=revised.carry,
+        requested_record_inclusion=revised.requested_record_inclusion,
+        reconciled_seq=passed.reconciled_seq,
+    )
+
+
+@dataclass(frozen=True)
+class _RevisionPass:
+    """What one revision pass body did inside the watermark's transaction."""
+
+    pairs: tuple[RevisionPair, ...]
+    created: int
+    reused: int
+    failures: tuple[RevisionComparisonFailure, ...]
+    carry: AutomaticCarryForwardResult
+    requested_record_inclusion: bool
+
+
+def _revise_project(
+    session: Session, project_id: int, *, matcher_version: str
+) -> _RevisionPass:
+    """The pass body the watermark runs: compare each pair, then carry forward."""
+
+    pairs = discover_revision_pairs(session, project_id)
+    created = 0
+    reused = 0
+    failures: list[RevisionComparisonFailure] = []
+    for pair in pairs:
+        try:
+            verified = obtain_verified_revision_pair(
+                session,
+                predecessor_extraction_run_id=pair.predecessor_extraction_run_id,
+                successor_extraction_run_id=pair.successor_extraction_run_id,
+                matcher_version=matcher_version,
+            )
+        except RevisionComparisonError as exc:
+            failures.append(
+                RevisionComparisonFailure(
+                    predecessor_extraction_run_id=pair.predecessor_extraction_run_id,
+                    successor_extraction_run_id=pair.successor_extraction_run_id,
+                    error_code=type(exc).__name__,
+                )
+            )
+            continue
+        if verified.created:
+            created += 1
+        else:
+            reused += 1
+
+    carry = run_automatic_carry_forward(session, project_id)
+    requested_record_inclusion = bool(carry.carried)
+    if requested_record_inclusion:
+        # The moved support is a committed change to the Project Record; its
+        # downstream reconciliation continues through the same durable handoff
+        # #342 owns, inside this transaction so a rollback leaves no load request.
+        request_record_inclusion(session, project_id, "revision_reconciliation")
+
+    return _RevisionPass(
+        pairs=pairs,
+        created=created,
+        reused=reused,
+        failures=tuple(failures),
+        carry=carry,
         requested_record_inclusion=requested_record_inclusion,
-        reconciled_seq=reconciled_seq,
     )
 
 

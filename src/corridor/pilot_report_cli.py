@@ -7,25 +7,12 @@ success-contract document; the written checkpoint records that human decision.
 
 import argparse
 import json
-import os
 from pathlib import Path
-import tempfile
 
 from corridor.pilot_measurement_cli import write_private_json
 from corridor.pilot_report import derive_report
 from corridor.pilot_checkpoint import build_checkpoint, render_checkpoint
-
-
-def _write_private_text(path, value):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
-    try:
-        with os.fdopen(fd, "w") as stream:
-            stream.write(value)
-        os.replace(temporary, path)
-    finally:
-        if os.path.exists(temporary):
-            os.unlink(temporary)
+from corridor.receipts import write_private_snapshot
 
 
 def main(argv=None):
@@ -48,7 +35,7 @@ def main(argv=None):
         write_private_json(args.output.with_suffix(".inputs.json"), inputs)
     else:
         result = build_checkpoint(json.loads(args.report.read_text()))
-        _write_private_text(args.output.with_suffix(".md"), render_checkpoint(result))
+        write_private_snapshot(args.output.with_suffix(".md"), render_checkpoint(result))
     write_private_json(args.output, result)
     print(f"Wrote {args.command} to {args.output}; input SHA-256 {result['input_sha256']}")
     return 0

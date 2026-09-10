@@ -28,6 +28,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import digests
 from corridor.experimental_database import (
     DatabaseGuard,
     ProductionDatabaseRefusal,
@@ -40,6 +41,7 @@ from corridor.extraction_run_queries import (
     is_completed_run,
 )
 from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.receipts import ArtifactCollision, identity, write_sealed
 from corridor.measurement_cases import (
     CasePredictionError,
     HumanCaseMeasurement,
@@ -812,19 +814,13 @@ def artifact(
     if case_measurement is not None:
         written["human_ruling_cases"] = case_measurement.as_dict()
     identity_material = dict(written)
-    identity_material.pop("ran_at")
-    identity_material.pop("reference_description")
     identity_reference = dict(identity_material["reference_scope"])
     identity_reference.pop("source")
     identity_reference.pop("manifest_source", None)
     identity_material["reference_scope"] = identity_reference
-    written["artifact_identity"] = hashlib.sha256(
-        json.dumps(
-            identity_material,
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()
+    written["artifact_identity"] = identity(
+        identity_material, volatile=("ran_at", "reference_description")
+    )
     return written
 
 
@@ -846,10 +842,6 @@ def exit_code(
 
 class NothingToMeasure(Exception):
     """There is no measurement to take, so a score would be a fiction."""
-
-
-class ArtifactCollision(Exception):
-    """An immutable measurement artifact already occupies this identity."""
 
 
 def assert_measurement_not_spent(
@@ -1334,13 +1326,7 @@ def measure(
         reference_scope = ReferenceScope(
             kind="page_text_reference",
             source=source,
-            sha256=hashlib.sha256(
-                json.dumps(
-                    reference_material,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                ).encode()
-            ).hexdigest(),
+            sha256=digests.ascii_escaped_sha256(reference_material),
             documents=tuple(
                 DocumentScope(id=document_id, sha256=document_sha256)
                 for document_id, document_sha256 in selected_document_scope
@@ -1401,27 +1387,7 @@ def write_measurement_artifact(path: Path, written: dict) -> bool:
     resolves to the same file. The first timestamp remains evidence; every
     other field must agree or the collision fails closed.
     """
-    serialized = json.dumps(written, indent=2) + "\n"
-    try:
-        with path.open("x") as handle:
-            handle.write(serialized)
-        return True
-    except FileExistsError:
-        try:
-            existing = json.loads(path.read_text())
-        except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-            raise ArtifactCollision(
-                f"refusing to overwrite unreadable measurement artifact {path}: {exc}"
-            ) from exc
-        existing_comparable = dict(existing)
-        written_comparable = dict(written)
-        existing_comparable.pop("ran_at", None)
-        written_comparable.pop("ran_at", None)
-        if existing_comparable != written_comparable:
-            raise ArtifactCollision(
-                f"refusing divergent overwrite of immutable measurement artifact {path}"
-            )
-        return False
+    return write_sealed(path, json.dumps(written, indent=2) + "\n", volatile=("ran_at",))
 
 
 def main(

@@ -27,7 +27,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Callable
 
 from sqlalchemy import select
@@ -89,15 +88,11 @@ class StatementScopeRun:
 
 def _rule_source_bytes() -> tuple[tuple[str, bytes], ...]:
     """The deployed bytes that decide a scope — the fingerprint's ground truth."""
-    from corridor import merge as merge_module
-    from corridor import statement_matcher as matcher_module
-    from corridor import verify as verify_module
-
-    return (
-        ("corridor.statement_scope_matching", Path(__file__).read_bytes()),
-        ("corridor.statement_matcher", Path(matcher_module.__file__).read_bytes()),
-        ("corridor.merge", Path(merge_module.__file__).read_bytes()),
-        ("corridor.verify", Path(verify_module.__file__).read_bytes()),
+    return policy.pinned_sources(
+        "corridor.statement_scope_matching",
+        "corridor.statement_matcher",
+        "corridor.merge",
+        "corridor.verify",
     )
 
 

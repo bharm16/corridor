@@ -16,16 +16,26 @@ means "this exact rule set, these exact deployed bytes"; a digest that
 depends on who computed it cannot carry that claim.
 
 What stays with each family is what actually differs: the eligibility
-rules, the reason vocabulary, the receipt tables. This module owns the
-two digests and nothing else, so it can never become the place where a
-policy's *decisions* quietly converge.
+rules, the reason vocabulary, the receipt tables — and which modules each
+family pins. This module owns the two digests and the resolution of a
+pinned name to deployed bytes, and nothing else, so it can never become
+the place where a policy's *decisions* quietly converge.
+
+The resolver arrived after #797 turned `corridor.models` into a package.
+Five families pinned the schema through `models_module.__file__`, which
+from that day named `models/__init__.py`, the re-export list; every
+column, CHECK and relationship in the submodules had left every rules
+digest, and no test noticed because each family resolved its own paths
+and nothing asserted what a pin covered. One resolver, one test.
 """
 
 from __future__ import annotations
 
 import hashlib
+import importlib
 from collections.abc import Callable, Iterable
 from functools import lru_cache
+from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
@@ -39,9 +49,15 @@ __all__ = [
     "current_approval",
     "digest_of_sources",
     "has_matching_abstention",
+    "pinned_sources",
     "record_approval",
     "source_digest",
 ]
+
+# Alembic does not load this directory; its files retain the exact bytes
+# released policy fingerprints were computed over (migrations/versions/README.md).
+_RETAINED_MIGRATIONS = Path(__file__).parent / "migrations" / "versions"
+_RETAINED_MIGRATION_PREFIX = "corridor.migrations."
 
 
 def canonical_json(value: object) -> str:
@@ -93,6 +109,64 @@ def source_digest(sources: Iterable[tuple[str, bytes]]) -> str:
         digest.update(source_bytes)
         digest.update(b"\0")
     return digest.hexdigest()
+
+
+def pinned_sources(*names: str) -> tuple[tuple[str, bytes], ...]:
+    """The deployed bytes behind each name a policy family pins.
+
+    A family declares *which* modules decide for it; this resolves *what
+    bytes* that declaration names, once for every family:
+
+    - a module name resolves to its deployed file;
+    - a package resolves to its own file and then to every member module,
+      each under its dotted name, in sorted order, so splitting a module
+      into a package cannot narrow a digest;
+    - `corridor.migrations.<revision>` resolves to the inert source retained
+      under `migrations/versions` for a released fingerprint;
+    - a name that resolves to nothing is refused here, not at first use.
+
+    Every family's `rules_digest` changed once when this replaced the six
+    hand-kept path lists: #797 had already changed them by turning
+    `corridor.models` into a package, leaving each `models_module.__file__`
+    pin on `models/__init__.py` alone. The digests written between #797
+    and this change attested less than they said; these attest the schema.
+    """
+    sources: list[tuple[str, bytes]] = []
+    for name in names:
+        sources.extend(_resolve_pin(name))
+    return tuple(sources)
+
+
+def _resolve_pin(name: str) -> list[tuple[str, bytes]]:
+    if name.startswith(_RETAINED_MIGRATION_PREFIX):
+        revision = name.removeprefix(_RETAINED_MIGRATION_PREFIX)
+        retained = sorted(_RETAINED_MIGRATIONS.glob(f"{revision}_*.py"))
+        if len(retained) == 1:
+            return [(name, retained[0].read_bytes())]
+    try:
+        module = importlib.import_module(name)
+    except ModuleNotFoundError as exc:
+        raise LookupError(
+            f"policy pin {name!r} names no deployed module and no retained migration"
+        ) from exc
+    if getattr(module, "__file__", None) is None:
+        raise LookupError(f"policy pin {name!r} has no deployed file to digest")
+    path = Path(module.__file__)
+    sources = [(name, path.read_bytes())]
+    if path.name == "__init__.py":
+        sources.extend(_package_members(name, path.parent))
+    return sources
+
+
+def _package_members(package: str, directory: Path) -> list[tuple[str, bytes]]:
+    members: list[tuple[str, bytes]] = []
+    for entry in sorted(directory.iterdir()):
+        if entry.is_dir() and (entry / "__init__.py").is_file():
+            members.append((f"{package}.{entry.name}", (entry / "__init__.py").read_bytes()))
+            members.extend(_package_members(f"{package}.{entry.name}", entry))
+        elif entry.suffix == ".py" and entry.name != "__init__.py":
+            members.append((f"{package}.{entry.stem}", entry.read_bytes()))
+    return members
 
 
 @lru_cache(maxsize=8)

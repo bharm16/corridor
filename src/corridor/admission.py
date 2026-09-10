@@ -20,9 +20,7 @@ declared, and both policies skip what is already on the record.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, timezone
 
-from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.dependency_admission import (
@@ -35,8 +33,8 @@ from corridor.fact_decisions import (
     include_current_structured_cell_facts,
 )
 from corridor.extraction_runs import declare_single_run_documents_by_policy
-from corridor.models import Project, RecordInclusionRequest
-from corridor.record_inclusion import ReconcileResult
+from corridor.models import Project
+from corridor.record_inclusion import RECORD_INCLUSION, ReconcileResult
 from corridor.unreadable_cell_admission import process_unreadable_cell_upgrades
 
 
@@ -103,35 +101,20 @@ def reconcile_record_inclusion(
     durable ``dirty_seq``/``reconciled_seq`` marker is what keeps an idle sweep
     from growing the receipt log (ADR-0029, #342).
 
-    The watermark row is locked so a concurrent producer's bump serializes behind
-    this pass rather than being lost. When the snapshot is not pending this is a
-    no-op that appends nothing; when it is, it loads and advances
-    ``reconciled_seq`` to the exact snapshot observed under the lock, so a bump
-    that arrives during the load keeps the project pending for the next pass.
+    The watermark's loop (:mod:`corridor.reconciliation_watermark`) locks the
+    row so a concurrent producer's bump serializes behind this pass rather than
+    being lost. When the snapshot is not pending this is a no-op that appends
+    nothing; when it is, it loads and advances ``reconciled_seq`` to the exact
+    snapshot observed under the lock, so a bump that arrives during the load
+    keeps the project pending for the next pass.
     """
 
-    row = session.scalar(
-        select(RecordInclusionRequest)
-        .where(RecordInclusionRequest.project_id == project_id)
-        .with_for_update()
-    )
-    if row is None or row.dirty_seq <= row.reconciled_seq:
-        return ReconcileResult(
-            project_id=project_id,
-            did_load=False,
-            reconciled_seq=row.reconciled_seq if row is not None else 0,
-            load=None,
-        )
-
-    snapshot = row.dirty_seq
-    load = load_project(session, project_id)
-    row.reconciled_seq = snapshot
-    row.reconciled_at = datetime.now(timezone.utc)
+    passed = RECORD_INCLUSION.reconcile(session, project_id, load_project)
     return ReconcileResult(
         project_id=project_id,
-        did_load=True,
-        reconciled_seq=snapshot,
-        load=load,
+        did_load=passed.ran,
+        reconciled_seq=passed.reconciled_seq,
+        load=passed.outcome,
     )
 
 

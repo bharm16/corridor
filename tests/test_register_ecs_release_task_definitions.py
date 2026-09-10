@@ -8,20 +8,9 @@ commit throughout. Nothing in the workflow output would say so.
 
 from __future__ import annotations
 
-import importlib.util
-import pathlib
-
 import pytest
 
-_SPEC = importlib.util.spec_from_file_location(
-    "register_release",
-    pathlib.Path(__file__).parents[1]
-    / "scripts"
-    / "register_ecs_release_task_definitions.py",
-)
-release = importlib.util.module_from_spec(_SPEC)
-assert _SPEC.loader is not None
-_SPEC.loader.exec_module(release)
+from scripts import register_ecs_release_task_definitions as release
 
 
 REPO = "810100779593.dkr.ecr.us-east-2.amazonaws.com/corridor"

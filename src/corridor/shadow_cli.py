@@ -13,9 +13,7 @@ from hashlib import sha256
 import json
 import os
 from pathlib import Path
-import stat
 import sys
-import tempfile
 
 from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
@@ -28,6 +26,7 @@ from corridor.models import Project, SourceDelivery
 from corridor.native_provider_boundary import CustomerAuthorization
 from corridor.principals import HumanPrincipal
 from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential, register_push_credential
+from corridor.receipts import ArtifactCollision, write_sealed
 from corridor.shadow_capabilities import ShadowRefused, verify_runtime
 from corridor.shadow_processing import provision_shadow_project, run_shadow_ucm, validate_shadow_input
 from corridor.shadow_receipts import read_shadow_run
@@ -57,24 +56,10 @@ def _compatibility(path, expected_sha256):
 def _write_export(path, output):
     body = json.dumps({"canonicalization": "postgresql-jsonb-text-v1", "payload_text": output.payload_text,
         "output_sha256": output.output_sha256}, sort_keys=True).encode()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temporary_name = tempfile.mkstemp(prefix=".shadow-export-", dir=path.parent)
-    temporary = Path(temporary_name)
     try:
-        with os.fdopen(fd, "wb") as stream:
-            stream.write(body)
-            stream.flush()
-            os.fsync(stream.fileno())
-        try:
-            os.link(temporary, path)
-        except FileExistsError:
-            metadata = path.lstat()
-            if not stat.S_ISREG(metadata.st_mode) or metadata.st_mode & 0o077:
-                raise ShadowRefused("export destination must be a private regular file")
-            if path.read_bytes() != body:
-                raise ShadowRefused("export destination already contains different bytes")
-    finally:
-        temporary.unlink(missing_ok=True)
+        write_sealed(path, body)
+    except ArtifactCollision as exc:
+        raise ShadowRefused(f"export destination refused: {exc}") from exc
     return sha256(body).hexdigest()
 
 

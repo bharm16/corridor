@@ -9,28 +9,16 @@ that an unrecognised name is kept rather than swept.
 from __future__ import annotations
 
 import ast
-import importlib.util
 from pathlib import Path
 import re
 
 from corridor.m8_acceptance_database import disposable_database_name
+from scripts.clean_test_databases import is_scratch_name, sweepable
 from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
 
 _ROOT = Path(__file__).resolve().parents[1]
 HARNESS_PREFIX = "corridor_pytest_"
 _LABEL_SHAPE = re.compile(r"^[a-z0-9]+(?:_[a-z0-9]+)*$")
-
-# `scripts/` is a directory of commands, not an importable package, so the
-# module is loaded by path rather than made one for a test's convenience.
-_SPEC = importlib.util.spec_from_file_location(
-    "clean_test_databases",
-    Path(__file__).resolve().parents[1] / "scripts" / "clean_test_databases.py",
-)
-_MODULE = importlib.util.module_from_spec(_SPEC)
-_SPEC.loader.exec_module(_MODULE)
-
-is_scratch_name = _MODULE.is_scratch_name
-sweepable = _MODULE.sweepable
 
 
 PROTECTED = frozenset({"corridor"})
