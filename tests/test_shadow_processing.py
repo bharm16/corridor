@@ -22,10 +22,12 @@ DELETE = date(2026, 12, 1)
 
 
 def authorization(body, slug):
-    return CustomerAuthorization("synthetic-shadow-authorization", CUSTOMER,
-        frozenset({slug}), frozenset({"ucm"}), frozenset({"shadow-processing"}),
-        frozenset({"compatibility", "shadow"}), frozenset({sha256(body).hexdigest()}),
-        0, 0, 0, "deterministic-no-model", "0" * 64, True, "local:authorizer", "2026-09-09")
+    return CustomerAuthorization(
+        record_id="synthetic-shadow-authorization", customer=CUSTOMER,
+        projects=frozenset({slug}), source_classes=frozenset({"ucm"}), purposes=frozenset({"shadow-processing"}),
+        stages=frozenset({"compatibility", "shadow"}), source_sha256s=frozenset({sha256(body).hexdigest()}),
+        max_calls=0, max_pages=0, max_total_tokens=0, posture_identity="deterministic-no-model",
+        posture_digest="0" * 64, retention_disclosed=True, signed_by="local:authorizer", signed_on="2026-09-09")
 
 
 @pytest.fixture
