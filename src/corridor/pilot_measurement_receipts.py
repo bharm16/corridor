@@ -17,12 +17,14 @@ from __future__ import annotations
 from dataclasses import replace
 from datetime import datetime
 import json
-from typing import Any, Iterable
+from typing import Any, Callable, Iterable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.analytics import AnalyticsEvent, EventFamily, default_binding
+from corridor.analytics import (
+    AnalyticsEvent, EventFamily, act_outcome, child_decision_action, declared_payload, default_binding,
+)
 from corridor import models as m
 from corridor.pilot_measurement import MeasurementPeriod
 from corridor.measurement_collection import binding_for_session
@@ -80,18 +82,18 @@ def read_domain_receipts(
                            and e.payload.get("project_id") == project_id
                            and e.binding.database_identity == origin
                            and e.binding.customer_id == customer_id
-                           and _same_receipt_event(e, payload, row, at)]
+                           and same_act(e, payload, row, at)]
                 if family == EventFamily.SOURCE_CAPTURE:
-                    outcomes = {e.payload.get("outcome", e.metric_labels.get("status")) for e in matches}
+                    outcomes = {act_outcome(e) for e in matches}
                     if len(outcomes) > 1:
                         raise ValueError("conflicting capture outcomes for one document registration")
                     payload["outcome"] = next(iter(outcomes)) if outcomes else "unavailable"
                     payload["attempt_outcomes"] = sorted({
-                        e.payload["outcome"] for e in observed_events
+                        declared_payload(e)["outcome"] for e in observed_events
                         if e.family == family and e.payload.get("document_id") == row.id
                         and e.payload.get("project_id") == project_id
                         and e.binding.database_identity == origin and e.binding.customer_id == customer_id
-                        and at <= e.occurred_at < through and e.payload.get("outcome")
+                        and at <= e.occurred_at < through and declared_payload(e).get("outcome")
                     })
                 if matches and len({json.dumps(e.binding.as_dict(), sort_keys=True) for e in matches}) == 1:
                     binding = matches[0].binding
@@ -289,53 +291,102 @@ def read_domain_receipts(
     return tuple(output)
 
 
-def _same_receipt_event(event, payload, row, at) -> bool:
-    """Corroborate one exact act, never a shared declaration, digest or delta alone."""
-    p = event.payload
-    family = event.family
-    expected_at = row.prepared_at if isinstance(row, m.ReleaseCandidate) else at
-    if event.occurred_at != expected_at or (p.get("refusal_code") and family != EventFamily.PREPARATION_ATTEMPT):
+def same_act(event: AnalyticsEvent, receipt: dict[str, Any], row, at: datetime) -> bool:
+    """Whether this logged event and this database receipt describe the same act.
+
+    Each family declares its own corroboration in ``_SAME_ACT``; a family
+    without one is never corroborated. Corroboration names one exact act,
+    never a shared declaration, digest or delta alone. The event is read
+    through its declared keys, so a row logged under a legacy spelling still
+    corroborates.
+    """
+    corroborates = _SAME_ACT.get(event.family)
+    if corroborates is None:
         return False
-    status = p.get("outcome", p.get("status", event.metric_labels.get("status")))
-    if family == EventFamily.PREPARATION_REQUEST:
-        return (p.get("request_id") == row.id and status == "requested"
-                and p.get("principal_subject") == row.requested_by_principal)
-    if family == EventFamily.COVERAGE_CONFIRMATION:
-        return (p.get("coverage_declaration_id") == row.id
-                and p.get("unchanged_declaration_reused") is False
-                and p.get("principal_subject") == row.confirmed_by_principal)
-    if family == EventFamily.PREPARATION_ATTEMPT:
-        if isinstance(row, m.ReleasePreparationReading):
-            return (p.get("request_id") == row.request_id and status == "started"
-                    and p.get("started_at") == row.bound_at.isoformat())
-        return (p.get("attempt_id") == row.id and p.get("request_id") == row.request_id
-                and status == row.outcome and p.get("started_at") == row.started_at.isoformat())
-    if family == EventFamily.PACKET_SAVE:
-        return p.get("receipt_id") == row.id and status == "saved"
-    if family == EventFamily.CHILD_DECISION:
-        actions = {"accept": "apply", "edit": "edit_and_apply", "reject": "keep_current"}
-        action = actions.get(p.get("action"), p.get("action"))
-        expected_action = actions.get(payload["action"], payload["action"])
-        outcomes = {"deferred"} if expected_action == "defer" else {"saved", "resolved"}
-        return (p.get("delta_id") == payload["delta_id"] and action == expected_action
-                and status in outcomes)
-    if family == EventFamily.DELTA_SUPERSESSION:
-        return (p.get("prior_delta_id") == row.prior_delta_id
-                and p.get("superseding_delta_id") == row.superseding_delta_id
-                and p.get("source_reading_id") == row.source_reading_id
-                and p.get("minutes_capture_id") == row.minutes_capture_id)
-    if family == EventFamily.PROPOSED_DELTA_CREATION:
-        return status in {None, "created"} and (p.get("delta_id") == row.id or row.id in p.get("delta_ids", []))
-    if family == EventFamily.FOLLOW_UP_PLAN_CREATION:
-        return p.get("follow_up_plan_id") == row.id and p.get("delta_id") == row.delta_id
-    if family == EventFamily.RELEASE_CANDIDATE_PREPARATION:
-        return p.get("candidate_identity") == row.candidate_identity and status == row.readiness
-    if family == EventFamily.RELEASE_AUTHORIZATION:
-        return (p.get("package_identity") == row.package_identity and status == "authorized"
-                and p.get("principal_subject") == row.authorized_by_principal)
-    if family == EventFamily.SOURCE_ARRIVAL:
-        return (status == "recorded" and p.get("disposition") == row.disposition
-                and (p.get("source_identity") == f"delivery:{row.id}" or p.get("source_delivery_id") == row.id))
-    if family == EventFamily.SOURCE_CAPTURE:
-        return status in {"captured", "unavailable"} and p.get("document_id") == row.id
-    return False
+    p = declared_payload(event)
+    expected_at = row.prepared_at if isinstance(row, m.ReleaseCandidate) else at
+    if event.occurred_at != expected_at or (p.get("refusal_code") and event.family != EventFamily.PREPARATION_ATTEMPT):
+        return False
+    return corroborates(p, act_outcome(event), receipt, row)
+
+
+def _same_preparation_request(p, outcome, receipt, row) -> bool:
+    return (p.get("request_id") == row.id and outcome == "requested"
+            and p.get("principal_subject") == row.requested_by_principal)
+
+
+def _same_coverage_confirmation(p, outcome, receipt, row) -> bool:
+    return (p.get("coverage_declaration_id") == row.id
+            and p.get("unchanged_declaration_reused") is False
+            and p.get("principal_subject") == row.confirmed_by_principal)
+
+
+def _same_preparation_attempt(p, outcome, receipt, row) -> bool:
+    if isinstance(row, m.ReleasePreparationReading):
+        return (p.get("request_id") == row.request_id and outcome == "started"
+                and p.get("started_at") == row.bound_at.isoformat())
+    return (p.get("attempt_id") == row.id and p.get("request_id") == row.request_id
+            and outcome == row.outcome and p.get("started_at") == row.started_at.isoformat())
+
+
+def _same_packet_save(p, outcome, receipt, row) -> bool:
+    return p.get("receipt_id") == row.id and outcome == "saved"
+
+
+def _same_child_decision(p, outcome, receipt, row) -> bool:
+    # The receipt speaks the record's disposition vocabulary; the event may
+    # have been logged in the screen's, which child_decision_action translates.
+    expected_action = receipt["action"]
+    outcomes = {"deferred"} if expected_action == "defer" else {"saved", "resolved"}
+    return (p.get("delta_id") == receipt["delta_id"]
+            and child_decision_action(p.get("action")) == expected_action
+            and outcome in outcomes)
+
+
+def _same_delta_supersession(p, outcome, receipt, row) -> bool:
+    return (p.get("prior_delta_id") == row.prior_delta_id
+            and p.get("superseding_delta_id") == row.superseding_delta_id
+            and p.get("source_reading_id") == row.source_reading_id
+            and p.get("minutes_capture_id") == row.minutes_capture_id)
+
+
+def _same_proposed_delta_creation(p, outcome, receipt, row) -> bool:
+    return outcome in {None, "created"} and (p.get("delta_id") == row.id or row.id in p.get("delta_ids", []))
+
+
+def _same_follow_up_plan_creation(p, outcome, receipt, row) -> bool:
+    return p.get("follow_up_plan_id") == row.id and p.get("delta_id") == row.delta_id
+
+
+def _same_release_candidate_preparation(p, outcome, receipt, row) -> bool:
+    return p.get("candidate_identity") == row.candidate_identity and outcome == row.readiness
+
+
+def _same_release_authorization(p, outcome, receipt, row) -> bool:
+    return (p.get("package_identity") == row.package_identity and outcome == "authorized"
+            and p.get("principal_subject") == row.authorized_by_principal)
+
+
+def _same_source_arrival(p, outcome, receipt, row) -> bool:
+    return (outcome == "recorded" and p.get("disposition") == row.disposition
+            and (p.get("source_identity") == f"delivery:{row.id}" or p.get("source_delivery_id") == row.id))
+
+
+def _same_source_capture(p, outcome, receipt, row) -> bool:
+    return outcome in {"captured", "unavailable"} and p.get("document_id") == row.id
+
+
+_SAME_ACT: dict[EventFamily, Callable[[dict[str, Any], str | None, dict[str, Any], Any], bool]] = {
+    EventFamily.PREPARATION_REQUEST: _same_preparation_request,
+    EventFamily.COVERAGE_CONFIRMATION: _same_coverage_confirmation,
+    EventFamily.PREPARATION_ATTEMPT: _same_preparation_attempt,
+    EventFamily.PACKET_SAVE: _same_packet_save,
+    EventFamily.CHILD_DECISION: _same_child_decision,
+    EventFamily.DELTA_SUPERSESSION: _same_delta_supersession,
+    EventFamily.PROPOSED_DELTA_CREATION: _same_proposed_delta_creation,
+    EventFamily.FOLLOW_UP_PLAN_CREATION: _same_follow_up_plan_creation,
+    EventFamily.RELEASE_CANDIDATE_PREPARATION: _same_release_candidate_preparation,
+    EventFamily.RELEASE_AUTHORIZATION: _same_release_authorization,
+    EventFamily.SOURCE_ARRIVAL: _same_source_arrival,
+    EventFamily.SOURCE_CAPTURE: _same_source_capture,
+}

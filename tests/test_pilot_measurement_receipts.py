@@ -426,3 +426,189 @@ def test_competing_worker_replay_cannot_claim_the_winning_delta_binding(session,
         assert receipt.binding.code_revision == "winning-code"
     finally:
         worker.dispose()
+
+
+# --- "This logged event and this database receipt describe the same act" ----
+#
+# Each family declares how its logged event corroborates its receipt. These
+# cases need no database: the events come from the family constructors and the
+# rows are model instances built in memory.
+
+from datetime import datetime, timezone
+
+from corridor import models as m
+from corridor.analytics import (
+    AnalyticsEvent, child_decision_event, coverage_confirmation_event, default_binding,
+    delta_supersession_event, follow_up_plan_creation_event, packet_save_event, packet_surfacing_event,
+    preparation_attempt_finished_event, preparation_attempt_started_event, preparation_request_event,
+    proposed_delta_creation_event, release_authorization_event, release_candidate_preparation_event,
+    source_arrival_event, source_capture_event,
+)
+from corridor.pilot_measurement_receipts import same_act
+
+AT = datetime(2026, 9, 10, 12, 30, tzinfo=timezone.utc)
+LATER = datetime(2026, 9, 10, 12, 31, tzinfo=timezone.utc)
+FIXTURE_BINDING = default_binding(code_revision="git:fixture")
+
+
+def decision_event(**changes):
+    fields = dict(occurred_at=AT, project_id=7, delta_id=31, action="apply", effect_kind="field_change",
+                  outcome="saved", refusal_reason=None, revision_id=12, packet_owned=True,
+                  support_assessment_count=0)
+    fields.update(changes)
+    return child_decision_event(FIXTURE_BINDING, **fields)
+
+
+def test_child_decision_corroborates_its_disposition_in_either_action_vocabulary():
+    row = m.DeltaDisposition(id=1, delta_id=31, disposition="apply")
+    receipt = {"delta_id": 31, "action": "apply", "outcome": "resolved"}
+    assert same_act(decision_event(), receipt, row, AT)
+    assert same_act(decision_event(outcome="resolved"), receipt, row, AT)
+    assert not same_act(decision_event(outcome="refused"), receipt, row, AT)
+    assert not same_act(decision_event(delta_id=32), receipt, row, AT)
+    assert not same_act(decision_event(action="keep_current"), receipt, row, AT)
+    assert not same_act(decision_event(), receipt, row, LATER)
+    # A row logged before the record's vocabulary was declared spelled the act
+    # "accept" and its outcome "status"; the named translation still reads it.
+    historical = AnalyticsEvent(family="child_decision", binding=FIXTURE_BINDING, occurred_at=AT,
+                                payload={"project_id": 7, "delta_id": 31, "action": "accept", "status": "saved"})
+    assert same_act(historical, receipt, row, AT)
+    assert not same_act(historical, {**receipt, "action": "keep_current"}, row, AT)
+
+
+def test_child_decision_defer_requires_the_deferred_outcome():
+    row = m.DeltaDeferral(id=2, delta_id=31)
+    receipt = {"delta_id": 31, "action": "defer", "outcome": "deferred"}
+    assert same_act(decision_event(action="defer", outcome="deferred"), receipt, row, AT)
+    assert not same_act(decision_event(action="defer", outcome="saved"), receipt, row, AT)
+
+
+def test_packet_save_corroborates_only_a_saved_receipt():
+    row = m.DeltaReviewPacketReceipt(id=4)
+    receipt = {"outcome": "saved"}
+    saved = packet_save_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, receipt_id=4, revision_id=12,
+                              grouping_rule_version="v2", grouping_key_kind="source_revision", grouping_key="k",
+                              observed_accepted_revision_id=11, child_count=1, outcome_counts={},
+                              outcome="saved", refusal_reason=None)
+    assert same_act(saved, receipt, row, AT)
+    refused = packet_save_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, receipt_id=None, revision_id=None,
+                                grouping_rule_version="v2", grouping_key_kind="source_revision", grouping_key="k",
+                                observed_accepted_revision_id=10, child_count=1, outcome_counts={},
+                                outcome="refused", refusal_reason="stale_revision")
+    assert not same_act(refused, receipt, row, AT)
+    assert not same_act(saved, receipt, m.DeltaReviewPacketReceipt(id=5), AT)
+
+
+def test_release_families_read_the_outcome_from_their_status_label():
+    candidate = m.ReleaseCandidate(id=5, candidate_identity="candidate:1", readiness="ready", prepared_at=AT)
+    prepared = release_candidate_preparation_event(
+        FIXTURE_BINDING, occurred_at=AT, surface="worker", outcome="ready", principal_subject="p", project_id=7,
+        source_cutoff=AT.isoformat(), accepted_revision_id=11, previous_package_id=None, issue_profile_id=3,
+        issue_profile_version=1, coverage_identity="c", configured_artifact_types=["updated_ucm"],
+        candidate_identity="candidate:1", content_sha256="b" * 64, readiness="ready", blocker_count=0,
+        exception_count=0, refusal_code=None,
+    )
+    # The candidate's own instant is prepared_at, whatever instant the reader passes.
+    assert same_act(prepared, {}, candidate, LATER)
+    assert not same_act(replace(prepared, occurred_at=LATER), {}, candidate, LATER)
+    assert not same_act(replace(prepared, metric_labels={"surface": "worker", "status": "blocked"}), {}, candidate, AT)
+    refused = replace(prepared, payload={**prepared.payload, "refusal_code": "no_coverage"})
+    assert not same_act(refused, {}, candidate, AT)
+
+    package = m.ReleasePackage(id=6, package_identity="package:1", authorized_by_principal="p")
+    authorized = release_authorization_event(
+        FIXTURE_BINDING, occurred_at=AT, surface="issue_screen", status="authorized", principal_subject="p",
+        project_id=7, candidate_id=5, candidate_identity="candidate:1", accepted_revision_id=11,
+        issue_profile_version=1, source_cutoff=AT.isoformat(), package_identity="package:1", issue_number=1,
+        refusal_code=None,
+    )
+    assert same_act(authorized, {}, package, AT)
+    assert not same_act(replace(authorized, metric_labels={"surface": "issue_screen", "status": "replayed"}),
+                        {}, package, AT)
+    assert not same_act(authorized, {}, m.ReleasePackage(id=7, package_identity="package:1",
+                                                          authorized_by_principal="someone-else"), AT)
+
+
+def test_preparation_families_corroborate_request_confirmation_and_both_attempt_shapes():
+    profile = {"issue_profile_identity": "i", "issue_profile_version": 1, "issue_profile_sha256": "a" * 64}
+    request_row = m.ReleasePreparationRequest(id=6, requested_by_principal="p")
+    requested = preparation_request_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, receipt_id=6,
+                                          principal_subject="p", request_id=6, coverage_declaration_id=8,
+                                          outcome="requested", **profile)
+    assert same_act(requested, {}, request_row, AT)
+    assert not same_act(replace(requested, payload={**requested.payload, "outcome": "replayed"}), {}, request_row, AT)
+
+    declaration = m.IssueCoverageDeclaration(id=8, confirmed_by_principal="p")
+    confirmed = coverage_confirmation_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, receipt_id=8,
+                                            principal_subject="p", coverage_declaration_id=8, reading_sha256="c" * 64,
+                                            annotation_count=2, unchanged_declaration_reused=False, **profile)
+    assert same_act(confirmed, {}, declaration, AT)
+    reused = replace(confirmed, payload={**confirmed.payload, "unchanged_declaration_reused": True})
+    assert not same_act(reused, {}, declaration, AT)
+
+    reading = m.ReleasePreparationReading(id=1, request_id=6, bound_at=AT)
+    started = preparation_attempt_started_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, request_id=6,
+                                                coverage_declaration_id=8, principal_subject="p",
+                                                started_at=AT.isoformat(), **profile)
+    assert same_act(started, {}, reading, AT)
+    attempt = m.ReleasePreparationAttempt(id=2, request_id=6, outcome="failed", started_at=AT)
+    finished = preparation_attempt_finished_event(FIXTURE_BINDING, occurred_at=LATER, project_id=7, request_id=6,
+                                                  attempt_id=2, outcome="failed", candidate_id=None,
+                                                  refusal_code="renderer_failed", started_at=AT.isoformat(),
+                                                  coverage_declaration_id=8, principal_subject="p", **profile)
+    # A refusal code disqualifies every family except the attempt that recorded it.
+    assert same_act(finished, {}, attempt, LATER)
+    assert not same_act(started, {}, attempt, AT)
+    assert not same_act(replace(finished, payload={**finished.payload, "outcome": "prepared"}), {}, attempt, LATER)
+
+
+def test_delta_and_source_families_corroborate_their_rows():
+    created = proposed_delta_creation_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, source_family="matrix",
+                                            source_revision="r", document_id=5, delta_id=31, outcome="created",
+                                            complete_enumerative_source=True, row_accounting_sealed=False)
+    assert same_act(created, {}, m.ProposedDelta(id=31), AT)
+    assert not same_act(created, {}, m.ProposedDelta(id=32), AT)
+    assert not same_act(replace(created, payload={**created.payload, "outcome": "replayed"}), {}, m.ProposedDelta(id=31), AT)
+
+    plan = follow_up_plan_creation_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, delta_id=31,
+                                         follow_up_plan_id=9, revision_id=12, grouping_rule_version="v2",
+                                         has_return_date=False, responsible_kind="organization", evidence_count=0)
+    assert same_act(plan, {}, m.DeltaFollowUpPlan(id=9, delta_id=31), AT)
+    assert not same_act(plan, {}, m.DeltaFollowUpPlan(id=9, delta_id=30), AT)
+
+    supersession = delta_supersession_event(FIXTURE_BINDING, occurred_at=AT, project_id=7, prior_delta_id=31,
+                                            superseding_delta_id=32, source_reading_id=5, source_revision="r",
+                                            comparison_rule_version="email-v3")
+    row = m.DeltaSupersession(id=1, prior_delta_id=31, superseding_delta_id=32, source_reading_id=5,
+                              minutes_capture_id=None)
+    assert same_act(supersession, {}, row, AT)
+    assert not same_act(supersession, {}, replace_attr(row, superseding_delta_id=33), AT)
+
+    arrival = source_arrival_event(FIXTURE_BINDING, filename="in.xlsx", content_sha256="d" * 64, byte_count=1,
+                                   source_delivery_id=3, occurred_at=AT, outcome="recorded", disposition="stored")
+    assert same_act(arrival, {}, m.SourceDelivery(id=3, disposition="stored"), AT)
+    assert not same_act(arrival, {}, m.SourceDelivery(id=3, disposition="terminally_refused"), AT)
+    staged = replace(arrival, payload={**arrival.payload, "outcome": "staged"})
+    assert not same_act(staged, {}, m.SourceDelivery(id=3, disposition="stored"), AT)
+
+    capture = source_capture_event(FIXTURE_BINDING, storage_key="k", content_sha256="d" * 64, byte_count=1,
+                                   document_id=5, occurred_at=AT, outcome="captured")
+    assert same_act(capture, {}, m.Document(id=5), AT)
+    assert same_act(replace(capture, payload={**capture.payload, "outcome": "unavailable"}), {}, m.Document(id=5), AT)
+    assert not same_act(replace(capture, payload={**capture.payload, "outcome": "replayed"}), {}, m.Document(id=5), AT)
+
+    shown = packet_surfacing_event(FIXTURE_BINDING, occurred_at=AT, principal_subject="p", **{
+        key: None for key in (
+            "project_id", "item_key", "grouping_key_kind", "grouping_key", "grouping_rule_version", "band",
+            "attention_reasons", "held_out_reason", "child_count", "ready_count", "held_out_count",
+            "unchanged_count", "customer_artifacts", "artifact_rule_version", "observed_accepted_revision_id",
+            "cutoff", "issue_profile_id", "issue_profile_identity", "issue_profile_version",
+            "issue_profile_sha256", "issue_profile_problems", "consequence_rule_version", "consequence_level",
+            "child_consequences")}, )
+    assert not same_act(shown, {}, m.ProposedDelta(id=31), AT)
+
+
+def replace_attr(row, **changes):
+    for name, value in changes.items():
+        setattr(row, name, value)
+    return row
