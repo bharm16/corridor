@@ -909,3 +909,79 @@ def test_the_prose_batch_gives_the_same_two_availability_answers(
         replay_native_segments(document, segments, path)
     assert not isinstance(raised.value, SourceSegmentIntegrityError)
     assert isinstance(raised.value, FreshReadingUnavailable)
+
+
+def _without(key):
+    """A reader result missing one top-level key of the child-process payload."""
+
+    def mutate(result):
+        return {name: value for name, value in result.items() if name != key}
+
+    return mutate
+
+
+def _page_without(key):
+    """A reader result whose first page is missing one key the projection reads."""
+
+    def mutate(result):
+        pages = [dict(page) for page in result["pages"]]
+        pages[0].pop(key)
+        return {**result, "pages": pages}
+
+    return mutate
+
+
+@pytest.mark.parametrize(
+    "mutate",
+    [
+        pytest.param(_without("pages"), id="pages"),
+        pytest.param(_without("version"), id="version"),
+        pytest.param(_without("native_version"), id="native_version"),
+        pytest.param(_page_without("tables"), id="page-tables"),
+    ],
+)
+def test_an_incomplete_reader_result_refuses_as_availability_not_integrity(
+    session, project, tmp_path, monkeypatch, mutate
+):
+    """A reader result this build cannot read is availability, not integrity.
+
+    ``read_native_pdf`` sat inside the ``try`` whose ``except (KeyError,
+    TypeError)`` said "native segment reader identity is incomplete", so a key
+    the child-process payload did not carry was reported as the integrity
+    verdict *Not found at cited location* — an assertion that a reader went to
+    the cited location and the passage was not there, when no page was opened
+    at all. Only the identity extraction from the stored configuration belongs
+    in that ``try``; a result the projection cannot read is a reading this
+    build cannot obtain.
+    """
+
+    from corridor_pdf_reader.execution import PdfiumExecutor
+
+    path = native_pdf(tmp_path)
+    document = registered(session, project, path)
+    stored = append_native_segments(session, document, reading(path))
+    segment = next(row for row in stored if row.kind == "pdf_cell")
+    spans = [row for row in stored if row.kind == "pdf_span"]
+    assert spans
+
+    class IncompleteResult:
+        def read_document(self, source, **kwargs):
+            return mutate(PdfiumExecutor().read_document(source, **kwargs))
+
+    monkeypatch.setattr("corridor.token_layers.PdfiumExecutor", IncompleteResult)
+
+    with pytest.raises(NativeReaderUnavailable) as scalar:
+        dereference_source_segment(document, segment, path)
+    assert not isinstance(scalar.value, SourceSegmentIntegrityError)
+    assert (
+        source_segment_locator_validation_status(document, segment, path)
+        == NOT_RE_READABLE
+    )
+
+    # The batch shape owes the same answer: it read the reading inside the
+    # identity ``try`` too.
+    from corridor.reader_segments import replay_native_segments
+
+    with pytest.raises(NativeReaderUnavailable) as batch:
+        replay_native_segments(document, spans, path)
+    assert not isinstance(batch.value, SourceSegmentIntegrityError)

@@ -460,7 +460,7 @@ def implementation_identity() -> dict[str, str]:
         "native_matrix_measurement.py", "native_matrix.py", "native_matrix_bindings.py",
         "facts.py", "materializer.py", "fact_types.py", "source_append.py",
         "extractor_lineage.py", "extraction_runs.py", "row_accounting.py",
-        "reader_segments.py", "token_layers.py",
+        "reader_segments.py", "native_segment_projection.py", "token_layers.py",
     )
     # The schema is a package of family modules since card 21; every one of them
     # is read, so a family added later cannot drop out of the recorded identity.

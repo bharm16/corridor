@@ -1004,3 +1004,32 @@ def test_a_legacy_row_and_an_accepted_record_read_as_the_same_shape(
         assert available(getattr(legacy, name))
         marker = getattr(accepted, name)
         assert isinstance(marker, NotAvailable) and str(marker) != ""
+
+
+def test_the_constraint_log_reads_an_adopted_project_through_the_reading(
+    client, session, tmp_path, monkeypatch
+):
+    """The log screen reads the reading, and declares what it cannot supply.
+
+    Every coordination cell read a legacy ``dependencies`` column off the
+    subject ``browse`` resolved. For an adopted project that subject is an
+    ``AcceptedConstraint``, which has no such column, so Jinja degraded the
+    attribute to ``Undefined`` and the cell printed an em dash — "nobody is
+    assigned to this constraint" for a population that establishes no
+    assignment at all. That is exactly the invented absence
+    ``constraint_reading`` exists to stop, and it was invisible because nothing
+    raised.
+    """
+    project, _ = _adopted(session, tmp_path, monkeypatch)
+    seed_membership(session, project, TEST_PRINCIPAL)
+
+    page = client.get(f"/ledger/{project.slug}")
+
+    assert page.status_code == 200
+    body = page.text
+    # The values the accepted record does supply, read off the reading.
+    assert "UC-1" in body and "UC-2" in body
+    assert "100+00" in body and "101+00" in body
+    # The three coordination facts it does not, declared in the words the
+    # reading carries rather than shown as an emptiness.
+    assert "carries no internal owner, next action or action due date" in body

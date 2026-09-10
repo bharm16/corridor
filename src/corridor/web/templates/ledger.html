@@ -88,12 +88,12 @@
     <tbody>
       {% for r in rows %}
         <tr>
-          <td><a href="/ledger/{{ project.slug }}/{{ r.dependency.id }}">{{ r.dependency.ref_code }}</a></td>
-          <td class="num">{{ r.dependency.source_ref or '—' }}</td>
+          <td><a href="/ledger/{{ project.slug }}/{{ r.reading.id }}">{{ r.reading.ref_code }}</a></td>
+          <td class="num">{{ r.reading.source_ref or '—' }}</td>
           <td>{{ r.org_name or '—' }}
             {%- if r.contradicted %} {{ ui.state(sources_disagree) }}{% endif %}</td>
-          <td class="num">{{ r.dependency.station_from or '—' }}{% if r.dependency.station_to %} → {{ r.dependency.station_to }}{% endif %}</td>
-          <td>{{ resolution_strategy_label(r.dependency.resolution_strategy) if r.dependency.resolution_strategy else '—' }}</td>
+          <td class="num">{{ r.reading.station_from or '—' }}{% if r.reading.station_to %} → {{ r.reading.station_to }}{% endif %}</td>
+          <td>{{ resolution_strategy_label(r.reading.resolution_strategy) if r.reading.resolution_strategy else '—' }}</td>
           <td>
             {{ ui.state(documentation_review_state(r.is_ready)) }}
             {% for c in r.open_conditions %}
@@ -105,20 +105,34 @@
              promised — the three things a coordinator opens a row to find
              out. No invented urgency ranking: the filing order stays the
              engine's, and urgency is a filter (ADR-0010). #}
-          <td>{{ r.dependency.internal_owner or '—' }}</td>
+          {# Read the Constraint reading, never the population's own subject.
+             An adopted project's subject carries no coordination column at all,
+             so reading one off it degraded to Jinja's Undefined and printed an
+             em dash — "nobody is assigned to this" for a population that
+             establishes no assignment. Where the reading declares the fact
+             unavailable the cell prints its stated reason instead. #}
           <td>
-            {%- if r.dependency.next_action -%}
-              {{ r.dependency.next_action }}
-              {%- if r.dependency.action_due_date %}
-                <span class="due">by {{ r.dependency.action_due_date }}</span>
-                {{ ui.state(next_action_overdue(r.dependency.action_due_date, today=today)) }}
+            {%- if available(r.reading.internal_owner) -%}
+              {{ r.reading.internal_owner or '—' }}
+            {%- else -%}
+              <span class="muted">{{ r.reading.internal_owner }}</span>
+            {%- endif -%}
+          </td>
+          <td>
+            {%- if not available(r.reading.next_action) -%}
+              <span class="muted">{{ r.reading.next_action }}</span>
+            {%- elif r.reading.next_action -%}
+              {{ r.reading.next_action }}
+              {%- if available(r.reading.action_due_date) and r.reading.action_due_date %}
+                <span class="due">by {{ r.reading.action_due_date }}</span>
+                {{ ui.state(next_action_overdue(r.reading.action_due_date, today=today)) }}
               {%- endif -%}
             {%- else -%}—{%- endif -%}
           </td>
           <td class="num">
             {%- if r.committed_date -%}
               {{ r.committed_date }}
-              {{ ui.state(promised_after_required(r.committed_date, r.dependency.need_date)) }}
+              {{ ui.state(promised_after_required(r.committed_date, r.reading.need_date)) }}
               {%- if r.committed_event and r.committed_event.source_kind == 'verbal' %}
                 {{ ui.state(state_label('neutral', provenance_label('verbal') ~ ' · ' ~ r.committed_event.created_by ~ ' ' ~ r.committed_event.event_date)) }}
               {%- endif -%}

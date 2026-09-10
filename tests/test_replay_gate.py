@@ -374,3 +374,38 @@ def test_the_ledger_refuses_each_familys_other_shape(session, project):
                 )
             )
             session.flush()
+
+
+def test_an_event_admission_reason_is_bounded_by_the_column_it_returns_to(
+    session, project
+):
+    """The one family whose predecessor column is narrower than this relation.
+
+    ``policy_activations.reason`` is 160 characters because three families'
+    predecessors were. ``event_admission_activations.reason`` is 128, and the
+    fold's downgrade restores that column, so a longer Event Admission reason
+    could only come back truncated. The relation refuses one — the check
+    constraint is the authority — and this seam says so in words rather than
+    letting an operator's suspension reason reach the database and fail there.
+    """
+
+    long_enough_for_the_others = "s" * 160
+    entry = record_suspension(
+        session,
+        family=FAMILY_SCHEDULE_LINK,
+        project_id=project.id,
+        fingerprint=FINGERPRINT,
+        reason=long_enough_for_the_others,
+        recorded_by="local:operator",
+    )
+    assert entry.reason == long_enough_for_the_others
+
+    with pytest.raises(ReplayGateRefusal, match="128"):
+        record_suspension(
+            session,
+            family=FAMILY_EVENT_ADMISSION,
+            project_id=project.id,
+            fingerprint=RuleFingerprint("unknown-scope-v1"),
+            reason="e" * 129,
+            recorded_by="local:operator",
+        )

@@ -31,7 +31,12 @@ outside the database (the SH99 shared-admission seal names activation 140), so
 its rows keep their ids exactly and the other three families are re-keyed above
 them in ``created_at`` order. The downgrade reverses that: Event Admission rows
 return under their own ids, the rest are re-keyed into their own sequences in
-ledger order, so a round trip loses no row and no attribution.
+ledger order, so a round trip loses no row and no attribution. The one place
+that could still edit an attribution is closed in the schema: this relation's
+``reason`` is 160 characters because three of the four predecessors were, and the
+Event Admission predecessor holds 128, so ``ck_policy_activation_event_admission_
+reason`` refuses a reason in that family that its restored column could not
+hold.
 
 **Grants.** A table created here arrives with the schema owner's default
 privileges, which hand every runtime login full access. The four relations this
@@ -105,6 +110,14 @@ create table public.policy_activations (
     -- A suspension proves nothing, so it never carries a case count.
     constraint ck_policy_activation_case_count check (
         action <> 'suspend' or replay_case_count is null
+    ),
+    -- This column is 160 because three families' predecessors were. The Event
+    -- Admission predecessor is `character varying(128)`, and the downgrade
+    -- below restores it at that width, so a longer reason in that family could
+    -- only come back with its tail cut off. The relation refuses one instead:
+    -- the schema keeps the round trip lossless, rather than trusting callers.
+    constraint ck_policy_activation_event_admission_reason check (
+        family <> 'event_admission' or length(reason) <= 128
     )
 );
 
@@ -382,8 +395,11 @@ def _carry_rows_back(op) -> None:
         "insert into public.event_admission_activations ("
         " id, project_id, acceptance_receipt_id, action, policy_version,"
         " reason, recorded_by, created_at) "
+        # Copied, never truncated: `ck_policy_activation_event_admission_reason`
+        # refuses a reason this column cannot hold, so `left(reason, 128)` here
+        # could only ever have edited a human attribution on the way back.
         "select id, project_id, acceptance_receipt_id, action,"
-        " policy_version, left(reason, 128), recorded_by, created_at "
+        " policy_version, reason, recorded_by, created_at "
         "from public.policy_activations where family = 'event_admission' "
         "order by id"
     )

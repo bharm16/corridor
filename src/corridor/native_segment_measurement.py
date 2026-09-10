@@ -70,6 +70,7 @@ def configuration_identity() -> dict[str, Any]:
         for name in (
             "src/corridor/native_segment_measurement.py",
             "src/corridor/reader_segments.py",
+            "src/corridor/native_segment_projection.py",
             "src/corridor/token_layers.py",
             "src/corridor/prose_spans.py",
             "src/corridor/source_append.py",

@@ -15,6 +15,7 @@ from corridor.render_profiles import render_page_derivative
 from corridor.token_layers import (
     EngineIdentity,
     NATIVE_INTEGRATION_VERSION,
+    NATIVE_PROJECTION_MODULES,
     READER_ENGINE,
     READER_NATIVE_ADAPTER_VERSION,
     Token,
@@ -280,9 +281,16 @@ def test_the_native_assembly_digest_is_declared_and_not_hashed_source_text(
         "native_integration_version": NATIVE_INTEGRATION_VERSION,
         "native_modules": {
             name: hashlib.sha256((root / name).read_bytes()).hexdigest()
-            for name in ("reader_segments.py", "prose_spans.py")
+            for name in NATIVE_PROJECTION_MODULES
         },
     }
+    # The exact declared input set, named here so a new dependency of the
+    # projection cannot join it unhashed and an unrelated module cannot join it
+    # at all.
+    assert NATIVE_PROJECTION_MODULES == (
+        "native_segment_projection.py",
+        "prose_spans.py",
+    )
     canonical = json.dumps(
         expected_inputs, sort_keys=True, separators=(",", ":"), ensure_ascii=False
     )
@@ -320,4 +328,38 @@ def test_the_native_assembly_digest_follows_the_projection_modules(monkeypatch):
     # Only the two projection files are read. This module's own bytes stay out:
     # it also carries the OCR layers, the Textract reading and retention, and a
     # change to any of those must not invalidate a native locator.
-    assert sorted(read) == ["prose_spans.py", "reader_segments.py"]
+    assert sorted(read) == ["native_segment_projection.py", "prose_spans.py"]
+
+
+def test_editing_the_replay_module_does_not_retire_a_retained_citation(monkeypatch):
+    """A refusal message or docstring in ``reader_segments`` is not the projection.
+
+    The digest hashed the whole of ``reader_segments.py``, which also holds
+    ``replay_native_segment``, ``replay_native_segments`` and
+    ``append_native_segments`` with their long docstrings. Correcting one of
+    those words changed ``integration_sha256``, and every retained
+    ``pdf_span``/``pdf_cell`` then reported *Cited location cannot be re-read* --
+    exactly the regression ``native_integration_digest`` was written to remove,
+    reintroduced one file up. What a retained reading must reproduce is the
+    projection, so the projection is its own module and the replay and append
+    seams that read it are not hashed.
+    """
+
+    root = Path(page_text_projection.__code__.co_filename).parent
+    before = native_integration_digest()
+    edited = (
+        (root / "reader_segments.py")
+        .read_bytes()
+        .replace(b"Append one explicit reading", b"Append one stated reading")
+    )
+    assert b"Append one stated reading" in edited
+    original = Path.read_bytes
+    read = []
+
+    def watched(self):
+        read.append(self.name)
+        return edited if self.name == "reader_segments.py" else original(self)
+
+    monkeypatch.setattr(Path, "read_bytes", watched)
+    assert native_integration_digest() == before
+    assert "reader_segments.py" not in read

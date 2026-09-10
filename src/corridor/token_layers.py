@@ -71,7 +71,11 @@ from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
 from corridor_pdf_reader.execution import MEASURED_DPI, MEASURED_ENGINE, PdfiumExecutor
 from corridor_pdf_reader.provenance import SOURCE_COMMIT, PACKAGE_ROOT
-from corridor.source_segment_errors import SourceDocumentDigestMismatch, SourceSegmentLocatorMismatch
+from corridor.source_segment_errors import (
+    NativeReaderUnavailable,
+    SourceDocumentDigestMismatch,
+    SourceSegmentLocatorMismatch,
+)
 
 
 # The replacement OCR adapter (ADR-0094, #739). The engine name is the
@@ -92,6 +96,16 @@ PDF_SEGMENT_SCHEME = "corridor.pdf-segments.v1"
 # the same change as any behaviour change to ``page_text_projection``,
 # ``_reader_word_lines`` or ``_line_words``. See ``native_integration_digest``.
 NATIVE_INTEGRATION_VERSION = "native-integration-v1"
+# The exact files whose bytes are the other half of that assembly: the modules
+# that own the segment and prose projections a retained reading must reproduce.
+# Nothing else may join this tuple, and a new dependency of the projection has
+# to (``tests/test_token_layers.py`` pins the set). It deliberately excludes the
+# replay and append seams that *read* the projection, because an edit to one of
+# those changes nothing a retained citation depends on.
+NATIVE_PROJECTION_MODULES: tuple[str, ...] = (
+    "native_segment_projection.py",
+    "prose_spans.py",
+)
 _NATIVE_READING_SEAL_KEY = secrets.token_bytes(32)
 
 
@@ -270,7 +284,19 @@ def read_native_pdf(
     engine: str = MEASURED_ENGINE,
     dpi: int = MEASURED_DPI,
 ) -> NativePdfReading:
-    """Execute the native reader explicitly, including previously ingested bytes."""
+    """Execute the native reader explicitly, including previously ingested bytes.
+
+    **A result this build cannot read is an availability refusal.** The keys
+    below belong to the child process's payload, and a payload that does not
+    carry them means no page was read here at all. Every caller of this
+    function used to let that ``KeyError`` escape into its own ``except
+    (KeyError, TypeError)`` around the *stored* reader identity, so an
+    unreadable result was reported as ``SourceSegmentLocatorMismatch`` — the
+    integrity verdict *Not found at cited location*, which asserts that a
+    reader went to a cited location and the passage was not there. The refusal
+    belongs here rather than in each caller, because only this function knows
+    which fields are the reader result contract and which are the locator's.
+    """
 
     original = Path(path)
     if sha256(original.read_bytes()).hexdigest() != source_sha256:
@@ -278,10 +304,23 @@ def read_native_pdf(
     if engine not in {"tagged", "pdfium"} or not isinstance(dpi, int) or not 1 <= dpi <= 300:
         raise SourceSegmentLocatorMismatch("unsupported native reader configuration")
     result = (executor or PdfiumExecutor()).read_document(original, engine=engine, dpi=dpi)
-    if (result["source_sha256"] != source_sha256
+    try:
+        read_sha256 = result["source_sha256"]
+        engine_identity = reader_native_engine_identity(result)
+        # Timing, wall-clock and diagnostic raster artifacts are not reading
+        # identity. The actual characters, clipping and reconstructed cells are.
+        pages = [
+            {key: page[key] for key in ("number", "geometry", "text", "characters", "tables", "clipped")}
+            for page in result["pages"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise NativeReaderUnavailable(
+            PDF_SEGMENT_SCHEME, "a complete result from the recorded native reader"
+        ) from exc
+    if (read_sha256 != source_sha256
             or sha256(original.read_bytes()).hexdigest() != source_sha256):
         raise SourceDocumentDigestMismatch("source bytes changed during the native reading")
-    identity = reader_native_engine_identity(result).model_copy(update={"dpi": dpi})
+    identity = engine_identity.model_copy(update={"dpi": dpi})
     identity_data = {
         "scheme": PDF_SEGMENT_SCHEME,
         "native_layer": identity.model_dump(mode="json"),
@@ -296,12 +335,6 @@ def read_native_pdf(
         # availability refusal, never as a missing passage.
         "integration_sha256": native_integration_digest(),
     }
-    # Timing, wall-clock and diagnostic raster artifacts are not reading
-    # identity. The actual characters, clipping and reconstructed cells are.
-    pages = [
-        {key: page[key] for key in ("number", "geometry", "text", "characters", "tables", "clipped")}
-        for page in result["pages"]
-    ]
     if [page["number"] for page in pages] != list(range(1, len(pages) + 1)):
         raise SourceSegmentLocatorMismatch("native reader returned an incomplete page sequence")
     identity_json, pages_json = _canonical(identity_data), _canonical(pages)
@@ -342,6 +375,15 @@ def native_integration_digest() -> str:
     must not invalidate a native locator; ``test_reader_segments`` asserts that
     those bytes are never read here.
 
+    **The same reasoning excludes replay and append.** The segment projection
+    used to live in ``reader_segments`` beside ``replay_native_segment``,
+    ``replay_native_segments`` and ``append_native_segments``, so the whole of
+    that file was hashed and a corrected refusal message in it retired every
+    retained citation exactly as the ``getsource`` digest did. The projection is
+    ``native_segment_projection`` now and only its bytes are read;
+    ``NATIVE_PROJECTION_MODULES`` declares the set, and a projection that grows a
+    new dependency has to add it there.
+
     The cost is that the version constant is declared rather than derived: a
     behaviour change to ``page_text_projection``, ``_reader_word_lines`` or
     ``_line_words`` must bump it in the same change, exactly as a migration
@@ -354,7 +396,7 @@ def native_integration_digest() -> str:
         "native_integration_version": NATIVE_INTEGRATION_VERSION,
         "native_modules": {
             name: sha256(Path(__file__).with_name(name).read_bytes()).hexdigest()
-            for name in ("reader_segments.py", "prose_spans.py")
+            for name in NATIVE_PROJECTION_MODULES
         },
     }))
 

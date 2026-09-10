@@ -776,3 +776,26 @@ def test_the_legacy_report_still_calls_every_section_it_always_did(session, proj
         NOT_POPULATED_IN_THIS_MODE["milestone_readiness"]
         not in {section.empty_message for section in report.sections}
     )
+
+
+def test_an_adopted_projects_alert_population_renders_from_the_reading(
+    client, session, tmp_path, monkeypatch
+):
+    """The alert population screen opens for an adopted-baseline project.
+
+    The row dictionary read ``row.dependency.title`` — a legacy
+    ``dependencies`` column — off the subject ``browse`` resolves. For an
+    adopted project that subject is an ``AcceptedConstraint``, which carries no
+    such column at all, so every alert facet on every adopted project raised
+    ``AttributeError`` and answered 500. The Constraint reading is the one shape
+    both populations have, and it composes the accepted record's title at its
+    owner (``constraint_reading.accepted_record_title``).
+    """
+    project, _ = adopt_ucm_workbook(session, tmp_path, monkeypatch)
+    seed_membership(session, project, TEST_PRINCIPAL)
+
+    response = client.get(f"/internal-report/{project.slug}/alerts/OVERDUE")
+
+    assert response.status_code == 200
+    assert "UC-1" in response.text
+    assert "Water — City Water" in response.text
