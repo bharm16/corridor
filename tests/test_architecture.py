@@ -197,17 +197,6 @@ _SUPPORT_TRANSFER = (
     "each other, operative_support and revision_comparison; the support-"
     "assessment card gives that group one downward direction"
 )
-_NATIVE_READER_COVERAGE = (
-    "the native-coverage and equivalence reports import the readers they "
-    "measure while those readers import current_record; the reader-equivalence "
-    "card measures through a declared registry instead"
-)
-_RELEASE_ASSEMBLY = (
-    "release candidate assembly, packet review and the issue renderers import "
-    "each other; the release-assembly card separates assembling a release from "
-    "rendering one"
-)
-
 CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     # extraction lineage
     ("admission", "dependency_admission", _EXTRACTION_LINEAGE),
@@ -269,25 +258,6 @@ CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     ("support_transfer_lineage", "extraction_runs", _SUPPORT_TRANSFER),
     ("support_transfer_lineage", "operative_support", _SUPPORT_TRANSFER),
     ("support_transfer_lineage", "revision_comparison", _SUPPORT_TRANSFER),
-    # native reader coverage
-    ("current_record", "reader_equivalence", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "packet_review", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "release_authorization", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "release_candidate", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "workbook_render", _NATIVE_READER_COVERAGE),
-    ("reader_equivalence", "native_reader_coverage", _NATIVE_READER_COVERAGE),
-    ("workbook_render", "current_record", _NATIVE_READER_COVERAGE),
-    # release assembly
-    ("follow_up_bundles", "project_workflow", _RELEASE_ASSEMBLY),
-    ("issue_coverage", "issue_rendering", _RELEASE_ASSEMBLY),
-    ("issue_rendering", "current_record", _RELEASE_ASSEMBLY),
-    ("packet_review", "issue_coverage", _RELEASE_ASSEMBLY),
-    ("project_workflow", "packet_review", _RELEASE_ASSEMBLY),
-    ("release_authorization", "release_candidate", _RELEASE_ASSEMBLY),
-    ("release_candidate", "follow_up_bundles", _RELEASE_ASSEMBLY),
-    ("release_candidate", "issue_coverage", _RELEASE_ASSEMBLY),
-    ("release_candidate", "issue_rendering", _RELEASE_ASSEMBLY),
-    ("release_candidate", "workbook_render", _RELEASE_ASSEMBLY),
 )
 
 

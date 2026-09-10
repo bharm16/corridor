@@ -1,8 +1,10 @@
 """Plain projection compatibility names and measured query timing.
 
 Rendering equivalence belongs to reader_equivalence (#458); projection clients
-no longer inherit the report, workbook and PDF rendering stack. Existing gate
-callers are forwarded lazily while they migrate to the owning module.
+no longer inherit the report, workbook and PDF rendering stack. The gate
+callers this module forwarded lazily while they migrated now import that owning
+module directly, so the forwarder is gone and reading a projection no longer
+reaches the rendering stack even by attribute.
 """
 
 from dataclasses import dataclass
@@ -19,8 +21,7 @@ from corridor.record_projection import (
 
 __all__ = ["CurrentRecordValue", "CurrentStatementTiming", "ViewPerformance",
            "read_current_project_record", "read_project_record_as_of_revision",
-           "measure_current_record_view", "ReaderEquivalence",
-           "freeze_project_reading_from_current_view", "prove_reader_equivalence"]
+           "measure_current_record_view"]
 
 
 @dataclass(frozen=True)
@@ -54,12 +55,3 @@ def measure_current_record_view(
         execution_time_ms=execution,
         materialized_view_needed=execution > slow_threshold_ms,
     )
-
-
-
-def __getattr__(name):
-    if name in {"ReaderEquivalence", "freeze_project_reading_from_current_view",
-                "prove_reader_equivalence", "_pdf_text"}:
-        from corridor import reader_equivalence
-        return getattr(reader_equivalence, name)
-    raise AttributeError(name)
