@@ -35,10 +35,20 @@ stored text that disagrees with its own digest is ``invalid`` and a retired
 -- and ``not_checked`` otherwise.  Each answer carries the checker's own
 sentence for a status other than ``valid``, so a reader reports the reason
 without inventing one.
+
+A reader that checks every accepted field of a project asks the same question
+hundreds of times about a handful of Documents, and one workbook decode per
+cell is what made the accepted field reader keep its own grouping and its own
+ladder.  ``source_passage_checks`` is the batch form: the same answer, with
+each spreadsheet Document decoded once through ``spreadsheet_replay``, which
+owns the digest check and the atomic-batch rule, and every other kind through
+the one-shot path.  The ladder is one function either way.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Iterator
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -50,6 +60,7 @@ from corridor.source_segments import (
     SourceSegmentIntegrityError,
     dereference_source_segment,
     replay_recorded_verbal_statement,
+    spreadsheet_replay,
 )
 from corridor.verify import quote_appears_on
 
@@ -121,13 +132,85 @@ def source_segment_locator_validation(
         if segment.kind == "prose_span":
             return LocatorValidation(NOT_RE_READABLE, str(FreshReadingUnavailable("prose_span", None)))
         return LocatorValidation(NOT_CHECKED)
+    return _replay_outcome(lambda: dereference_source_segment(document, segment, path))
+
+
+def _replay_outcome(replay: Callable[[], str]) -> LocatorValidation:
+    """The one ladder from a replay's outcome to a status and its reason."""
+
     try:
-        dereference_source_segment(document, segment, path)
+        replay()
     except FreshReadingUnavailable as error:
         return LocatorValidation(NOT_RE_READABLE, str(error))
     except SourceSegmentIntegrityError as error:
         return LocatorValidation(INVALID, str(error))
     return LocatorValidation(VALID)
+
+
+class SourcePassageChecks:
+    """Many Source Passage Checks, one workbook decode per spreadsheet Document.
+
+    ``check`` answers exactly as ``source_segment_locator_validation`` does for
+    the same arguments.  A ``spreadsheet_cell`` with registered bytes is
+    replayed through the Document's ``spreadsheet_replay``, opened on first
+    use and held until the batch closes; every other kind, and every check
+    without bytes, takes the one-shot path.  A Document whose replay cannot
+    open -- bytes that are not the registered digest, or not a workbook --
+    is left to the one-shot path too, so each of its cells reports the same
+    reason the one-shot would.  The exceptions the one-shot lets through (a
+    missing file, an unreadable store) pass through ``check`` unchanged.
+
+    ``spreadsheet_replay``'s atomic-batch rule applies: bytes or a Document
+    identity that change while the batch is open refuse the whole batch on
+    exit, so a caller returns its results only after the context closes.
+    """
+
+    def __init__(self, stack: ExitStack) -> None:
+        self._stack: ExitStack | None = stack
+        self._replays: dict[tuple, Callable[[SourceSegment], str] | None] = {}
+
+    def check(
+        self, document: Document, segment: SourceSegment, path: Path | str | None
+    ) -> LocatorValidation:
+        if self._stack is None:
+            raise RuntimeError("source passage checks are closed")
+        if path is None or segment.kind != "spreadsheet_cell":
+            return source_segment_locator_validation(document, segment, path)
+        # The same Document asked about through different bytes is a different
+        # replay: a decode cached by Document alone would answer for bytes it
+        # never opened.
+        key = (document.id, document.sha256, Path(path))
+        if key not in self._replays:
+            try:
+                self._replays[key] = self._stack.enter_context(
+                    spreadsheet_replay(document, path)
+                )
+            except SourceSegmentIntegrityError:
+                self._replays[key] = None
+        replay = self._replays[key]
+        if replay is None:
+            return source_segment_locator_validation(document, segment, path)
+        return _replay_outcome(lambda: replay(segment))
+
+    def _close(self) -> None:
+        self._stack = None
+
+
+@contextmanager
+def source_passage_checks() -> Iterator[SourcePassageChecks]:
+    """Run many Source Passage Checks, decoding each spreadsheet Document once.
+
+    The one-shot ``source_segment_locator_validation`` stays for a single
+    caller; a reader that walks every accepted field of a project opens this
+    once around its walk and asks ``check`` per segment.
+    """
+
+    with ExitStack() as stack:
+        checks = SourcePassageChecks(stack)
+        try:
+            yield checks
+        finally:
+            checks._close()
 
 
 def source_segment_locator_validation_status(

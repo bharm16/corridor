@@ -162,6 +162,32 @@ def test_source_check_does_not_make_an_undecided_fact_an_accepted_value(session,
         read_accepted_field_population(session, project.id)
 
 
+def test_a_population_read_decodes_each_source_workbook_once(session, adopted, monkeypatch):
+    """The Source Passage Check over every accepted field costs one decode per Document.
+
+    Before the check moved onto ``locator_validation`` the reader grouped cells
+    by Document and replayed them in one workbook decode; the one-shot check
+    then decoded the same workbook once per cell.  The reader now asks the
+    check's own batch form, so a report or Constraint Log read is back to one
+    decode per Document, and every cell still reads ``valid``.
+    """
+    import corridor.source_segments as source_segments
+    project, _ = adopted
+    original = source_segments.load_workbook
+    decodes = []
+
+    def counted(source, **options):
+        decodes.append(options)
+        return original(source, **options)
+
+    monkeypatch.setattr(source_segments, "load_workbook", counted)
+    population = read_accepted_field_population(session, project.id)
+    passages = [source for record in population.records for field in record.fields.values() for source in field.sources]
+    assert len(passages) > 1
+    assert {source.locator_validation_status for source in passages} == {"valid"}
+    assert len(decodes) == len({source.document_id for source in passages}) == 1
+
+
 def test_ambiguous_effective_source_and_record_alias_decisions_refuse_instead_of_last_wins(session, adopted):
     project, _ = adopted
     row = session.scalar(select(BaselineSourceRow).where(BaselineSourceRow.project_id == project.id).order_by(BaselineSourceRow.id))

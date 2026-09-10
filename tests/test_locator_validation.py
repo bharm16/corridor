@@ -11,6 +11,7 @@ the projection ``status == valid``, and no customer surface prints a bare
 from __future__ import annotations
 
 import ast
+from email.message import EmailMessage
 from hashlib import sha256
 from pathlib import Path
 import re
@@ -34,9 +35,11 @@ from corridor.locator_validation import (
     evidence_link_verified,
     recorded_verbal_statement_locator_validation,
     recorded_verbal_statement_locator_validation_status,
+    source_passage_checks,
     source_segment_locator_validation,
     source_segment_locator_validation_status,
 )
+from corridor.email_segments import append_email_segments
 from corridor.models import Document, SourceSegment
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.presentation import (
@@ -48,6 +51,7 @@ from corridor.presentation import (
     source_passage_check_label,
     statement_type_label,
 )
+import corridor.source_segments as source_segments
 from corridor.source_segments import recorded_verbal_statement_segment
 
 from pdf_fixture_support import PdfFixture
@@ -308,6 +312,173 @@ def test_every_answer_carries_the_replay_own_reason(
     assert recorded_verbal_statement_locator_validation(verbal).reason == (
         "stored segment digest does not match its recorded words"
     )
+
+
+def _registered_email(session, project, tmp_path):
+    """A registered ``.eml`` Document and the ``email_span`` rows read from it."""
+
+    message = EmailMessage()
+    message["From"] = "Utility Person <utility@example.test>"
+    message["To"] = "project@example.test"
+    message["Message-ID"] = "<one@example.test>"
+    message.set_content("We will finish the relocation in October.\n")
+    raw = message.as_bytes()
+    path = tmp_path / "thread.eml"
+    path.write_bytes(raw)
+    document = Document(
+        project_id=project.id,
+        sha256=sha256(raw).hexdigest(),
+        filename=path.name,
+        doc_type="email",
+    )
+    session.add(document)
+    session.flush()
+    return document, append_email_segments(session, document, raw), path
+
+
+def _second_workbook(tmp_path):
+    path = tmp_path / "key-dates.xlsx"
+    book = Workbook()
+    sheet = book.active
+    sheet.title = "Key Dates"
+    sheet.append(["Milestone", "Date"])
+    sheet.append(["Letting", "2026-03-01"])
+    sheet.append(["Clearance", "2025-12-15"])
+    book.save(path)
+    return path
+
+
+def _counted_decodes(monkeypatch):
+    """Count every workbook decode ``source_segments`` performs, either way in."""
+
+    original = source_segments.load_workbook
+    decodes = []
+
+    def counted(source, **options):
+        decodes.append(options)
+        return original(source, **options)
+
+    monkeypatch.setattr(source_segments, "load_workbook", counted)
+    return decodes
+
+
+def test_the_batch_answers_exactly_as_the_one_shot_on_every_branch(
+    session, project, workbook, tmp_path
+):
+    """One ladder, two entrances: ``check`` may never disagree with the function.
+
+    Each row below is one segment kind or one failure branch the one-shot
+    function decides: a cell that replays, a cell whose stored digest was
+    tampered, a cell moved to an empty location, a cell that belongs to
+    another Document, bytes that are not the registered Document, a retired
+    ``prose_span``, an email span with and without its bytes, and a cell with
+    no bytes at all.  The batch must return the same status *and* the same
+    reason for every one, since a reader prints the reason as the limitation.
+    """
+
+    document = _ingest(session, project, workbook, tmp_path)
+    cells = _segments(session, document)
+    other_bytes = tmp_path / "other.xlsx"
+    other_bytes.write_bytes(workbook.read_bytes() + b"tampered")
+    retained_document, prose, retained_path = _retained_prose_citation(
+        session, project, tmp_path
+    )
+    email_document, email_spans, email_path = _registered_email(session, project, tmp_path)
+
+    # In memory only, after every row is written: the rows are append-only.
+    tampered, moved, foreign = cells[1], cells[2], cells[3]
+    tampered.content_sha256 = "0" * 64
+    moved.cell_range = "Z99"
+    foreign.document_id = document.id + 1
+
+    cases = [
+        (document, cells[0], workbook),
+        (document, tampered, workbook),
+        (document, moved, workbook),
+        (document, foreign, workbook),
+        (document, cells[0], other_bytes),
+        (document, cells[0], None),
+        (document, tampered, None),
+        (retained_document, prose, retained_path),
+        (retained_document, prose, None),
+        (email_document, email_spans[0], email_path),
+        (email_document, email_spans[0], None),
+    ]
+
+    one_shot = [source_segment_locator_validation(*case) for case in cases]
+    with source_passage_checks() as checks:
+        batched = [checks.check(*case) for case in cases]
+
+    assert batched == one_shot
+    # The rows cover every status the check can return, so the equality above
+    # is not vacuous.
+    assert {answer.status for answer in one_shot} == {
+        VALID, INVALID, NOT_CHECKED, NOT_RE_READABLE
+    }
+    assert [answer.reason for answer in one_shot[1:5]] == [
+        "stored segment digest does not match its text",
+        "spreadsheet locator does not exist: Utility Conflicts!Z99",
+        "source segment does not belong to the supplied Document",
+        "source bytes do not match the registered Document digest",
+    ]
+
+    # What the one-shot lets through, the batch lets through unchanged.
+    missing = tmp_path / "not-staged.xlsx"
+    with pytest.raises(FileNotFoundError):
+        source_segment_locator_validation(document, cells[0], missing)
+    with source_passage_checks() as checks:
+        with pytest.raises(FileNotFoundError):
+            checks.check(document, cells[0], missing)
+
+
+def test_the_batch_decodes_each_spreadsheet_document_once(
+    session, project, workbook, tmp_path, monkeypatch
+):
+    """N cells of one Document cost one decode; two Documents cost two.
+
+    The accepted field reader runs the check over every accepted field of a
+    project, and after it moved onto the one-shot function a Constraint Log
+    read decoded the same workbook once per cell.  ``spreadsheet_replay``
+    already owned the one-decode batch; this is the batch offered at the
+    check's own interface.
+    """
+
+    first = _ingest(session, project, workbook, tmp_path)
+    second_path = _second_workbook(tmp_path)
+    second = _ingest(session, project, second_path, tmp_path)
+    first_cells = _segments(session, first)
+    second_cells = _segments(session, second)
+    assert len(first_cells) >= 4 and len(second_cells) >= 4
+    decodes = _counted_decodes(monkeypatch)
+
+    one_shot = [
+        source_segment_locator_validation(first, cell, workbook) for cell in first_cells
+    ]
+    assert len(decodes) == len(first_cells)
+    assert set(one_shot) == {LocatorValidation(VALID)}
+
+    decodes.clear()
+    with source_passage_checks() as checks:
+        batched = [checks.check(first, cell, workbook) for cell in first_cells]
+    assert batched == one_shot
+    assert len(decodes) == 1
+
+    decodes.clear()
+    with source_passage_checks() as checks:
+        interleaved = [
+            checks.check(document, cell, path)
+            for cell_pair in zip(first_cells, second_cells)
+            for document, cell, path in (
+                (first, cell_pair[0], workbook), (second, cell_pair[1], second_path),
+            )
+        ]
+    assert set(interleaved) == {LocatorValidation(VALID)}
+    assert len(decodes) == 2
+
+    # A closed batch answers nothing rather than an answer from an expired
+    # replay.
+    with pytest.raises(RuntimeError, match="closed"):
+        checks.check(first, first_cells[0], workbook)
 
 
 def test_the_not_re_readable_state_is_labelled_without_claiming_a_check(

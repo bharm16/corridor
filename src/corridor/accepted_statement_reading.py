@@ -23,7 +23,7 @@ from corridor.locator_validation import (
     NOT_CHECKED,
     VALID,
     recorded_verbal_statement_locator_validation,
-    source_segment_locator_validation,
+    source_passage_checks,
 )
 from corridor.models import Document, Fact, FactDecision, FactSource, ProjectRecordRevision, RecordedVerbalOrigin, SourceSegment
 from corridor.object_storage import DigestMismatch, StorageError
@@ -151,7 +151,7 @@ class AcceptedStatement:
         return tuple(sorted({source.source_class for source in self.sources if source.source_class}))
 
 
-def _source(session, segment, role, project_id):
+def _source(session, segment, role, project_id, checks):
     if segment.project_id != project_id:
         raise AcceptedStatementReadingRefused("statement source belongs to another project")
     document = session.get(Document, segment.document_id) if segment.document_id else None
@@ -168,7 +168,7 @@ def _source(session, segment, role, project_id):
     else:
         try:
             path = stored_file(document)
-            check = source_segment_locator_validation(document, segment, path)
+            check = checks.check(document, segment, path)
         except DigestMismatch as error:
             status, limitation = INVALID, str(error)
         except (OSError, ValueError, StorageError) as error:
@@ -219,11 +219,12 @@ def read_native_statements(session, project_id: int, revision_id: int, *, values
             .where(FactSource.project_id == project_id, FactSource.fact_id.in_(identities))
             .order_by(FactSource.fact_id, FactSource.role, FactSource.ordinal)).all()
         sources, cache = {}, {}
-        for link, segment in links:
-            key = (segment.id, link.role)
-            if key not in cache:
-                cache[key] = _source(session, segment, link.role, project_id)
-            sources.setdefault(link.fact_id, []).append(cache[key])
+        with source_passage_checks() as checks:
+            for link, segment in links:
+                key = (segment.id, link.role)
+                if key not in cache:
+                    cache[key] = _source(session, segment, link.role, project_id, checks)
+                sources.setdefault(link.fact_id, []).append(cache[key])
         grouped, projected = {}, {}
         for value in selected:
             fact = facts[value.fact_id]

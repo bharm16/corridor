@@ -38,7 +38,7 @@ from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted
 from corridor.source_segments import source_segment_locator_words
 from corridor.storage import stored_file
 from corridor.accepted_statement_reading import AcceptedStatement, read_native_statements
-from corridor.locator_validation import INVALID, NOT_CHECKED, source_segment_locator_validation
+from corridor.locator_validation import INVALID, NOT_CHECKED, source_passage_checks
 from corridor.object_storage import StorageError, DigestMismatch
 
 
@@ -221,25 +221,26 @@ def _passages(session, values):
         .join(Document, Document.id == SourceSegment.document_id)
         .where(FactSource.fact_id.in_(identities), FactSource.role == "value_source")
         .order_by(FactSource.fact_id, FactSource.ordinal)).all()
-    for link, segment, document in rows:
-        value = identities[link.fact_id]
-        if segment.project_id != value.project_id or document.project_id != value.project_id:
-            raise NativeReadingRefused("native value source belongs to another project")
-        try:
-            path = stored_file(document)
-            check = source_segment_locator_validation(document, segment, path)
-        except DigestMismatch as error:
-            status, limitation = INVALID, str(error)
-        except (OSError, ValueError, StorageError) as error:
-            status, limitation = NOT_CHECKED, f"Source Passage Check unavailable: {error}"
-        else:
-            status, limitation = check.status, check.reason
-            if path is None and status == NOT_CHECKED:
-                limitation = "registered source bytes are unavailable for the Source Passage Check"
-        result.setdefault(link.fact_id, []).append(AcceptedSourcePassage(
-            value.fact_id, value.decision_id, value.revision_id, segment.id,
-            document.id, document.filename, source_segment_locator_words(segment), segment.exact_text, segment.page_no,
-            document.doc_date, status, limitation))
+    with source_passage_checks() as checks:
+        for link, segment, document in rows:
+            value = identities[link.fact_id]
+            if segment.project_id != value.project_id or document.project_id != value.project_id:
+                raise NativeReadingRefused("native value source belongs to another project")
+            try:
+                path = stored_file(document)
+                check = checks.check(document, segment, path)
+            except DigestMismatch as error:
+                status, limitation = INVALID, str(error)
+            except (OSError, ValueError, StorageError) as error:
+                status, limitation = NOT_CHECKED, f"Source Passage Check unavailable: {error}"
+            else:
+                status, limitation = check.status, check.reason
+                if path is None and status == NOT_CHECKED:
+                    limitation = "registered source bytes are unavailable for the Source Passage Check"
+            result.setdefault(link.fact_id, []).append(AcceptedSourcePassage(
+                value.fact_id, value.decision_id, value.revision_id, segment.id,
+                document.id, document.filename, source_segment_locator_words(segment), segment.exact_text, segment.page_no,
+                document.doc_date, status, limitation))
     return {key: tuple(items) for key, items in result.items()}
 
 
