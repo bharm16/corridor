@@ -2,15 +2,14 @@
 
 Retrospective replay was rejected because it can expose later answers. These
 commands allow only prospective batch freezing and exact later label capture.
+The guarded database, JSON receipt and exit codes are the shared frame in
+`experimental_command`.
 """
 
 from __future__ import annotations
 
-import argparse
 import asyncio
-import json
 from pathlib import Path
-import sys
 
 from sqlalchemy import select
 
@@ -25,10 +24,9 @@ from corridor.evidence_investigator_shadow import (
     run_v2_shadow_cohort,
     write_shadow_cohort_manifest,
 )
+from corridor.experimental_command import experiment_parser, run_json_command
 from corridor.experimental_database import (
     DatabaseGuard,
-    ProductionDatabaseRefusal,
-    experimental_session,
     require_experimental_database,
 )
 from corridor.models import Project
@@ -40,16 +38,11 @@ def main(
     session_factory=None,
     database_guard: DatabaseGuard = require_experimental_database,
 ) -> int:
-    parser = argparse.ArgumentParser(
+    parser = experiment_parser(
         description=(
             "Run hidden Statement Review Assistant cases prospectively, or capture "
             "a later independent human outcome."
         ),
-    )
-    parser.add_argument(
-        "--database-url",
-        required=True,
-        help="explicit non-production PostgreSQL database",
     )
     commands = parser.add_subparsers(dest="command", required=True)
     run = commands.add_parser("run", help="freeze exact cases and run the hidden assistant")
@@ -62,74 +55,67 @@ def main(
     run.add_argument("--manifest-path", type=Path, required=True)
     capture = commands.add_parser("capture", help="record the later independent human outcome")
     capture.add_argument("shadow_case_id")
-    try:
-        args = parser.parse_args(argv)
-    except SystemExit as exc:
-        return int(exc.code)
-    try:
-        with experimental_session(
-            args.database_url,
-            session_factory=session_factory,
-            database_guard=database_guard,
-        ) as session:
-            with session.begin_nested():
-                if args.command == "capture":
-                    outcome = capture_shadow_outcome(session, args.shadow_case_id)
-                    output = {
-                        "shadow_case_id": args.shadow_case_id,
-                        "outcome_sha256": outcome.outcome_sha256,
-                        "strata": outcome.strata_json,
-                        "unresolved": outcome.unresolved,
-                    }
-                else:
-                    project = session.scalar(
-                        select(Project).where(Project.slug == args.project_slug)
-                    )
-                    if project is None:
-                        raise ValueError(f"unknown project {args.project_slug!r}")
-                    identity = configured_runtime_identity(
-                        settings.evidence_investigator_model
-                    )
 
-                    def runtime_factory():
-                        return configured_direct_runtime(
-                            model=settings.evidence_investigator_model,
-                            api_key=settings.openai_api_key,
-                            base_url=settings.openai_base_url,
-                        )
+    def shadow(session, args):
+        if args.command == "capture":
+            outcome = capture_shadow_outcome(session, args.shadow_case_id)
+            return {
+                "shadow_case_id": args.shadow_case_id,
+                "outcome_sha256": outcome.outcome_sha256,
+                "strata": outcome.strata_json,
+                "unresolved": outcome.unresolved,
+            }
+        project = session.scalar(
+            select(Project).where(Project.slug == args.project_slug)
+        )
+        if project is None:
+            raise ValueError(f"unknown project {args.project_slug!r}")
+        identity = configured_runtime_identity(
+            settings.evidence_investigator_model
+        )
 
-                    cohort = asyncio.run(
-                        run_v2_shadow_cohort(
-                            session,
-                            project.id,
-                            candidate_ids=tuple(args.candidate_id),
-                            selection_rule=args.selection_rule,
-                            runtime_factory=runtime_factory,
-                            identity=identity,
-                            budget=InvestigationBudget(),
-                        )
-                    )
-                    write_shadow_cohort_manifest(cohort, args.manifest_path)
-                    output = {
-                        "project": project.slug,
-                        "cohort_id": cohort.manifest.cohort_id,
-                        "manifest_path": str(args.manifest_path),
-                        "manifest_sha256": cohort.manifest.manifest_sha256,
-                        "cases": [
-                            {
-                                "shadow_case_id": item.case.public_id,
-                                "run_id": item.investigation.run.public_id,
-                                "status": item.execution.execution_status,
-                            }
-                            for item in cohort.results
-                        ],
-                        "hidden": True,
-                    }
-    except (ProductionDatabaseRefusal, OSError, ValueError) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    print(json.dumps(output, indent=2, sort_keys=True))
-    return 0
+        def runtime_factory():
+            return configured_direct_runtime(
+                model=settings.evidence_investigator_model,
+                api_key=settings.openai_api_key,
+                base_url=settings.openai_base_url,
+            )
+
+        cohort = asyncio.run(
+            run_v2_shadow_cohort(
+                session,
+                project.id,
+                candidate_ids=tuple(args.candidate_id),
+                selection_rule=args.selection_rule,
+                runtime_factory=runtime_factory,
+                identity=identity,
+                budget=InvestigationBudget(),
+            )
+        )
+        write_shadow_cohort_manifest(cohort, args.manifest_path)
+        return {
+            "project": project.slug,
+            "cohort_id": cohort.manifest.cohort_id,
+            "manifest_path": str(args.manifest_path),
+            "manifest_sha256": cohort.manifest.manifest_sha256,
+            "cases": [
+                {
+                    "shadow_case_id": item.case.public_id,
+                    "run_id": item.investigation.run.public_id,
+                    "status": item.execution.execution_status,
+                }
+                for item in cohort.results
+            ],
+            "hidden": True,
+        }
+
+    return run_json_command(
+        parser,
+        argv,
+        shadow,
+        session_factory=session_factory,
+        database_guard=database_guard,
+    )
 
 
 if __name__ == "__main__":

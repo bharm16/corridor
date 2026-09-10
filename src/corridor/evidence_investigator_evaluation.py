@@ -17,6 +17,7 @@ from pathlib import Path
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.evidence_investigator_human_outcome import HUMAN_OUTCOME_STRATA
 from corridor.evidence_investigator_runtime import sha256_json
 from corridor.receipts import write_sealed
 from corridor.models import (
@@ -32,16 +33,9 @@ from corridor.models import (
 
 EVALUATION_VERSION = "evidence-investigator-shadow-eval-v1"
 GRADING_RULES_VERSION = "evidence-investigator-deterministic-graders-v1"
-EVALUATION_STRATA = (
-    "single_dependency",
-    "multiple_dependencies",
-    "unknown_scope",
-    "not_relevant",
-    "party_ambiguity",
-    "timing_ambiguity",
-    "later_corrected",
-    "unresolved",
-)
+# The strata the grader counts are exactly the strata the outcome reading can
+# produce; the vocabulary is declared once, beside the reading.
+EVALUATION_STRATA = HUMAN_OUTCOME_STRATA
 REQUIRED_STRATA = tuple(
     stratum for stratum in EVALUATION_STRATA if stratum != "multiple_dependencies"
 )

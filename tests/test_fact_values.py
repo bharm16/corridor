@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.delta_generation import COMPARABLE_FACT_TYPES, accepted_values
-from corridor.fact_decisions import include_stationing_fact_by_policy
+from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.fact_types import (
     STRUCTURED_DATE_FACT_TYPES,
     STRUCTURED_TEXT_FACT_TYPES,
@@ -416,7 +416,7 @@ def accepted_record(session, project, document):
             )
         )
         session.flush()
-        include_stationing_fact_by_policy(
+        include_structured_cell_fact_by_policy(
             session, fact, idempotency_key=f"fact-values:{fact_type}"
         )
     return project, proposal.subject_key

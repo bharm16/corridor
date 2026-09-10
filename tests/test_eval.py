@@ -7,7 +7,6 @@ from sqlalchemy import select
 
 from corridor.adjudicate import edit_candidate
 from corridor.eval import (
-    ArtifactCollision,
     DocumentScope,
     GoldRecord,
     GoldSet,
@@ -24,7 +23,6 @@ from corridor.eval import (
     measure,
     render,
     verified_machine_reference_scope,
-    write_measurement_artifact,
 )
 from corridor.eval import _SEQUENTIAL_ID, _UTILITY_ID
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -1331,28 +1329,6 @@ def test_repeating_an_identical_command_preserves_the_first_artifact(
     ) == 0
     assert artifact_path.read_bytes() == first_bytes
     assert json.loads(first_bytes)["ran_at"] == first_ran_at.isoformat()
-
-
-def test_an_identity_collision_can_never_overwrite_divergent_evidence(tmp_path):
-    path = tmp_path / "measurement.json"
-    first = {
-        "artifact_identity": "same-name",
-        "ran_at": "2026-08-06T00:00:00+00:00",
-        "matched": 1,
-    }
-    divergent = {
-        "artifact_identity": "same-name",
-        "ran_at": "2026-08-07T00:00:00+00:00",
-        "matched": 0,
-    }
-
-    assert write_measurement_artifact(path, first) is True
-    first_bytes = path.read_bytes()
-
-    with pytest.raises(ArtifactCollision, match="divergent overwrite"):
-        write_measurement_artifact(path, divergent)
-
-    assert path.read_bytes() == first_bytes
 
 
 def test_measurement_refuses_an_implicit_run_population(

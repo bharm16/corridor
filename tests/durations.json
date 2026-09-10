@@ -253,7 +253,6 @@
   "tests/test_textract_adapter_replay.py": 0.1,
   "tests/test_textract_imported_tests.py": 0.3,
   "tests/test_textract_twin_receipts.py": 0.0,
-  "tests/test_thread_reading.py": 0.3,
   "tests/test_token_layer_ingest.py": 4.5,
   "tests/test_token_layers.py": 1.7,
   "tests/test_trusted_proxy_client_scope.py": 0.0,

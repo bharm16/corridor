@@ -1,7 +1,7 @@
 """Run one frozen, budgeted, non-authoritative explanation request.
 
-Production-run explanations, revision-change explanations, and extraction-failure
-diagnoses all need the same cage: refuse before spend when input exceeds the
+Production-run explanations, revision-change explanations, extraction-failure
+diagnoses, and source-intake drafts all need the same cage: refuse before spend when input exceeds the
 declared budget, perform one external request with no retry, re-check the frozen
 reading afterward, validate the structured result deterministically, and retain
 redacted execution lineage.  Their source snapshots, schemas, validators, stale

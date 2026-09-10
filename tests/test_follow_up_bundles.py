@@ -756,6 +756,52 @@ def test_a_project_that_retained_no_request_reads_empty_and_fires_no_band(
     )
 
 
+def test_no_production_module_retains_an_outgoing_request_yet():
+    """The writer seam has no producer until #652's sending side lands.
+
+    ``outgoing_requests`` is a deliberate seam awaiting the sending side; the
+    only callers of its two commands are this module and the chase-screen
+    tests. This pin holds that absence exactly, the way the architecture
+    ratchets do: the first production caller deletes this test and the
+    matching paragraph of ``outgoing_requests``'s docstring in the same change,
+    so the seam gains a producer on purpose rather than by accident.
+    """
+
+    import ast
+    from pathlib import Path
+
+    from source_scan_support import python_files, read_python
+
+    writers = {"retain_outgoing_request", "record_outgoing_request_response"}
+    source_root = Path(__file__).parents[1] / "src" / "corridor"
+    callers: list[str] = []
+    for path in python_files(source_root):
+        if path.name == "outgoing_requests.py" or "migrations" in path.parts:
+            continue
+        for node in read_python(path).nodes:
+            if isinstance(node, ast.ImportFrom) and node.module == "corridor.outgoing_requests":
+                callers.extend(
+                    f"{path.name}:{node.lineno} imports {alias.name}"
+                    for alias in node.names
+                    if alias.name in writers
+                )
+            if isinstance(node, ast.Call):
+                name = (
+                    node.func.id
+                    if isinstance(node.func, ast.Name)
+                    else node.func.attr
+                    if isinstance(node.func, ast.Attribute)
+                    else None
+                )
+                if name in writers:
+                    callers.append(f"{path.name}:{node.lineno} calls {name}")
+
+    assert callers == [], (
+        "outgoing_requests has a production producer now; retire this pin and "
+        "the docstring paragraph that announces the absence"
+    )
+
+
 def test_a_retained_request_is_read_back_through_the_port_in_its_shape(
     session, project
 ):

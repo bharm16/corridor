@@ -37,7 +37,7 @@ from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.exceptions import (
@@ -207,22 +207,12 @@ def _latest_configuration(
     Newest by id: the table is append-only, so a higher id is a later
     declaration without depending on timestamp resolution.
 
-    A reader resolves its thresholds through here, so it must not crash against
-    a database that predates this feature's table. The parallel development
-    stack keeps the shared database at the previous migration head until
-    integration, and a rolling deploy can serve this code briefly before the
-    migration runs; in both, an absent table means no project has declared
-    anything, so the effective configuration is the supported default — the
-    same answer an empty table gives. ``to_regclass`` returns NULL for an absent
-    relation without raising, so this probe never aborts the caller's
-    transaction. The write paths still insert into the table and fail loudly, so
-    a genuinely missing migration cannot pass silently.
+    This used to probe ``to_regclass`` first so a reader could serve against a
+    database that predated the table. The table is in the consolidated
+    baseline now and the #548 migration window admits no database without it,
+    so the probe guarded a state that cannot exist; an absent table fails
+    loudly here, the way the write paths always did.
     """
-    if (
-        session.scalar(select(func.to_regclass("project_check_configurations")))
-        is None
-    ):
-        return None
     return session.scalars(
         select(ProjectCheckConfiguration)
         .where(ProjectCheckConfiguration.project_id == project_id)

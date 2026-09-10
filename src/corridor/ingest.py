@@ -40,6 +40,13 @@ project has never been allowed to send a customer page to a provider, and it
 used to be answered locally instead. A routing decision says who a region
 *should* be read by; an attempt and its Processing Failure record who read it.
 Neither is allowed to borrow the other's name.
+
+A value only Textract supplies is an Unconfirmed reading (ADR-0094, ADR-0064).
+Extraction stays pure, so the page loop carries the scanned reading to the
+persistence seam, which appends one ``unconfirmed`` resolution per Textract-only
+cell beside the token layer and the raw OCR receipt. That row is what
+``load_project``'s corroboration upgrade works; the receipt alone gave it
+nothing to read.
 """
 
 from __future__ import annotations
@@ -78,9 +85,11 @@ from corridor.render_profiles import (
 )
 from corridor.retention import open_reference, register_processing_artifact
 from corridor.scanned_reading import (
+    ScannedPageReading,
     ScannedReader,
     open_scanned_reader,
     read_routed_page,
+    record_unconfirmed_readings,
     recovered_text,
 )
 from corridor.source_segments import (
@@ -187,6 +196,9 @@ class ExtractedPage:
     ocr_attempts: tuple[OcrAttempt, ...] = ()
     token_layers: tuple[TokenLayer, ...] = ()
     native_reading: object | None = None
+    # The page's Textract reading when the route sent it there and the read
+    # succeeded; the persistence seam records its Textract-only cells.
+    scanned_reading: ScannedPageReading | None = None
 
 
 def ingest_document(
@@ -577,6 +589,16 @@ def _persist_pages(
         # promoted source segment verifiable.
         for layer in extracted.token_layers:
             persist_token_layer(session, document.id, layer, output_dir=token_dir)
+        # A cell only Textract read is an Unconfirmed reading on the record
+        # (ADR-0094): flagged, never Ready, upgraded by `load_project` the
+        # moment a readable source corroborates it. Idempotent per cell.
+        if extracted.scanned_reading is not None:
+            record_unconfirmed_readings(
+                session,
+                project_id=document.project_id,
+                document_id=document.id,
+                reading=extracted.scanned_reading,
+            )
         # Raw OCR output is its own Class B intermediary; register each receipt
         # and key it by region so an open failure can hold it reachable.
         raw_ocr_by_region: dict[str, ProcessingArtifact] = {}
@@ -833,6 +855,7 @@ def _extract_pages(
                 ocr_attempts=tuple(ocr_attempts),
                 token_layers=tuple(token_layers),
                 native_reading=native_reading,
+                scanned_reading=outcome.reading,
             )
         )
 
@@ -847,6 +870,7 @@ class _ScannedPageOutcome:
     failures: tuple[PageFailure, ...]
     attempts: tuple[OcrAttempt, ...]
     token_layer: TokenLayer | None
+    reading: ScannedPageReading | None = None
 
 
 def _read_scanned_page(
@@ -955,6 +979,7 @@ def _read_scanned_page(
         (),
         (OcrAttempt("page", result, receipt),),
         reading.token_layer,
+        reading,
     )
 
 

@@ -142,7 +142,6 @@ PRIVATE_JSON_DIGESTS = {
     "pipeline_comparison.py": "expected/actual comparison digests",
     "shadow_comparison.py": "frozen payload content_sha256",
     "shadow_processing.py": "shadow canonical_bytes digest",
-    "source_intake_draft.py": "draft configuration digest",
     "token_layers.py": "token-layer content_sha256",
     "workbook_render.py": "retirement content_sha256",
     # Provider and evaluation receipts.

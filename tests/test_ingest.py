@@ -1053,6 +1053,72 @@ def test_an_authorized_scanned_read_writes_the_provider_backed_token_layer(
     assert receipt["values"][0]["provenance"]["processing"]["engine"] == "textract"
 
 
+def test_a_textract_only_value_lands_as_an_unconfirmed_reading_the_upgrade_pass_can_see(
+    session, project, tmp_path, monkeypatch
+):
+    """ADR-0094: a value only Textract supplies is an Unconfirmed reading.
+
+    The receipt above records the class; this is the record of it. Ingest
+    appends one ``unconfirmed`` resolution per Textract-only cell, bound to the
+    document, the page and the cell the receipt names, so ADR-0064's upgrade
+    pass — wired through ``load_project`` — has a population to work: the row
+    never counts toward Ready, and a readable sibling stating the value
+    upgrades it without a human step.
+    """
+    from corridor.models import UnreadableCellResolution
+    from corridor.scanned_reading import UNCONFIRMED_READING_POLICY_VERSION
+    from corridor.unreadable_cell_admission import process_unreadable_cell_upgrades
+    from corridor.unreadable_cells import contributes_to_ready
+
+    service = _RecordedService(_provider_response((400.0, 300.0), ("SCANNED",)))
+    _install_reader(monkeypatch, _authorized_reader(project, tmp_path, service))
+
+    doc = ingest(session, project, _scan_pdf(tmp_path), tmp_path / "images")
+
+    receipt = json.loads(
+        next((tmp_path / "images" / doc.sha256).glob("0001-page-raw-ocr-*.json")).read_text()
+    )
+    [value] = receipt["values"]
+    [row] = session.scalars(
+        select(UnreadableCellResolution).where(
+            UnreadableCellResolution.project_id == project.id
+        )
+    ).all()
+    assert row.document_id == doc.id
+    assert row.page_no == 1
+    assert row.cell_key == f"scan:p1:t{value['table']}:r{value['row']}:c{value['column']}"
+    assert (row.state, row.value, row.origin) == ("unconfirmed", "SCANNED", "harness")
+    assert row.policy_version == UNCONFIRMED_READING_POLICY_VERSION
+    assert contributes_to_ready(row) is False
+
+    readable = Document(
+        project_id=project.id,
+        sha256=hashlib.sha256(b"sue/level-a.xlsx").hexdigest(),
+        filename="sue/level-a.xlsx",
+        doc_type="other",
+        parse_status="parsed",
+    )
+    session.add(readable)
+    session.flush()
+    session.add(
+        DocPage(
+            document_id=readable.id,
+            page_no=1,
+            text="Sheet: SCANNED\nOwner: CenterPoint",
+            text_source="cells",
+        )
+    )
+    session.flush()
+
+    [upgraded] = process_unreadable_cell_upgrades(session, project.id)
+
+    assert upgraded.document_id == doc.id
+    assert upgraded.cell_key == row.cell_key
+    assert (upgraded.state, upgraded.origin) == ("corroborated", "corroboration_upgrade")
+    assert upgraded.corroboration_document_id == readable.id
+    assert contributes_to_ready(upgraded) is False
+
+
 def test_a_page_the_route_sends_nowhere_is_not_read_and_is_not_a_failure(
     session, project, pdf, tmp_path, monkeypatch
 ):

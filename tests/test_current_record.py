@@ -18,7 +18,7 @@ from corridor.reader_equivalence import (
     freeze_project_reading_from_current_view,
     prove_reader_equivalence,
 )
-from corridor.fact_decisions import include_stationing_fact_by_policy
+from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
     ActiveExtractionRun,
     Candidate,
@@ -151,10 +151,10 @@ def record_case(session):
         )
         facts.append(fact)
     session.flush()
-    first = include_stationing_fact_by_policy(
+    first = include_structured_cell_fact_by_policy(
         session, facts[0], idempotency_key="current-record:first"
     )
-    second = include_stationing_fact_by_policy(
+    second = include_structured_cell_fact_by_policy(
         session, facts[1], idempotency_key="current-record:second"
     )
     return project, dependency, first, second

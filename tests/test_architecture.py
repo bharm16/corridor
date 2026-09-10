@@ -949,7 +949,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "adjudicate", "candidate_statement_facts", "candidates", "cohort", "demo",
         "dependency_admission", "disputes", "eval", "event_admission",
         "event_admission_acceptance", "evidence_investigator",
-        "evidence_investigator_capture", "evidence_investigator_runtime",
+        "evidence_investigator_human_outcome", "evidence_investigator_runtime",
         "evidence_investigator_shadow", "external_statements",
         "extract_agreement", "extract_batch", "extract_minutes_v5", "extract_project",
         "extract_sheet", "extraction_runs", "fact_decisions", "facts", "gold",
@@ -962,7 +962,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "sh99_coordinator_rehearsal", "statement_coordination",
         "statement_scope_matching", "statement_spine", "statement_suggestions",
         "supersession", "supersession_review", "support_transfer",
-        "support_transfer_lineage", "thread_reading", "web.app", "web.queue",
+        "support_transfer_lineage", "web.app", "web.queue",
         # Same move: the queue reading names the Extracted Proposal it opens
         # and the sibling revisions offered as merges. Nothing new is built on
         # the table; the read left `web.app` and did not grow.
@@ -2296,3 +2296,30 @@ def test_the_empty_public_allowlist_still_builds_a_valid_sql_array():
     assert module._text_array_sql(()) == "array[]::text[]"
     assert module._text_array_sql(("a", "b")) == "array['a', 'b']"
     assert "array[]::text[]" in module.PUBLIC_PRIVILEGE_REVOKE
+
+
+def test_the_unconfirmed_reading_append_has_exactly_its_production_caller():
+    """ADR-0094's Unconfirmed reading is recorded by a seam ingest reaches.
+
+    `scanned_reading.record_unconfirmed_readings` is the only append of a
+    scanned `unconfirmed` resolution, and for a while nothing in production
+    called it: the class existed in tests, `load_project`'s corroboration
+    upgrade was wired, and the population it reads over was empty. Ingest's
+    persistence seam is the caller. Exact, in both directions: losing the
+    caller re-opens the gap, and a second caller is a second door into the
+    class, reviewed as one.
+    """
+
+    callers: set[str] = set()
+    for path in _module_paths():
+        if path.name == "scanned_reading.py":
+            continue
+        for node in read_python(path).nodes:
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            name = callee.attr if isinstance(callee, ast.Attribute) else getattr(callee, "id", None)
+            if name == "record_unconfirmed_readings":
+                callers.add(path.name)
+
+    assert callers == {"ingest.py"}

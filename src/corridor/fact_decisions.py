@@ -38,10 +38,6 @@ from corridor.refusals import STALE, database_refusal_kind
 
 
 STRUCTURED_CELL_INCLUSION_POLICY = "structured-cell-record-inclusion-v1"
-# Kept until the final Project Record cutover so already-merged #435/#436
-# callers retain their public name while the implementation is no longer
-# Stationing-only.
-STATIONING_INCLUSION_POLICY = STRUCTURED_CELL_INCLUSION_POLICY
 
 
 class FactDecisionRefused(ValueError):
@@ -312,29 +308,6 @@ def _include_current_facts(
             ),
         )
         for fact in facts
-    )
-
-
-def include_stationing_fact_by_policy(
-    session: Session,
-    fact: Fact,
-    *,
-    idempotency_key: str,
-) -> InclusionDecisionResult:
-    """Compatibility seam for the Stationing slice merged before #449."""
-
-    return include_structured_cell_fact_by_policy(
-        session, fact, idempotency_key=idempotency_key
-    )
-
-
-def include_current_stationing_facts(
-    session: Session, project_id: int
-) -> tuple[InclusionDecisionResult, ...]:
-    """Compatibility seam preserving the original Stationing-only behavior."""
-
-    return _include_current_facts(
-        session, project_id, ("station_from", "station_to")
     )
 
 

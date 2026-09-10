@@ -54,11 +54,3 @@ HISTORY_CLASSES = (
     *_classes(("support_assessment_sources",), "h.support_assessment_id in (select id from support_assessments where project_id=p_project_id)", "native_lineage", _NATIVE_EXPIRY),
     *_classes(("audit_log",), "(h.entity_type='project' and h.entity_id=p_project_id) or (h.entity_type='dependency' and h.entity_id in (select id from dependencies where project_id=p_project_id)) or (h.entity_type='candidate' and h.entity_id in (select id from candidates where project_id=p_project_id)) or (h.entity_type='commitment_lineage' and h.entity_id in (select id from commitment_lineages where project_id=p_project_id)) or (h.entity_type='document' and h.entity_id in (select id from documents where project_id=p_project_id)) or (h.entity_type='milestone' and h.entity_id in (select id from milestones where project_id=p_project_id))"),
 )
-
-# The three known quote carriers: retain without fabricating a locator. Rows
-# that already carry EvidenceLinkSource retain that genuine citation too.
-QUOTE_WRITERS = (
-    "adjudicate._evidence_link: EvidenceLink.quote",
-    "operative_support.transfer_operative_scopes_under_lock: EvidenceLink.quote",
-    "operative_support.resolve_operative_support: EvidenceLink.quote",
-)

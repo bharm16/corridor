@@ -25,6 +25,13 @@ on the row they already wrote.
 What is out of scope (#652): drafting or sending the request, delivery
 confirmation, automatic escalation, and full receipt tracking. Recording that a
 reply arrived, sufficiently to stop the clock, is all the response half does.
+
+No production module calls ``retain_outgoing_request`` or
+``record_outgoing_request_response`` yet. The sending side that #652 scopes out
+is the producer this seam is waiting for; until it lands, the only writers are
+the tests, ``read_retained_outgoing_requests`` returns nothing in production,
+and ``tests/test_follow_up_bundles.py`` pins that absence so the first
+production caller is a deliberate edit rather than an accident.
 """
 
 from __future__ import annotations
