@@ -47,18 +47,24 @@ SEALED_SCHEMAS = {
     "corridor.email_spine.EmailThreadOutput": "d0247987d8d054ad61250447cb512861f13b94a649d5fa3cdcacc3d81d226716",
     "corridor.minutes_spine.MinutesOutput": "6c297318ddc4025534847d282907734ca7bda881b3f170917c1dc3aa03ce144a",
     "corridor.prose_interpretation.ProseInterpretationOutput": "80973da26c64f8700113dc88338dea0870abbf0c882772705df2d42c264b008d",
+    # Recorded from the reader Page Inventory's own base before it joined the
+    # shared one. The inventory is a measurement input: a routing decision is
+    # compared against a recorded gold set, so a moved schema byte would be a
+    # different reading rather than the same one under a shared declaration.
+    "corridor.page_inventory.PdfRect": "47ec5ee53350cffff4daecfa9981bd0c42cb2d6d47415757f3b6b1ed45738b8b",
+    "corridor.page_inventory.PageBoxes": "0e1a04a936721e92e4be327c0b6c907abe802322dd25c5fe859f52401a54ed62",
+    "corridor.page_inventory.InventoryRegion": "2e10c88031962dfb8c41aae12a2e34abb109322f9478b437d0c8a9e9c1a454f4",
+    "corridor.page_inventory.TableRegionEvidence": "b67e65f49cb04fd6f66a75ad32c480bc65bdd74b48e59689e57793329317c0d5",
+    "corridor.page_inventory.PageInventory": "f7783952a37bcba438f04e018c402deb404249ec7837063f46d8098fcc04be6e",
+    "corridor.page_inventory.RoutingRegion": "9095ea9ef165e2d0ff39c7243a48e493981f71b199b636abe46278c5d51129bb",
+    "corridor.page_inventory.StructuralTrigger": "ac4d818f6ce33e75e1ff55d9e7c9dd5c028564347c00e93058348ac70ecb3cbc",
+    "corridor.page_inventory.PageRoutingDecision": "fb89e0a06c392a6c1f95fb500e87518b6a1b8926ecd47078b83156f47b388f5e",
 }
 
-# The one base a module may still declare for itself, and why. This list may
-# fall and may never rise: `page_inventory` is not this card's file, and every
-# other module's base now derives from `typed_output`.
-OWN_BASE_ALLOWLIST = {
-    "page_inventory": (
-        "InventoryModel is the reader Page Inventory's own base; the module "
-        "belongs to the inventory seam rather than the measurement one and "
-        "moves onto the shared base with it"
-    ),
-}
+# No module declares the closed-model configuration for itself any more. The
+# list may fall and may never rise: a new own base joins it only with the seam
+# that removes it.
+OWN_BASE_ALLOWLIST: dict[str, str] = {}
 
 
 def _schema_digest(dotted: str) -> str:
@@ -126,6 +132,7 @@ def test_only_typed_output_declares_the_closed_model_configuration():
         "corridor.pipeline_contracts.PipelineContract",
         "corridor.render_profiles.RenderModel",
         "corridor.token_layers.TokenModel",
+        "corridor.page_inventory.InventoryModel",
     ],
 )
 def test_every_measurement_base_is_the_shared_base_under_its_own_name(dotted):

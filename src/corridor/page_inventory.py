@@ -39,10 +39,11 @@ import ctypes
 import json
 import unicodedata
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import Field, field_validator
 from shapely.geometry import box as shapely_box
 from shapely.ops import unary_union
 
+from corridor.typed_output import ClosedModel
 from corridor_pdf_reader.execution import PdfiumExecutor, pdfium_entry, read_document
 from corridor_pdf_reader.replacement.layout import rotate_box
 
@@ -83,8 +84,12 @@ READER_COORDINATE_FRAME = "displayed crop, PDF points, top-left origin"
 INCUMBENT_COORDINATE_FRAME = "incumbent page space"
 
 
-class InventoryModel(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class InventoryModel(ClosedModel):
+    """The Page Inventory's shapes are closed and frozen, under its own name.
+
+    The configuration is ``typed_output.ClosedModel``'s, declared once there;
+    the name stays so the shapes below and their importers do not move.
+    """
 
 
 class PdfRect(InventoryModel):
