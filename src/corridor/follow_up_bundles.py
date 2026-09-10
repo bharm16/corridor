@@ -106,10 +106,9 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    follow_up_reading_event,
 )
 from corridor.models import (
     BaselineSourceRow,
@@ -1503,23 +1502,20 @@ def emit_follow_up_reading(
     for bundle in reading.bundles:
         counted[bundle.band] += 1
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.FOLLOW_UP_READING,
-            binding=binding or default_binding(),
+        follow_up_reading_event(
+            binding or default_binding(),
             occurred_at=reading.cutoff,
-            payload={
-                "principal_subject": principal_subject,
-                "project_id": reading.project_id,
-                "cutoff": reading.cutoff.isoformat(),
-                "rule_set": reading.rule_set,
-                "accepted_revision_id": reading.accepted_revision_id,
-                "reading_identity": reading.reading_identity,
-                "bundle_count": len(reading.bundles),
-                "retained_outgoing_requests": reading.retained_outgoing_requests,
-                "bundles_by_band": counted,
-            },
-            # Bounded shape only: the project and the person stay in the
-            # payload, never in an infrastructure label (#491, #522).
-            metric_labels={"surface": surface, "status": "presented"},
+            # Bounded shape only: the surface becomes a label; the project and
+            # the person stay in the payload (#491, #522).
+            surface=surface,
+            principal_subject=principal_subject,
+            project_id=reading.project_id,
+            cutoff=reading.cutoff.isoformat(),
+            rule_set=reading.rule_set,
+            accepted_revision_id=reading.accepted_revision_id,
+            reading_identity=reading.reading_identity,
+            bundle_count=len(reading.bundles),
+            retained_outgoing_requests=reading.retained_outgoing_requests,
+            bundles_by_band=counted,
         )
     )

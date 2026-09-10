@@ -5,9 +5,12 @@ Nothing else in Corridor may import the imported client or transport;
 takes the authorization record and the request's boundary, matches them on
 every field, and refuses with a Processing Failure carrying the reason and
 zero outbound requests when the record is absent or does not cover the
-request. Only after that does it construct the imported client, and the
-client is handed a scope directory named by the cache identity, a counting
-proxy in place of the boto3 service, and the region the request named.
+request. The check, the refusal's shape and the request counting are
+`corridor.provider_authorization`'s, shared with the native model-provider
+boundary; `records.py` adds Textract's fields to the check. Only after the
+check passes does this module construct the imported client, and the client
+is handed a scope directory named by the cache identity, a counting proxy in
+place of the boto3 service, and the region the request named.
 
 The proxy is the transport seam. Every outbound request passes through it
 and is counted as a call (a response came back), a retry (a retryable error
@@ -36,6 +39,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Protocol
 
+from corridor.provider_authorization import OutboundCounts, ProviderRefused
 from corridor_pdf_reader.textract.client import (
     DOLLARS_PER_PAGE,
     MAX_PAGES_DEFAULT,
@@ -63,14 +67,13 @@ from corridor_pdf_reader.textract_adapter.identity import (
     request_id,
 )
 from corridor_pdf_reader.textract_adapter.records import (
+    AUTHORIZATION_CHECK,
     NATIVE_GEOMETRY_PURPOSE,
     PROVIDER_POSTURE,
     AuthorizationRecord,
     CustomerAuthorization,
-    ExperimentScope,
     ProviderPosture,
     RequestBoundary,
-    mismatches,
 )
 
 SCOPE_FILE = "scope.json"
@@ -94,53 +97,28 @@ def _now() -> str:
     return datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
 
 
-class TextractProcessingFailure(RuntimeError):
+class TextractProcessingFailure(ProviderRefused):
     """A Processing Failure: the attempt did not complete the contract, and its record is preserved.
 
     `reason` is a short code (`authorization-refused`, `resource-budget-exhausted`,
     `provider-call-failed`, `retained-entry-invalid`); `outbound_requests` is
     how many requests left this process before the failure, which is zero for
-    a refusal by construction.
+    a refusal by construction. The shape is the shared refusal's; the record
+    is kept to the second, like every other record this adapter writes.
     """
 
-    def __init__(
-        self,
-        reason: str,
-        *,
-        detail: str = "",
-        mismatches: tuple[str, ...] = (),
-        outbound_requests: int = 0,
-        request: RequestBoundary | None = None,
-    ) -> None:
-        summary = detail or "; ".join(mismatches) or reason
-        super().__init__(f"{reason}: {summary}")
-        self.reason = reason
-        self.detail = detail
-        self.mismatches = mismatches
-        self.outbound_requests = outbound_requests
-        self.request = request
+    kind = "processing-failure"
 
-    def record(self) -> dict[str, Any]:
-        return {
-            "kind": "processing-failure",
-            "reason": self.reason,
-            "detail": self.detail,
-            "mismatches": list(self.mismatches),
-            "outbound_requests": self.outbound_requests,
-            "request": None if self.request is None else self.request.as_dict(),
-            "recorded_at": _now(),
-        }
+    def recorded_at(self) -> str:
+        return _now()
 
 
-class _CountingService:
+class _CountingService(OutboundCounts):
     """Every outbound request passes here and is counted, whatever becomes of it."""
 
     def __init__(self, service: AnalyzeDocumentService) -> None:
+        super().__init__()
         self._service = service
-        self.attempts = 0
-        self.calls = 0
-        self.retries = 0
-        self.failed_attempts = 0
 
     def analyze_document(self, *, Document: dict[str, Any], FeatureTypes: list[str]) -> dict[str, Any]:
         self.attempts += 1
@@ -205,10 +183,11 @@ class PageReading:
     binding: ProvenanceBinding
 
 
-class CostReceipt:
+class CostReceipt(OutboundCounts):
     """Per Extraction Run: calls, retries and hits separately, every binding, every failure."""
 
     def __init__(self, extraction_run: str, scope: CacheScope, record: AuthorizationRecord, request: RequestBoundary) -> None:
+        super().__init__()
         self.extraction_run = extraction_run
         self.scope = scope
         self.record = record
@@ -216,15 +195,8 @@ class CostReceipt:
         self.opened_at = _now()
         self.pages_requested = 0
         self.hits = 0
-        self.calls = 0
-        self.retries = 0
-        self.failed_attempts = 0
         self.bindings: list[ProvenanceBinding] = []
         self.failures: list[dict[str, Any]] = []
-
-    @property
-    def outbound_requests(self) -> int:
-        return self.calls + self.retries + self.failed_attempts
 
     def as_dict(self) -> dict[str, Any]:
         return {
@@ -237,10 +209,7 @@ class CostReceipt:
             "counts": {
                 "pages_requested": self.pages_requested,
                 "hits": self.hits,
-                "calls": self.calls,
-                "retries": self.retries,
-                "failed_attempts": self.failed_attempts,
-                "outbound_requests": self.outbound_requests,
+                **self.counted(),
                 "failures": len(self.failures),
             },
             "charged_pages": self.calls,
@@ -279,13 +248,8 @@ def open_boundary(
     A refusal is raised before anything touches the disk or the service:
     no scope directory, no client, zero outbound requests.
     """
-    found = mismatches(record, request, posture)
-    if found:
-        reason = "authorization-absent" if record is None else "authorization-refused"
-        raise TextractProcessingFailure(reason, mismatches=found, outbound_requests=0, request=request)
-    assert isinstance(record, (CustomerAuthorization, ExperimentScope))
     return AuthorizedTextract(
-        record,
+        AUTHORIZATION_CHECK.authorized(record, request, posture, refuse=TextractProcessingFailure),
         request,
         extraction_run=extraction_run,
         cache_root=cache_root,

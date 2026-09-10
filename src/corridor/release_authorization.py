@@ -85,10 +85,9 @@ from sqlalchemy.orm import Session
 from corridor import refusals
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    release_authorization_event,
 )
 from corridor.baseline_adoption import effective_baseline_formats
 from corridor.issue_profile import (
@@ -960,42 +959,40 @@ def _emit(
     """
 
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.RELEASE_AUTHORIZATION,
-            binding=binding,
+        release_authorization_event(
+            binding,
             occurred_at=occurred_at,
-            payload={
-                "principal_subject": principal_subject,
-                "project_id": (
-                    project_id
-                    if candidate is None
-                    else int(candidate.project_id)
-                ),
-                "candidate_id": (
-                    candidate_id if candidate is None else int(candidate.id)
-                ),
-                "candidate_identity": (
-                    None if candidate is None else candidate.candidate_identity
-                ),
-                "accepted_revision_id": (
-                    None
-                    if candidate is None
-                    else int(candidate.accepted_revision_id)
-                ),
-                "issue_profile_version": (
-                    None
-                    if candidate is None
-                    else int(candidate.issue_profile_version)
-                ),
-                "source_cutoff": (
-                    None if candidate is None else candidate.source_cutoff.isoformat()
-                ),
-                "package_identity": package_identity,
-                "issue_number": issue_number,
-                "refusal_code": refusal_code,
-            },
-            # Bounded shape only: the project and the person stay in the
-            # payload, never in an infrastructure label (#491, #522).
-            metric_labels={"surface": surface, "status": status},
+            # Bounded shape only: the surface and status become the labels;
+            # the project and the person stay in the payload (#491, #522).
+            surface=surface,
+            status=status,
+            principal_subject=principal_subject,
+            project_id=(
+                project_id
+                if candidate is None
+                else int(candidate.project_id)
+            ),
+            candidate_id=(
+                candidate_id if candidate is None else int(candidate.id)
+            ),
+            candidate_identity=(
+                None if candidate is None else candidate.candidate_identity
+            ),
+            accepted_revision_id=(
+                None
+                if candidate is None
+                else int(candidate.accepted_revision_id)
+            ),
+            issue_profile_version=(
+                None
+                if candidate is None
+                else int(candidate.issue_profile_version)
+            ),
+            source_cutoff=(
+                None if candidate is None else candidate.source_cutoff.isoformat()
+            ),
+            package_identity=package_identity,
+            issue_number=issue_number,
+            refusal_code=refusal_code,
         )
     )

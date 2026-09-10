@@ -64,9 +64,8 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     emit_event,
+    proposed_delta_creation_event,
 )
 from corridor.models import (
     DeltaDeferral,
@@ -223,20 +222,17 @@ def create_proposed_delta_group(
     for row in rows:
         created = row.id in created_ids
         emit_event(
-            AnalyticsEvent(
-                family=EventFamily.PROPOSED_DELTA_CREATION,
-                binding=binding,
+            proposed_delta_creation_event(
+                binding,
                 occurred_at=row.created_at if created else datetime.now(timezone.utc),
-                payload={
-                    "project_id": project_id,
-                    "source_family": source_family,
-                    "source_revision": source_revision,
-                    "document_id": document_id,
-                    "delta_id": row.id, "delta_count": 1, "delta_ids": [row.id],
-                    "outcome": "created" if created else "replayed",
-                    "complete_enumerative_source": is_complete_enumerative_source,
-                    "row_accounting_sealed": row_accounting_sealed,
-                },
+                project_id=project_id,
+                source_family=source_family,
+                source_revision=source_revision,
+                document_id=document_id,
+                delta_id=row.id,
+                outcome="created" if created else "replayed",
+                complete_enumerative_source=is_complete_enumerative_source,
+                row_accounting_sealed=row_accounting_sealed,
             )
         )
 

@@ -5,7 +5,10 @@ absent or mismatched, and it is proved with a transport double that fails
 the test on any call: the boundary is opened against it with each kind of
 gap, and the refusal must arrive with the double untouched, no cache
 directory on disk, and a Processing Failure record naming every failing
-field. The rest of the file proves what the adapter keeps once a request is
+field. The gaps every provider adapter shares are proved for this adapter in
+`tests/test_provider_authorization.py`; this file keeps Textract's own
+(region, its posture's purposes, the operations evidence, the posture
+history). The rest of the file proves what the adapter keeps once a request is
 covered: the six identity fields on every cache entry, one charge for one
 raster under two renditions, a hit in the next Extraction Run, retries and
 failed attempts counted apart from calls, the native-glyph re-map with
@@ -195,31 +198,23 @@ def response_around_total() -> dict[str, Any]:
 
 # --- zero outbound requests -----------------------------------------------------
 
+# Textract's own fields: the region on the posture, the record and the request,
+# and the purposes its posture permits. The fields every provider adapter
+# shares (project, source class, stage, posture identity and digest, an absent
+# or foreign record) are refused for this adapter in
+# tests/test_provider_authorization.py.
 REFUSALS = {
-    "absent": (None, request(), {"authorization-absent"}),
-    "project": (authorization(), request(project="project-9"), {"project"}),
-    "source-class": (authorization(), request(source_class="email"), {"source-class"}),
-    "purpose-by-record": (authorization(), request(purpose="image-region-reading"), {"purpose"}),
     "native-geometry-purpose-by-record": (authorization(), request(purpose=NATIVE_GEOMETRY_PURPOSE), {"purpose"}),
     "native-geometry-record-for-ocr": (authorization(purposes=frozenset({NATIVE_GEOMETRY_PURPOSE})), request(), {"purpose"}),
     "purpose-outside-posture": (authorization(purposes=frozenset({"anything"})), request(purpose="anything"), {"purpose"}),
     "region-in-request": (authorization(), request(region="us-west-2"), {"region"}),
     "region-in-record": (authorization(region="us-west-2"), request(), {"region"}),
-    "posture-identity-in-request": (authorization(), request(posture_identity="some-other-posture"), {"posture-identity"}),
-    "posture-identity-in-record": (authorization(posture_identity="some-other-posture"), request(), {"posture-identity"}),
-    "posture-digest": (authorization(posture_digest="0" * 64), request(), {"posture-digest"}),
-    "stage": (authorization(), request(stage="authoritative"), {"stage"}),
-    "experiment-scope-for-a-customer-stage": (experiment(), experiment_request(stage="shadow"), {"stage"}),
-    "experiment-scope-for-another-dataset": (experiment(), experiment_request(project="project-1"), {"project"}),
-    "experiment-scope-for-another-purpose": (experiment(purpose="something-else"), experiment_request(), {"purpose"}),
-    "customer-record-for-an-experiment": (authorization(), experiment_request(), {"project", "source-class", "purpose", "stage"}),
-    "not-a-record": ({"record_id": "auth-0001"}, request(), {"record-kind"}),
-    "everything-at-once": (authorization(), request(project="project-9", source_class="email", stage="authoritative"), {"project", "source-class", "stage"}),
+    "region-and-a-shared-field-at-once": (authorization(region="us-west-2"), request(project="project-9"), {"region", "project"}),
 }
 
 
 @pytest.mark.parametrize("name", sorted(REFUSALS))
-def test_an_absent_or_mismatched_authorization_is_refused_with_zero_outbound_requests(tmp_path, name):
+def test_a_mismatched_authorization_is_refused_with_zero_outbound_requests_and_nothing_on_disk(tmp_path, name):
     record, boundary, expected = REFUSALS[name]
     service = FailingService()
 
@@ -229,7 +224,7 @@ def test_an_absent_or_mismatched_authorization_is_refused_with_zero_outbound_req
     failure = caught.value
     assert {entry.split(":")[0] for entry in failure.mismatches} == expected
     assert failure.outbound_requests == 0
-    assert failure.reason == ("authorization-absent" if record is None else "authorization-refused")
+    assert failure.reason == "authorization-refused"
     assert service.calls == 0
     assert not (tmp_path / "cache").exists(), "a refusal touches nothing on disk"
     record_kept = failure.record()
@@ -237,15 +232,11 @@ def test_an_absent_or_mismatched_authorization_is_refused_with_zero_outbound_req
     assert record_kept["outbound_requests"] == 0
     assert record_kept["request"] == boundary.as_dict()
     assert record_kept["mismatches"] == list(failure.mismatches)
+    assert len(record_kept["recorded_at"]) == len("2026-09-06T00:00:00+00:00"), "kept to the second, like every other record"
 
 
-def test_mismatches_name_every_failing_field_not_the_first():
-    found = mismatches(authorization(), request(project="project-9", source_class="email", stage="authoritative"), ACCEPTED_POSTURE)
-
-    assert [entry.split(":")[0] for entry in found] == ["source-class", "project", "stage"]
-    assert "project-9" in found[1] and "project-1" in found[1]
+def test_a_covered_customer_request_has_no_mismatches_under_an_accepted_posture():
     assert mismatches(authorization(), request(), ACCEPTED_POSTURE) == ()
-    assert mismatches(experiment(), experiment_request()) == ()
 
 
 def test_a_customer_record_is_refused_while_the_posture_is_only_proposed(tmp_path):

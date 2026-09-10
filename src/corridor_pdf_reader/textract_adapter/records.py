@@ -9,30 +9,38 @@ it names the dataset, the purpose and the scope, and authorizes the
 experiment stage and nothing else, so no fictional customer agreement is ever
 written to cover reference material.
 
-`mismatches` compares a request against a record on every field and returns
-every field that fails, not the first one, so a refusal names the whole gap.
-An empty result is the only thing that lets the boundary construct a client.
-Earlier drafts checked the first failing field and returned; a refusal that
-said "project" when region and stage were also wrong would have sent the
-maintainer back three times.
+The shape of those records and the rule that matches them are
+`corridor.provider_authorization`'s, shared with the native model-provider
+boundary; this module adds what is Textract's. The posture carries the
+operation, feature set, region and the three pieces of operations evidence;
+every record and request carries the region; and `TextractAuthorizationCheck`
+adds the region checks and the evidence checks to the shared `mismatches`.
+That shared rule compares a request against a record on every field and
+returns every field that fails, not the first one, so a refusal names the
+whole gap. An empty result is the only thing that lets the boundary construct
+a client. Earlier drafts checked the first failing field and returned; a
+refusal that said "project" when region and stage were also wrong would have
+sent the maintainer back three times.
+
+The posture-status rule is the declared one for Textract: a customer record
+is refused while the posture is not `accepted`; an experiment scope is not
+gated on it. The model provider applies the other declared rule.
 """
 
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass
-from typing import Any
+from dataclasses import dataclass
+
+from corridor import provider_authorization
 
 PROVIDER = "aws-textract"
 OPERATION = "AnalyzeDocument"
 FEATURE_TYPES: tuple[str, ...] = ("TABLES",)
 NATIVE_GEOMETRY_PURPOSE = "native-table-geometry-assistance"
 
-CUSTOMER_STAGES: tuple[str, ...] = ("compatibility", "shadow", "authoritative")
-EXPERIMENT_STAGE = "experiment"
-
 
 @dataclass(frozen=True)
-class ProviderPosture:
+class ProviderPosture(provider_authorization.ProviderPosture):
     """The reusable provider posture, as `docs/operations/textract-provider-posture.md` records it.
 
     `digest` is the SHA-256 of that document's bytes; the test that checks it
@@ -41,21 +49,12 @@ class ProviderPosture:
     them changes the document, the digest, and therefore this record.
     """
 
-    identity: str
-    document: str
-    digest: str
-    provider: str
     operation: str
     feature_types: tuple[str, ...]
     region: str
-    permitted_purposes: tuple[str, ...]
     retention: str
     ai_services_opt_out: str
     permissions: str
-    status: str
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 PROVIDER_POSTURE = ProviderPosture(
@@ -75,162 +74,49 @@ PROVIDER_POSTURE = ProviderPosture(
 
 
 @dataclass(frozen=True)
-class CustomerAuthorization:
-    """#522's signed instance, reduced to the fields the boundary matches.
+class CustomerAuthorization(provider_authorization.CustomerAuthorization):
+    """#522's signed instance, with the region the adapter matches."""
 
-    The full instance names much more (credential custody, incident contact,
-    audit access, retention of artifacts, termination); those govern people
-    and operations, not this check. What the adapter needs is who signed for
-    which projects, source classes, purposes and stages, in which region,
-    accepting which posture.
-    """
-
-    record_id: str
-    customer: str
-    projects: frozenset[str]
-    source_classes: frozenset[str]
-    purposes: frozenset[str]
-    stages: frozenset[str]
     region: str
-    posture_identity: str
-    posture_digest: str
-    signed_by: str
-    signed_on: str
-
-    kind = "customer-authorization"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "record_id": self.record_id,
-            "customer": self.customer,
-            "projects": sorted(self.projects),
-            "source_classes": sorted(self.source_classes),
-            "purposes": sorted(self.purposes),
-            "stages": sorted(self.stages),
-            "region": self.region,
-            "posture_identity": self.posture_identity,
-            "posture_digest": self.posture_digest,
-            "signed_by": self.signed_by,
-            "signed_on": self.signed_on,
-        }
 
 
 @dataclass(frozen=True)
-class ExperimentScope:
-    """The recorded scope for public or synthetic experiment data.
+class ExperimentScope(provider_authorization.ExperimentScope):
+    """The recorded scope for public or synthetic experiment data, with its region."""
 
-    A request under this record names the dataset as its project and
-    `experiment` as its stage. It can never authorize a customer stage, and
-    a customer authorization can never be read as an experiment scope.
-    """
-
-    record_id: str
-    dataset: str
-    dataset_digest: str
-    purpose: str
-    scope: str
-    source_classes: frozenset[str]
     region: str
-    posture_identity: str
-    posture_digest: str
-    recorded_by: str
-    recorded_on: str
-
-    kind = "experiment-scope"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {
-            "kind": self.kind,
-            "record_id": self.record_id,
-            "dataset": self.dataset,
-            "dataset_digest": self.dataset_digest,
-            "purpose": self.purpose,
-            "scope": self.scope,
-            "source_classes": sorted(self.source_classes),
-            "region": self.region,
-            "posture_identity": self.posture_identity,
-            "posture_digest": self.posture_digest,
-            "recorded_by": self.recorded_by,
-            "recorded_on": self.recorded_on,
-        }
 
 
 AuthorizationRecord = CustomerAuthorization | ExperimentScope
 
 
 @dataclass(frozen=True)
-class RequestBoundary:
-    """What one request claims about itself, matched against the record.
+class RequestBoundary(provider_authorization.RequestBoundary):
+    """What one request claims about itself, with the region it names."""
 
-    `project` is the customer project identity, or the dataset identity when
-    the record is an experiment scope. `stage` is one of the three customer
-    stages or `experiment`.
-    """
-
-    project: str
-    source_class: str
-    purpose: str
     region: str
-    posture_identity: str
-    stage: str
-
-    def as_dict(self) -> dict[str, str]:
-        return asdict(self)
 
 
-def mismatches(
-    record: object | None,
-    request: RequestBoundary,
-    posture: ProviderPosture = PROVIDER_POSTURE,
-) -> tuple[str, ...]:
-    """Every field on which the request is not covered; empty means covered.
+class TextractAuthorizationCheck(
+    provider_authorization.AuthorizationCheck[ProviderPosture, RequestBoundary, CustomerAuthorization, ExperimentScope]
+):
+    """The shared check plus Textract's region and operations-evidence checks."""
 
-    Each entry is `<field>: <what was asked>, <what the record or posture
-    allows>`. The posture is checked first because a record naming another
-    posture, or an old digest of this one, has accepted terms the adapter
-    does not implement, whatever else it says.
-    """
+    implementer = "the adapter"
+    posture_status = provider_authorization.CUSTOMER_RECORDS_NEED_ACCEPTED
+    record_kinds = (CustomerAuthorization, ExperimentScope)
 
-    found: list[str] = []
-    if request.posture_identity != posture.identity:
-        found.append(
-            f"posture-identity: request names {request.posture_identity!r}, "
-            f"the adapter implements {posture.identity!r}"
-        )
-    if request.region != posture.region:
-        found.append(f"region: request names {request.region!r}, the posture is for {posture.region!r}")
-    if request.purpose not in posture.permitted_purposes:
-        found.append(
-            f"purpose: {request.purpose!r} is not a purpose the posture permits "
-            f"({', '.join(posture.permitted_purposes)})"
-        )
-    if record is None:
-        found.append("authorization-absent: no customer authorization or experiment scope was given")
-        return tuple(found)
-    if not isinstance(record, (CustomerAuthorization, ExperimentScope)):
-        found.append(f"record-kind: {type(record).__name__} is not an authorization record")
-        return tuple(found)
-    if record.posture_identity != posture.identity:
-        found.append(
-            f"posture-identity: record {record.record_id!r} accepts {record.posture_identity!r}, "
-            f"the adapter implements {posture.identity!r}"
-        )
-    if record.posture_digest != posture.digest:
-        found.append(
-            f"posture-digest: record {record.record_id!r} accepts digest {record.posture_digest[:12]!r}, "
-            f"the posture document's digest is {posture.digest[:12]!r}"
-        )
-    if isinstance(record, CustomerAuthorization):
-        if posture.status != "accepted":
-            found.append(
-                f"posture-status: the posture is {posture.status!r}; no customer page may be "
-                "transmitted until the maintainer accepts it"
-            )
+    def request_mismatches(self, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
+        if request.region != posture.region:
+            return [f"region: request names {request.region!r}, the posture is for {posture.region!r}"]
+        return []
+
+    def customer_mismatches(self, record: CustomerAuthorization, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
         # Status alone cannot turn unknown operations evidence into verified
         # facts. The maintainer records evidence for the actual calling account
         # and workload role in the exact posture document before asserting these
         # states; the boundary does not query AWS or infer them from a signature.
+        found: list[str] = []
         for field, state, required in (
             ("retention", posture.retention, "verified"),
             ("ai-services-opt-out", posture.ai_services_opt_out, "optOut"),
@@ -241,43 +127,21 @@ def mismatches(
                     f"posture-{field}: the posture records {state!r}; customer processing "
                     f"requires {required!r} with evidence for the actual calling account and workload role"
                 )
-    if record.region != request.region:
-        found.append(f"region: request names {request.region!r}, record {record.record_id!r} covers {record.region!r}")
-    if request.source_class not in record.source_classes:
-        found.append(
-            f"source-class: {request.source_class!r} is not permitted by record {record.record_id!r} "
-            f"({', '.join(sorted(record.source_classes))})"
-        )
-    if isinstance(record, CustomerAuthorization):
-        if request.project not in record.projects:
-            found.append(
-                f"project: {request.project!r} is not a project of record {record.record_id!r} "
-                f"({', '.join(sorted(record.projects))})"
-            )
-        if request.purpose not in record.purposes:
-            found.append(
-                f"purpose: {request.purpose!r} is not permitted by record {record.record_id!r} "
-                f"({', '.join(sorted(record.purposes))})"
-            )
-        if request.stage not in record.stages:
-            found.append(
-                f"stage: {request.stage!r} is not authorized by record {record.record_id!r} "
-                f"({', '.join(sorted(record.stages))})"
-            )
-    else:
-        if request.project != record.dataset:
-            found.append(
-                f"project: {request.project!r} is not the dataset of experiment scope "
-                f"{record.record_id!r} ({record.dataset!r})"
-            )
-        if request.purpose != record.purpose:
-            found.append(
-                f"purpose: {request.purpose!r} is not the purpose of experiment scope "
-                f"{record.record_id!r} ({record.purpose!r})"
-            )
-        if request.stage != EXPERIMENT_STAGE:
-            found.append(
-                f"stage: {request.stage!r} cannot be authorized by an experiment scope, "
-                f"which covers {EXPERIMENT_STAGE!r} only"
-            )
-    return tuple(found)
+        return found
+
+    def record_mismatches(self, record: AuthorizationRecord, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
+        if record.region != request.region:
+            return [f"region: request names {request.region!r}, record {record.record_id!r} covers {record.region!r}"]
+        return []
+
+
+AUTHORIZATION_CHECK = TextractAuthorizationCheck()
+
+
+def mismatches(
+    record: object | None,
+    request: RequestBoundary,
+    posture: ProviderPosture = PROVIDER_POSTURE,
+) -> tuple[str, ...]:
+    """Every field on which the request is not covered; empty means covered."""
+    return AUTHORIZATION_CHECK.mismatches(record, request, posture)

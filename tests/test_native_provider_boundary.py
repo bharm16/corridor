@@ -3,17 +3,20 @@
 Every refusal test hands the boundary a transport that fails the test if it is
 ever asked to send anything: a refusal that still opened a socket is not a
 refusal. The authorized tests use a recording transport, so nothing here needs
-a network or a key.
+a network or a key. The properties every provider adapter shares (an absent
+record, every failing field named, the experiment stage, the posture digest,
+the posture-status rule) are proved for this adapter in
+`tests/test_provider_authorization.py`; this file keeps the model provider's
+own fields.
 """
 
-from hashlib import sha256
 import json
 from pathlib import Path
 
 import pytest
 
 from corridor.native_provider_boundary import (
-    EXPERIMENT_STAGE, NATIVE_MATRIX_PURPOSE, POSTURE, POSTURE_PATH,
+    EXPERIMENT_STAGE, NATIVE_MATRIX_PURPOSE, POSTURE,
     Budget, CustomerAuthorization, ExperimentScope, NativeProviderRefused,
     RequestBoundary, TransportOutcome, open_native_provider_boundary,
 )
@@ -50,6 +53,20 @@ def _experiment(**overrides) -> ExperimentScope:
     )
     values.update(overrides)
     return ExperimentScope(**values)
+
+
+def _customer(**overrides) -> CustomerAuthorization:
+    values = dict(
+        record_id="signed-2026-09-08", customer="Example DOT",
+        projects=frozenset({"wsdot-public-utility-listings"}),
+        source_classes=frozenset({"native_matrix"}), purposes=frozenset({NATIVE_MATRIX_PURPOSE}),
+        stages=frozenset({"shadow"}), source_sha256s=frozenset({SOURCE}),
+        max_calls=4, max_pages=4, max_total_tokens=100_000,
+        posture_identity=POSTURE.identity, posture_digest=POSTURE.digest,
+        retention_disclosed=True, signed_by="an actual signatory", signed_on="2026-09-08",
+    )
+    values.update(overrides)
+    return CustomerAuthorization(**values)
 
 
 def _request(**overrides) -> RequestBoundary:
@@ -108,52 +125,32 @@ def _open(transport, *, record=_DEFAULT, request=None, budget=None, sources=(SOU
     )
 
 
-def test_the_posture_digest_is_the_recorded_document_bytes():
-    assert sha256(POSTURE_PATH.read_bytes()).hexdigest() == POSTURE.digest
+def test_the_posture_records_the_approved_model_configuration():
     assert POSTURE.model == "gpt-5.6-luna" and POSTURE.reasoning_effort == "none"
     assert POSTURE.store is False and POSTURE.customer_processing == "blocked"
 
 
-def test_an_absent_record_refuses_with_zero_outbound_requests():
-    with pytest.raises(NativeProviderRefused) as refused:
-        _open(ForbiddenTransport(), record=None)
-    assert refused.value.reason == "authorization-absent"
-    assert refused.value.outbound_requests == 0
-    assert any("authorization-absent" in item for item in refused.value.mismatches)
-
-
-def test_a_refusal_names_every_failing_field_not_only_the_first():
-    request = _request(purpose="minutes-prose-extraction", source_class="native_minutes",
-                       model="some-other-model", reasoning_effort="high", store=True)
+def test_a_refusal_names_every_failing_model_configuration_field_not_only_the_first():
+    request = _request(source_class="native_minutes", model="some-other-model", reasoning_effort="high",
+                       store=True, image_dpi=300)
     with pytest.raises(NativeProviderRefused) as refused:
         _open(ForbiddenTransport(), request=request)
     reported = " | ".join(refused.value.mismatches)
-    for field in ("purpose", "source-class", "model", "reasoning-effort", "store"):
+    for field in ("source-class", "model", "reasoning-effort", "store", "image-dpi"):
         assert field in reported, reported
+    assert "the posture approves" in reported
     assert refused.value.outbound_requests == 0
 
 
 def test_customer_material_is_refused_while_the_posture_blocks_customer_processing():
-    record = CustomerAuthorization(
-        record_id="signed-2026-09-08", customer="Example DOT",
-        projects=frozenset({"wsdot-public-utility-listings"}),
-        source_classes=frozenset({"native_matrix"}), purposes=frozenset({NATIVE_MATRIX_PURPOSE}),
-        stages=frozenset({"shadow"}), source_sha256s=frozenset({SOURCE}),
-        max_calls=4, max_pages=4, max_total_tokens=100_000,
-        posture_identity=POSTURE.identity, posture_digest=POSTURE.digest,
-        retention_disclosed=True, signed_by="an actual signatory", signed_on="2026-09-08",
-    )
     with pytest.raises(NativeProviderRefused) as refused:
-        _open(ForbiddenTransport(), record=record, request=_request(stage="shadow"))
+        _open(ForbiddenTransport(), record=_customer(), request=_request(stage="shadow"))
     reported = " | ".join(refused.value.mismatches)
     assert "posture-customer-processing" in reported and "posture-pdf-licensing" in reported
     assert refused.value.outbound_requests == 0
-
-
-def test_an_experiment_scope_cannot_authorize_a_customer_stage():
-    with pytest.raises(NativeProviderRefused) as refused:
-        _open(ForbiddenTransport(), request=_request(stage="authoritative"))
-    assert "stage" in " | ".join(refused.value.mismatches)
+    with pytest.raises(NativeProviderRefused) as undisclosed:
+        _open(ForbiddenTransport(), record=_customer(retention_disclosed=False), request=_request(stage="shadow"))
+    assert "retention-disclosure" in " | ".join(undisclosed.value.mismatches)
 
 
 def test_a_source_outside_the_declared_digest_allowlist_is_refused():

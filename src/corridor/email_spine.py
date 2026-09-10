@@ -20,7 +20,7 @@ from pydantic import Field
 from sqlalchemy import func, select
 
 from corridor.connectors.pull_connector import SourceEnvelope
-from corridor.analytics import AnalyticsEvent, EventFamily, emit_event
+from corridor.analytics import delta_supersession_event, emit_event
 from corridor.email_segments import append_email_segments
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import injected_extractor_config, token_usage_delta, usage_snapshot, zero_token_usage
@@ -253,13 +253,13 @@ def capture_email_thread(session, envelope: SourceEnvelope, *, client):
         delivery = session.get_one(SourceDelivery, closing.push_delivery_id)
         for supersession in session.scalars(select(DeltaSupersession).where(
                 DeltaSupersession.source_reading_id == reading.id)):
-            emit_event(AnalyticsEvent(family=EventFamily.DELTA_SUPERSESSION,
-                binding=binding_for_source(session, delivery),
-                payload={"project_id": thread.project_id,
-                         "prior_delta_id": supersession.prior_delta_id,
-                         "superseding_delta_id": supersession.superseding_delta_id,
-                         "source_reading_id": reading.id, "source_revision": input_digest,
-                         "comparison_rule_version": PROMPT_VERSION}))
+            emit_event(delta_supersession_event(
+                binding_for_source(session, delivery),
+                project_id=thread.project_id,
+                prior_delta_id=supersession.prior_delta_id,
+                superseding_delta_id=supersession.superseding_delta_id,
+                source_reading_id=reading.id, source_revision=input_digest,
+                comparison_rule_version=PROMPT_VERSION))
         return reading
 
 

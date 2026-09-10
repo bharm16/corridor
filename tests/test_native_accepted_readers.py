@@ -107,7 +107,7 @@ def test_actual_readers_never_select_legacy_populations_or_values(session, adopt
         report = build_report(session, project.id, today=TODAY, frozen_reading=reading)
         body = render(report)
         assert "100+00" in body and "200+00" in body and "p.None" not in body
-        assert "Utility Conflicts!" in body
+        assert "sheet Utility Conflicts, cell " in body  # the one locator caption, as every reader prints it (C04b)
         assert any(isinstance(cell.provenance, Assertion) and cell.provenance.decision_id for cell in report.cells)
         briefing = brief_project(session, project.id, client=covering_client(), today=TODAY, frozen_reading=reading)
         assert not briefing.refused and briefing.sentences
@@ -160,6 +160,32 @@ def test_source_check_does_not_make_an_undecided_fact_an_accepted_value(session,
     record_human_fact_decision(session, fact, principal=PRINCIPAL, command_type="resolve_discrepancy", idempotency_key="decide-unmapped")
     with pytest.raises(NativeReadingRefused, match="no declared baseline"):
         read_accepted_field_population(session, project.id)
+
+
+def test_a_population_read_decodes_each_source_workbook_once(session, adopted, monkeypatch):
+    """The Source Passage Check over every accepted field costs one decode per Document.
+
+    Before the check moved onto ``locator_validation`` the reader grouped cells
+    by Document and replayed them in one workbook decode; the one-shot check
+    then decoded the same workbook once per cell.  The reader now asks the
+    check's own batch form, so a report or Constraint Log read is back to one
+    decode per Document, and every cell still reads ``valid``.
+    """
+    import corridor.source_segments as source_segments
+    project, _ = adopted
+    original = source_segments.load_workbook
+    decodes = []
+
+    def counted(source, **options):
+        decodes.append(options)
+        return original(source, **options)
+
+    monkeypatch.setattr(source_segments, "load_workbook", counted)
+    population = read_accepted_field_population(session, project.id)
+    passages = [source for record in population.records for field in record.fields.values() for source in field.sources]
+    assert len(passages) > 1
+    assert {source.locator_validation_status for source in passages} == {"valid"}
+    assert len(decodes) == len({source.document_id for source in passages}) == 1
 
 
 def test_ambiguous_effective_source_and_record_alias_decisions_refuse_instead_of_last_wins(session, adopted):
@@ -490,7 +516,8 @@ def test_resolve_delta_reordered_source_updates_only_its_explicit_canonical_targ
     assert len(displaced) == 1
     assert displaced[0]["delta_record_decision_id"] == result.decision_id
     assert displaced[0]["replacement_decision_id"] in result.fact_decision_ids
-    assert changed.fields["station_from"].sources[0].locator.endswith("!D3")
+    # The caption is source_segments' one locator wording, shared with every other reader (C04b).
+    assert changed.fields["station_from"].sources[0].locator == "sheet Utility Conflicts, cell D3"
     assert changed.source_row_key == target.source_row_key  # adopted row was !4; later source moved to !3
     before = read_accepted_field_population(session, project.id, revision_id=adoption.revision_id)
     assert next(record for record in before.records if record.subject_key == target.record_subject_key).station_from == "200+00"

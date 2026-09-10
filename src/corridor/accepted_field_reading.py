@@ -6,6 +6,11 @@ matched. Here an adopted source's explicit source-row-to-record-subject mapping
 owns identity, and each field names the exact native FactDecision and revision.
 Unmapped source subjects and unsupported authority classes refuse native reading;
 no grouping by legacy dependency ID or last-row-wins policy is permitted.
+The Source Passage Check on each value source is ``locator_validation``'s
+answer and its caption is ``source_segments``' one locator wording, not a
+second ladder and a fifth spelling kept here; this reader adds only what it
+alone knows: that the source belongs to the reading's project, and whether the
+registered bytes were available to it.
 """
 from __future__ import annotations
 
@@ -14,8 +19,6 @@ from datetime import date, datetime
 from hashlib import sha256
 import json
 from types import MappingProxyType
-from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Any, Mapping
 
 from sqlalchemy import func, select, text
@@ -31,13 +34,12 @@ from corridor.models import (
     ScheduleLinkReceipt, ScheduleGoverningDerivation, Milestone, MilestoneRegistration,
 )
 from corridor.record_projection import read_native_record_values, record_value_payload
-from corridor.object_storage import content_store
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
-from corridor.source_segments import spreadsheet_replay
+from corridor.source_segments import source_segment_locator_words
+from corridor.storage import stored_file
 from corridor.accepted_statement_reading import AcceptedStatement, read_native_statements
-from corridor.locator_validation import source_segment_locator_validation_status
+from corridor.locator_validation import INVALID, NOT_CHECKED, source_passage_checks
 from corridor.object_storage import StorageError, DigestMismatch
-from corridor.source_segment_errors import SourceSegmentIntegrityError
 
 
 class NativeReadingRefused(ValueError):
@@ -219,50 +221,26 @@ def _passages(session, values):
         .join(Document, Document.id == SourceSegment.document_id)
         .where(FactSource.fact_id.in_(identities), FactSource.role == "value_source")
         .order_by(FactSource.fact_id, FactSource.ordinal)).all()
-    by_document = {}
-    for link, segment, document in rows:
-        by_document.setdefault(document.id, (document, {}))[1][segment.id] = segment
-    checks = {}
-    for document, segments in by_document.values():
-        try:
-            store = content_store()
-            key = store.resolve(document.sha256)
-            if key is None:
-                for segment in segments.values():
-                    checks[segment.id] = ("not_checked", "registered source bytes are unavailable")
-                continue
-            with TemporaryDirectory(prefix="corridor-native-reading-") as temporary:
-                path = Path(temporary) / ("source" + Path(document.filename).suffix)
-                store.stage(key, path, sha256=document.sha256)
-                if all(segment.kind == "spreadsheet_cell" for segment in segments.values()):
-                    with spreadsheet_replay(document, path) as replay:
-                        for segment in segments.values():
-                            replay(segment)
-                            checks[segment.id] = ("valid", None)
-                else:
-                    for segment in segments.values():
-                        status = source_segment_locator_validation_status(document, segment, path)
-                        checks[segment.id] = (status, None if status == "valid" else "Source Passage Check could not establish this locator")
-        except (SourceSegmentIntegrityError, DigestMismatch) as error:
-            for segment in segments.values():
-                checks[segment.id] = ("invalid", str(error))
-        except (StorageError, OSError, ValueError) as error:
-            for segment in segments.values():
-                checks[segment.id] = ("not_checked", str(error))
-    for link, segment, document in rows:
-        value = identities[link.fact_id]
-        if segment.project_id != value.project_id or document.project_id != value.project_id:
-            raise NativeReadingRefused("native value source belongs to another project")
-        if segment.kind == "spreadsheet_cell" and segment.sheet_name and segment.cell_range:
-            locator = f"{segment.sheet_name}!{segment.cell_range}"
-        elif segment.kind in {"pdf_span", "pdf_cell", "prose_span"} and segment.page_no is not None:
-            locator = f"page {segment.page_no}"
-        else:
-            raise NativeReadingRefused("native publication needs an explicit supported source locator")
-        result.setdefault(link.fact_id, []).append(AcceptedSourcePassage(
-            value.fact_id, value.decision_id, value.revision_id, segment.id,
-            document.id, document.filename, locator, segment.exact_text, segment.page_no,
-            document.doc_date, *checks.get(segment.id, ("not_checked", "locator was not checked"))))
+    with source_passage_checks() as checks:
+        for link, segment, document in rows:
+            value = identities[link.fact_id]
+            if segment.project_id != value.project_id or document.project_id != value.project_id:
+                raise NativeReadingRefused("native value source belongs to another project")
+            try:
+                path = stored_file(document)
+                check = checks.check(document, segment, path)
+            except DigestMismatch as error:
+                status, limitation = INVALID, str(error)
+            except (OSError, ValueError, StorageError) as error:
+                status, limitation = NOT_CHECKED, f"Source Passage Check unavailable: {error}"
+            else:
+                status, limitation = check.status, check.reason
+                if path is None and status == NOT_CHECKED:
+                    limitation = "registered source bytes are unavailable for the Source Passage Check"
+            result.setdefault(link.fact_id, []).append(AcceptedSourcePassage(
+                value.fact_id, value.decision_id, value.revision_id, segment.id,
+                document.id, document.filename, source_segment_locator_words(segment), segment.exact_text, segment.page_no,
+                document.doc_date, status, limitation))
     return {key: tuple(items) for key, items in result.items()}
 
 

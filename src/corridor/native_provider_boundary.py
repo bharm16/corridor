@@ -3,14 +3,21 @@
 `native_pipeline.py` used to refuse every `fresh_provider` observation flatly,
 because a mode label and a digest string are not authorization and no boundary
 existed to be one. That refusal was right and is not deleted here; it is
-replaced by a boundary that can actually be satisfied, in the shape
-`corridor_pdf_reader/textract_adapter/boundary.py` already proved for Textract.
+replaced by a boundary that can actually be satisfied. It was first written in
+the shape `corridor_pdf_reader/textract_adapter/boundary.py` proved for
+Textract; that shape is now `corridor.provider_authorization`, which both
+adapters extend, and this module adds only what the model provider needs: the
+model, effort, store, base URL and image settings on the posture and the
+request, the source-digest allowlist and the three budget ceilings on the
+records, and the checks over those fields.
 
 `open_native_provider_boundary` takes the authorization record, the request's
 own boundary, the exact source digests the run intends to send, and the
 campaign budget. It matches all of them against the recorded provider posture
 and against each other, and refuses with zero outbound requests when anything
-is absent or uncovered. Only then does it construct the mapper.
+is absent or uncovered. Only then does it construct the mapper. The
+posture-status rule is the declared one for this provider: every request is
+refused while the posture is not `approved`, experiments included.
 
 The transport is the seam. One `send` is one outbound request, counted as a
 call, a retry or a failed attempt, so the receipt can separate what was
@@ -26,7 +33,7 @@ and `pdf_licensing: unresolved`, and both appear in the refusal.
 
 from __future__ import annotations
 
-from corridor import digests
+from corridor import digests, provider_authorization
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from hashlib import sha256
@@ -42,14 +49,18 @@ from corridor.llm import (
     RequestConfiguration,
     responses_payload,
 )
+from corridor.provider_authorization import (  # the stage names stay importable from here
+    CUSTOMER_STAGES,
+    EXPERIMENT_STAGE,
+    OutboundCounts,
+    ProviderRefused,
+)
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 POSTURE_PATH = REPO_ROOT / "docs/operations/openai-responses-provider-posture.md"
 
 NATIVE_MATRIX_PURPOSE = "native-matrix-structure-mapping"
 MEASUREMENT_PURPOSE = "extraction-measurement"
-EXPERIMENT_STAGE = "experiment"
-CUSTOMER_STAGES: tuple[str, ...] = ("compatibility", "shadow", "authoritative")
 # The retry set and the attempt ceiling come from the client, imported rather
 # than restated: this boundary owns *when* an attempt is counted as a retry,
 # not which statuses are transient.
@@ -67,7 +78,7 @@ _digest = digests.canonical_sha256
 
 
 @dataclass(frozen=True)
-class ProviderPosture:
+class ProviderPosture(provider_authorization.ProviderPosture):
     """What the provider is approved to do at all, bound to its document bytes.
 
     `customer_processing` and `pdf_licensing` are the maintainer's to change,
@@ -75,10 +86,6 @@ class ProviderPosture:
     which invalidates every record that accepted the old one.
     """
 
-    identity: str
-    document: str
-    digest: str
-    provider: str
     api: str
     model: str
     reasoning_effort: str
@@ -87,17 +94,12 @@ class ProviderPosture:
     base_url: str
     image_detail: str
     image_dpi: int
-    permitted_purposes: tuple[str, ...]
     permitted_source_classes: tuple[str, ...]
     retention: str
     training_opt_out: str
     zero_data_retention: str
     customer_processing: str
     pdf_licensing: str
-    status: str
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 POSTURE = ProviderPosture(
@@ -137,7 +139,7 @@ class Budget:
 
 
 @dataclass(frozen=True)
-class ExperimentScope:
+class ExperimentScope(provider_authorization.ExperimentScope):
     """The record for public or synthetic experiment material.
 
     It names the dataset, the exact source digests, the purpose and the
@@ -145,71 +147,28 @@ class ExperimentScope:
     fictional customer agreement is ever written to cover reference material.
     """
 
-    record_id: str
-    dataset: str
-    dataset_digest: str
-    purpose: str
-    scope: str
-    source_classes: frozenset[str]
     source_sha256s: frozenset[str]
     max_calls: int
     max_pages: int
     max_total_tokens: int
-    posture_identity: str
-    posture_digest: str
-    recorded_by: str
-    recorded_on: str
-
-    kind = "experiment-scope"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "record_id": self.record_id, "dataset": self.dataset,
-                "dataset_digest": self.dataset_digest, "purpose": self.purpose, "scope": self.scope,
-                "source_classes": sorted(self.source_classes), "source_sha256s": sorted(self.source_sha256s),
-                "max_calls": self.max_calls, "max_pages": self.max_pages,
-                "max_total_tokens": self.max_total_tokens, "posture_identity": self.posture_identity,
-                "posture_digest": self.posture_digest, "recorded_by": self.recorded_by,
-                "recorded_on": self.recorded_on}
 
 
 @dataclass(frozen=True)
-class CustomerAuthorization:
+class CustomerAuthorization(provider_authorization.CustomerAuthorization):
     """#522's signed instance, reduced to the fields this boundary matches."""
 
-    record_id: str
-    customer: str
-    projects: frozenset[str]
-    source_classes: frozenset[str]
-    purposes: frozenset[str]
-    stages: frozenset[str]
     source_sha256s: frozenset[str]
     max_calls: int
     max_pages: int
     max_total_tokens: int
-    posture_identity: str
-    posture_digest: str
     retention_disclosed: bool
-    signed_by: str
-    signed_on: str
-
-    kind = "customer-authorization"
-
-    def as_dict(self) -> dict[str, Any]:
-        return {"kind": self.kind, "record_id": self.record_id, "customer": self.customer,
-                "projects": sorted(self.projects), "source_classes": sorted(self.source_classes),
-                "purposes": sorted(self.purposes), "stages": sorted(self.stages),
-                "source_sha256s": sorted(self.source_sha256s), "max_calls": self.max_calls,
-                "max_pages": self.max_pages, "max_total_tokens": self.max_total_tokens,
-                "posture_identity": self.posture_identity, "posture_digest": self.posture_digest,
-                "retention_disclosed": self.retention_disclosed, "signed_by": self.signed_by,
-                "signed_on": self.signed_on}
 
 
 AuthorizationRecord = ExperimentScope | CustomerAuthorization
 
 
 @dataclass(frozen=True)
-class RequestBoundary:
+class RequestBoundary(provider_authorization.RequestBoundary):
     """What one campaign claims about itself, matched against the record.
 
     The model configuration is part of the boundary, not a client detail: a
@@ -217,20 +176,12 @@ class RequestBoundary:
     outside the posture whatever the record says about projects and purposes.
     """
 
-    project: str
-    source_class: str
-    purpose: str
-    stage: str
-    posture_identity: str
     model: str
     reasoning_effort: str
     store: bool
     base_url: str
     image_detail: str
     image_dpi: int
-
-    def as_dict(self) -> dict[str, Any]:
-        return asdict(self)
 
 
 @dataclass(frozen=True)
@@ -249,27 +200,74 @@ class ResponsesTransport(Protocol):
     def send(self, payload: dict[str, Any]) -> TransportOutcome: ...
 
 
-class NativeProviderRefused(RuntimeError):
+class NativeProviderRefused(ProviderRefused):
     """A refusal, with its reason, every failing field, and what went out.
 
     `outbound_requests` is zero for an authorization refusal by construction:
     the check runs before a transport is ever handed a payload.
     """
 
-    def __init__(self, reason: str, *, detail: str = "", mismatches: tuple[str, ...] = (),
-                 outbound_requests: int = 0, request: RequestBoundary | None = None) -> None:
-        super().__init__(f"{reason}: {detail or '; '.join(mismatches) or reason}")
-        self.reason = reason
-        self.detail = detail
-        self.mismatches = tuple(mismatches)
-        self.outbound_requests = outbound_requests
-        self.request = request
+    kind = "native-provider-refusal"
 
-    def record(self) -> dict[str, Any]:
-        return {"kind": "native-provider-refusal", "reason": self.reason, "detail": self.detail,
-                "mismatches": list(self.mismatches), "outbound_requests": self.outbound_requests,
-                "request": None if self.request is None else self.request.as_dict(),
-                "recorded_at": _now()}
+
+@dataclass(frozen=True)
+class _NativeAuthorizationCheck(
+    provider_authorization.AuthorizationCheck[ProviderPosture, RequestBoundary, CustomerAuthorization, ExperimentScope]
+):
+    """The shared check plus the model configuration, the source allowlist and the budgets."""
+
+    source_sha256s: frozenset[str]
+    budget: Budget
+
+    implementer = "the boundary"
+    posture_status = provider_authorization.EVERY_REQUEST_NEEDS_APPROVED
+    record_kinds = (ExperimentScope, CustomerAuthorization)
+
+    def request_mismatches(self, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
+        found: list[str] = []
+        for name, asked, allowed in (
+            ("model", request.model, posture.model),
+            ("reasoning-effort", request.reasoning_effort, posture.reasoning_effort),
+            ("store", request.store, posture.store),
+            ("base-url", request.base_url, posture.base_url),
+            ("image-detail", request.image_detail, posture.image_detail),
+            ("image-dpi", request.image_dpi, posture.image_dpi),
+        ):
+            if asked != allowed:
+                found.append(f"{name}: request names {asked!r}, the posture approves {allowed!r}")
+        if request.source_class not in posture.permitted_source_classes:
+            found.append(f"source-class: {request.source_class!r} is not a source class the posture permits ({', '.join(posture.permitted_source_classes)})")
+        if not self.source_sha256s:
+            found.append("source-digests: a request must name the exact sources it intends to send")
+        return found
+
+    def customer_mismatches(self, record: CustomerAuthorization, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
+        # Status alone cannot open customer processing. Both fields are the
+        # maintainer's to record in the posture document with evidence; the
+        # boundary neither queries the provider nor infers them from a
+        # signature, and refuses while either is unmet.
+        found: list[str] = []
+        for name, state, required in (("customer-processing", posture.customer_processing, "open"),
+                                      ("pdf-licensing", posture.pdf_licensing, "resolved")):
+            if state != required:
+                found.append(f"posture-{name}: the posture records {state!r}; customer material requires {required!r} with evidence in the posture document")
+        if not record.retention_disclosed:
+            found.append(f"retention-disclosure: record {record.record_id!r} does not disclose the posture's abuse-monitoring retention")
+        return found
+
+    def record_mismatches(self, record: AuthorizationRecord, request: RequestBoundary, posture: ProviderPosture) -> list[str]:
+        found: list[str] = []
+        outside = sorted(self.source_sha256s - record.source_sha256s)
+        if outside:
+            found.append(f"source-digests: {len(outside)} source(s) are outside record {record.record_id!r}, beginning {outside[0][:12]!r}")
+        for name, asked, ceiling in (
+            ("budget-max-calls", self.budget.max_calls, record.max_calls),
+            ("budget-max-pages", self.budget.max_pages, record.max_pages),
+            ("budget-max-total-tokens", self.budget.max_total_tokens, record.max_total_tokens),
+        ):
+            if asked > ceiling or asked < 1:
+                found.append(f"{name}: the campaign asks for {asked}, record {record.record_id!r} allows {ceiling}")
+        return found
 
 
 def mismatches(
@@ -281,74 +279,7 @@ def mismatches(
     Every failing field is reported, not the first, so one refusal names the
     whole gap instead of sending the maintainer back three times.
     """
-    found: list[str] = []
-    if request.posture_identity != posture.identity:
-        found.append(f"posture-identity: request names {request.posture_identity!r}, the boundary implements {posture.identity!r}")
-    for name, asked, allowed in (
-        ("model", request.model, posture.model),
-        ("reasoning-effort", request.reasoning_effort, posture.reasoning_effort),
-        ("store", request.store, posture.store),
-        ("base-url", request.base_url, posture.base_url),
-        ("image-detail", request.image_detail, posture.image_detail),
-        ("image-dpi", request.image_dpi, posture.image_dpi),
-    ):
-        if asked != allowed:
-            found.append(f"{name}: request names {asked!r}, the posture approves {allowed!r}")
-    if request.purpose not in posture.permitted_purposes:
-        found.append(f"purpose: {request.purpose!r} is not a purpose the posture permits ({', '.join(posture.permitted_purposes)})")
-    if request.source_class not in posture.permitted_source_classes:
-        found.append(f"source-class: {request.source_class!r} is not a source class the posture permits ({', '.join(posture.permitted_source_classes)})")
-    if posture.status != "approved":
-        found.append(f"posture-status: the posture is {posture.status!r}; no request may be sent under it")
-    if not source_sha256s:
-        found.append("source-digests: a request must name the exact sources it intends to send")
-    if record is None:
-        found.append("authorization-absent: no experiment scope or customer authorization was given")
-        return tuple(found)
-    if not isinstance(record, (ExperimentScope, CustomerAuthorization)):
-        found.append(f"record-kind: {type(record).__name__} is not an authorization record")
-        return tuple(found)
-    if record.posture_identity != posture.identity:
-        found.append(f"posture-identity: record {record.record_id!r} accepts {record.posture_identity!r}, the boundary implements {posture.identity!r}")
-    if record.posture_digest != posture.digest:
-        found.append(f"posture-digest: record {record.record_id!r} accepts digest {record.posture_digest[:12]!r}, the posture document's digest is {posture.digest[:12]!r}")
-    if request.source_class not in record.source_classes:
-        found.append(f"source-class: {request.source_class!r} is not permitted by record {record.record_id!r} ({', '.join(sorted(record.source_classes))})")
-    outside = sorted(source_sha256s - record.source_sha256s)
-    if outside:
-        found.append(f"source-digests: {len(outside)} source(s) are outside record {record.record_id!r}, beginning {outside[0][:12]!r}")
-    for name, asked, ceiling in (
-        ("budget-max-calls", budget.max_calls, record.max_calls),
-        ("budget-max-pages", budget.max_pages, record.max_pages),
-        ("budget-max-total-tokens", budget.max_total_tokens, record.max_total_tokens),
-    ):
-        if asked > ceiling or asked < 1:
-            found.append(f"{name}: the campaign asks for {asked}, record {record.record_id!r} allows {ceiling}")
-    if isinstance(record, CustomerAuthorization):
-        # Status alone cannot open customer processing. Both fields are the
-        # maintainer's to record in the posture document with evidence; the
-        # boundary neither queries the provider nor infers them from a
-        # signature, and refuses while either is unmet.
-        for name, state, required in (("customer-processing", posture.customer_processing, "open"),
-                                      ("pdf-licensing", posture.pdf_licensing, "resolved")):
-            if state != required:
-                found.append(f"posture-{name}: the posture records {state!r}; customer material requires {required!r} with evidence in the posture document")
-        if not record.retention_disclosed:
-            found.append(f"retention-disclosure: record {record.record_id!r} does not disclose the posture's abuse-monitoring retention")
-        if request.project not in record.projects:
-            found.append(f"project: {request.project!r} is not a project of record {record.record_id!r} ({', '.join(sorted(record.projects))})")
-        if request.purpose not in record.purposes:
-            found.append(f"purpose: {request.purpose!r} is not permitted by record {record.record_id!r} ({', '.join(sorted(record.purposes))})")
-        if request.stage not in record.stages or request.stage not in CUSTOMER_STAGES:
-            found.append(f"stage: {request.stage!r} is not authorized by record {record.record_id!r} ({', '.join(sorted(record.stages))})")
-    else:
-        if request.project != record.dataset:
-            found.append(f"project: {request.project!r} is not the dataset of experiment scope {record.record_id!r} ({record.dataset!r})")
-        if request.purpose != record.purpose:
-            found.append(f"purpose: {request.purpose!r} is not the purpose of experiment scope {record.record_id!r} ({record.purpose!r})")
-        if request.stage != EXPERIMENT_STAGE:
-            found.append(f"stage: {request.stage!r} cannot be authorized by an experiment scope, which covers {EXPERIMENT_STAGE!r} only")
-    return tuple(found)
+    return _NativeAuthorizationCheck(source_sha256s=source_sha256s, budget=budget).mismatches(record, request, posture)
 
 
 @dataclass
@@ -367,14 +298,11 @@ def open_native_provider_boundary(
     posture: ProviderPosture = POSTURE, sleep=time.sleep,
 ) -> AuthorizedNativeMapper:
     """Match everything, then construct the mapper. A refusal sends nothing."""
-    found = mismatches(record, request, source_sha256s=frozenset(source_sha256s), budget=budget, posture=posture)
-    if found:
-        reason = "authorization-absent" if record is None else "authorization-refused"
-        raise NativeProviderRefused(reason, mismatches=found, outbound_requests=0, request=request)
-    assert isinstance(record, (ExperimentScope, CustomerAuthorization))
+    check = _NativeAuthorizationCheck(source_sha256s=frozenset(source_sha256s), budget=budget)
+    authorized = check.authorized(record, request, posture, refuse=NativeProviderRefused)
     if not isinstance(campaign, str) or not campaign.strip():
         raise NativeProviderRefused("campaign-identity-missing", detail="a campaign needs an explicit identity", request=request)
-    return AuthorizedNativeMapper(record, request, transport=transport, budget=budget,
+    return AuthorizedNativeMapper(authorized, request, transport=transport, budget=budget,
                                   source_sha256s=frozenset(source_sha256s), campaign=campaign,
                                   posture=posture, sleep=sleep)
 
@@ -405,9 +333,7 @@ class AuthorizedNativeMapper:
         )
         self.image_detail = request.image_detail
         self.usage = Usage()
-        self.calls = 0
-        self.retries = 0
-        self.failed_attempts = 0
+        self.counts = OutboundCounts()
         self.pages_requested = 0
         self.refusals: list[dict[str, Any]] = []
         self.receipts: list[dict[str, Any]] = []
@@ -444,10 +370,6 @@ class AuthorizedNativeMapper:
         return self.usage.cached_tokens
 
     @property
-    def outbound_requests(self) -> int:
-        return self.calls + self.retries + self.failed_attempts
-
-    @property
     def total_tokens(self) -> int:
         return self.usage.prompt_tokens + self.usage.completion_tokens
 
@@ -469,9 +391,8 @@ class AuthorizedNativeMapper:
             "opened_at": self.opened_at, "posture": self.posture.as_dict(),
             "authorization": {"kind": self.record.kind, "record_id": self.record.record_id},
             "request": self.request.as_dict(), "budget": self.budget.as_dict(),
-            "counts": {"pages_requested": self.pages_requested, "calls": self.calls,
-                       "retries": self.retries, "failed_attempts": self.failed_attempts,
-                       "outbound_requests": self.outbound_requests, "refusals": len(self.refusals)},
+            "counts": {"pages_requested": self.pages_requested, **self.counts.counted(),
+                       "refusals": len(self.refusals)},
             "tokens": {"input": self.usage.prompt_tokens, "output": self.usage.completion_tokens,
                        "cached_input": self.usage.cached_tokens, "total": self.total_tokens},
             "usd": None,
@@ -515,15 +436,16 @@ class AuthorizedNativeMapper:
         for attempt in range(MAX_ATTEMPTS):
             attempts += 1
             outcome = self._transport.send(payload)
+            self.counts.attempts += 1
             if outcome.status == 200 and outcome.body is not None:
-                self.calls += 1
+                self.counts.calls += 1
                 return self._read(outcome.body, request_identity, attempts, started)
             if outcome.status in RETRY_STATUSES and attempt + 1 < MAX_ATTEMPTS:
-                self.retries += 1
+                self.counts.retries += 1
                 last_error = f"{outcome.status}: {outcome.error or ''}"[:200]
                 self._backoff(attempt, outcome.retry_after)
                 continue
-            self.failed_attempts += 1
+            self.counts.failed_attempts += 1
             raise self._refuse("provider-call-failed", f"{outcome.status}: {outcome.error or ''}"[:300],
                                request_identity, attempts)
         raise self._refuse("provider-call-failed", f"failed after {attempts} attempts: {last_error}",
@@ -532,7 +454,7 @@ class AuthorizedNativeMapper:
     def _require_budget(self, pages: int, request_identity: dict[str, Any]) -> None:
         exceeded = [
             name for name, value, ceiling in (
-                ("calls", self.calls + 1, self.budget.max_calls),
+                ("calls", self.counts.calls + 1, self.budget.max_calls),
                 ("pages", self.pages_requested + pages, self.budget.max_pages),
                 ("total_tokens", self.total_tokens, self.budget.max_total_tokens),
             ) if value > ceiling

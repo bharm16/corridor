@@ -76,10 +76,10 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import (
     AnalyticsBinding,
-    AnalyticsEvent,
-    EventFamily,
     default_binding,
     emit_event,
+    follow_up_plan_creation_event,
+    packet_save_event,
 )
 from corridor.delta_refusals import RefusalCode, database_refusal_code
 from corridor.delta_resolution import (
@@ -1043,32 +1043,20 @@ def _emit_packet_save(
     for child in request.children:
         counts[child.outcome] = counts.get(child.outcome, 0) + 1
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.PACKET_SAVE,
-            binding=binding,
+        packet_save_event(
+            binding,
             occurred_at=request.decided_at.astimezone(timezone.utc),
-            payload={
-                "project_id": request.project_id,
-                "receipt_id": receipt_id,
-                "revision_id": revision_id,
-                "grouping_rule_version": request.grouping_rule_version,
-                "grouping_key_kind": request.grouping_key_kind,
-                "grouping_key": request.grouping_key,
-                "observed_accepted_revision_id": (
-                    request.observed_accepted_revision_id
-                ),
-                "child_count": len(request.children),
-                "outcome_counts": counts,
-                "outcome": outcome,
-                "refusal_reason": reason,
-                "wrote_revision": revision_id is not None,
-            },
-            metric_labels={
-                "grouping_key_kind": request.grouping_key_kind,
-                "outcome": outcome,
-                "refusal_reason": reason or "none",
-                "wrote_revision": "true" if revision_id is not None else "false",
-            },
+            project_id=request.project_id,
+            receipt_id=receipt_id,
+            revision_id=revision_id,
+            grouping_rule_version=request.grouping_rule_version,
+            grouping_key_kind=request.grouping_key_kind,
+            grouping_key=request.grouping_key,
+            observed_accepted_revision_id=request.observed_accepted_revision_id,
+            child_count=len(request.children),
+            outcome_counts=counts,
+            outcome=outcome,
+            refusal_reason=reason,
         )
     )
 
@@ -1085,34 +1073,21 @@ def _emit_follow_up_plan(
     coordination = child.request.coordination
     assert coordination is not None
     emit_event(
-        AnalyticsEvent(
-            family=EventFamily.FOLLOW_UP_PLAN_CREATION,
-            binding=binding,
+        follow_up_plan_creation_event(
+            binding,
             occurred_at=request.decided_at.astimezone(timezone.utc),
-            payload={
-                "project_id": request.project_id,
-                "delta_id": child.request.delta_id,
-                "follow_up_plan_id": plan_id,
-                "revision_id": revision_id,
-                "grouping_rule_version": request.grouping_rule_version,
-                "has_return_date": coordination.return_date is not None,
-                "responsible_kind": (
-                    "principal"
-                    if (coordination.responsible_principal or "").strip()
-                    else "organization"
-                ),
-                "evidence_count": evidence_count,
-            },
-            metric_labels={
-                "responsible_kind": (
-                    "principal"
-                    if (coordination.responsible_principal or "").strip()
-                    else "organization"
-                ),
-                "has_return_date": (
-                    "true" if coordination.return_date is not None else "false"
-                ),
-            },
+            project_id=request.project_id,
+            delta_id=child.request.delta_id,
+            follow_up_plan_id=plan_id,
+            revision_id=revision_id,
+            grouping_rule_version=request.grouping_rule_version,
+            has_return_date=coordination.return_date is not None,
+            responsible_kind=(
+                "principal"
+                if (coordination.responsible_principal or "").strip()
+                else "organization"
+            ),
+            evidence_count=evidence_count,
         )
     )
 

@@ -18,7 +18,18 @@ import json
 
 from sqlalchemy import text
 
-from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily, default_binding, emit_event
+from corridor.analytics import (
+    AnalyticsBinding,
+    AnalyticsEvent,
+    EventFamily,
+    coverage_confirmation_event,
+    coverage_reading_event,
+    default_binding,
+    emit_event,
+    evidence_opening_event,
+    preparation_request_event,
+    project_opening_event,
+)
 
 TIME_CATEGORIES = (
     "coordinator_review", "record_maintenance", "report_preparation",
@@ -163,13 +174,18 @@ def emit_presentation(
 ) -> None:
     """Record an actual project, coverage or evidence opening without a DB act."""
 
-    if family not in {EventFamily.PROJECT_OPENING, EventFamily.COVERAGE_READING, EventFamily.EVIDENCE_OPENING}:
+    if family not in _PRESENTATION_EVENTS:
         raise ValueError("unsupported presentation family")
-    emit_event(AnalyticsEvent(
-        family=family, binding=binding, occurred_at=at,
-        payload={"project_id": project_id, "principal_subject": principal_subject, **payload},
-        metric_labels={"surface": family.value},
+    emit_event(_PRESENTATION_EVENTS[family](
+        binding, occurred_at=at, project_id=project_id, principal_subject=principal_subject, **payload,
     ))
+
+
+_PRESENTATION_EVENTS = {
+    EventFamily.PROJECT_OPENING: project_opening_event,
+    EventFamily.COVERAGE_READING: coverage_reading_event,
+    EventFamily.EVIDENCE_OPENING: evidence_opening_event,
+}
 
 
 def emit_preparation_interaction(session, family: EventFamily, row, *, at: datetime,
@@ -179,16 +195,21 @@ def emit_preparation_interaction(session, family: EventFamily, row, *, at: datet
     The log names a flushed row but is not proof it committed. Verified exports
     use the immutable row and this event only supplies its runtime binding.
     """
-    if family not in {EventFamily.COVERAGE_CONFIRMATION, EventFamily.PREPARATION_REQUEST}:
+    if family not in _PREPARATION_INTERACTION_EVENTS:
         raise ValueError("unsupported preparation interaction")
     profile_sha256 = session.scalar(text(
         "select content_sha256 from project_issue_profiles where id = :profile_id and project_id = :project_id"
     ), {"profile_id": row.issue_profile_id, "project_id": row.project_id})
-    emit_event(AnalyticsEvent(
-        family=family, binding=binding_for_session(session), occurred_at=at,
-        payload={"project_id": row.project_id, "receipt_id": row.id,
-                 "issue_profile_identity": row.issue_profile_identity,
-                 "issue_profile_version": row.issue_profile_version,
-                 "issue_profile_sha256": profile_sha256,
-                 "principal_subject": principal_subject, **payload},
+    emit_event(_PREPARATION_INTERACTION_EVENTS[family](
+        binding_for_session(session), occurred_at=at, project_id=row.project_id, receipt_id=row.id,
+        issue_profile_identity=row.issue_profile_identity,
+        issue_profile_version=row.issue_profile_version,
+        issue_profile_sha256=profile_sha256,
+        principal_subject=principal_subject, **payload,
     ))
+
+
+_PREPARATION_INTERACTION_EVENTS = {
+    EventFamily.COVERAGE_CONFIRMATION: coverage_confirmation_event,
+    EventFamily.PREPARATION_REQUEST: preparation_request_event,
+}

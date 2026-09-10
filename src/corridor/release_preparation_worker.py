@@ -38,7 +38,13 @@ from typing import Any, Callable, Mapping, Sequence
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.analytics import AnalyticsBinding, AnalyticsEvent, EventFamily, default_binding, emit_event
+from corridor.analytics import (
+    AnalyticsBinding,
+    default_binding,
+    emit_event,
+    preparation_attempt_finished_event,
+    preparation_attempt_started_event,
+)
 from corridor.measurement_collection import binding_for_session
 from corridor.issue_coverage import CoverageRefused, load_declaration
 from corridor.issue_rendering import TemplateBinding
@@ -142,12 +148,10 @@ def run_preparation_request(
                        IssueProfile.id == request.issue_profile_id, IssueProfile.project_id == project_id))}
         reading.rollback()
 
-    emit_event(AnalyticsEvent(
-        family=EventFamily.PREPARATION_ATTEMPT, binding=resolved.binding or default_binding(),
-        occurred_at=started_at, payload={"project_id": project_id, "request_id": request_id,
-                                        "coverage_declaration_id": declaration_id,
-                                        "principal_subject": requester.subject, "outcome": "started",
-                                        "started_at": started_at.isoformat(), **profile},
+    emit_event(preparation_attempt_started_event(
+        resolved.binding or default_binding(), occurred_at=started_at,
+        project_id=project_id, request_id=request_id, coverage_declaration_id=declaration_id,
+        principal_subject=requester.subject, started_at=started_at.isoformat(), **profile,
     ))
     outcome = prepare_release_candidate(
         sessions,
@@ -181,14 +185,12 @@ def run_preparation_request(
         )
         recording.commit()
         recording.refresh(attempt)
-        emit_event(AnalyticsEvent(
-            family=EventFamily.PREPARATION_ATTEMPT, binding=resolved.binding or default_binding(),
-            occurred_at=completed_at, payload={"project_id": project_id, "request_id": request_id,
-                                             "attempt_id": int(attempt.id), "outcome": attempt.outcome,
-                                             "candidate_id": attempt.candidate_id, "refusal_code": attempt.refusal_code,
-                                             "started_at": started_at.isoformat(),
-                                             "coverage_declaration_id": declaration_id,
-                                             "principal_subject": requester.subject, **profile},
+        emit_event(preparation_attempt_finished_event(
+            resolved.binding or default_binding(), occurred_at=completed_at,
+            project_id=project_id, request_id=request_id, attempt_id=int(attempt.id), outcome=attempt.outcome,
+            candidate_id=attempt.candidate_id, refusal_code=attempt.refusal_code,
+            started_at=started_at.isoformat(), coverage_declaration_id=declaration_id,
+            principal_subject=requester.subject, **profile,
         ))
         return attempt
 
