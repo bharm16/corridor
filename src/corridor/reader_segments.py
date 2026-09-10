@@ -236,20 +236,23 @@ def replay_native_segment(
     """
 
     identity = segment.reader_identity or {}
+    # Only the stored identity is read here. The reader ran inside this ``try``
+    # once, so a key the reader's own result did not carry was reported as this
+    # row's locator being incomplete — an integrity verdict about a citation for
+    # a reading nothing obtained. ``read_native_pdf`` owns its result contract
+    # and refuses an unreadable payload as availability.
     try:
         config = identity["native_layer"]
         if identity["scheme"] != PDF_SEGMENT_SCHEME:
             raise KeyError("scheme")
-        reading = read_native_pdf(
-            path,
-            source_sha256=document.sha256,
-            engine=config["configuration"]["reader_engine"],
-            dpi=config["dpi"],
-        )
+        engine, dpi = config["configuration"]["reader_engine"], config["dpi"]
     except (KeyError, TypeError) as exc:
         raise SourceSegmentLocatorMismatch(
             "native segment reader identity is incomplete"
         ) from exc
+    reading = read_native_pdf(
+        path, source_sha256=document.sha256, engine=engine, dpi=dpi
+    )
     if identity != reading.identity:
         raise NativeReaderUnavailable(
             PDF_SEGMENT_SCHEME, "the recorded native reader configuration"
@@ -288,11 +291,14 @@ def replay_native_segments(document, segments, path):
     first = segments[0]
     identity = first.reader_identity or {}
     config = identity.get("native_layer", {})
+    # As in ``replay_native_segment``: the stored identity is what may be
+    # incomplete here. The read itself refuses an unreadable reader result as
+    # availability, because no page was opened.
     try:
-        reading = read_native_pdf(path, source_sha256=document.sha256,
-            engine=config["configuration"]["reader_engine"], dpi=config["dpi"])
+        engine, dpi = config["configuration"]["reader_engine"], config["dpi"]
     except (KeyError, TypeError) as exc:
         raise SourceSegmentLocatorMismatch("prose reader identity is incomplete") from exc
+    reading = read_native_pdf(path, source_sha256=document.sha256, engine=engine, dpi=dpi)
     # Neither of these opened a page, so neither may speak about the source:
     # the reader this batch was captured with is absent, or it ran and did not
     # return the reading these offsets are positions inside.

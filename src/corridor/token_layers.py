@@ -71,7 +71,11 @@ from corridor.retention import artifact_key, register_processing_artifact
 from corridor.verify import normalize
 from corridor_pdf_reader.execution import MEASURED_DPI, MEASURED_ENGINE, PdfiumExecutor
 from corridor_pdf_reader.provenance import SOURCE_COMMIT, PACKAGE_ROOT
-from corridor.source_segment_errors import SourceDocumentDigestMismatch, SourceSegmentLocatorMismatch
+from corridor.source_segment_errors import (
+    NativeReaderUnavailable,
+    SourceDocumentDigestMismatch,
+    SourceSegmentLocatorMismatch,
+)
 
 
 # The replacement OCR adapter (ADR-0094, #739). The engine name is the
@@ -270,7 +274,19 @@ def read_native_pdf(
     engine: str = MEASURED_ENGINE,
     dpi: int = MEASURED_DPI,
 ) -> NativePdfReading:
-    """Execute the native reader explicitly, including previously ingested bytes."""
+    """Execute the native reader explicitly, including previously ingested bytes.
+
+    **A result this build cannot read is an availability refusal.** The keys
+    below belong to the child process's payload, and a payload that does not
+    carry them means no page was read here at all. Every caller of this
+    function used to let that ``KeyError`` escape into its own ``except
+    (KeyError, TypeError)`` around the *stored* reader identity, so an
+    unreadable result was reported as ``SourceSegmentLocatorMismatch`` — the
+    integrity verdict *Not found at cited location*, which asserts that a
+    reader went to a cited location and the passage was not there. The refusal
+    belongs here rather than in each caller, because only this function knows
+    which fields are the reader result contract and which are the locator's.
+    """
 
     original = Path(path)
     if sha256(original.read_bytes()).hexdigest() != source_sha256:
@@ -278,10 +294,23 @@ def read_native_pdf(
     if engine not in {"tagged", "pdfium"} or not isinstance(dpi, int) or not 1 <= dpi <= 300:
         raise SourceSegmentLocatorMismatch("unsupported native reader configuration")
     result = (executor or PdfiumExecutor()).read_document(original, engine=engine, dpi=dpi)
-    if (result["source_sha256"] != source_sha256
+    try:
+        read_sha256 = result["source_sha256"]
+        engine_identity = reader_native_engine_identity(result)
+        # Timing, wall-clock and diagnostic raster artifacts are not reading
+        # identity. The actual characters, clipping and reconstructed cells are.
+        pages = [
+            {key: page[key] for key in ("number", "geometry", "text", "characters", "tables", "clipped")}
+            for page in result["pages"]
+        ]
+    except (KeyError, TypeError) as exc:
+        raise NativeReaderUnavailable(
+            PDF_SEGMENT_SCHEME, "a complete result from the recorded native reader"
+        ) from exc
+    if (read_sha256 != source_sha256
             or sha256(original.read_bytes()).hexdigest() != source_sha256):
         raise SourceDocumentDigestMismatch("source bytes changed during the native reading")
-    identity = reader_native_engine_identity(result).model_copy(update={"dpi": dpi})
+    identity = engine_identity.model_copy(update={"dpi": dpi})
     identity_data = {
         "scheme": PDF_SEGMENT_SCHEME,
         "native_layer": identity.model_dump(mode="json"),
@@ -296,12 +325,6 @@ def read_native_pdf(
         # availability refusal, never as a missing passage.
         "integration_sha256": native_integration_digest(),
     }
-    # Timing, wall-clock and diagnostic raster artifacts are not reading
-    # identity. The actual characters, clipping and reconstructed cells are.
-    pages = [
-        {key: page[key] for key in ("number", "geometry", "text", "characters", "tables", "clipped")}
-        for page in result["pages"]
-    ]
     if [page["number"] for page in pages] != list(range(1, len(pages) + 1)):
         raise SourceSegmentLocatorMismatch("native reader returned an incomplete page sequence")
     identity_json, pages_json = _canonical(identity_data), _canonical(pages)
