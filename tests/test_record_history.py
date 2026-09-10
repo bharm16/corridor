@@ -64,7 +64,7 @@ from corridor.record_projection import (
     read_current_project_record,
     read_project_record_as_of_revision,
 )
-from corridor.proposed_deltas import record_delta_supersession
+from delta_supersession_support import record_delta_supersession
 from corridor.report_release import external_report_release_history
 from corridor.review_packets import APPLY, KEEP_CURRENT, resolve_review_packet
 from corridor.web.app import app, get_human_principal, get_session

@@ -10,14 +10,14 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.extract_matrix import ExtractionFailed
+from corridor.extraction_errors import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
 from corridor.extraction_runs import (
     active_run_for_document,
     extractor_configuration,
     record_extraction_run,
 )
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.extract_project import (
     Outcome,
     UnextractableDocument,
@@ -26,7 +26,7 @@ from corridor.extract_project import (
     main,
     render,
 )
-from corridor.extract_matrix import SequencingSemanticsDetected
+from corridor.extraction_errors import SequencingSemanticsDetected
 from corridor.extractor_lineage import injected_extractor_config
 from corridor.models import (
     Candidate,

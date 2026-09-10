@@ -16,7 +16,7 @@ from pathlib import Path
 import pytest
 from openpyxl import Workbook
 
-from corridor.extract_matrix import TEMPLATE_FIELDS
+from corridor.vocabulary import TEMPLATE_FIELDS
 from corridor.sheets import (
     NoConflictSheet,
     column_mapping,

@@ -80,15 +80,12 @@ DISPOSITIONS = (
     DISPOSITION_TERMINALLY_REFUSED,
     DISPOSITION_TRANSIENT_FAILURE,
 )
-# The dispositions past which a checkpoint may advance at all.  Whether one of
-# the refused pair actually may is a further question the recorded evidence
-# answers, and the database asks it.
-ADVANCING_DISPOSITIONS = (
-    DISPOSITION_STORED,
-    DISPOSITION_DUPLICATE,
-    DISPOSITION_QUARANTINED,
-    DISPOSITION_TERMINALLY_REFUSED,
-)
+# Which dispositions a checkpoint may advance past is asked once, by
+# ``enforce_checkpoint_advance_coverage`` on
+# ``connector_checkpoint_advance_deliveries``: a transient failure never, and a
+# refused or quarantined delivery only on its recorded evidence.  A Python
+# tuple naming the same set was defined here and read by nothing, which is the
+# only reason it never disagreed with the trigger.
 
 
 class SourceDeliveryRefused(ValueError):

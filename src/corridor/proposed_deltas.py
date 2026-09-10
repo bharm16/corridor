@@ -1,4 +1,13 @@
-"""Proposed Delta identity, grouping, lifecycle, and query seams (#518).
+"""Proposed Delta identity, grouping, and the appends that create one (#518).
+
+This module writes.  It does not answer what a delta's standing is, and it
+does not query the open ones: ``delta_resolution.live_delta_status`` derives
+one delta's standing (clocklessly, and reading the packet reversals that a
+compensated deferral leaves behind), and ``review_packet_reading``
+(``open_deltas``, ``standing_sets``, ``read_open_deltas``) reads the whole
+project's.  A second copy of those derivations lived here and answered
+differently — it read a wall clock and knew nothing about packet reversals —
+so it is gone.
 
 ADR-0075, ADR-0076, ADR-0081, ADR-0082, and ADR-0083 define the target architecture:
     SourceEnvelope -> Source Segment -> Source Fact -> Proposed Delta
@@ -20,7 +29,8 @@ This module implements the Proposed Delta layer:
    - ``DeltaDeferral`` records attributable Work List scheduling with a wake condition;
      it leaves the delta open and writes no Project Record revision (ADR-0035).
    - Live state is a derived query view (open, resolved, superseded, deferred), never
-     mutable columns on the occurrence.
+     mutable columns on the occurrence — and that view is derived in
+     ``delta_resolution`` and ``review_packet_reading``, not here.
 3. Coalescing follows source lineage:
    - Newer revisions of the same source family may supersede or coalesce prior deltas.
    - Independent sources (e.g. email, minutes) mentioning the same field do not
@@ -60,9 +70,6 @@ from corridor.analytics import (
 )
 from corridor.models import (
     DeltaDeferral,
-    DeltaDisposition,
-    DeltaGroup,
-    DeltaSupersession,
     ProposedDelta,
     Document,
     SourceDelivery,
@@ -119,18 +126,6 @@ class ImpactDerivation:
     affected_constraint_ids: tuple[str, ...] = field(default_factory=tuple)
     affected_key_dates: tuple[str, ...] = field(default_factory=tuple)
     rule_version: str = "v1"
-
-
-@dataclass(frozen=True)
-class LiveDeltaState:
-    """The derived live status of a proposed delta."""
-
-    delta_id: int
-    status: str  # open, resolved, superseded, deferred
-    disposition: str | None = None
-    deferred_until: datetime | None = None
-    wake_condition: str | None = None
-    superseded_by_delta_id: int | None = None
 
 
 def assert_removal_permitted(
@@ -277,91 +272,6 @@ def _new_delta_ids(session: Session, project_id: int, ids: Sequence[int], before
           )::text::xid8) = 'in progress'
     """).bindparams(bindparam("ids", expanding=True))
     return frozenset(session.scalars(query, {"project_id": project_id, "ids": tuple(ids), "before_id": before_id}))
-
-
-def derive_live_delta_state(session: Session, delta_id: int) -> LiveDeltaState:
-    """Walk dispositions, supersessions, and deferrals to derive live state."""
-
-    # Check disposition
-    disp = session.scalar(
-        select(DeltaDisposition).where(DeltaDisposition.delta_id == delta_id)
-    )
-    if disp is not None:
-        return LiveDeltaState(
-            delta_id=delta_id,
-            status="resolved",
-            disposition=disp.disposition,
-        )
-
-    # Check supersession
-    sup = session.scalar(
-        select(DeltaSupersession).where(DeltaSupersession.prior_delta_id == delta_id)
-    )
-    if sup is not None:
-        return LiveDeltaState(
-            delta_id=delta_id,
-            status="superseded",
-            superseded_by_delta_id=sup.superseding_delta_id,
-        )
-
-    # Check deferral
-    deferral = session.scalars(
-        select(DeltaDeferral)
-        .where(DeltaDeferral.delta_id == delta_id)
-        .order_by(DeltaDeferral.id.desc())
-    ).first()
-    if deferral is not None:
-        now = datetime.now(timezone.utc)
-        if deferral.deferred_until is None or deferral.deferred_until > now:
-            return LiveDeltaState(
-                delta_id=delta_id,
-                status="deferred",
-                deferred_until=deferral.deferred_until,
-                wake_condition=deferral.wake_condition,
-            )
-
-    return LiveDeltaState(delta_id=delta_id, status="open")
-
-
-def query_live_deltas(
-    session: Session,
-    *,
-    project_id: int,
-    target_subject_identity: str | None = None,
-) -> tuple[ProposedDelta, ...]:
-    """Query currently open deltas (not resolved or superseded)."""
-
-    stmt = select(ProposedDelta).where(
-        ProposedDelta.project_id == project_id,
-        ~ProposedDelta.id.in_(select(DeltaDisposition.delta_id)),
-        ~ProposedDelta.id.in_(select(DeltaSupersession.prior_delta_id)),
-    )
-    if target_subject_identity is not None:
-        stmt = stmt.where(ProposedDelta.target_subject_identity == target_subject_identity)
-
-    deltas = session.scalars(stmt.order_by(ProposedDelta.id)).all()
-    return tuple(deltas)
-
-
-def record_delta_supersession(
-    session: Session,
-    *,
-    project_id: int,
-    prior_delta_id: int,
-    superseding_delta_id: int,
-    reason: str = "newer_source_revision",
-) -> DeltaSupersession:
-    """Link an old delta to a newer superseding delta in the same source lineage."""
-
-    row = DeltaSupersession(
-        project_id=project_id,
-        prior_delta_id=prior_delta_id,
-        superseding_delta_id=superseding_delta_id,
-        reason=reason,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def record_delta_deferral(

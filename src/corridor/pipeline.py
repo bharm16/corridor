@@ -29,7 +29,7 @@ from corridor.extractor_lineage import (
     zero_token_usage,
 )
 from corridor.extraction_errors import ExtractionFailed, NativeObservationFailed
-from corridor.geometry import NoMatrixFound
+from corridor.extraction_errors import NoMatrixFound
 from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
 from corridor.config import settings
 from corridor.native_matrix_runtime import NativeMatrixRuntime, configured_native_matrix_runtime

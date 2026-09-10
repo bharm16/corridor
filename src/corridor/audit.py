@@ -1147,14 +1147,6 @@ def support_transfer_records_for_dependencies(
     return {dependency_id: tuple(records) for dependency_id, records in grouped.items()}
 
 
-def reconfirmation_records_for_dependencies(
-    session: Session, dependency_ids: Iterable[int]
-) -> dict[int, tuple[SupportTransferRecord, ...]]:
-    """Compatibility wrapper for the pre-generalization read model name."""
-
-    return support_transfer_records_for_dependencies(session, dependency_ids)
-
-
 def _support_transfer_predecessor_pointer(
     after: dict,
     *,
@@ -1264,46 +1256,6 @@ def _automatic_receipt_matches(
         and predecessor_support_transfer_audit_id
         == receipt.predecessor_support_transfer_audit_id
     )
-
-
-def reconfirmed_successor_candidate_ids(
-    records_by_dependency: Mapping[int, tuple[SupportTransferRecord, ...]],
-) -> frozenset[int]:
-    """Candidates named by a support transfer, including corrupt old records.
-
-    A malformed surrounding identity must not put an already-reconfirmed
-    Candidate back into ordinary Admission.  The candidate id itself remains
-    usable for exclusion only when it is a strict positive integer.
-    """
-
-    return frozenset(
-        (record.durable_successor_candidate_id or record.successor_candidate_id)
-        for records in records_by_dependency.values()
-        for record in records
-        if (
-            record.durable_successor_candidate_id is not None
-            or record.successor_candidate_id is not None
-        )
-    )
-
-
-def readiness_evidence_ids_before_audit(
-    session: Session,
-    dependency_id: int,
-    audit_id: int,
-) -> frozenset[int] | None:
-    """Reconstruct attributable readiness state immediately before an act.
-
-    ``None`` means the durable history is malformed or internally
-    inconsistent.  Reconfirmation consumers must treat that as unsafe rather
-    than substituting the mutable present-day Evidence flag.
-    """
-
-    _dependency_ids((dependency_id,))
-    if _positive_id(audit_id) is None:
-        raise ValueError("audit id must be a positive integer")
-    state = readiness_audit_state_before_audit(session, dependency_id, audit_id)
-    return None if state is None else state.current_evidence_ids
 
 
 def readiness_audit_state_before_audit(

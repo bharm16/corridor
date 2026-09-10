@@ -77,7 +77,7 @@ def test_minutes_commitment_timing_change_and_completion_are_cited_unaccepted_fa
     import json
     from corridor.facts import replay_fact
     from corridor.storage import stored_file
-    from corridor.proposed_deltas import query_live_deltas
+    from corridor.review_packet_reading import open_deltas
     from corridor.record_projection import read_current_project_record
 
     project = adopted_project(session)
@@ -108,7 +108,7 @@ def test_minutes_commitment_timing_change_and_completion_are_cited_unaccepted_fa
     completed_row = next(row for row in completion.output_json["outcomes"] if row["status"] == "captured")
     closure = next(session.get(Fact, identity) for identity in completed_row["fact_ids"] if session.get(Fact, identity).fact_type == "closure_result")
     assert replay_fact(session, completion_doc, closure, stored_file(completion_doc)).closure_kind == "completion_reported"
-    assert changed_ids.isdisjoint({delta.id for delta in query_live_deltas(session, project_id=project.id)})
+    assert changed_ids.isdisjoint({delta.id for delta in open_deltas(session, project_id=project.id)})
     assert read_current_project_record(session, project.id) == accepted_before
 
 

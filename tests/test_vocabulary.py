@@ -10,7 +10,9 @@ from corridor.vocabulary import (
     RETIREMENT_PHRASES,
     ROW_FIELDS,
     UCM_CONFLICT_LIST_HEADINGS,
+    dedupe_hint,
     is_retired_row,
+    normalize_header,
 )
 
 
@@ -65,3 +67,15 @@ def test_the_report_and_the_extractors_share_one_phrase_list():
     the exact drift ADR-0012 forbids. Identity, not equality: an equal
     copy would pass today and drift tomorrow."""
     assert GOLD_PHRASES is RETIREMENT_PHRASES
+
+
+def test_dedupe_hint_is_org_type_and_station_range():
+    fields = {"external_org": "AT&T Texas (SWBT)", "utility_type": "Telecom",
+              "station_from": "1149+00", "station_to": "1153+17"}
+    assert dedupe_hint(fields) == "AT&T Texas (SWBT)|Telecom|1149+00-1153+17"
+
+
+def test_a_printed_heading_normalizes_to_one_spaced_uppercase_form():
+    """A heading arrives wrapped across lines and cased however it was typed."""
+    assert normalize_header("Dependent\n  Activity ") == "DEPENDENT ACTIVITY"
+    assert normalize_header(None) == ""

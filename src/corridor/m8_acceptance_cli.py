@@ -13,7 +13,8 @@ whose inputs, outcomes, and failure status are machine-checkable.
 from __future__ import annotations
 
 import argparse
-from dataclasses import asdict
+from collections.abc import Callable
+from dataclasses import asdict, dataclass
 import json
 from pathlib import Path
 import re
@@ -141,26 +142,56 @@ def _print_json(payload: dict) -> None:
     print(json.dumps(payload, sort_keys=True, separators=(",", ":")))
 
 
-def _capture_with_live_model(config: AcceptanceCaptureConfig):
-    """Run capture through one pinned production client, closed on every exit."""
+@dataclass(frozen=True)
+class ProductionExtractor:
+    """The extractor a live capture must match, and the read it performs.
+
+    Passed in rather than reached for, so a test states which extractor
+    identity it is exercising instead of rewriting a module attribute. The
+    default is the deployed one and is resolved only on the live path.
+    """
+
+    prompt_version: str
+    schema_version: str
+    extract_document: Callable[..., list]
+
+
+def production_extractor() -> ProductionExtractor:
+    """The deployed Matrix route: the selected native reader (#766)."""
 
     # Imports stay inside the explicit live path.  Model-free replay neither
     # constructs a client nor needs to know which extractor production uses.
-    from corridor.extract_matrix import (
-        PROMPT_VERSION,
-        SCHEMA_VERSION,
-        extract_document,
+    from corridor.native_matrix import PROMPT_VERSION, SCHEMA_VERSION
+    from corridor.pipeline import extraction_route
+
+    def extract_document(session, document, *, client=None):
+        return extraction_route(document, client=client).extract(session, document)
+
+    return ProductionExtractor(
+        prompt_version=PROMPT_VERSION,
+        schema_version=SCHEMA_VERSION,
+        extract_document=extract_document,
     )
 
-    if config.prompt_version != PROMPT_VERSION:
+
+def _capture_with_live_model(
+    config: AcceptanceCaptureConfig,
+    *,
+    extractor: ProductionExtractor | None = None,
+):
+    """Run capture through one pinned production client, closed on every exit."""
+
+    extractor = extractor if extractor is not None else production_extractor()
+
+    if config.prompt_version != extractor.prompt_version:
         raise AcceptanceError(
             f"pinned prompt version {config.prompt_version!r} does not match "
-            f"production PROMPT_VERSION {PROMPT_VERSION!r}"
+            f"production PROMPT_VERSION {extractor.prompt_version!r}"
         )
-    if config.schema_version != SCHEMA_VERSION:
+    if config.schema_version != extractor.schema_version:
         raise AcceptanceError(
             f"pinned schema version {config.schema_version!r} does not match "
-            f"production SCHEMA_VERSION {SCHEMA_VERSION!r}"
+            f"production SCHEMA_VERSION {extractor.schema_version!r}"
         )
 
     from corridor.llm import OpenAIClient
@@ -174,17 +205,23 @@ def _capture_with_live_model(config: AcceptanceCaptureConfig):
             )
 
         def extract(session, document):
-            return extract_document(session, document, client=client)
+            return extractor.extract_document(session, document, client=client)
 
         return capture_m8_fixture(config, extract=extract)
     finally:
         client.close()
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(
+    argv: list[str] | None = None,
+    *,
+    extractor: ProductionExtractor | None = None,
+) -> int:
     """Route one explicit acceptance operation and print stable JSON.
 
     In particular, ``replay`` does not accept or derive a model client.
+    ``extractor`` names the extractor a live capture must match; it defaults
+    to the deployed one.
     """
 
     try:
@@ -208,7 +245,8 @@ def main(argv: list[str] | None = None) -> int:
                     expected_model=args.expected_model,
                     schema_version=args.schema_version,
                     expected_clean_git_revision=args.expected_clean_git_revision,
-                )
+                ),
+                extractor=extractor,
             )
             payload = _capture_payload(summary)
         elif args.command == "replay":

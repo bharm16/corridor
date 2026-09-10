@@ -2,7 +2,7 @@
 
 from datetime import date
 
-from corridor.extract_minutes_v4 import PROMPT_VERSION, _to_candidate
+from corridor.extract_minutes_v5 import PROMPT_VERSION, to_candidate
 from corridor.models import DocPage, Document
 from corridor.product_proving_run import ExtractionConfiguration, compare_candidate_sets
 
@@ -165,8 +165,8 @@ def test_same_minutes_evidence_produces_stable_candidate_meaning():
         "event_type": "closure",
         "description": "The action item is complete.",
     }
-    baseline = _to_candidate(document, page, baseline_item, "gpt-5.6-luna")
-    fresh = _to_candidate(document, page, fresh_item, "gpt-5.6-luna")
+    baseline = to_candidate(document, page, baseline_item, "gpt-5.6-luna")
+    fresh = to_candidate(document, page, fresh_item, "gpt-5.6-luna")
 
     comparison = compare_candidate_sets(
         document_id=1438,

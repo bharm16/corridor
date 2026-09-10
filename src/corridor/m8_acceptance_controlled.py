@@ -28,7 +28,7 @@ from corridor.automatic_carry_forward import (
     run_automatic_carry_forward,
 )
 from corridor.exceptions import evaluate as evaluate_exceptions
-from corridor.extract_matrix import ExtractionFailed
+from corridor.extraction_errors import ExtractionFailed
 from corridor.extract_project import extract_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies

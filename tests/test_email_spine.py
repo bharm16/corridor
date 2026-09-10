@@ -95,7 +95,7 @@ class ClosingStatement:
 def test_bound_thread_creates_replayable_facts_and_one_delta_without_acceptance(session):
     from corridor.email_spine import capture_email_thread
     from corridor.facts import replay_fact
-    from corridor.proposed_deltas import query_live_deltas
+    from corridor.review_packet_reading import open_deltas
     from corridor.storage import stored_file
     from corridor.models import Document
 
@@ -104,7 +104,7 @@ def test_bound_thread_creates_replayable_facts_and_one_delta_without_acceptance(
     fact = session.get(Fact, result.source_fact_id)
     document = session.get(Document, fact.document_id)
     assert replay_fact(session, document, fact, stored_file(document)) == "We will finish in October.\n"
-    assert [delta.proposed_value for delta in query_live_deltas(session, project_id=project.id)] == [
+    assert [delta.proposed_value for delta in open_deltas(session, project_id=project.id)] == [
         {"statement_wording": "We will finish in October.\n"}
     ]
     assert session.scalars(select(ProjectRecordRevision).where(ProjectRecordRevision.project_id == project.id)).all() == []
@@ -113,7 +113,8 @@ def test_bound_thread_creates_replayable_facts_and_one_delta_without_acceptance(
 
 def test_reversal_replaces_only_its_thread_and_an_unresolved_reply_retires_the_delta(session):
     from corridor.email_spine import capture_email_thread, current_email_thread_reading
-    from corridor.proposed_deltas import query_live_deltas, derive_live_delta_state
+    from corridor.delta_resolution import live_delta_status
+    from corridor.review_packet_reading import open_deltas
     from corridor.review_packet_reading import read_open_deltas
     from datetime import datetime, timezone
 
@@ -124,8 +125,8 @@ def test_reversal_replaces_only_its_thread_and_an_unresolved_reply_retires_the_d
     _, second = deliver(session, message_bytes(body="Ignore my previous message; we will finish in October.\n",
         message_id="<two@example.test>", references="<one@example.test>"), project)
     replacement = capture_email_thread(session, second, client=ClosingStatement())
-    assert derive_live_delta_state(session, original.proposed_delta_id).status == "superseded"
-    assert {d.id for d in query_live_deltas(session, project_id=project.id)} == {replacement.proposed_delta_id, separate.proposed_delta_id}
+    assert live_delta_status(session, original.proposed_delta_id) == "superseded"
+    assert {d.id for d in open_deltas(session, project_id=project.id)} == {replacement.proposed_delta_id, separate.proposed_delta_id}
 
     class Unresolved(ClosingStatement):
         def complete(self, **kwargs):
@@ -137,8 +138,8 @@ def test_reversal_replaces_only_its_thread_and_an_unresolved_reply_retires_the_d
     question = capture_email_thread(session, third, client=Unresolved())
     assert question.source_fact_id is None
     assert question.open_question == "Maybe October; please confirm the date.\n"
-    assert derive_live_delta_state(session, replacement.proposed_delta_id).status == "superseded"
-    assert [d.id for d in query_live_deltas(session, project_id=project.id)] == [separate.proposed_delta_id]
+    assert live_delta_status(session, replacement.proposed_delta_id) == "superseded"
+    assert [d.id for d in open_deltas(session, project_id=project.id)] == [separate.proposed_delta_id]
     assert read_open_deltas(session, project_id=project.id, as_of=datetime.now(timezone.utc)).open_delta_ids == (separate.proposed_delta_id,)
     assert current_email_thread_reading(session, project_id=project.id, thread_id=question.thread_id).id == question.id
     assert session.get(Fact, original.source_fact_id).text_value == "We will finish in September.\n"
@@ -178,7 +179,7 @@ def test_changed_envelope_cannot_supply_another_customer_boundary(session):
 
 def test_crash_after_capture_before_commit_and_duplicate_delivery_converge(runtime_database):
     from corridor.email_spine import capture_email_thread
-    from corridor.proposed_deltas import query_live_deltas
+    from corridor.review_packet_reading import open_deltas
 
     factory = runtime_database.session_factory
     raw = message_bytes(body="We will finish in October.\n")
@@ -198,14 +199,14 @@ def test_crash_after_capture_before_commit_and_duplicate_delivery_converge(runti
     with factory() as committed:
         replay = capture_email_thread(committed, envelope, client=ClosingStatement())
         assert (replay.id, replay.source_fact_id) == (reading_id, fact_id)
-        assert len(query_live_deltas(committed, project_id=project_id)) == 1
+        assert len(open_deltas(committed, project_id=project_id)) == 1
         assert len(committed.scalars(select(Fact).where(Fact.project_id == project_id, Fact.fact_type == "statement_wording")).all()) == 1
 
 
 def test_normal_pipeline_uses_the_bound_thread_capture(session):
     from corridor.models import Document
     from corridor.pipeline import extraction_route, CapturedCandidates
-    from corridor.proposed_deltas import query_live_deltas
+    from corridor.review_packet_reading import open_deltas
 
     project, envelope = deliver(session, message_bytes(body="We will finish in October.\n"))
     document = session.scalar(select(Document).where(Document.project_id == project.id, Document.sha256 == envelope.content_digest))
@@ -214,7 +215,7 @@ def test_normal_pipeline_uses_the_bound_thread_capture(session):
     assert result == []
     assert result.run.document_id == document.id
     assert result.run.prompt_version == "email_thread_v1"
-    assert len(query_live_deltas(session, project_id=project.id)) == 1
+    assert len(open_deltas(session, project_id=project.id)) == 1
 
 
 def test_attachment_bytes_and_cells_keep_their_own_document_provenance(session):
@@ -424,7 +425,7 @@ def test_a_return_to_the_accepted_wording_supersedes_only_the_unaccepted_change(
     from corridor.email_spine import capture_email_thread
     from corridor.models import FactSource
     from corridor.principals import HumanPrincipal
-    from corridor.proposed_deltas import query_live_deltas
+    from corridor.review_packet_reading import open_deltas
     from corridor.support_assessments import FactProposition, record_support_assessment
 
     project, first = deliver(session, message_bytes(body="We will finish in October.\n"))
@@ -452,5 +453,5 @@ def test_a_return_to_the_accepted_wording_supersedes_only_the_unaccepted_change(
         message_id="<three@example.test>", references="<one@example.test> <two@example.test>"), project)
     returned = capture_email_thread(session, third, client=ClosingStatement())
     assert returned.source_fact_id is not None and returned.proposed_delta_id is None
-    assert query_live_deltas(session, project_id=project.id) == ()
+    assert open_deltas(session, project_id=project.id) == ()
     assert accepted_values(session, project.id) == accepted_before

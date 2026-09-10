@@ -43,7 +43,7 @@ from __future__ import annotations
 from collections import Counter
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Callable, Mapping, Sequence
+from typing import Any, Callable, Mapping
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -101,36 +101,6 @@ CONNECTOR_FACTORIES: Mapping[str, Callable[[Mapping[str, Any]], PullConnector]] 
 )
 
 
-class CheckpointRecorder:
-    """Observe the token one pass advanced to without widening the contract.
-
-    ``PullConnector`` has no way to report the token it checkpointed, and
-    adding one would change #496's four-method interface for every adapter.
-    This delegate records the token as it passes through, so the handler can
-    record the durable advance while the connector still performs its own
-    checkpoint exactly as ADR-0083 requires.
-    """
-
-    def __init__(self, connector: PullConnector) -> None:
-        self._connector = connector
-        self.token: str | None = None
-
-    def list_changes(
-        self, cursor: str | None = None
-    ) -> tuple[Sequence[ChangeItem], str]:
-        return self._connector.list_changes(cursor)
-
-    def fetch_version(self, item_id: str, version_id: str) -> bytes:
-        return self._connector.fetch_version(item_id, version_id)
-
-    def get_metadata(self, item_id: str) -> dict[str, Any]:
-        return self._connector.get_metadata(item_id)
-
-    def checkpoint(self, token: str) -> None:
-        self._connector.checkpoint(token)
-        self.token = token
-
-
 class LedgerWriter:
     """Record one pass's deliveries, one committed transaction at a time.
 
@@ -149,10 +119,6 @@ class LedgerWriter:
         self._binding = binding
         self._run_identity = run_identity
         self.dispositions: Counter[str] = Counter()
-
-    def authorize_source(self, *, customer, project, channel):
-        """Delegate the real session/binding proof to the low-level context."""
-        self.activation_context.authorize(customer=customer, project=project, channel=channel)
 
     def record(
         self,
@@ -247,9 +213,8 @@ def execute_connector_polling(
     )
     ledger = LedgerWriter(session_factory, binding, run_identity)
 
-    recorder = CheckpointRecorder(connector)
     sync = sync_pull_connector(
-        recorder,
+        connector,
         customer=binding.customer,
         project=project_slug,
         channel=channel,
@@ -258,7 +223,11 @@ def execute_connector_polling(
     )
 
     checkpoint_token = sync.checkpoint_token or cursor
-    advanced = sync.advanced and recorder.token is not None
+    # ``sync.advanced`` is set in exactly the pass that called
+    # ``connector.checkpoint(next_token)``, and its ``checkpoint_token`` is
+    # that same token; a delegate that observed the call as it passed through
+    # could only repeat what the result already reports.
+    advanced = sync.advanced
     if advanced:
         with session_factory() as writing:
             with writing.begin():
@@ -269,7 +238,7 @@ def execute_connector_polling(
                     configuration_identity=connector_identity,
                     configuration_version=configuration_version,
                     channel=channel,
-                    checkpoint_token=str(recorder.token),
+                    checkpoint_token=str(sync.checkpoint_token),
                     service_identity=SERVICE_IDENTITY,
                     run_identity=run_identity,
                     delivery_ids=sync.delivery_ids(),
