@@ -42,6 +42,7 @@ from sqlalchemy.orm import Session
 
 from corridor import refusals
 from corridor import audit
+from corridor import replay_gate
 from corridor.dependency_events import (
     COMMITTED_EVENT_TYPES,
     closed_party_commitment_lineages,
@@ -66,6 +67,11 @@ from corridor.verify import normalize
 
 MACHINE_ACTOR = "corridor:condition-clearing"
 CLEARING_POLICY_VERSION = "condition-clearing-v1-exact-mechanical"
+
+# The ADR-0050 policy family this module replays under.  Like identifying
+# language, it keeps no activation ledger of its own: the replay is read at the
+# moment of the clear, so there is nothing to append.
+CONDITION_CLEAR_FAMILY = "condition_clear"
 
 # The exact-and-mechanical clear only fires when a later passage both names the
 # condition's own words and states a completion.  These are the completion
@@ -673,32 +679,23 @@ def mechanical_match(condition_text: str, evidence_quote: str) -> bool:
 
 
 @dataclass(frozen=True)
-class ConditionClearReplay:
-    """ADR-0050's comparison: the mechanical rule against human clears."""
-
-    case_count: int
-    contradictions: tuple[int, ...]
-
-    @property
-    def passed(self) -> bool:
-        return self.case_count > 0 and not self.contradictions
-
-
-@dataclass(frozen=True)
 class ConditionClearRun:
     cleared_count: int
-    replay: ConditionClearReplay
+    replay: replay_gate.ReplayOutcome
 
 
 def replay_matches_human_condition_clears(
     session: Session, project_id: int
-) -> ConditionClearReplay:
+) -> replay_gate.ReplayOutcome:
     """Compare the mechanical clear to this project's human condition clears.
 
     A person's cited clear is the answer key.  A contradiction is the rule
     clearing the same condition with a *different* sole passage than the
-    person cited; the rule abstaining on a case a person decided by judgment
-    is not a contradiction.  Machine clears are never the answer key.
+    person cited; the rule abstaining — no sole passage — on a case a person
+    decided by judgment is not a contradiction.  Machine clears are never the
+    answer key.  The comparison, the pass rule and the zero-case refusal are
+    ``corridor.replay_gate``'s (ADR-0050); this family contributes only the
+    answer key and the recomputation, and keeps no activation ledger.
     """
     human_clears = session.scalars(
         select(ConditionResolution)
@@ -711,21 +708,30 @@ def replay_matches_human_condition_clears(
         )
         .order_by(ConditionResolution.id)
     ).all()
-    contradictions: list[int] = []
-    seen: set[tuple[int, int]] = set()
-    case_count = 0
+    # One condition is one case, whichever clear recorded it first; the case is
+    # keyed by the clear's own id so a contradiction names the human act.
+    cases: dict[tuple[int, int], ConditionResolution] = {}
     for clear in human_clears:
-        key = (clear.dependency_id, clear.evidence_link_id)
-        if key in seen:
-            continue
-        seen.add(key)
-        case_count += 1
+        cases.setdefault((clear.dependency_id, clear.evidence_link_id), clear)
+    by_id = {clear.id: clear for clear in cases.values()}
+
+    def recompute(clear_id: int) -> object:
+        clear = by_id[clear_id]
         matches = mechanical_matches(
             session, clear.dependency_id, clear.evidence_link_id, clear.condition_text
         )
-        if len(matches) == 1 and matches[0] != clear.basis_evidence_link_id:
-            contradictions.append(clear.id)
-    return ConditionClearReplay(case_count, tuple(sorted(contradictions)))
+        if len(matches) != 1:
+            return replay_gate.ABSTAINED
+        return matches[0]
+
+    return replay_gate.replay(
+        family=CONDITION_CLEAR_FAMILY,
+        human_decisions=[
+            (clear_id, by_id[clear_id].basis_evidence_link_id)
+            for clear_id in sorted(by_id)
+        ],
+        recompute=recompute,
+    )
 
 
 def mechanical_matches(
