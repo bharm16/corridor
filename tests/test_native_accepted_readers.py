@@ -107,7 +107,7 @@ def test_actual_readers_never_select_legacy_populations_or_values(session, adopt
         report = build_report(session, project.id, today=TODAY, frozen_reading=reading)
         body = render(report)
         assert "100+00" in body and "200+00" in body and "p.None" not in body
-        assert "Utility Conflicts!" in body
+        assert "sheet Utility Conflicts, cell " in body  # the one locator caption, as every reader prints it (C04b)
         assert any(isinstance(cell.provenance, Assertion) and cell.provenance.decision_id for cell in report.cells)
         briefing = brief_project(session, project.id, client=covering_client(), today=TODAY, frozen_reading=reading)
         assert not briefing.refused and briefing.sentences
@@ -490,7 +490,8 @@ def test_resolve_delta_reordered_source_updates_only_its_explicit_canonical_targ
     assert len(displaced) == 1
     assert displaced[0]["delta_record_decision_id"] == result.decision_id
     assert displaced[0]["replacement_decision_id"] in result.fact_decision_ids
-    assert changed.fields["station_from"].sources[0].locator.endswith("!D3")
+    # The caption is source_segments' one locator wording, shared with every other reader (C04b).
+    assert changed.fields["station_from"].sources[0].locator == "sheet Utility Conflicts, cell D3"
     assert changed.source_row_key == target.source_row_key  # adopted row was !4; later source moved to !3
     before = read_accepted_field_population(session, project.id, revision_id=adoption.revision_id)
     assert next(record for record in before.records if record.subject_key == target.record_subject_key).station_from == "200+00"

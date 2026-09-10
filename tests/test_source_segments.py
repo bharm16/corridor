@@ -577,13 +577,13 @@ def test_the_caption_table_covers_every_kind_the_schema_admits():
 
 
 def test_no_reader_spells_a_locator_by_hand():
-    """The four surfaces that used to keep their own copy all ask the one function."""
+    """The five surfaces that used to keep their own copy all ask the one function."""
 
     import re
 
     source = Path(__file__).resolve().parents[1] / "src" / "corridor"
     readers = ("record_history.py", "accepted_statement_reading.py",
-               "native_reader_coverage.py", "packet_review.py")
+               "native_reader_coverage.py", "packet_review.py", "accepted_field_reading.py")
     hand_spelled = re.compile(r'f"(?:sheet|page) \{|characters \{|MIME part')
     found = {name: [line.strip() for line in (source / name).read_text().splitlines() if hand_spelled.search(line)]
              for name in readers}
