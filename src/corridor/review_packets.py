@@ -67,7 +67,6 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 import json
-import re
 from typing import Any, Sequence
 
 from sqlalchemy import BigInteger, bindparam, cast, func, select
@@ -82,6 +81,7 @@ from corridor.analytics import (
     default_binding,
     emit_event,
 )
+from corridor.delta_refusals import RefusalCode, database_refusal_code
 from corridor.delta_resolution import (
     ACCEPT,
     COORDINATION_NEEDED,
@@ -139,11 +139,8 @@ REVERSED = "reversed"
 
 # Every refusal the commands raise carries a stable leading token, exactly as
 # #519's do, so the Python and SQL halves of one rule agree on what refused.
-_REFUSAL_TOKEN = re.compile(r"review_packet:([a-z_]+)")
-_STATUS_BY_REASON = {
-    "stale_accepted_revision": STALE,
-    "missing_support": UNSUPPORTED,
-}
+# The tokens and the status each carries are declared once, in
+# ``corridor.delta_refusals``, beside #519's own family.
 
 
 class ReviewPacketRefused(ValueError):
@@ -1124,14 +1121,13 @@ def _emit_follow_up_plan(
 
 
 def _database_refusal(delta_id: int | None, exc: DBAPIError) -> Refusal:
-    """Map a command's own stable refusal token onto a structured result."""
+    """Map a command's own stable refusal token through the declared vocabulary."""
 
     message = str(getattr(exc, "orig", exc))
-    match = _REFUSAL_TOKEN.search(message)
-    reason = match.group(1) if match else "refused"
+    declared: RefusalCode = database_refusal_code(message)
     return Refusal(
-        status=_STATUS_BY_REASON.get(reason, REFUSED),
-        reason=reason,
+        status=declared.status,
+        reason=declared.code,
         detail=message.strip().splitlines()[0],
         delta_id=delta_id or 0,
     )

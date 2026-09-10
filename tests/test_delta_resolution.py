@@ -33,6 +33,9 @@ from corridor.delta_refusals import (
     REFUSAL_CODES,
     REFUSAL_TOKEN,
     REFUSAL_VOCABULARY,
+    REVIEW_PACKET_CODES,
+    REVIEW_PACKET_TOKEN,
+    REVIEW_PACKET_VOCABULARY,
     UNCLASSIFIED_REFUSAL,
     database_refusal_code,
 )
@@ -540,6 +543,38 @@ DECLARED_VOCABULARY: tuple[tuple[str, str, str], ...] = (
     ("unsupported_free_text", CONSTRAINED_EDIT, PYTHON_PRECHECK),
 )
 
+# The Review Packet family (#526): every ``review_packet:<code>`` token the
+# packet, Follow-up Plan and reversal commands raise, with the status a screen
+# routes on and which half raises it. Only ``missing_support`` leaves REFUSED,
+# because none of the others carries the structured refresh a STALE,
+# UNSUPPORTED, CONSTRAINED_EDIT or COORDINATION_NEEDED outcome promises.
+DECLARED_PACKET_VOCABULARY: tuple[tuple[str, str, str], ...] = (
+    ("already_resolved", REFUSED, BOTH),
+    ("already_reversed", REFUSED, DATABASE_ONLY),
+    ("child_identity_mismatch", REFUSED, DATABASE_ONLY),
+    ("cross_project_delta", REFUSED, BOTH),
+    ("cross_project_receipt", REFUSED, DATABASE_ONLY),
+    ("cross_project_revision", REFUSED, DATABASE_ONLY),
+    ("duplicate_child", REFUSED, DATABASE_ONLY),
+    ("empty_packet", REFUSED, DATABASE_ONLY),
+    ("invalid_grouping_key", REFUSED, DATABASE_ONLY),
+    ("invalid_outcome", REFUSED, BOTH),
+    ("key_bound_to_other_content", REFUSED, DATABASE_ONLY),
+    ("later_act_depends", REFUSED, DATABASE_ONLY),
+    ("missing_decided_at", REFUSED, DATABASE_ONLY),
+    ("missing_grouping_rule", REFUSED, DATABASE_ONLY),
+    ("missing_idempotency_key", REFUSED, DATABASE_ONLY),
+    ("missing_principal", REFUSED, DATABASE_ONLY),
+    ("missing_question", REFUSED, BOTH),
+    ("missing_responsible_party", REFUSED, BOTH),
+    ("missing_revision", REFUSED, DATABASE_ONLY),
+    ("missing_source_revision", REFUSED, DATABASE_ONLY),
+    ("missing_support", UNSUPPORTED, BOTH),
+    ("superseded_delta", REFUSED, BOTH),
+    ("unexpected_revision", REFUSED, DATABASE_ONLY),
+    ("unordered_children", REFUSED, DATABASE_ONLY),
+)
+
 # The concurrency refusals: each is decided by state the pre-check cannot hold
 # still, so a Python guess at one is either a lie or a race.
 DATABASE_OWNED_CONCURRENCY = (
@@ -572,6 +607,32 @@ def _precheck_codes() -> set[str]:
         and node.func.id == "_refusal"
         and node.args
         for code in _named_codes(node.args[0])
+    }
+
+
+def _packet_precheck_codes() -> set[str]:
+    """Every reason the packet's readable half writes into a ``Refusal`` itself.
+
+    ``review_packets`` has no single constructor: each pre-check site builds a
+    ``Refusal`` with a ``reason=`` keyword, so the codes it raises are exactly
+    the literal reasons of those calls. A reason forwarded from another
+    refusal (``reason=refusal.reason``) is that refusal's, not this half's.
+    """
+
+    module = ast.parse(
+        Path("src/corridor/review_packets.py").read_text(encoding="utf-8")
+    )
+    return {
+        code
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "Refusal"
+        for keyword in node.keywords
+        if keyword.arg == "reason"
+        and not isinstance(keyword.value, ast.Attribute)
+        for code in _named_codes(keyword.value)
+        if code is not None
     }
 
 
@@ -666,6 +727,79 @@ def test_a_database_message_is_mapped_through_the_declared_vocabulary() -> None:
     assert database_refusal_code("resolve_delta:missing_support ...").status == UNSUPPORTED
     # A message with no readable token still comes back structured.
     assert database_refusal_code("deadlock detected") == UNCLASSIFIED_REFUSAL
+    # A token the vocabulary does not declare is not guessed at either.
+    assert database_refusal_code("resolve_delta:unheard_of ...") == UNCLASSIFIED_REFUSAL
+
+
+# --- The Review Packet family's declaration (#526) ------------------------
+
+
+def test_the_packet_vocabulary_gives_every_code_a_status_and_one_raiser() -> None:
+    declared = tuple(
+        (entry.code, entry.status, entry.raiser)
+        for entry in REVIEW_PACKET_VOCABULARY
+    )
+
+    assert declared == DECLARED_PACKET_VOCABULARY
+    assert set(REVIEW_PACKET_CODES) == {
+        code for code, _, _ in DECLARED_PACKET_VOCABULARY
+    }
+    assert UNCLASSIFIED_REFUSAL.code not in REVIEW_PACKET_CODES
+    # The two statuses the packet module used to map by hand are unchanged.
+    assert REVIEW_PACKET_CODES["missing_support"].status == UNSUPPORTED
+    assert all(
+        entry.status == REFUSED
+        for entry in REVIEW_PACKET_VOCABULARY
+        if entry.code != "missing_support"
+    )
+
+
+def test_every_refusal_the_packet_commands_raise_is_declared() -> None:
+    """The packet, Follow-up Plan and reversal plpgsql, parsed with the runtime's expression."""
+
+    source = Path(
+        "src/corridor/migrations/source_append_commands/review_packets.py"
+    ).read_text(encoding="utf-8")
+    raised = set(REVIEW_PACKET_TOKEN.findall(source))
+
+    assert raised == {
+        entry.code
+        for entry in REVIEW_PACKET_VOCABULARY
+        if entry.raiser in (DATABASE_ONLY, BOTH)
+    }
+    # The two commands never share a token expression, so neither half can read
+    # the other family's code as its own.
+    assert not REFUSAL_TOKEN.findall(source)
+
+
+def test_the_packet_declaration_names_which_half_raises_each_code() -> None:
+    """A code declared BOTH is one the readable half writes itself; DATABASE_ONLY is not."""
+
+    precheck = _packet_precheck_codes()
+
+    assert {
+        entry.code for entry in REVIEW_PACKET_VOCABULARY if entry.raiser == BOTH
+    } <= precheck
+    assert {
+        entry.code
+        for entry in REVIEW_PACKET_VOCABULARY
+        if entry.raiser == DATABASE_ONLY
+    }.isdisjoint(precheck)
+    assert not any(
+        entry.raiser == PYTHON_PRECHECK for entry in REVIEW_PACKET_VOCABULARY
+    )
+
+
+def test_a_packet_database_message_is_mapped_through_its_own_family() -> None:
+    assert (
+        database_refusal_code(
+            "review_packet:later_act_depends a later decision already superseded "
+            "a value this packet made effective"
+        )
+        == REVIEW_PACKET_CODES["later_act_depends"]
+    )
+    assert database_refusal_code("review_packet:missing_support ...").status == UNSUPPORTED
+    assert database_refusal_code("review_packet:unheard_of ...") == UNCLASSIFIED_REFUSAL
 
 
 # --- Refusals, before any authoritative write -----------------------------
