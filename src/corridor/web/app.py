@@ -293,11 +293,14 @@ from corridor.locator_validation import (
     evidence_link_locator_validation_status as locator_validation_status,
 )
 from corridor.presentation import (
+    attention_reason_sentence,
+    authority_gap_label,
     documentation_review_label,
     field_label,
     input_reference_label,
     label,
     provenance_label,
+    read_guided_save_offer,
     resolution_strategy_label,
     source_passage_check_label,
     statement_type_label,
@@ -526,50 +529,6 @@ app = FastAPI(title="Corridor — coordination records")
 configure_logging(role=ROLE_WEB)
 app.add_middleware(RequestCorrelationMiddleware)
 
-_WORK_REASON_COPY = {
-    "past_due": "The organization's commitment passed its stated date.",
-    "critical_missing_internal_owner": (
-        "No project person is assigned to this relocation, removal, or abandonment constraint."
-    ),
-    "critical_missing_next_action": (
-        "This relocation, removal, or abandonment constraint has no Next Action."
-    ),
-    "committed_date_change": "The organization changed its promised timing.",
-    "milestone_impact_unknown": "The effect on key dates is not yet known.",
-    "disputed_date": "Sources disagree about a current date.",
-    "contractual_amendment": (
-        "Field data changed under an executed agreement — flag the agreement for amendment."
-    ),
-    "required_by_advanced": "A schedule revision moved this constraint's Required By date.",
-    "key_date_decision_affected": "A schedule revision moved a key date a recorded decision referenced.",
-    "unknown_scope": "Applies to: not yet known.",
-    "unplaced_statement": "Clarify the organization's statement and which constraints it applies to.",
-    "missing_internal_owner": "Assign a project person for this Commitment.",
-    "missing_next_action": "Set the Next Action for this Commitment.",
-    "action_due": "The project Next Action is due now.",
-    "action_due_date_unknown": "The Next Action needs a return date.",
-    "external_closure_follow_up": "Confirm the project Next Action after the organization reported completion.",
-    "support_changed_value": (
-        "A newer document states a different value than the recorded conclusion — "
-        "resolve which one the record concludes."
-    ),
-    "support_documentation_review": (
-        "A newer document changed the supporting documentation — review it against "
-        "the stated requirement."
-    ),
-    "support_failed_citation": (
-        "A newer document's supporting passage could not be verified — check the "
-        "citation."
-    ),
-    "support_uncertain_match": (
-        "A newer document has more than one row that could replace this "
-        "supporting document — coordinate the correct one."
-    ),
-    "support_dropped_row": (
-        "A newer document no longer contains the row this entry relied on — remove "
-        "or correct the entry."
-    ),
-}
 
 def get_session(request: Request):
     with customer_session(request, SessionFactory) as session:
@@ -2388,6 +2347,11 @@ def _statement_coordination_screen(
         scope_match_card = read_statement_scope_match_card(
             scope_card_data, scope_match_candidates
         )
+    guided_save_offer = read_guided_save_offer(
+        evidence_available=candidate_evidence_available,
+        timing_available=bool(candidate_timing["available"]),
+        roster_available=bool(roster),
+    )
     disposition = current_candidate_disposition(session, candidate.id)
     not_relevant = (
         disposition
@@ -2426,9 +2390,10 @@ def _statement_coordination_screen(
             "candidate_description": str(fields.get("description") or ""),
             "candidate_event_date": str(fields.get("event_date") or ""),
             "candidate_timing": candidate_timing,
-            "guided_save_available": (
-                candidate_evidence_available and candidate_timing["available"]
-            ),
+            # One value for the offer (ADR-0039): the template renders it and
+            # adds no condition of its own.
+            "guided_save_available": guided_save_offer.available,
+            "guided_save_refusal": guided_save_offer.refusal,
             "next_action_choices": STATEMENT_NEXT_ACTION_CHOICES,
             "scope_match_card": scope_match_card,
             "candidate_evidence": candidate_evidence,
@@ -2461,7 +2426,7 @@ def _statement_coordination_screen(
             "history": history,
             "pending_authority_gap": pending_authority_gap,
             "pending_authority_gap_label": (
-                _authority_gap_label(pending_authority_gap.code)
+                authority_gap_label(pending_authority_gap.code)
                 if pending_authority_gap is not None
                 else None
             ),
@@ -2560,32 +2525,13 @@ def _statement_coordination_history(session: Session, candidate_id: int) -> tupl
         {
             "created_at": entry.ts,
             "label": "Recorded unresolved authority gap",
-            "detail": _authority_gap_label(
+            "detail": authority_gap_label(
                 str((entry.after_json or {}).get("authority_gap") or "")
             ),
         }
         for entry in unresolved
     )
     return tuple(sorted(rows, key=lambda row: (row["created_at"], row["label"])))
-
-
-def _authority_gap_label(code: str) -> str:
-    return {
-        "closure_target_commitment_not_established": (
-            "Commitment covered by the completion report is not established"
-        ),
-        "closure_target_relationship_not_established": (
-            "One open commitment is recorded, but the completion report does not "
-            "establish that it covers that commitment"
-        ),
-        "closure_target_commitment_ambiguous": (
-            "Several open commitments match; the completion report does not "
-            "identify which one"
-        ),
-        "closure_affected_party_not_established": (
-            "The organization that reported completion is not established"
-        ),
-    }.get(code, code.replace("_", " "))
 
 
 def _safe_next(candidate: str) -> str:
@@ -5288,7 +5234,12 @@ def coordinator_home(
             action_label = "Review statement"
         return {
             "item": item,
-            "reasons": tuple(_WORK_REASON_COPY[code] for code in item.attention_reason_codes),
+            # One sentence per Attention Reason, from the one place they are
+            # minted; an unknown code raises rather than rendering a blank row.
+            "reasons": tuple(
+                attention_reason_sentence(code)
+                for code in item.attention_reason_codes
+            ),
             "action_url": action_url,
             "action_label": action_label,
         }

@@ -20,6 +20,7 @@ from corridor.external_statements import (
     StatementScope,
     StatementTiming,
 )
+from corridor import presentation
 from corridor.models import Candidate
 from corridor.statement_coordination import (
     StatementCoordinationDraft,
@@ -29,11 +30,9 @@ from corridor.statement_coordination import (
 )
 
 
-CANDIDATE_EVIDENCE_UNAVAILABLE = (
-    "Save unavailable until every registered source page for this extracted "
-    "statement has its complete context: a rendered image for PDF or OCR "
-    "pages, or registered cell text for a worksheet."
-)
+# The screen's disabled control and this module's refusal are the same offer,
+# so the sentence is minted once beside the reading that decides it.
+CANDIDATE_EVIDENCE_UNAVAILABLE = presentation.GUIDED_SAVE_EVIDENCE_UNAVAILABLE
 
 
 @dataclass(frozen=True)
@@ -164,8 +163,11 @@ def supporting_statement_evidence(
     """Bind optional supporting wording to a source page already on screen."""
     facts = prepare_candidate_statement_facts(session, candidate)
     visible_evidence = candidate_statement_evidence_view(facts)
-    if not facts.evidence_is_reviewable:
-        raise StatementCoordinationRefusal(CANDIDATE_EVIDENCE_UNAVAILABLE)
+    offer = presentation.read_supporting_evidence_offer(
+        evidence_available=facts.evidence_is_reviewable
+    )
+    if not offer.available:
+        raise StatementCoordinationRefusal(offer.refusal)
     page_index_value = str(form.get("supporting_page_index") or "").strip()
     quote = str(form.get("supporting_quote") or "").strip()
     if not page_index_value and not quote:

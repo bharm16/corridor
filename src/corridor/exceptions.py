@@ -41,8 +41,10 @@ from corridor.operative_support import (
     resolve_operative_support,
 )
 from corridor.presentation import (
+    CoordinationPlan,
     exception_label as _display_exception_label,
     exception_name as _display_exception_name,
+    read_coordination_residue,
 )
 
 # v0.4 adds the coordination rules (#176): MISSING_ACTION beside the
@@ -618,13 +620,20 @@ def _apply(
     # seam maintains equal to its chain tails and defends with a divergence
     # refusal (ADR-0025) — so each predicate is "no current Work Decision
     # establishes this" without walking the chain per record. Queries,
-    # never stored flags.
-    if not dependency.internal_owner and live:
+    # never stored flags.  The predicate itself is the shared coordination
+    # reading, so this ruleset and the Work List cannot disagree about which
+    # half of a Follow-up Plan is missing; only the rule codes and the
+    # detail sentences below are this engine's own.
+    residue = read_coordination_residue(
+        CoordinationPlan(dependency.internal_owner, dependency.next_action),
+        live=live,
+    )
+    if residue.missing_owner:
         found.append(
             ("MISSING_OWNER", "no Work Decision assigns an internal owner", None)
         )
 
-    if not dependency.next_action and live:
+    if residue.missing_next_action:
         found.append(("MISSING_ACTION", "no Work Decision sets a next action", None))
 
     if dependency.next_action and dependency.action_due_date and live:

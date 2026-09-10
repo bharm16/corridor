@@ -148,7 +148,7 @@ from corridor.issue_coverage import (
 )
 from corridor.issue_profile import effective_issue_inventory
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
-from corridor.presentation import field_label
+from corridor.presentation import field_label, sentence_for
 from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import (
@@ -234,7 +234,10 @@ CONTRADICTED_ELSEWHERE = (
 )
 
 # The sentence each consequence band already carries in #494, read back rather
-# than restated, so the screen and the audit agree word for word.
+# than restated, so the screen and the audit agree word for word.  Bands are
+# their own Attention Reason vocabulary; the lookup is the shared loud one
+# (`presentation.sentence_for`), because a band with no sentence is the same
+# defect as a Work List code with none, not a row to leave blank.
 BAND_SENTENCES = {band.name: band.reason for band in CONSEQUENCE_BANDS}
 
 # Why a listed child cannot be applied right now.  These are not partition
@@ -814,12 +817,14 @@ class ItemReading:
 
     @property
     def attention_sentences(self) -> tuple[str, ...]:
-        """Why this item is in front of the coordinator, in #494's own words."""
+        """Why this item is in front of the coordinator, in #494's own words.
+
+        Every recorded Attention Reason is shown (ADR-0085), so a band with no
+        sentence raises here rather than dropping the row's reason silently.
+        """
 
         return tuple(
-            BAND_SENTENCES[name]
-            for name in self.attention_reasons
-            if name in BAND_SENTENCES
+            sentence_for(name, BAND_SENTENCES) for name in self.attention_reasons
         )
 
     @property

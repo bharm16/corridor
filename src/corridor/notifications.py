@@ -73,6 +73,11 @@ from corridor.outgoing_dispatch import (
     LIMITATION_REVOKED_MEMBERSHIP,
     LIMITATION_UNRESOLVED_CONTACT,
 )
+from corridor.presentation import (
+    CoordinationPlan,
+    read_action_timing,
+    read_statement_coordination_residue,
+)
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.statement_lifecycle import current_work_decision_filter
 
@@ -796,13 +801,26 @@ def derive_due_action_conditions(
                 continue
             if _has_live_deferral(lineage, today):
                 continue
-            if not lineage.next_action or lineage.action_due_date is None:
+            # The same coordination reading the Work List and the guided Save
+            # screen use decides whether this accepted Commitment still has a
+            # live Next Action; only the urgency vocabulary is this module's.
+            residue = read_statement_coordination_residue(
+                CoordinationPlan(lineage.internal_owner, lineage.next_action),
+                closed=False,
+                action_due_date=lineage.action_due_date,
+                today=today,
+            )
+            if residue.missing_next_action or lineage.action_due_date is None:
                 continue
-            delta = (lineage.action_due_date - today).days
-            if delta < 0:
-                urgency, days = URGENCY_OVERDUE, -delta
-            elif delta <= thresholds.action_due_soon_days:
-                urgency, days = URGENCY_SOON, delta
+            timing = read_action_timing(
+                lineage.action_due_date,
+                today,
+                due_soon_days=thresholds.action_due_soon_days,
+            )
+            if timing.overdue:
+                urgency, days = URGENCY_OVERDUE, timing.days
+            elif timing.due_soon:
+                urgency, days = URGENCY_SOON, timing.days
             else:
                 continue
             plan_decision = _current_plan_decision(
@@ -1486,10 +1504,14 @@ def _stale_due_action_condition(
 
 
 def _urgency_band(action_due_date: date, today: date) -> tuple[str | None, int]:
-    delta = (action_due_date - today).days
-    if delta < 0:
-        return URGENCY_OVERDUE, -delta
-    return URGENCY_SOON, delta
+    """Classify an already-raised condition's date in this module's words.
+
+    The split itself is the shared reading; no threshold applies here, because
+    the question is which band the standing notification is in now, not whether
+    a new one should be raised.
+    """
+    timing = read_action_timing(action_due_date, today, due_soon_days=None)
+    return (URGENCY_OVERDUE if timing.overdue else URGENCY_SOON, timing.days)
 
 
 def _due_action_subject_projection(

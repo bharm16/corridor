@@ -25,6 +25,12 @@ from corridor.dependency_events import (
 )
 from corridor.event_admission import waiting_statements
 from corridor.disputes import contradicted_fields, contractual_amendment_field_names
+from corridor.presentation import (
+    CoordinationPlan,
+    attention_reason_sort_key,
+    read_critical_coordination_residue,
+    read_statement_coordination_residue,
+)
 from corridor.models import (
     Candidate,
     CommitmentLineage,
@@ -68,34 +74,6 @@ WORK_LIST_RULESET_VERSION = "work-list-v2"
 MAX_IMMEDIATE_WORK_ITEMS = 20
 WORK_BACKLOG_PAGE_SIZE = 25
 CANDIDATE_BACKLOG_PAGE_SIZE = 25
-
-_REASON_ORDER = {
-    "past_due": 0,
-    "critical_missing_internal_owner": 1,
-    "critical_missing_next_action": 1,
-    "committed_date_change": 2,
-    "milestone_impact_unknown": 2,
-    "disputed_date": 2,
-    "contractual_amendment": 2,
-    # The routed consequence of ineligible replacement support (ADR-0037):
-    # a specific project question, never the retired generic reconfirmation.
-    "support_changed_value": 2,
-    "support_documentation_review": 2,
-    "support_failed_citation": 2,
-    "support_uncertain_match": 2,
-    "support_dropped_row": 2,
-    # A schedule revision moved a Required By basis (ADR-0057): surfaced as
-    # attention showing old and new dates, never as an approval question.
-    "required_by_advanced": 2,
-    "key_date_decision_affected": 2,
-    "unknown_scope": 3,
-    "unplaced_statement": 3,
-    "missing_internal_owner": 4,
-    "missing_next_action": 4,
-    "action_due": 4,
-    "action_due_date_unknown": 4,
-    "external_closure_follow_up": 4,
-}
 
 
 @dataclass(frozen=True)
@@ -276,19 +254,17 @@ def build_work_list(
             reason_codes.append("key_date_decision_affected")
         if not is_closed and scope.scope_mode == "unknown":
             reason_codes.append("unknown_scope")
-        if lineage.next_action is not None and is_closed:
-            reason_codes.append("external_closure_follow_up")
-        if not lineage.internal_owner and (
-            not is_closed or lineage.next_action is not None
-        ):
-            reason_codes.append("missing_internal_owner")
-        if lineage.next_action:
-            if lineage.action_due_date is None:
-                reason_codes.append("action_due_date_unknown")
-            elif lineage.action_due_date <= evaluated_on:
-                reason_codes.append("action_due")
-        elif not is_closed:
-            reason_codes.append("missing_next_action")
+        # Owner, Next Action, and their timing are one reading (ADR-0025), so
+        # this list, the guided Save screen, the report and the reminders cannot
+        # disagree about the same accepted Commitment.
+        reason_codes.extend(
+            read_statement_coordination_residue(
+                CoordinationPlan(lineage.internal_owner, lineage.next_action),
+                closed=is_closed,
+                action_due_date=lineage.action_due_date,
+                today=evaluated_on,
+            ).reason_codes
+        )
         if not reason_codes:
             continue
         item = WorkItem(
@@ -301,7 +277,7 @@ def build_work_list(
             source_candidate_id=candidate_ids.get(event.commitment_lineage_id),
             timing_text=_display_timing(timing),
             attention_reason_codes=tuple(
-                sorted(reason_codes, key=_REASON_ORDER.__getitem__)
+                sorted(reason_codes, key=attention_reason_sort_key)
             ),
             past_due=past_due,
             deferral_reason=lineage.deferral_reason,
@@ -428,7 +404,9 @@ def _display_timing(timing: StatementTimingRecord) -> str:
 
 def _item_sort_key(item: WorkItem) -> tuple[int, int]:
     """Keep the highest-consequence reason in charge of one grouped item."""
-    priority = min(_REASON_ORDER[reason] for reason in item.attention_reason_codes)
+    priority = min(
+        attention_reason_sort_key(reason) for reason in item.attention_reason_codes
+    )
     identity = item.statement_event_id or item.dependency_id or item.candidate_id or 0
     return priority, identity
 
@@ -535,11 +513,12 @@ def _dependency_items(
     items = []
     for dependency in dependencies:
         reason_codes: list[str] = []
-        if is_critical(dependency.resolution_strategy):
-            if not dependency.internal_owner:
-                reason_codes.append("critical_missing_internal_owner")
-            if not dependency.next_action:
-                reason_codes.append("critical_missing_next_action")
+        reason_codes.extend(
+            read_critical_coordination_residue(
+                CoordinationPlan(dependency.internal_owner, dependency.next_action),
+                critical=is_critical(dependency.resolution_strategy),
+            ).reason_codes
+        )
         if set(disputed.get(dependency.id, ())).intersection(
             {"committed_date", "need_date"}
         ):
@@ -566,7 +545,7 @@ def _dependency_items(
                     source_candidate_id=None,
                     timing_text=None,
                     attention_reason_codes=tuple(
-                        sorted(reason_codes, key=_REASON_ORDER.__getitem__)
+                        sorted(reason_codes, key=attention_reason_sort_key)
                     ),
                     past_due=None,
                     deferral_reason=dependency.deferral_reason,

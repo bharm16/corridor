@@ -62,10 +62,12 @@ from corridor.models import (
 from corridor.dependency_events import current_scope_decision_filter
 from corridor.project_reading import FrozenProjectReading, freeze_project_reading
 from corridor.presentation import (
+    CoordinationPlan,
     documentation_review_label,
     input_reference_label,
     label,
     provenance_label,
+    read_coordination_residue,
     statement_type_label,
 )
 from corridor.work_list import party_commitment_due_after
@@ -967,7 +969,12 @@ def _coordination(session: Session, rows: list[LedgerRow]) -> Section:
     )
     for row in rows:
         dependency = row.dependency
-        if not dependency.internal_owner and not dependency.next_action:
+        # Nothing decided yet is nothing to publish; the same reading the
+        # alerts and the Work List use decides that, not a second expression.
+        if read_coordination_residue(
+            CoordinationPlan(dependency.internal_owner, dependency.next_action),
+            live=True,
+        ).nothing_recorded:
             continue
         owner_tail = current_internal_owner_decision(session, dependency.id)
         action_tail = current_next_action_decision(session, dependency.id)
