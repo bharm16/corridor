@@ -1,21 +1,16 @@
 """Job outputs supply current proof; completed logs supply timing history."""
 
 from datetime import datetime, timedelta, timezone
-import importlib.util
 import json
 import subprocess
-from pathlib import Path
 from types import SimpleNamespace
 from threading import Barrier
 
 import pytest
 
-
-SPEC = importlib.util.spec_from_file_location(
-    "corridor_ci_feedback", Path(__file__).resolve().parents[1] / "scripts/ci_feedback.py"
-)
-ci = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(ci)
+from scripts import ci_feedback as ci
+from scripts.test_gate.contract import RECEIPT_MARKER
+from scripts.test_gate.receipt import ShardReceipt
 
 
 def test_colored_logs_are_captured_without_printing_terminal_control_bytes(monkeypatch, capsys):
@@ -30,7 +25,7 @@ def test_colored_logs_are_captured_without_printing_terminal_control_bytes(monke
     monkeypatch.setattr(ci.subprocess, "run", run)
     result = ci.github("repos/owner/repo/actions/jobs/1/logs", binary=True)
     assert result == raw
-    assert ci.logged_json(result, ci.RECEIPT_MARKER) == {"sample": 1}
+    assert ci.logged_json(result, RECEIPT_MARKER) == {"sample": 1}
     assert len(calls) == 2
     assert "--allow-escape-sequences" not in calls[0]
     assert capsys.readouterr().out == ""
@@ -54,11 +49,11 @@ def test_old_cli_needs_no_new_flag_and_unrelated_errors_are_not_retried(monkeypa
 def _report(run=100, attempt=1):
     expected = {"run_id": str(run), "run_attempt": attempt, "head_sha": "a" * 40,
                 "suites": {"pytest": 1, "slow": 1}}
-    receipts = [{
-        "schema_version": 1, **{key: expected[key] for key in ("run_id", "run_attempt", "head_sha")},
-        "suite": suite, "shard": 1, "shards": 1, "elapsed_seconds": 1.0,
-        "exit_code": 0, "test_count": 1, "per_file_seconds": {"tests/test_one.py": 0.5},
-    } for suite in ("pytest", "slow")]
+    receipts = [ShardReceipt(
+        **{key: expected[key] for key in ("run_id", "run_attempt", "head_sha")},
+        suite=suite, shard=1, shards=1, elapsed_seconds=1.0,
+        exit_code=0, test_count=1, per_file_seconds={"tests/test_one.py": 0.5},
+    ).as_dict() for suite in ("pytest", "slow")]
     return ci.aggregate_receipts(receipts, expected, 2)
 
 
@@ -112,15 +107,15 @@ def test_logged_json_reads_the_last_machine_record_in_timestamped_logs():
 def test_human_summaries_and_other_machine_records_are_not_timing_receipts():
     for log in (b"", b"5284 passed, 3 skipped, 23 warnings in 564.85s\n",
                 _log(ci.REPORT_MARKER, _report())):
-        assert ci.logged_json(log, ci.RECEIPT_MARKER) is None
+        assert ci.logged_json(log, RECEIPT_MARKER) is None
 
 
 def test_malformed_final_record_cannot_fall_back_to_an_earlier_good_record():
     for malformed in ('{', '{"value":NaN}', '{"value":1,"value":2}'):
-        log = _log(ci.RECEIPT_MARKER, {"valid": 1})
-        log += (ci.RECEIPT_MARKER + " " + malformed).encode()
+        log = _log(RECEIPT_MARKER, {"valid": 1})
+        log += (RECEIPT_MARKER + " " + malformed).encode()
         with pytest.raises(ValueError):
-            ci.logged_json(log, ci.RECEIPT_MARKER)
+            ci.logged_json(log, RECEIPT_MARKER)
 
 
 @pytest.mark.parametrize("step_name", [

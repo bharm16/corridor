@@ -4,6 +4,9 @@ The required test run is also the timing run. Previously a separate full
 local run maintained the weights, and its corpus and hardware did not match
 CI. Receipts preserve pytest's failure, the exact partition and tested SHA;
 the summary job checks their completeness before using them for feedback.
+The receipt itself, the JUnit rule and the partition inputs are the shared
+definitions in `scripts/test_gate`; this command chooses the partition, runs
+pytest and publishes what it measured.
 """
 
 from __future__ import annotations
@@ -13,18 +16,18 @@ import json
 import math
 import os
 from pathlib import Path
-import re
 import subprocess
 import sys
 import time
-from xml.etree import ElementTree
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-from scripts.test_shard import (
+from scripts.test_gate.junit import measured_cases
+from scripts.test_gate.partition import (
     DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard, test_files,
 )
+from scripts.test_gate.receipt import ShardReceipt
 
 
 CHECK_OWNED_FILES = (
@@ -77,28 +80,6 @@ def pytest_command(suite: str, files: list[str], workers: int, junit: Path) -> l
     return command + ["--durations=25", "--durations-min=1.0", f"--junitxml={junit}", *files]
 
 
-def measured_cases(junit: Path, assigned: list[str]) -> tuple[int, dict[str, float]]:
-    totals = dict.fromkeys(assigned, 0.0)
-    count = 0
-    for case in ElementTree.parse(junit).iter("testcase"):
-        name = case.get("file")
-        if name is None:
-            match = re.match(r"tests\.(test_[^.]+)(?:\.|$)", case.get("classname", ""))
-            if match is None:
-                raise ValueError("JUnit case does not name a top-level test file")
-            name = f"tests/{match[1]}.py"
-        if name not in totals:
-            raise ValueError(f"JUnit case is outside its assigned partition: {name}")
-        if case.find("skipped") is not None:
-            continue
-        seconds = float(case.get("time", "0"))
-        if not math.isfinite(seconds) or seconds < 0:
-            raise ValueError("JUnit duration must be finite and nonnegative")
-        totals[name] += seconds
-        count += 1
-    return count, totals
-
-
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--suite", choices=("pytest", "slow", "migration"), required=True)
@@ -134,21 +115,19 @@ def main(argv: list[str] | None = None) -> int:
     tested_sha = os.environ.get("GITHUB_SHA") or subprocess.check_output(
         ["git", "rev-parse", "HEAD"], cwd=ROOT, text=True
     ).strip()
-    receipt = {
-        "schema_version": 1,
-        "run_id": os.environ.get("GITHUB_RUN_ID", "1"),
-        "run_attempt": int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
-        "head_sha": tested_sha,
-        "suite": args.suite, "shard": args.shard, "shards": args.shards,
-        "elapsed_seconds": elapsed, "exit_code": status,
-        "test_count": count, "per_file_seconds": totals,
-    }
-    receipt_path.write_text(json.dumps(receipt, indent=2, sort_keys=True) + "\n")
-    encoded = json.dumps(receipt, separators=(",", ":"), allow_nan=False)
+    receipt = ShardReceipt(
+        run_id=os.environ.get("GITHUB_RUN_ID", "1"),
+        run_attempt=int(os.environ.get("GITHUB_RUN_ATTEMPT", "1")),
+        head_sha=tested_sha,
+        suite=args.suite, shard=args.shard, shards=args.shards,
+        elapsed_seconds=elapsed, exit_code=status,
+        test_count=count, per_file_seconds=totals,
+    )
+    receipt.write(receipt_path)
     if os.environ.get("GITHUB_OUTPUT"):
         with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-            output.write(f"{args.suite}_{args.shard}={encoded}\n")
-    print("CORRIDOR_TEST_RECEIPT " + encoded, flush=True)
+            output.write(receipt.output_line())
+    print(receipt.marker_line(), flush=True)
     return 0 if status == 5 and count == 0 else status
 
 

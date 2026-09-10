@@ -3,9 +3,11 @@
 #548 records a budget for required PR checks, and #423's lesson was that a
 suite regresses again the moment nobody is looking at its cost.  CI evidence
 alone cannot name the expensive tests: a total runtime says the job got
-slower, not which file did it.  This turns one JUnit report into per-file and
-per-shard totals, and diffs two reports so a pull request can show what it
-added.
+slower, not which file did it.  This turns one JUnit report into per-file
+totals, diffs two reports so a pull request can show what it added, and with
+`--write` refreshes the bootstrap weights.  The report is read by the same
+rule as the CI receipt (`scripts/test_gate/junit.py`), so the weights this
+writes and the weights CI measures are the same number for the same run.
 
 Usage:
     uv run python scripts/test_timing.py out/timing/non-slow.xml
@@ -16,53 +18,14 @@ Usage:
 from __future__ import annotations
 
 import argparse
-from collections import defaultdict
-import json
 from pathlib import Path
 import sys
-from xml.etree import ElementTree
-
 
 ROOT = Path(__file__).resolve().parents[1]
-
-
-def per_file_seconds(report: Path) -> dict[str, float]:
-    """Total wall-clock seconds per test file, from one JUnit report."""
-
-    totals: dict[str, float] = defaultdict(float)
-    for case in ElementTree.parse(report).iter("testcase"):
-        # `file` is the path pytest recorded; `classname` is the fallback for
-        # reports that omit it.
-        name = case.get("file") or case.get("classname", "").replace(".", "/")
-        if not name.endswith(".py"):
-            name = f"{name}.py"
-        totals[name] += float(case.get("time", 0.0))
-    return dict(totals)
-
-
-def write_durations(totals: dict[str, float], destination: Path) -> None:
-    """Record per-file seconds for every test file, zero included.
-
-    `scripts/test_shard.py` treats a file with no recorded duration as
-    *average*, so an omitted file is not free — it is imaginary work that
-    unbalances the partition. Ten files added after the last hand-written
-    recording were each counted as 52.8 imaginary slow seconds, which is how
-    one slow shard ended up running no tests at all (#548). Every file gets an
-    entry, and a file the gate does not select gets an explicit 0.0.
-    """
-
-    recorded = {
-        str(path.relative_to(ROOT)): round(
-            totals.get(str(path.relative_to(ROOT)), 0.0), 1
-        )
-        for path in sorted((ROOT / "tests").glob("test_*.py"))
-    }
-    unknown = sorted(set(totals) - set(recorded))
-    if unknown:
-        raise SystemExit(f"report names files that are not test files: {unknown}")
-    destination.write_text(
-        json.dumps(recorded, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+from scripts.test_gate.junit import measured_cases
+from scripts.test_gate.partition import test_files, write_durations
 
 
 def _render(totals: dict[str, float], limit: int) -> str:
@@ -102,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         "--write",
         type=Path,
         default=None,
-        help="record per-file seconds for scripts/test_shard.py",
+        help="record per-file seconds as the partition's bootstrap weights",
     )
     arguments = parser.parse_args(argv)
 
@@ -110,17 +73,22 @@ def main(argv: list[str] | None = None) -> int:
         print(f"no report at {arguments.report}", file=sys.stderr)
         return 2
 
-    current = per_file_seconds(arguments.report)
-    if arguments.write is not None:
-        write_durations(current, arguments.write)
-    if arguments.against is None:
-        print(_render(current, arguments.limit))
-        return 0
+    files = test_files()
+    try:
+        current = measured_cases(arguments.report, files)[1]
+        if arguments.write is not None:
+            write_durations(current, arguments.write)
+        if arguments.against is None:
+            print(_render(current, arguments.limit))
+            return 0
 
-    if not arguments.against.exists():
-        print(f"no baseline report at {arguments.against}", file=sys.stderr)
+        if not arguments.against.exists():
+            print(f"no baseline report at {arguments.against}", file=sys.stderr)
+            return 2
+        print(_render_diff(current, measured_cases(arguments.against, files)[1], arguments.limit))
+    except ValueError as error:
+        print(f"report cannot weight the current suite: {error}", file=sys.stderr)
         return 2
-    print(_render_diff(current, per_file_seconds(arguments.against), arguments.limit))
     return 0
 
 

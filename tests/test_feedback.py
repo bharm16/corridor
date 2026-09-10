@@ -5,19 +5,17 @@ for a slow suite. The actual workflow produces the same public CLI inputs.
 """
 
 from copy import deepcopy
-import importlib.util
 import json
 from pathlib import Path
 
 import pytest
 
+from scripts import test_feedback
+from scripts.test_gate import feedback
+from scripts.test_gate.receipt import ShardReceipt
+
 
 ROOT = Path(__file__).resolve().parents[1]
-SPEC = importlib.util.spec_from_file_location(
-    "corridor_test_feedback", ROOT / "scripts" / "test_feedback.py"
-)
-feedback = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(feedback)
 POLICY = json.loads((ROOT / "tests" / "feedback-budget.json").read_text())
 
 
@@ -31,14 +29,14 @@ def _expected(run=100, *, sha=None, migration=False, shards=1):
 
 
 def _receipts(expected, *, elapsed=10):
+    """Receipts as the gate writes them, not as a test imagines them."""
     return [
-        {
-            "schema_version": 1,
+        ShardReceipt(
             **{name: expected[name] for name in ("run_id", "run_attempt", "head_sha")},
-            "suite": suite, "shard": shard, "shards": shards,
-            "elapsed_seconds": elapsed, "exit_code": 0, "test_count": 2,
-            "per_file_seconds": {f"tests/test_part_{shard}.py": 5.0},
-        }
+            suite=suite, shard=shard, shards=shards,
+            elapsed_seconds=elapsed, exit_code=0, test_count=2,
+            per_file_seconds={f"tests/test_part_{shard}.py": 5.0},
+        ).as_dict()
         for suite, shards in expected["suites"].items()
         for shard in range(1, shards + 1)
     ]
@@ -312,14 +310,6 @@ def test_failing_performance_results_remain_valid_history():
     assert result["sample_count"] == 2
 
 
-@pytest.mark.parametrize("raw", ['{"a":1,"a":2}', '{"a":NaN}', '{"a":Infinity}'])
-def test_json_reader_refuses_ambiguous_or_non_finite_evidence(tmp_path, raw):
-    path = tmp_path / "receipt.json"
-    path.write_text(raw)
-    with pytest.raises(feedback.EvidenceError):
-        feedback.read_json(path)
-
-
 def test_cli_aggregates_and_assesses_the_same_artifacts_ci_uses(tmp_path):
     receipts = tmp_path / "receipts"
     receipts.mkdir()
@@ -329,18 +319,18 @@ def test_cli_aggregates_and_assesses_the_same_artifacts_ci_uses(tmp_path):
     expected_path = tmp_path / "expected.json"
     expected_path.write_text(json.dumps(expected))
     output = tmp_path / "report.json"
-    assert feedback.main([
+    assert test_feedback.main([
         "aggregate", "--receipts", str(receipts), "--expected", str(expected_path),
         "--gate-seconds", "100", "--output", str(output),
     ]) == 0
     history = tmp_path / "history"
     history.mkdir()
-    assert feedback.main([
+    assert test_feedback.main([
         "assess", "--current", str(output), "--history", str(history),
         "--policy", str(ROOT / "tests" / "feedback-budget.json"),
     ]) == 0
     (receipts / "0.json").unlink()
-    assert feedback.main([
+    assert test_feedback.main([
         "aggregate", "--receipts", str(receipts), "--expected", str(expected_path),
         "--gate-seconds", "100", "--output", str(output),
     ]) == 2

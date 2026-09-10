@@ -1,7 +1,6 @@
 """The required runner preserves pytest outcomes and measured file ownership."""
 
 import json
-import importlib.util
 import os
 from pathlib import Path
 import subprocess
@@ -9,25 +8,8 @@ from types import SimpleNamespace
 
 import pytest
 
-SPEC = importlib.util.spec_from_file_location(
-    "corridor_run_test_gate", Path(__file__).resolve().parents[1] / "scripts/run_test_gate.py"
-)
-gate = importlib.util.module_from_spec(SPEC)
-SPEC.loader.exec_module(gate)
-
-
-def test_measurement_keeps_zeroes_and_ignores_skipped_work(tmp_path):
-    report = tmp_path / "suite.xml"
-    report.write_text('<testsuites><testsuite><testcase classname="tests.test_a" time="2"/><testcase classname="tests.test_a" time="5"><skipped/></testcase></testsuite></testsuites>')
-    assert gate.measured_cases(report, ["tests/test_a.py", "tests/test_b.py"]) == (1, {"tests/test_a.py": 2.0, "tests/test_b.py": 0.0})
-
-
-@pytest.mark.parametrize("case", ['classname="tests.test_other" time="1"', 'classname="tests.test_a" time="nan"', 'classname="tests.test_a" time="-1"'])
-def test_untrustworthy_junit_cannot_produce_weights(tmp_path, case):
-    report = tmp_path / "suite.xml"
-    report.write_text(f"<testsuites><testcase {case}/></testsuites>")
-    with pytest.raises(ValueError):
-        gate.measured_cases(report, ["tests/test_a.py"])
+from scripts import run_test_gate as gate
+from scripts.test_gate.partition import SLOW_MINIMUM_FILE_SECONDS, shard
 
 
 def test_migration_parallelizes_only_the_migration_file(tmp_path):
@@ -121,7 +103,6 @@ def test_slow_partition_spreads_zero_time_imports_without_changing_coverage(monk
     must import them. The slow-only floor spreads that load without pruning a
     single file or moving the expensive modules in this regression population.
     """
-    from scripts.test_shard import shard, SLOW_MINIMUM_FILE_SECONDS
     heavy = {f"tests/test_heavy_{i}.py": value for i, value in enumerate((100, 98, 90, 85, 74, 55))}
     durations = {**heavy, **{f"tests/test_zero_{i:03}.py": 0.0 for i in range(278)}}
     files = sorted(durations)
@@ -142,19 +123,5 @@ def test_slow_partition_spreads_zero_time_imports_without_changing_coverage(monk
 
 @pytest.mark.parametrize("floor", [-1, float("inf"), float("nan")])
 def test_nonfinite_or_negative_collection_floors_cannot_create_a_partition(floor):
-    from scripts.test_shard import shard
     with pytest.raises(ValueError, match="finite and nonnegative"):
         shard(["tests/test_one.py"], {}, 1, minimum_file_seconds=floor)
-
-
-def test_slow_shard_cli_and_required_runner_use_the_same_floor(monkeypatch, tmp_path, capsys):
-    from scripts import test_shard
-    files = [f"tests/test_{i}.py" for i in range(30)]
-    durations = {name: (20 if i < 5 else 0) for i, name in enumerate(files)}
-    monkeypatch.setattr(test_shard, "test_files", lambda: files)
-    monkeypatch.setattr(test_shard, "recorded_seconds", lambda *_: durations)
-    monkeypatch.setattr(gate, "test_files", lambda: files)
-    monkeypatch.setenv("CORRIDOR_CI_WEIGHTS", json.dumps({"slow": durations}))
-    for index in range(1, 4):
-        assert test_shard.main(["--slow", "--shards", "3", "--shard", str(index)]) == 0
-        assert capsys.readouterr().out.split() == gate.partition("slow", 3, index, tmp_path)

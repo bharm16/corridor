@@ -152,7 +152,7 @@ jobs:
   pytest:
     # Every file lands in exactly one shard. Each private runner has two
     # cores and uses two xdist workers; the ordinary suite uses worksteal.
-    # scripts/test_shard.py proves the exact cover (ADR-0096).
+    # tests/test_ci_policy.py proves the exact cover (ADR-0096).
     # Eight ordinary plus three slow adds one runner to the measured seven/three
     # allocation. The required gate measures this capacity increase against
     # the unchanged budget and retains every test (ADR-0096).

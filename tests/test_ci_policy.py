@@ -8,15 +8,19 @@ never reports; a job skipped by an `if` reports `skipped`, which the
 against what `scripts/classify_ci_change.py` asked for (ADR-0093, #697).
 """
 
-import importlib.util
 import os
 from pathlib import Path
 import subprocess
-import sys
 
 import pytest
 from sqlalchemy import create_engine, text
 import yaml
+
+from scripts.run_test_gate import CHECK_OWNED_FILES
+from scripts.test_gate import partition
+from scripts.test_gate.partition import (
+    DURATIONS, SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS, recorded_seconds, shard,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -384,25 +388,12 @@ def test_every_test_file_lands_in_exactly_one_shard():
     # Each gate balances on its own recorded seconds and carries its own
     # runner count, so each has its own partition; both must cover the suite
     # exactly.
-    for job, profile in (("pytest", []), ("slow", ["--slow"])):
-        shards = _shard_count(job)
-        assigned: list[str] = []
-        for shard in range(1, shards + 1):
-            completed = subprocess.run(
-                [
-                    sys.executable,
-                    str(ROOT / "scripts" / "test_shard.py"),
-                    "--shards",
-                    str(shards),
-                    "--shard",
-                    str(shard),
-                    *profile,
-                ],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-            assigned.extend(completed.stdout.split())
+    for job, durations, floor in (
+        ("pytest", DURATIONS, 0.0), ("slow", SLOW_DURATIONS, SLOW_MINIMUM_FILE_SECONDS),
+    ):
+        buckets = shard(partition.test_files(), recorded_seconds(durations), _shard_count(job),
+                        minimum_file_seconds=floor)
+        assigned = [name for bucket in buckets for name in bucket]
 
         assert len(assigned) == len(set(assigned)), f"{job}: a file landed twice"
         assert set(assigned) == expected, (
@@ -464,20 +455,8 @@ def test_ci_worker_count_matches_the_private_runner_capacity():
 
 def test_check_owns_its_source_checks_once_in_the_required_gate():
     """The same checks must not execute in check and a behavior shard."""
-    path = ROOT / "scripts" / "run_test_gate.py"
-    spec = importlib.util.spec_from_file_location("ci_policy_run_test_gate", path)
-    assert spec is not None and spec.loader is not None
-    module = importlib.util.module_from_spec(spec)
-    previous_path = sys.path[:]
-    sys.path.insert(0, str(ROOT / "scripts"))
-    sys.modules[spec.name] = module
-    try:
-        spec.loader.exec_module(module)
-    finally:
-        sys.path[:] = previous_path
-        del sys.modules[spec.name]
     expected = {"tests/test_architecture.py", "tests/test_source_scan_support.py"}
-    assert set(module.CHECK_OWNED_FILES) == expected
+    assert set(CHECK_OWNED_FILES) == expected
     recipe = _make_recipe("check")
     commands = [line.strip() for line in recipe.splitlines() if "pytest " in line]
     assert len(commands) == 1
