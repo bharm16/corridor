@@ -364,7 +364,7 @@ def test_an_unknown_renderer_version_is_never_resolved_to_a_known_one():
     assert (
         registered_contract(
             UPDATED_UCM,
-            RendererRevision(UCM_RENDERER_IDENTITY, "workbook_render_v2"),
+            RendererRevision(UCM_RENDERER_IDENTITY, "workbook_render_unknown"),
         )
         is None
     )

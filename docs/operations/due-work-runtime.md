@@ -53,6 +53,22 @@ source without scraping arbitrary pages or treating a filename as a Document
 kind. New references remain proposed intake until Corridor Operations records
 the existing attributable authorization.
 
+The pull-polling `BoxPullConnector` takes a configured **Box shared-file URL**.
+Its public-page parser supplies no native revision token, so a polling pass
+captures each current download and uses `sha256:<digest>` as an explicitly
+labelled `observed_content_sha256` version. Fetching that listed version returns
+the captured bytes, even if the download changes afterward; an unlisted version
+is refused. Each poll downloads the current files to detect byte changes. This
+is an observation of the current share, not recovery of intermediate Box
+versions that were never observed.
+
+Its `box-snapshot-v1` checkpoint binds the configured shares and observed
+versions. Changed snapshots re-list their members; delivery persistence handles
+duplicates. Old item-ID checkpoints replay the current snapshot once instead
+of guessing what version the old ID meant. Failed observations and incomplete
+fetch sets cannot checkpoint. Durable checkpoint custody remains with the
+polling runtime and its delivery ledger, not adapter memory.
+
 Each hourly UTC `latest_only` occurrence has a stable identity. Claims have a
 bounded lease and deadline. A crashed worker's attempt is retained before a new
 owner retries it; a stale owner cannot finalize after recovery. Backoff and

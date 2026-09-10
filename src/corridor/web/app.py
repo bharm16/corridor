@@ -776,70 +776,35 @@ def get_coordination_summary_client_factory():
     """Build an adapter only after the route found declared spend authority."""
     from corridor.llm import OpenAIClient
 
-    def build(configuration):
-        return OpenAIClient(
-            model=configuration.model,
-            timeout=configuration.timeout_seconds,
-            max_output_tokens=configuration.max_output_tokens,
-        )
-
-    return build
+    return OpenAIClient.from_spend_authorization
 
 
 def get_run_explanation_client_factory():
     """Build an explanation adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
-    def build(configuration):
-        return OpenAIClient(
-            model=configuration.model,
-            timeout=configuration.timeout_seconds,
-            max_output_tokens=configuration.max_output_tokens,
-        )
-
-    return build
+    return OpenAIClient.from_spend_authorization
 
 
 def get_failure_diagnosis_client_factory():
     """Build a diagnosis adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
-    def build(configuration):
-        return OpenAIClient(
-            model=configuration.model,
-            timeout=configuration.timeout_seconds,
-            max_output_tokens=configuration.max_output_tokens,
-        )
-
-    return build
+    return OpenAIClient.from_spend_authorization
 
 
 def get_revision_change_explanation_client_factory():
     """Build a revision-change adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
-    def build(configuration):
-        return OpenAIClient(
-            model=configuration.model,
-            timeout=configuration.timeout_seconds,
-            max_output_tokens=configuration.max_output_tokens,
-        )
-
-    return build
+    return OpenAIClient.from_spend_authorization
 
 
 def get_intake_draft_client_factory():
     """Build an intake-draft adapter only after declared spend authority exists."""
     from corridor.llm import OpenAIClient
 
-    def build(configuration):
-        return OpenAIClient(
-            model=configuration.model,
-            timeout=configuration.timeout_seconds,
-            max_output_tokens=configuration.max_output_tokens,
-        )
-
-    return build
+    return OpenAIClient.from_spend_authorization
 
 
 async def get_human_principal(

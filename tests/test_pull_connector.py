@@ -180,7 +180,7 @@ def test_sync_pull_connector_crash_safety(isolated_content_store) -> None:
 
 def test_box_pull_connector_implements_protocol() -> None:
     """BoxPullConnector satisfies the PullConnector contract."""
-    connector = BoxPullConnector()
+    connector = BoxPullConnector(fetcher=lambda _: b"exact Box observation")
     shared = BoxSharedFile(
         shared_name="txdot_sample",
         item_id=123456,
@@ -193,13 +193,14 @@ def test_box_pull_connector_implements_protocol() -> None:
     assert len(items) == 1
     assert items[0].item_id == "123456"
     assert items[0].name == "Utility_Matrix_Nov2025.zip"
-    assert token == "123456"
+    assert token.startswith("box-snapshot-v1:")
+    assert connector.fetch_version(items[0].item_id, items[0].version_id) == b"exact Box observation"
 
     meta = connector.get_metadata("123456")
     assert meta["shared_name"] == "txdot_sample"
 
     connector.checkpoint(token)
-    assert connector.current_checkpoint == "123456"
+    assert connector.current_checkpoint == token
 
 
 class RecordingLedger:

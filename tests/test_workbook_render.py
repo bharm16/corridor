@@ -1467,6 +1467,80 @@ def test_a_declared_new_row_carries_only_the_approved_table_metadata(
     assert _cells(with_metadata.content)["B6"] == "Bluebonnet Electric Cooperative"
 
 
+@pytest.mark.parametrize("relative_relationship", (False, True))
+def test_row_insertion_preserves_unrelated_tables_and_their_parts(
+    session, project, adopted_rich, relative_relationship
+):
+    from openpyxl.worksheet.table import Table
+
+    book = load_workbook(BytesIO(adopted_rich.body))
+    lookups = book.create_sheet("Lookups")
+    lookups.append(["Lookup code", "Lookup meaning"])
+    lookups.append(["A", "First"])
+    lookups.add_table(Table(displayName="LookupCodes", ref="A1:B2"))
+    # A separate table alongside the UCM is not its row-insertion target.
+    sheet = book[SHEET]
+    for row, values in enumerate(
+        (("Lookup code", "Lookup meaning"), ("B", "Second")), start=2
+    ):
+        for column, value in enumerate(values, start=18):
+            sheet.cell(row, column, value)
+    sheet.add_table(Table(displayName="SideCodes", ref="R2:S3"))
+    output = BytesIO()
+    book.save(output)
+    parts = _parts(output.getvalue())
+    if relative_relationship:
+        for name in parts:
+            if name.startswith("xl/worksheets/_rels/"):
+                parts[name] = parts[name].replace(b'Target="/xl/tables/', b'Target="../tables/')
+    template = _repack(parts)
+    _approve_template(session, project, template)
+    revision = _add_new_subject(session, project)
+
+    rendered = _render(
+        session, project, adopted_rich, template_bytes=template,
+        revision_id=revision,
+        profile=RenderProfile(row_insertion=RowInsertionTemplate(extend_table_ref=True)),
+    )
+
+    result = load_workbook(BytesIO(rendered.content))
+    assert result[SHEET].tables["Conflicts"].ref == "A2:P6"
+    assert result[SHEET].tables["Conflicts"].autoFilter.ref == "A2:P6"
+    assert result[SHEET].tables["SideCodes"].ref == "R2:S3"
+    assert result["Lookups"].tables["LookupCodes"].ref == "A1:B2"
+    changed = _parts(rendered.content)
+    for name in parts:
+        if name not in {"xl/worksheets/sheet1.xml", "xl/tables/table1.xml"}:
+            assert changed[name] == parts[name], name
+
+
+@pytest.mark.parametrize("layout", ("missing", "ambiguous", "totals"))
+def test_row_insertion_refuses_unproven_table_ownership(
+    session, project, adopted_rich, layout
+):
+    from openpyxl.worksheet.table import Table
+
+    book = load_workbook(BytesIO(adopted_rich.body))
+    table = book[SHEET].tables["Conflicts"]
+    if layout == "missing":
+        del book[SHEET].tables["Conflicts"]
+    elif layout == "ambiguous":
+        book[SHEET].add_table(Table(displayName="SecondClaim", ref="A2:P5"))
+    else:
+        table.totalsRowCount = 1
+    output = BytesIO()
+    book.save(output)
+    template = output.getvalue()
+    _approve_template(session, project, template)
+    revision = _add_new_subject(session, project)
+    with pytest.raises(UnsupportedWorkbookFeature, match="table"):
+        _render(
+            session, project, adopted_rich, template_bytes=template,
+            revision_id=revision,
+            profile=RenderProfile(row_insertion=RowInsertionTemplate(extend_table_ref=True)),
+        )
+
+
 # --- What a real Excel-authored template looks like --------------------------
 
 
