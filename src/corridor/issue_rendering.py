@@ -127,6 +127,7 @@ from corridor.models import (
     SupportAssessment,
     SupportAssessmentSource,
 )
+from corridor.native_follow_up_reading import AcceptedFollowUpPlan
 from corridor.operating_mode import ADOPTED_BASELINE, project_operating_mode
 from corridor.presentation import accepted_record_exception_name, field_label
 from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
@@ -260,13 +261,15 @@ CHECKS_RAISED_ELSEWHERE = (
     ),
     (
         "ACTION_DUE_SOON",
-        "a next action that is coming due is stated in the follow-up "
-        "section, from the accepted follow-up plan that carries it",
+        "a coordination question whose answer is coming due is stated in the "
+        "follow-up section and chased in the chase list, from the return date "
+        "the accepted follow-up plan itself recorded",
     ),
     (
         "ACTION_OVERDUE",
-        "a next action that is past its date is stated in the follow-up "
-        "section, from the accepted follow-up plan that carries it",
+        "a coordination question whose answer is past its return date is "
+        "stated in the follow-up section and chased in the chase list, from "
+        "the return date the accepted follow-up plan itself recorded",
     ),
 )
 
@@ -404,26 +407,23 @@ RELEASED_TEMPLATE_SECTIONS: tuple[ReportSection, ...] = (
 )
 
 
-@dataclass(frozen=True, slots=True)
-class AcceptedFollowUpPlan:
-    """One accepted Follow-up Plan the report may state (ADR-0038, ADR-0084).
-
-    ``open_question`` carries the exact unresolved question a person recorded.
-    It deliberately has nowhere to put a proposed value: the accepted position
-    beside it is always composed here, from the frozen projection, so an
-    unaccepted incoming value cannot reach a customer artifact through this
-    field.
-    """
-
-    plan_identity: str
-    subject_identity: str
-    assigned_to: str
-    next_action: str
-    recorded_by: str
-    recorded_at: datetime
-    field: str | None = None
-    action_due_date: date | None = None
-    open_question: str | None = None
+# What the Follow-up Plan section states, and the one thing no record holds.
+# ADR-0084 section 1 defines a spine Follow-up Plan as an open question, the
+# party who owes the answer and the date it returns.  The legacy Follow-up
+# Plan's Assigned To, Next Action and Action Due Date belong to a different
+# record on a frozen path (ADR-0081), and this report may not invent one from
+# nothing.  So the section declares the absence in the same way the alerts
+# section declares the checks it does not run: a customer reading "our next
+# steps" is told what Corridor holds the authority to say.
+FOLLOW_UP_NOT_RETAINED = (
+    (
+        "the next action we will take",
+        "a Follow-up Plan records the question, the party who owes the answer "
+        "and the date it comes back; nobody recorded a sentence saying what we "
+        "will do next, so this section states what each question is waiting on "
+        "instead of a step no record of ours holds",
+    ),
+)
 
 
 @dataclass(frozen=True)
@@ -943,13 +943,25 @@ def _validate_coverage(coverage: tuple[SourceCoverage, ...]) -> None:
 
 
 def _validate_follow_up_plans(plans: tuple[AcceptedFollowUpPlan, ...]) -> None:
+    """Refuse anything that is not a Follow-up Plan read from the records.
+
+    The type check is the whole point of the parameter having a type: this
+    section was handed ``Sequence[Any]`` from two callers, and the shape it
+    actually wanted was a dataclass nothing produced, so a mismatch was never
+    an error anywhere and the section rendered nothing (#425).
+    """
+
     for plan in plans:
-        if not plan.assigned_to.strip() or not plan.next_action.strip():
+        if not isinstance(plan, AcceptedFollowUpPlan):
             raise MixedIssueInputs(
-                "an accepted Follow-up Plan names who is doing what"
+                "a Follow-up Plan section states plans read from the retained "
+                "records; this reading was handed "
+                f"{type(plan).__name__} instead"
             )
-        if plan.open_question is None:
-            continue
+        if not plan.responsible:
+            raise MixedIssueInputs(
+                "a Follow-up Plan names the party who owes the answer"
+            )
         if not plan.open_question.strip().endswith("?"):
             raise MixedIssueInputs(
                 "a pending coordination line asks a question; a sentence that "
@@ -1013,12 +1025,11 @@ def _reading_identity(**parts: Any) -> str:
         "first_issue_behavior": parts["first_issue_behavior"],
         "follow_up_plans": [
             [
-                plan.plan_identity,
-                plan.subject_identity,
-                plan.field,
-                plan.assigned_to,
-                plan.next_action,
-                None if plan.action_due_date is None else plan.action_due_date.isoformat(),
+                plan.plan_id,
+                plan.target_subject_identity,
+                plan.target_field,
+                plan.responsible,
+                None if plan.return_date is None else plan.return_date.isoformat(),
                 plan.open_question,
             ]
             for plan in parts["follow_up_plans"]
@@ -1736,26 +1747,34 @@ def _plan_provenance(plan: AcceptedFollowUpPlan) -> ValueProvenance:
         value_class=COORDINATION_DECISION,
         decided_by=plan.recorded_by,
         decided_at=plan.recorded_at,
-        subject_identity=plan.subject_identity,
+        subject_identity=plan.target_subject_identity,
     )
 
 
 def _follow_up_lines(reading: BoundIssueReading) -> list[ReportLine]:
+    """What each plan is waiting on, in the words the chase list already uses.
+
+    A retained plan holds the question, the party who owes the answer and the
+    date it comes back. It holds no next-action sentence, so none is composed
+    here: ``_follow_up_coverage_paragraph`` states that absence instead, the
+    way the alerts section states which checks it did not run.
+    """
+
     lines = []
     for plan in reading.follow_up_plans:
-        due = (
-            "no date is set for it yet"
-            if plan.action_due_date is None
-            else f"it is due on {plan.action_due_date.isoformat()}"
+        by = (
+            " No return date has been recorded for this question."
+            if plan.return_date is None
+            else f" We need the answer by {plan.return_date.date().isoformat()}."
         )
         lines.append(
             ReportLine(
                 section_key=SECTION_FOLLOW_UP_PLANS,
-                subject_identity=plan.subject_identity,
+                subject_identity=plan.target_subject_identity,
                 statement=(
-                    f"{plan.subject_identity}: {plan.assigned_to} will "
-                    f"{plan.next_action[0].lower()}{plan.next_action[1:]}, and "
-                    f"{due}."
+                    f"{plan.target_subject_identity}: a coordinator recorded a "
+                    f"Follow-up Plan for this question and named "
+                    f"{plan.responsible} as the party who can answer it.{by}"
                 ),
                 provenance=_plan_provenance(plan),
             )
@@ -1777,32 +1796,34 @@ def _pending_lines(reading: BoundIssueReading) -> list[ReportLine]:
     }
     lines = []
     for plan in reading.follow_up_plans:
-        if plan.open_question is None:
-            continue
-        held = accepted.get((plan.subject_identity, plan.field or ""))
-        if plan.field is None:
+        held = accepted.get(
+            (plan.target_subject_identity, plan.target_field or "")
+        )
+        if plan.target_field is None:
             position = (
                 "Nothing about this has been accepted into the project record "
                 "yet."
             )
         elif held is None:
             position = (
-                f"The project record holds no {field_label(plan.field)} for "
+                f"The project record holds no "
+                f"{field_label(plan.target_field)} for "
                 "this item, and no change to that has been accepted."
             )
         else:
             position = (
-                f"The project record shows {field_label(plan.field)} "
+                f"The project record shows "
+                f"{field_label(plan.target_field)} "
                 f"{_projected_text(held)}, and no change to that has been "
                 "accepted."
             )
         lines.append(
             ReportLine(
                 section_key=SECTION_PENDING_COORDINATION,
-                subject_identity=plan.subject_identity,
+                subject_identity=plan.target_subject_identity,
                 statement=(
-                    f"{plan.subject_identity}: {plan.open_question.strip()} "
-                    f"{position}"
+                    f"{plan.target_subject_identity}: "
+                    f"{plan.open_question.strip()} {position}"
                 ),
                 provenance=_plan_provenance(plan),
             )
@@ -2017,6 +2038,11 @@ def render_weekly_report(reading: WeeklyReportReading) -> RenderedArtifact:
                 paragraphs.append(f"{line.statement} {line.provenance.sentence()}")
         if section.key == SECTION_CONSTRAINT_ALERTS:
             paragraphs.extend(_check_coverage_paragraphs(reading.check_coverage))
+        if section.key == SECTION_FOLLOW_UP_PLANS and lines:
+            # Only where there are plans: the empty sentence above already says
+            # nothing was recorded, and "we cannot state a next action for the
+            # plans you do not have" is noise, not a disclosure.
+            paragraphs.append(_follow_up_coverage_paragraph())
 
     paragraphs.append(
         f"{_open_work_paragraph(reading)} "
@@ -2029,6 +2055,15 @@ def render_weekly_report(reading: WeeklyReportReading) -> RenderedArtifact:
         accepted_revision_id=bound.accepted_revision_id,
         container=_container(bound, "Constraint status report"),
         body="\n\n".join(paragraphs),
+    )
+
+
+def _follow_up_coverage_paragraph() -> str:
+    """State what this section does not say, and why no record could say it."""
+
+    return "This section states what each recorded question is waiting on. " + " ".join(
+        f"It does not state {what}, because {why}."
+        for what, why in FOLLOW_UP_NOT_RETAINED
     )
 
 

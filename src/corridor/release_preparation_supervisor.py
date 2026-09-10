@@ -87,6 +87,7 @@ from corridor.models import (
     ReleasePreparationReading,
     ReleasePreparationRequest,
 )
+from corridor.native_follow_up_reading import read_adopted_follow_up_plans
 from corridor.object_storage import (
     ObjectStore,
     StorageError,
@@ -554,14 +555,17 @@ def resolve_preparation_inputs(
     | ``follow_up_plans``       | see below                                   |
     | analytics binding         | the deployed code and product identity      |
 
-    ``follow_up_plans`` resolves empty, deliberately and not by oversight.
-    #425 retains an open question, a responsible party and a return date;
-    ``AcceptedFollowUpPlan`` additionally requires the **next action** sentence
-    the report prints, and no retained record holds one. A supervisor that
+    ``follow_up_plans`` is read from the retained records, and it is read
+    rather than composed. #425 retains an open question, a responsible party
+    and a return date, and ``AcceptedFollowUpPlan`` is now exactly those
+    fields, so this resolution is a read with no prose in it. It used to
+    resolve empty because the renderer's own twin of that type additionally
+    required a **next action** sentence no record holds; a supervisor that
     composed that sentence would be writing customer-facing prose out of a
-    background job, which is the exact thing this module refuses to do. The
-    chase list still reaches the candidate: ``bind_preparation`` reads
-    ``read_follow_up_bundles`` itself, from the same #425 records.
+    background job, which this module still refuses to do. The report declares
+    the absent next action instead. The chase list reaches the candidate by its
+    own path: ``bind_preparation`` reads ``read_follow_up_bundles`` itself,
+    from the same #425 records.
     """
 
     receipt = session.get(DueWorkReceipt, int(reading.receipt_id))
@@ -630,7 +634,13 @@ def resolve_preparation_inputs(
         ),
         first_issue_behavior=RELEASED_FIRST_ISSUE_BEHAVIOR,
         template_bytes=template.content,
-        follow_up_plans=(),
+        follow_up_plans=read_adopted_follow_up_plans(
+            session,
+            int(request.project_id),
+            int(preparation["accepted_revision_id"]),
+            current=True,
+            as_of=_aware_utc(request.source_cutoff),
+        ),
         binding=default_binding(),
         report_receipt_id=int(reading.receipt_id),
         report_result_sha256=reading.result_sha256,

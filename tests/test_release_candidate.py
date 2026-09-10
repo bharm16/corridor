@@ -470,6 +470,35 @@ def test_a_renderer_version_this_release_does_not_register_refuses_preparation(
 
 
 
+def test_the_follow_up_plans_parameter_refuses_a_shape_that_is_not_a_plan(
+    session, adopted, store
+):
+    """A real type at the boundary, and a refusal rather than an empty section.
+
+    ``follow_up_plans`` was ``Sequence[Any]`` here and in
+    ``prepare_release_candidate``, and the renderer's own follow-up type shared
+    not one field name with the reading the records produce. Nothing converted
+    between them and nothing objected, so "Our next steps" was structurally
+    empty in every production path (#425). The parameter now names the one
+    reading type, and the wrong shape is a refusal.
+    """
+
+    _configure(session, adopted)
+
+    class _Twin:
+        plan_identity = "plan-88"
+        subject_identity = "UC-1"
+        assigned_to = "Dana Reyes"
+        next_action = "Ask City Water to confirm the relocation date"
+
+    with pytest.raises(PreparationRefused) as refused:
+        _bind(session, adopted, follow_up_plans=(_Twin(),))
+
+    assert refused.value.code == MIXED_READING
+    assert "retained records" in refused.value.sentence
+    assert _candidates(session, adopted) == ()
+
+
 # --- what the candidate identity binds -------------------------------------
 
 

@@ -493,7 +493,7 @@ def build_native_report(session, reading: FrozenProjectReading, *, document_only
         authority = WorkDecision((plan.plan_id,), plan.recorded_by, plan.recorded_at.date(), "delta_follow_up_plan")
         follow_up.rows.append([Cell("Proposed Delta", str(plan.delta_id), authority),
             Cell("Open question", plan.open_question, authority),
-            Cell(label("assigned_to"), plan.responsible_principal or plan.responsible_organization or "—", authority),
+            Cell(label("assigned_to"), plan.responsible or "—", authority),
             Cell("Return date", plan.return_date.date().isoformat() if plan.return_date else "—", authority)])
     statement_section = Section("Accepted statements", columns=["Statement", "Accepted wording", "Recorded timing", label("applies_to"), "Source traceability"],
         note="Statement fields retain their own Record Decisions. Timing is not converted into a Constraint date without its released projection policy.")
