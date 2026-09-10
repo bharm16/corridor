@@ -12,6 +12,7 @@ each proving the intake draft's registration state is untouched.
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import date
 from pathlib import Path
 
@@ -256,6 +257,86 @@ def test_completed_draft_keeps_source_backed_suggestions(session, project, tmp_p
         )
     ).one()
     assert predecessor.superseded_by is None
+
+
+def test_completed_receipt_digests_and_bounds_are_pinned(session, project, tmp_path):
+    """The retained receipt's digests and bounds for one fixture, pinned exactly.
+
+    The draft lane runs on the shared bounded-explanation loop; these values are
+    what an earlier receipt already holds for the same inputs, so they may not
+    move when the loop's implementation does. Digests over inputs that vary per
+    run (the workbook bytes, the assigned Document ids) are pinned to the retained
+    encoding spelled out here instead of to a literal.
+    """
+    predecessor = _registered_document(
+        session, project, registry_id="UCM-REV-2", sha="a" * 64
+    )
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+    adapter = FakeAdapter(result=_valid_result())
+
+    receipt = _draft(session, project, staged, adapter)
+
+    def retained_sha256(payload) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                payload,
+                sort_keys=True,
+                separators=(",", ":"),
+                ensure_ascii=False,
+                default=str,
+            ).encode("utf-8")
+        ).hexdigest()
+
+    call = adapter.calls[0]
+    assert receipt.status == "completed"
+    assert receipt.adapter == "fake-intake-draft"
+    assert receipt.adapter_contract_version == "fake-adapter-v1"
+    assert receipt.source_sha256 == (
+        "9d413d0c6634722b5224f93d4f6f139f5f42f05819a2c59d0bf3e51ef1ec39bf"
+    )
+    assert receipt.read_fingerprint == retained_sha256(
+        {
+            "project_id": project.id,
+            "staged_sha256": staged.sha256,
+            "doc_type": "matrix",
+            "documents": [
+                {
+                    "id": predecessor.id,
+                    "registry_id": "UCM-REV-2",
+                    "sha256": "a" * 64,
+                    "superseded_by": None,
+                }
+            ],
+        }
+    )
+    assert receipt.state_token == retained_sha256(
+        {
+            "project_id": project.id,
+            "staged_sha256": staged.sha256,
+            "registered_registry_ids": ["UCM-REV-2"],
+            "known_facts": {"already_registered": False},
+        }
+    )
+    lineage = receipt.execution_lineage_json
+    assert lineage["adapter"] == "fake-intake-draft"
+    assert lineage["adapter_contract_version"] == "fake-adapter-v1"
+    assert lineage["request_sha256"] == retained_sha256([call.system, call.user])
+    assert lineage["result_sha256"] == (
+        "8778c2e0303571ec038030f9d19cdfd824b59d4290d59bb175cc86cca76fc35d"
+    )
+    assert isinstance(lineage["elapsed_ms"], int)
+    assert receipt.budget_json == {
+        "max_input_tokens": 50_000,
+        "max_output_tokens": 2_000,
+        "timeout_seconds": 30,
+        "max_requests": 1,
+        "retry_policy": "none",
+    }
+    assert receipt.usage_json == {
+        "estimated_input_tokens": (len(call.system) + len(call.user) + 3) // 4,
+        "reported": {},
+    }
 
 
 def test_a_pdf_source_is_read_page_by_page_from_its_text_layer(session, project, tmp_path):
