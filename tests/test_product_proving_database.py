@@ -250,8 +250,10 @@ def test_public_fingerprint_discovers_all_current_tables_and_sequences_read_only
     # `policy_activations` relation, so four tables and four sequences leave and
     # one of each arrives. #809 adds the processing observation an Unconfirmed
     # reading is bound to, keyed by its own bigserial: one table, one sequence.
-    assert fingerprint.table_count == 221
-    assert fingerprint.sequence_count == 199
+    # #811 adds the one spend authorization the five assistant configurations
+    # reference, keyed by its own bigserial: one table, one sequence.
+    assert fingerprint.table_count == 222
+    assert fingerprint.sequence_count == 200
     assert fingerprint.schema_object_count > 0
     assert len(fingerprint.schema_sha256) == 64
     assert [item.name for item in fingerprint.tables] == sorted(

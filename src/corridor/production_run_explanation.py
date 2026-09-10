@@ -52,8 +52,13 @@ from corridor.models import (
     ExtractionRun,
     ProductionRunExplanationConfiguration,
     ProductionRunExplanationRequest,
+    SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.spend_authorization import (
+    RETENTION_POLICY,
+    declare_spend_authorization,
+)
 
 
 PROMPT_VERSION = "production_run_explanation_v1"
@@ -65,9 +70,6 @@ PROMPT = (
 TOOL_CONTRACT_VERSION = "production-run-explanation-input-v1"
 VALIDATOR_VERSION = "production-run-explanation-validator-v1"
 
-_RETRY_POLICY = "none"
-_RETENTION_POLICY = "class_b_30_days"
-_OBSERVATION_CONTEXT = "internal_working_view"
 
 _MAX_TEXT = 2_000
 _MAX_ITEMS = 50
@@ -227,13 +229,11 @@ def declare_configuration(
     fallback. A changed bound is another attributable configuration, not an edit
     of an earlier receipt's authority.
     """
-    require_human_principal(principal)
+    # What belongs to this family is checked here; the spend itself -- the
+    # model, the limits, one request, no retry, the retention class, the
+    # observation context and the declaring actor -- is one declaration.
     text_values = {
-        "model": model,
         "prompt_version": prompt_version,
-        "retry_policy": retry_policy,
-        "retention_policy": retention_policy,
-        "observation_context": observation_context,
     }
     if any(
         not isinstance(value, str) or not value.strip()
@@ -246,34 +246,12 @@ def declare_configuration(
         raise InvalidExplanationConfiguration(
             "the configured prompt is not the installed run-explanation prompt"
         )
-    if retry_policy != _RETRY_POLICY or max_requests != 1:
-        raise InvalidExplanationConfiguration(
-            "a run explanation permits one request and no automatic retry"
-        )
-    if retention_policy != _RETENTION_POLICY:
-        raise InvalidExplanationConfiguration(
-            "retention must be declared as class_b_30_days"
-        )
-    if observation_context != _OBSERVATION_CONTEXT:
-        raise InvalidExplanationConfiguration(
-            "observation context must be internal_working_view"
-        )
-    if not 1 <= max_input_tokens <= 200_000:
-        raise InvalidExplanationConfiguration(
-            "input budget must be between 1 and 200000 tokens"
-        )
-    if not 1 <= max_output_tokens <= 20_000:
-        raise InvalidExplanationConfiguration(
-            "output budget must be between 1 and 20000 tokens"
-        )
-    if not 1 <= timeout_seconds <= 600:
-        raise InvalidExplanationConfiguration(
-            "time budget must be between 1 and 600 seconds"
-        )
-    configuration = ProductionRunExplanationConfiguration(
+    authorization = declare_spend_authorization(
+        session,
         project_id=project_id,
-        model=model.strip(),
-        prompt_version=prompt_version,
+        principal=principal,
+        operation="production_run_explanation",
+        model=model,
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
         timeout_seconds=timeout_seconds,
@@ -281,7 +259,11 @@ def declare_configuration(
         retry_policy=retry_policy,
         retention_policy=retention_policy,
         observation_context=observation_context,
-        created_by=principal.subject,
+    )
+    configuration = ProductionRunExplanationConfiguration(
+        project_id=project_id,
+        authorization_id=authorization.id,
+        prompt_version=prompt_version,
     )
     session.add(configuration)
     session.flush()
@@ -294,9 +276,10 @@ def current_configuration(
     """Read the latest declared authority; absence is deliberately not a default."""
     return session.scalars(
         select(ProductionRunExplanationConfiguration)
+        .join(ProductionRunExplanationConfiguration.authorization)
         .where(
             ProductionRunExplanationConfiguration.project_id == project_id,
-            ProductionRunExplanationConfiguration.retention_policy == _RETENTION_POLICY,
+            SpendAuthorization.retention_policy == RETENTION_POLICY,
         )
         .order_by(ProductionRunExplanationConfiguration.id.desc())
     ).first()

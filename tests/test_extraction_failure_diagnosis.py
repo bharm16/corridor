@@ -384,7 +384,7 @@ def test_configuration_route_declares_and_rejects_invalid_bounds(
         )
     ).one()
     assert stored.model == "fake-model"
-    assert stored.created_by == OPERATOR.subject
+    assert stored.authorization.declared_by == OPERATOR.subject
 
     assert _declare_config(client, project, prompt_version="not-installed").status_code == 400
     assert _declare_config(client, project, max_input_tokens="0").status_code == 400

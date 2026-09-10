@@ -31,6 +31,7 @@ from corridor.models import (
     CoordinationSummaryRequest,
     Project,
     RetentionManifest,
+    SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal
 from corridor.retention import open_reference, place_hold
@@ -56,11 +57,10 @@ def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep
     )
     session.add(project)
     session.flush([project])
-    configuration = CoordinationSummaryConfiguration(
+    authorization = SpendAuthorization(
         project_id=project.id,
-        source_scope="all_sources",
+        operation="coordination_summary",
         model="test-model",
-        prompt_version="coordination_summary_v1",
         max_input_tokens=100,
         max_output_tokens=100,
         timeout_seconds=10,
@@ -68,7 +68,15 @@ def _project_with_due_content(session, *, due=True, slug_prefix="retention-sweep
         retry_policy="none",
         retention_policy="class_b_30_days",
         observation_context="internal_working_view",
-        created_by=OPERATOR.subject,
+        declared_by=OPERATOR.subject,
+    )
+    session.add(authorization)
+    session.flush([authorization])
+    configuration = CoordinationSummaryConfiguration(
+        project_id=project.id,
+        authorization_id=authorization.id,
+        source_scope="all_sources",
+        prompt_version="coordination_summary_v1",
     )
     session.add(configuration)
     session.flush([configuration])

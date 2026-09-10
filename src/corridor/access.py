@@ -938,6 +938,7 @@ PARTITIONED_RELATIONS: frozenset[str] = frozenset(
         "source_deliveries",
         "source_fact_append_receipts",
         "source_segments",
+        "spend_authorizations",
         "support_assessment_sources",
         "support_assessments",
     }

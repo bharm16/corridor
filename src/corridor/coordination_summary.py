@@ -36,9 +36,14 @@ from corridor.briefing import (
 from corridor.models import (
     CoordinationSummaryConfiguration,
     CoordinationSummaryRequest,
+    SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_reading import freeze_project_reading
+from corridor.spend_authorization import (
+    RETENTION_POLICY,
+    declare_spend_authorization,
+)
 
 
 class ConfigurationRequired(ValueError):
@@ -50,9 +55,6 @@ class InvalidSummaryConfiguration(ValueError):
 
 
 _SOURCE_SCOPES = frozenset({"all_sources", "documents_only"})
-_RETRY_POLICY = "none"
-_RETENTION_POLICY = "class_b_30_days"
-_OBSERVATION_CONTEXT = "internal_working_view"
 
 
 def _latest_configuration(
@@ -60,9 +62,10 @@ def _latest_configuration(
 ) -> CoordinationSummaryConfiguration | None:
     return session.scalars(
         select(CoordinationSummaryConfiguration)
+        .join(CoordinationSummaryConfiguration.authorization)
         .where(
             CoordinationSummaryConfiguration.project_id == project_id,
-            CoordinationSummaryConfiguration.retention_policy == _RETENTION_POLICY,
+            SpendAuthorization.retention_policy == RETENTION_POLICY,
         )
         .order_by(CoordinationSummaryConfiguration.id.desc())
     ).first()
@@ -90,14 +93,12 @@ def declare_configuration(
     fallback.  A changed bound is another attributable configuration, not an
     edit of an earlier receipt's authority.
     """
-    require_human_principal(principal)
+    # What belongs to this family is checked here; the spend itself -- the
+    # model, the limits, one request, no retry, the retention class, the
+    # observation context and the declaring actor -- is one declaration.
     text_values = {
-        "model": model,
         "prompt_version": prompt_version,
         "source_scope": source_scope,
-        "retry_policy": retry_policy,
-        "retention_policy": retention_policy,
-        "observation_context": observation_context,
     }
     if any(
         not isinstance(value, str) or not value.strip()
@@ -114,35 +115,12 @@ def declare_configuration(
         raise InvalidSummaryConfiguration(
             "the configured prompt is not the installed Coordination Summary prompt"
         )
-    if retry_policy != _RETRY_POLICY or max_requests != 1:
-        raise InvalidSummaryConfiguration(
-            "Coordination Summary permits one request and no automatic retry"
-        )
-    if retention_policy != _RETENTION_POLICY:
-        raise InvalidSummaryConfiguration(
-            "retention must be declared as class_b_30_days"
-        )
-    if observation_context != _OBSERVATION_CONTEXT:
-        raise InvalidSummaryConfiguration(
-            "observation context must be internal_working_view"
-        )
-    if not 1 <= max_input_tokens <= 200_000:
-        raise InvalidSummaryConfiguration(
-            "input budget must be between 1 and 200000 tokens"
-        )
-    if not 1 <= max_output_tokens <= 20_000:
-        raise InvalidSummaryConfiguration(
-            "output budget must be between 1 and 20000 tokens"
-        )
-    if not 1 <= timeout_seconds <= 600:
-        raise InvalidSummaryConfiguration(
-            "time budget must be between 1 and 600 seconds"
-        )
-    configuration = CoordinationSummaryConfiguration(
+    authorization = declare_spend_authorization(
+        session,
         project_id=project_id,
-        model=model.strip(),
-        prompt_version=prompt_version,
-        source_scope=source_scope,
+        principal=principal,
+        operation="coordination_summary",
+        model=model,
         max_input_tokens=max_input_tokens,
         max_output_tokens=max_output_tokens,
         timeout_seconds=timeout_seconds,
@@ -150,7 +128,12 @@ def declare_configuration(
         retry_policy=retry_policy,
         retention_policy=retention_policy,
         observation_context=observation_context,
-        created_by=principal.subject,
+    )
+    configuration = CoordinationSummaryConfiguration(
+        project_id=project_id,
+        authorization_id=authorization.id,
+        prompt_version=prompt_version,
+        source_scope=source_scope,
     )
     session.add(configuration)
     session.flush()

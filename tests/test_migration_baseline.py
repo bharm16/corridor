@@ -76,7 +76,12 @@ EXPECTED_SCHEMA_SHA256 = (
     # #809 adds `scanned_page_observations` (+1 table, +1 sequence, its own
     # partition policy) and gives `unreadable_cell_resolutions` the three
     # binding columns and `ck_unreadable_cell_resolution_observation`.
-    "30fdf9341a96875b20c41904fb7c51ed1db06bbf2355d1e498059e1268f7b565"
+    # #811 adds `spend_authorizations` (+1 table, +1 sequence, its immutability
+    # guard and partition policy) and moves the nine common columns and their
+    # checks off the five assistant configuration relations, which each gain
+    # `authorization_id`, `operation` and the composite reference that holds a
+    # configuration to a declaration of its own project and operation.
+    "79ce393229e9cb42a468d07d5fb4abe4b6849a077c9f638fd4e6a51715a41893"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -191,6 +196,7 @@ COMPOSED_UPGRADE = (
     "environment_binding",
     "outgoing_requests",
     "scanned_observations",
+    "spend_authorization",
     # The sibling transitions this revision has always carried at the end, and
     # the PUBLIC sweep that runs last of all because it reads the catalog every
     # block above has finished writing.
@@ -215,6 +221,7 @@ COMPOSED_DOWNGRADE = (
     "minutes_spine",
     "project_contacts",
     "email_spine",
+    "spend_authorization",
     "scanned_observations",
     "environment_binding",
     "native_segments",
@@ -2423,6 +2430,180 @@ def test_a_scanned_reading_binds_to_its_observation_and_an_earlier_one_says_it_c
         refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
         assert refused.returncode != 0
         assert "scanned page observations cannot be represented" in refused.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+
+_CONFIGURATION_COMMON = (
+    "model, max_input_tokens, max_output_tokens, timeout_seconds, max_requests, "
+    "retry_policy, retention_policy, observation_context"
+)
+
+
+def test_each_configuration_becomes_one_declaration_its_own_actor_made(tmp_path):
+    """#811, on exact rows: the migration carries declarations, it makes none.
+
+    Three configuration rows at the supported revision -- two Coordination
+    Summary declarations by different people, one of them the pre-#355
+    indefinite class, and one intake draft -- come through the transition as
+    three ``spend_authorizations`` rows carrying each row's own ``created_by``
+    as the declaring actor and its own ``created_at`` as the moment it took
+    effect, one per configuration and bound by id; no synthetic actor and no
+    migration-time timestamp appears. The family rows keep only what is theirs
+    and name their declaration. A declaration made for one operation cannot
+    then back a configuration of another. The downgrade hands back the nine
+    columns exactly as they were and drops the relation; a declaration no
+    configuration references refuses it, because the supported predecessor has
+    nowhere to hold one person's declaration without dropping it.
+    """
+
+    configured = make_url(settings.database_url)
+    with provision_disposable_postgres(
+        settings.database_url,
+        repo_root=ROOT,
+        label="baseline_spend",
+        migration_revision=SUPPORTED_HEAD,
+        reuse_migrated_template=True,
+    ) as database:
+        database_url = configured.set(database=database.name)
+        summary_columns = (
+            f"id, project_id, source_scope, prompt_version, {_CONFIGURATION_COMMON}, "
+            "created_by, created_at"
+        )
+        draft_columns = (
+            f"id, project_id, prompt_version, {_CONFIGURATION_COMMON}, created_by, created_at"
+        )
+        with database.session_factory.begin() as session:
+            project_id = session.scalar(text(
+                "insert into projects (slug, name, is_synthetic) values "
+                "('spend-authorization', 'Spend authorization', true) returning id"
+            ))
+            first_id = session.scalar(text(
+                "insert into coordination_summary_configurations (project_id, source_scope, "
+                " model, prompt_version, max_input_tokens, max_output_tokens, timeout_seconds, "
+                " max_requests, retry_policy, retention_policy, observation_context, "
+                " created_by, created_at) values (:project_id, 'all_sources', 'model-a', "
+                " 'briefing_v2', 8000, 500, 30, 1, 'none', 'retained_indefinitely', "
+                " 'internal_working_view', 'local:first-declarer', '2026-01-05T09:30:00Z') "
+                "returning id"
+            ), {"project_id": project_id})
+            second_id = session.scalar(text(
+                "insert into coordination_summary_configurations (project_id, source_scope, "
+                " model, prompt_version, max_input_tokens, max_output_tokens, timeout_seconds, "
+                " max_requests, retry_policy, retention_policy, observation_context, "
+                " created_by, created_at) values (:project_id, 'documents_only', 'model-b', "
+                " 'briefing_v2', 8000, 500, 30, 1, 'none', 'class_b_30_days', "
+                " 'internal_working_view', 'local:second-declarer', '2026-03-17T16:45:00Z') "
+                "returning id"
+            ), {"project_id": project_id})
+            draft_id = session.scalar(text(
+                "insert into source_intake_draft_configurations (project_id, model, "
+                " prompt_version, max_input_tokens, max_output_tokens, timeout_seconds, "
+                " max_requests, retry_policy, retention_policy, observation_context, "
+                " created_by, created_at) values (:project_id, 'model-c', "
+                " 'source_intake_draft_v1', 50000, 2000, 30, 1, 'none', 'class_b_30_days', "
+                " 'internal_working_view', 'local:curator', '2026-06-01T08:00:00Z') "
+                "returning id"
+            ), {"project_id": project_id})
+            before_summary = [tuple(row) for row in session.execute(text(
+                f"select {summary_columns} from coordination_summary_configurations order by id"
+            )).all()]
+            before_draft = [tuple(row) for row in session.execute(text(
+                f"select {draft_columns} from source_intake_draft_configurations order by id"
+            )).all()]
+
+        upgraded = _alembic(database_url, "upgrade", "head")
+        assert upgraded.returncode == 0, upgraded.stderr
+        assert _migration_head(database.session_factory) == CURRENT_HEAD
+
+        with database.session_factory() as session:
+            declarations = [tuple(row) for row in session.execute(text(
+                f"select id, project_id, operation, {_CONFIGURATION_COMMON}, declared_by, "
+                "effective_from from spend_authorizations order by id"
+            )).all()]
+            summaries = [tuple(row) for row in session.execute(text(
+                "select id, project_id, authorization_id, operation, source_scope, "
+                "prompt_version from coordination_summary_configurations order by id"
+            )).all()]
+            drafts = [tuple(row) for row in session.execute(text(
+                "select id, project_id, authorization_id, operation, prompt_version "
+                "from source_intake_draft_configurations order by id"
+            )).all()]
+            columns = set(session.scalars(text(
+                "select column_name from information_schema.columns "
+                "where table_schema = 'public' "
+                "and table_name = 'coordination_summary_configurations'"
+            )).all())
+            worker_insert = session.scalar(text(
+                "select has_table_privilege('corridor_worker', 'public.spend_authorizations', 'INSERT')"
+            ))
+            web_insert = session.scalar(text(
+                "select has_table_privilege('corridor_web', 'public.spend_authorizations', 'INSERT')"
+            ))
+        assert declarations == [
+            (1, project_id, "coordination_summary", "model-a", 8000, 500, 30, 1, "none",
+             "retained_indefinitely", "internal_working_view", "local:first-declarer",
+             datetime(2026, 1, 5, 9, 30, tzinfo=timezone.utc)),
+            (2, project_id, "coordination_summary", "model-b", 8000, 500, 30, 1, "none",
+             "class_b_30_days", "internal_working_view", "local:second-declarer",
+             datetime(2026, 3, 17, 16, 45, tzinfo=timezone.utc)),
+            (3, project_id, "source_intake_draft", "model-c", 50000, 2000, 30, 1, "none",
+             "class_b_30_days", "internal_working_view", "local:curator",
+             datetime(2026, 6, 1, 8, 0, tzinfo=timezone.utc)),
+        ]
+        assert summaries == [
+            (first_id, project_id, 1, "coordination_summary", "all_sources", "briefing_v2"),
+            (second_id, project_id, 2, "coordination_summary", "documents_only", "briefing_v2"),
+        ]
+        assert drafts == [(draft_id, project_id, 3, "source_intake_draft", "source_intake_draft_v1")]
+        assert columns == {
+            "id", "project_id", "source_scope", "prompt_version", "authorization_id", "operation",
+        }
+        assert worker_insert is True and web_insert is False
+
+        # The intake draft's declaration cannot back a Coordination Summary.
+        with database.session_factory() as session:
+            with pytest.raises(DBAPIError) as crossed:
+                with session.begin():
+                    session.execute(text(
+                        "insert into coordination_summary_configurations (project_id, "
+                        " authorization_id, operation, source_scope, prompt_version) values "
+                        "(:project_id, 3, 'coordination_summary', 'all_sources', 'briefing_v2')"
+                    ), {"project_id": project_id})
+        assert "fk_coordination_summary_configurations_authorization" in str(crossed.value)
+
+        downgraded = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert downgraded.returncode == 0, downgraded.stderr
+        assert _migration_head(database.session_factory) == SUPPORTED_HEAD
+        with database.session_factory() as session:
+            restored_summary = [tuple(row) for row in session.execute(text(
+                f"select {summary_columns} from coordination_summary_configurations order by id"
+            )).all()]
+            restored_draft = [tuple(row) for row in session.execute(text(
+                f"select {draft_columns} from source_intake_draft_configurations order by id"
+            )).all()]
+            relation = session.scalar(text("select to_regclass('public.spend_authorizations')"))
+            restored_columns = set(session.scalars(text(
+                "select column_name from information_schema.columns "
+                "where table_schema = 'public' "
+                "and table_name = 'coordination_summary_configurations'"
+            )).all())
+        assert restored_summary == before_summary
+        assert restored_draft == before_draft
+        assert relation is None
+        assert not restored_columns & {"authorization_id", "operation"}
+
+        again = _alembic(database_url, "upgrade", "head")
+        assert again.returncode == 0, again.stderr
+        with database.session_factory.begin() as session:
+            session.execute(text(
+                f"insert into spend_authorizations (project_id, operation, {_CONFIGURATION_COMMON}, "
+                " declared_by) values (:project_id, 'revision_change_explanation', 'model-d', "
+                " 8000, 500, 30, 1, 'none', 'class_b_30_days', 'internal_working_view', "
+                " 'local:third-declarer')"
+            ), {"project_id": project_id})
+        refused = _alembic(database_url, "downgrade", SUPPORTED_HEAD)
+        assert refused.returncode != 0
+        assert "spend authorization no configuration references" in refused.stderr
         assert _migration_head(database.session_factory) == CURRENT_HEAD
 
 

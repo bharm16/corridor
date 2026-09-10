@@ -15,6 +15,7 @@ from corridor.models import (
     ExternalReportRelease,
     Project,
     RetentionManifestItem,
+    SpendAuthorization,
 )
 from corridor.principals import HumanPrincipal
 from corridor.retention import (
@@ -35,26 +36,38 @@ ACTOR = HumanPrincipal("local:retention-operator")
 AS_OF = datetime(2026, 8, 31, tzinfo=timezone.utc)
 
 
-def _request(session, *, completed_at=AS_OF - timedelta(days=31)):
-    project = Project(slug=f"retention-{completed_at.timestamp()}", name="Retention", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    config = CoordinationSummaryConfiguration(
+def _configuration(session, project, *, retention_policy):
+    authorization = SpendAuthorization(
         project_id=project.id,
-        source_scope="all_sources",
+        operation="coordination_summary",
         model="test-model",
-        prompt_version="coordination_summary_v1",
         max_input_tokens=100,
         max_output_tokens=100,
         timeout_seconds=10,
         max_requests=1,
         retry_policy="none",
-        retention_policy="class_b_30_days",
+        retention_policy=retention_policy,
         observation_context="internal_working_view",
-        created_by=ACTOR.subject,
+        declared_by=ACTOR.subject,
+    )
+    session.add(authorization)
+    session.flush()
+    config = CoordinationSummaryConfiguration(
+        project_id=project.id,
+        authorization_id=authorization.id,
+        source_scope="all_sources",
+        prompt_version="coordination_summary_v1",
     )
     session.add(config)
     session.flush()
+    return config
+
+
+def _request(session, *, completed_at=AS_OF - timedelta(days=31)):
+    project = Project(slug=f"retention-{completed_at.timestamp()}", name="Retention", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    config = _configuration(session, project, retention_policy="class_b_30_days")
     request = CoordinationSummaryRequest(
         public_id=f"receipt-{project.id}",
         project_id=project.id,
@@ -187,22 +200,9 @@ def test_legacy_indefinite_configuration_cannot_authorize_new_requests(session):
     project = Project(slug="legacy-retention-config", name="Legacy", is_synthetic=True)
     session.add(project)
     session.flush()
-    legacy = CoordinationSummaryConfiguration(
-        project_id=project.id,
-        source_scope="all_sources",
-        model="test-model",
-        prompt_version="coordination_summary_v1",
-        max_input_tokens=100,
-        max_output_tokens=100,
-        timeout_seconds=10,
-        max_requests=1,
-        retry_policy="none",
-        retention_policy="retained_indefinitely",
-        observation_context="internal_working_view",
-        created_by=ACTOR.subject,
-    )
-    session.add(legacy)
-    session.flush()
+    # The database still carries the pre-#355 class; the Python declaration
+    # refuses it, so the row is written as the baseline would have held it.
+    _configuration(session, project, retention_policy="retained_indefinitely")
 
     assert current_configuration(session, project.id) is None
 

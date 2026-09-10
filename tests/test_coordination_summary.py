@@ -144,7 +144,7 @@ def test_configuration_is_append_only_and_request_records_reading_identity(
     configuration = _declare(session, project)
     with pytest.raises(Exception, match="append-only"):
         with session.begin_nested():
-            configuration.model = "another-model"
+            configuration.prompt_version = "another_prompt"
             session.flush()
     session.refresh(configuration)
 
@@ -160,7 +160,8 @@ def test_configuration_is_append_only_and_request_records_reading_identity(
     assert stored.project_reading_json["project_id"] == project.id
     assert stored.evaluated_on == TODAY
     assert (
-        session.scalars(select(CoordinationSummaryConfiguration)).one().created_by
+        session.scalars(select(CoordinationSummaryConfiguration)).one()
+        .authorization.declared_by
         == ACTOR.subject
     )
 
@@ -264,10 +265,14 @@ def _project_floor(session, project):
 
 
 def test_incomplete_configuration_bounds_are_refused(session, project):
+    """The family refuses what is its own; the spend bounds refuse through the
+    one declaration (`tests/test_spend_authorization.py` holds the nine)."""
     from corridor.coordination_summary import (
         InvalidSummaryConfiguration,
         declare_configuration,
     )
+    from corridor.models import CoordinationSummaryConfiguration
+    from corridor.spend_authorization import InvalidSpendAuthorization
 
     complete = dict(
         project_id=project.id,
@@ -284,16 +289,15 @@ def test_incomplete_configuration_bounds_are_refused(session, project):
         observation_context="internal_working_view",
     )
     for overrides in (
-        {"retry_policy": "exponential"},
-        {"max_requests": 2},
-        {"max_input_tokens": 0},
-        {"timeout_seconds": 0},
         {"prompt_version": "some_other_prompt"},
         {"source_scope": "everything"},
-        {"model": "  "},
+        {"prompt_version": "  "},
     ):
         with pytest.raises(InvalidSummaryConfiguration):
             declare_configuration(session, **{**complete, **overrides})
+    with pytest.raises(InvalidSpendAuthorization):
+        declare_configuration(session, **{**complete, "max_input_tokens": 0})
+    assert session.scalars(select(CoordinationSummaryConfiguration)).all() == []
 
 
 def test_input_over_the_declared_budget_is_refused_without_a_model_call(
