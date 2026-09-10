@@ -10,18 +10,32 @@ import json
 from pathlib import Path
 
 from corridor.db import WorkerSession
+from corridor.llm import RequestConfiguration
 from corridor.email_spine import capture_email_thread, envelope_for_delivery, inspect_email_thread
 
 
 class RetainedEmailResponse:
-    """An explicitly identified response adapter for offline replay."""
+    """An explicitly identified response adapter for offline replay.
 
-    model = "retained-response"
+    Its configuration is a statement about the retained answer, not an
+    impersonation of a provider: the endpoint says it came off disk.
+    """
+
+    CONFIGURATION = RequestConfiguration(
+        model="retained-response", base_url="retained://offline"
+    )
 
     def __init__(self, response):
         self.response = response
 
-    def complete(self, **_request):
+    def configuration(self):
+        return self.CONFIGURATION
+
+    @property
+    def model(self):
+        return self.CONFIGURATION.model
+
+    def complete(self, *, system, user, schema, images=(), logprobs=False):
         return self.response
 
 

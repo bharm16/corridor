@@ -10,7 +10,8 @@ from corridor.extractor_lineage import (
     token_usage_delta,
     usage_snapshot,
 )
-from corridor.llm import Usage
+from corridor.llm import RequestConfiguration, Usage
+from model_client_support import FakeModelClient
 
 
 def test_injected_configuration_seals_exact_sources_and_request_controls():
@@ -155,15 +156,16 @@ def test_usage_receipt_refuses_a_counter_that_moves_backwards():
 def test_deployed_registry_seals_each_current_extractor(
     extractor, prompt_version, schema_version, uses_images
 ):
-    class Client:
-        model = "gpt-fixture"
-        effort = "low"
-        flex = True
-        base_url = "https://provider.example/v1/"
+    client = FakeModelClient(
+        configuration=RequestConfiguration(
+            model="gpt-fixture", effort="low", flex=True,
+            base_url="https://provider.example/v1/",
+        )
+    )
 
     config = deployed_extractor_config(
         extractor,
-        client=None if extractor == "sheet" else Client(),
+        client=None if extractor == "sheet" else client,
     )
 
     assert config.prompt_version == prompt_version
@@ -198,14 +200,14 @@ def test_deployed_registry_seals_each_current_extractor(
 
 
 def test_deployed_registry_refuses_a_provider_url_that_contains_credentials():
-    class Client:
-        model = "gpt-fixture"
-        effort = "none"
-        flex = False
-        base_url = "https://secret-token@provider.example/v1"
+    client = FakeModelClient(
+        configuration=RequestConfiguration(
+            model="gpt-fixture", base_url="https://secret-token@provider.example/v1"
+        )
+    )
 
     with pytest.raises(ValueError, match="must not contain credentials"):
-        deployed_extractor_config("agreement", client=Client())
+        deployed_extractor_config("agreement", client=client)
 
 
 def test_the_deployed_minutes_registry_seals_the_current_version_only():
@@ -217,18 +219,18 @@ def test_the_deployed_minutes_registry_seals_the_current_version_only():
     reconstruct a configuration that never ran.
     """
 
-    class Client:
-        model = "gpt-fixture"
-        effort = "low"
-        flex = False
-        base_url = "https://provider.example/v1"
+    client = FakeModelClient(
+        configuration=RequestConfiguration(
+            model="gpt-fixture", effort="low", base_url="https://provider.example/v1"
+        )
+    )
 
-    current = deployed_extractor_config("minutes", client=Client())
+    current = deployed_extractor_config("minutes", client=client)
     assert current.prompt_version == "minutes_v5"
     assert current.config_json["extractor"] == "minutes"
 
     with pytest.raises(ValueError):
-        deployed_extractor_config("minutes_v4", client=Client())
+        deployed_extractor_config("minutes_v4", client=client)
 
 
 def test_injected_configuration_refuses_unverifiable_runtime_identity():

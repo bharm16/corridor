@@ -6,17 +6,24 @@ an extra argument to the existing call rather than a second client.
 The wire shape is the Responses API: the provider documents it as the
 surface reasoning models belong on, and every GPT-5.6 control we need —
 reasoning effort, image detail, prompt caching, logprobs — is reachable
-only there. The `StructuredClient` protocol does not move, so every stub
-in this suite and every text-only extractor is untouched by that.
+only there.
+
+`StructuredClient` is one protocol with two halves: `complete`, and the
+`RequestConfiguration` the client states it will request under. The tests at
+the end of this file hold that seam to one implementation — this client — and
+prove that no Corridor module reaches the ported copy of it.
 """
 
+import ast
 import base64
 import json
+from pathlib import Path
 
 import httpx
 import pytest
 
-from corridor.llm import OpenAIClient, complete_many
+from corridor.llm import OpenAIClient, RequestConfiguration, complete_many
+from model_client_support import FakeModelClient
 
 SCHEMA = {"type": "object", "properties": {}}
 
@@ -323,18 +330,10 @@ def test_flex_is_opt_in_and_raises_the_timeout():
 
 
 def test_complete_many_carries_one_image_set_per_user():
-    seen = []
-
-    class Recorder:
-        model = "test-model"
-        max_workers = 2
-
-        def complete(self, *, system, user, schema, images=(), logprobs=False):
-            seen.append((user, list(images)))
-            return {"user": user}
+    client = FakeModelClient(lambda call: {"user": call.user}, max_workers=2)
 
     results = complete_many(
-        Recorder(),
+        client,
         system="s",
         schema=SCHEMA,
         users=["a", "b"],
@@ -343,38 +342,43 @@ def test_complete_many_carries_one_image_set_per_user():
     )
 
     assert [r.value["user"] for r in results] == ["a", "b"]
-    assert sorted(seen) == [("a", ["a.png"]), ("b", ["b.png"])]
+    assert sorted((call.user, list(call.images)) for call in client.calls) == [
+        ("a", ["a.png"]),
+        ("b", ["b.png"]),
+    ]
 
 
-def test_complete_many_without_images_does_not_pass_the_argument():
-    """Existing text-only stubs take no `images` kwarg and must keep working."""
+def test_complete_many_passes_every_keyword_of_the_seam_on_every_call():
+    """The batch helper used to omit `images` and `logprobs` when they were
+    empty, so that text-only stubs taking neither keyword kept working. That
+    made the narrowest test double the real interface: a client could not tell
+    a text-only batch from a client that does not support images at all."""
+    client = FakeModelClient(lambda call: {"user": call.user}, max_workers=2)
 
-    class TextOnly:
-        max_workers = 2
+    complete_many(client, system="s", schema=SCHEMA, users=["a", "b"], max_workers=2)
 
-        def complete(self, *, system, user, schema):
-            return {"user": user}
+    assert [(call.images, call.logprobs) for call in client.calls] == [((), False)] * 2
 
-    results = complete_many(
-        TextOnly(), system="s", schema=SCHEMA, users=["a", "b"], max_workers=2
-    )
 
-    assert [r.value["user"] for r in results] == ["a", "b"]
+def test_complete_many_passes_logprobs_through_when_asked():
+    client = FakeModelClient(lambda call: {"user": call.user})
+
+    complete_many(client, system="s", schema=SCHEMA, users=["a"], logprobs=True)
+
+    assert [call.logprobs for call in client.calls] == [True]
 
 
 def test_a_completion_separates_the_answer_from_the_metadata():
     """The reserved key cannot leak into a Candidate because it is not in
     the value. It used to travel inside the schema's own dict, and four
     caller sites had to recognise and strip it."""
-    from corridor.llm import META_KEY, complete_many
+    from corridor.llm import META_KEY
 
-    class WithMeta:
-        max_workers = 1
+    client = FakeModelClient(
+        {"rows": [{"utility_id": "FOC1-1"}], META_KEY: {"logprobs": [1]}}
+    )
 
-        def complete(self, *, system, user, schema):
-            return {"rows": [{"utility_id": "FOC1-1"}], META_KEY: {"logprobs": [1]}}
-
-    [completion] = complete_many(WithMeta(), system="s", schema={}, users=["p"])
+    [completion] = complete_many(client, system="s", schema={}, users=["p"])
 
     assert completion.value == {"rows": [{"utility_id": "FOC1-1"}]}
     assert META_KEY not in completion.value
@@ -389,30 +393,18 @@ def test_a_returned_error_key_is_not_a_failure():
     indistinguishable from the call having failed — and every stub that
     wanted to simulate a failure returned one rather than raising.
     """
-    from corridor.llm import complete_many
+    client = FakeModelClient({"_error": "a value the document actually printed"})
 
-    class Odd:
-        max_workers = 1
-
-        def complete(self, *, system, user, schema):
-            return {"_error": "a value the document actually printed"}
-
-    [completion] = complete_many(Odd(), system="s", schema={}, users=["p"])
+    [completion] = complete_many(client, system="s", schema={}, users=["p"])
 
     assert completion.failed is False
     assert completion.value == {"_error": "a value the document actually printed"}
 
 
 def test_a_raised_failure_is_the_failure():
-    from corridor.llm import complete_many
+    client = FakeModelClient(RuntimeError("503 upstream"))
 
-    class Broken:
-        max_workers = 1
-
-        def complete(self, *, system, user, schema):
-            raise RuntimeError("503 upstream")
-
-    [completion] = complete_many(Broken(), system="s", schema={}, users=["p"])
+    [completion] = complete_many(client, system="s", schema={}, users=["p"])
 
     assert completion.failed is True
     assert "503 upstream" in completion.error
@@ -447,3 +439,191 @@ def test_complete_many_marks_only_the_bad_page_failed_for_a_200_with_no_message(
     assert results[0].value == {"rows": []}
     assert results[1].failed is True
     assert "returned 200 with no message" in results[1].error
+
+
+# --------------------------------------------------- retry, backoff, give-up
+
+
+def retrying(monkeypatch, statuses, *, headers=None):
+    """A client whose transport answers `statuses` in order, then succeeds."""
+    slept = []
+    monkeypatch.setattr("corridor.llm.time.sleep", slept.append)
+    remaining = list(statuses)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if remaining:
+            return httpx.Response(
+                remaining.pop(0), json={"error": "transient"}, headers=headers or {}
+            )
+        return httpx.Response(200, json=responded())
+
+    c = OpenAIClient(model="test-model", api_key="k")
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+    return c, slept
+
+
+@pytest.mark.parametrize("status", [408, 409, 429, 500, 502, 503, 504])
+def test_every_transient_status_is_retried_rather_than_lost(monkeypatch, status):
+    """A page lost to one of these is a page silently not extracted."""
+    client, slept = retrying(monkeypatch, [status])
+
+    assert client.complete(system="s", user="u", schema=SCHEMA) == {"rows": []}
+    assert len(slept) == 1
+
+
+def test_a_permanent_status_is_not_retried():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(400, json={"error": "bad schema"})
+
+    c = OpenAIClient(model="test-model", api_key="k")
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    with pytest.raises(RuntimeError, match="returned 400"):
+        c.complete(system="s", user="u", schema=SCHEMA)
+
+
+def test_the_run_gives_up_after_the_declared_attempt_ceiling(monkeypatch):
+    from corridor.llm import MAX_ATTEMPTS
+
+    client, slept = retrying(monkeypatch, [503] * (MAX_ATTEMPTS + 1))
+
+    with pytest.raises(RuntimeError, match=f"failed after {MAX_ATTEMPTS} attempts"):
+        client.complete(system="s", user="u", schema=SCHEMA)
+    assert len(slept) == MAX_ATTEMPTS
+
+
+def test_backoff_grows_and_is_jittered_so_workers_do_not_synchronise(monkeypatch):
+    client, slept = retrying(monkeypatch, [503, 503, 503])
+    client.complete(system="s", user="u", schema=SCHEMA)
+
+    assert len(slept) == 3
+    assert slept[0] < slept[2]
+    assert all(0 < delay <= 16 * 1.5 for delay in slept)
+
+
+def test_a_retry_after_header_is_honoured_and_capped(monkeypatch):
+    client, slept = retrying(monkeypatch, [429], headers={"retry-after": "600"})
+    client.complete(system="s", user="u", schema=SCHEMA)
+
+    assert slept == [30]
+
+
+def test_a_transport_error_is_retried_like_a_transient_status(monkeypatch):
+    slept = []
+    monkeypatch.setattr("corridor.llm.time.sleep", slept.append)
+    attempts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise httpx.ConnectError("connection reset", request=request)
+        return httpx.Response(200, json=responded())
+
+    c = OpenAIClient(model="test-model", api_key="k")
+    c._http = httpx.Client(transport=httpx.MockTransport(handler))
+
+    assert c.complete(system="s", user="u", schema=SCHEMA) == {"rows": []}
+    assert len(slept) == 1
+
+
+# ------------------------------------------------------- strict local parsing
+
+
+def test_text_that_is_not_json_raises_rather_than_returning_a_string():
+    """Strict mode is requested on every call; a body that is not an object
+    is a provider contract failure, not something to hand a caller."""
+    with pytest.raises(json.JSONDecodeError):
+        client([], body=responded(text="not json at all")).complete(
+            system="s", user="u", schema=SCHEMA
+        )
+
+
+# ------------------------------------------- the request configuration value
+
+
+def test_the_client_states_its_request_configuration_as_one_value():
+    """It was four duck-typed attributes, so every replay adapter had to grow
+    four of them describing a provider it never called."""
+    c = OpenAIClient(model="m", api_key="k", effort="low", flex=True,
+                     base_url="https://provider.example/v1/")
+
+    assert c.configuration() == RequestConfiguration(
+        model="m", effort="low", flex=True, base_url="https://provider.example/v1"
+    )
+
+
+def test_the_stated_configuration_is_the_one_the_request_is_built_from():
+    sent = []
+    c = client(sent, effort="low", flex=True)
+    c.complete(system="s", user="u", schema=SCHEMA)
+
+    configuration = c.configuration()
+    assert sent[0]["body"]["model"] == configuration.model
+    assert sent[0]["body"]["reasoning"] == {"effort": configuration.effort}
+    assert sent[0]["body"]["service_tier"] == "flex"
+
+
+def test_a_configuration_refuses_an_effort_the_model_rejects():
+    with pytest.raises(ValueError, match="unknown reasoning effort"):
+        RequestConfiguration(model="m", effort="minimal")
+
+
+def test_a_configuration_refuses_a_missing_model():
+    with pytest.raises(ValueError, match="must name its model"):
+        RequestConfiguration(model="  ")
+
+
+def test_the_deployed_native_matrix_request_and_the_provider_posture_agree():
+    """The measured model was a literal in two places; a drift between them
+    is a receipt that claims a configuration the boundary would refuse."""
+    from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST
+    from corridor.native_provider_boundary import POSTURE
+
+    assert DEPLOYED_NATIVE_MATRIX_REQUEST.model == POSTURE.model
+    assert DEPLOYED_NATIVE_MATRIX_REQUEST.effort == POSTURE.reasoning_effort
+    assert DEPLOYED_NATIVE_MATRIX_REQUEST.base_url == POSTURE.base_url
+    assert DEPLOYED_NATIVE_MATRIX_REQUEST.flex is False
+
+
+# ------------------------------------------------------- one client, one port
+
+# The ported copies of this client. `replacement/` is imported unchanged under
+# ADR-0094 and keeps its own client for its own standalone CLI; the Textract
+# rung's drivers are retained provenance. Neither may be reached from
+# Corridor: a second transport is a second set of retry statuses and a second
+# place `strict` can go missing. Corridor injects `llm.OpenAIClient` instead.
+FORBIDDEN_CLIENT_MODULES = (
+    "corridor_pdf_reader.replacement.llm",
+    "corridor_pdf_reader.textract.client",
+    "corridor_pdf_reader.textract.transport",
+)
+_SOURCE_ROOT = Path(__file__).resolve().parents[1] / "src" / "corridor"
+
+
+def _imported_names(tree: ast.AST) -> set[str]:
+    names: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module and not node.level:
+            names.add(node.module)
+            names.update(f"{node.module}.{alias.name}" for alias in node.names)
+    return names
+
+
+def test_no_corridor_module_imports_a_second_provider_client():
+    offending = {}
+    for path in sorted(_SOURCE_ROOT.rglob("*.py")):
+        imported = _imported_names(ast.parse(path.read_text()))
+        found = sorted(
+            name
+            for name in imported
+            if any(
+                name == forbidden or name.startswith(f"{forbidden}.")
+                for forbidden in FORBIDDEN_CLIENT_MODULES
+            )
+        )
+        if found:
+            offending[path.name] = found
+
+    assert offending == {}
