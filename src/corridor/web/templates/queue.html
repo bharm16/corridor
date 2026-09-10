@@ -1,8 +1,47 @@
+{% import "_primitives.html" as ui -%}
+{#
+  Every fact on this page comes from `corridor.web.queue_view`; the handler
+  passes that one reading and adds nothing. The names below are the reading's
+  own fields, bound once here — including the plan-form names the shared
+  coordination strip reads, so the strip has one source rather than a context
+  the handler assembled beside it.
+#}
+{% set view = reading.view %}
+{% set lane = reading.lane %}
+{% set lane_url = reading.lane_url %}
+{% set summary_url = reading.summary_url %}
+{% set next_coordinate_url = reading.next_coordinate_url %}
+{% set rail = reading.rail %}
+{% set cohort_receipt = reading.cohort_receipt %}
+{% set event_cohort_receipt = reading.event_cohort_receipt %}
+{% set coordinate_dependency = reading.coordinate_dependency %}
+{% set waiting_statements = reading.waiting_statements %}
+{% set candidate_count = reading.candidate_count %}
+{% set support_update_count = reading.support_update_count %}
+{% set ordinary_reviews = reading.ordinary_reviews %}
+{% set review_headline = reading.review_headline %}
+{% set review_guidance = reading.review_guidance %}
+{% set identity_card = reading.identity_card %}
+{% set candidate_authority_gap = reading.candidate_authority_gap %}
+{% set unresolved_acknowledgments = reading.unresolved_acknowledgments %}
+{% set differences = reading.differences %}
+{% set evidence_panels = reading.evidence_panels %}
+{% set siblings = reading.siblings %}
+{% set classification = reading.classification %}
+{% set changes = reading.changes %}
+{% set plan_roster = reading.plan.roster if reading.plan else [] %}
+{% set plan_next_action_choices = reading.plan.next_action_choices if reading.plan else [] %}
+{% set plan_unknown_date_reasons = reading.plan.unknown_date_reasons if reading.plan else [] %}
+{% set coordinate_expected_internal_owner_decision_id = reading.plan.expected_internal_owner_decision_id if reading.plan else "" %}
+{% set coordinate_expected_next_action_decision_id = reading.plan.expected_next_action_decision_id if reading.plan else "" %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Proposed constraints — {{ project.name }}</title>
 <style>
-  :root { --line:#e2e2e2; --muted:#666; --bad:#b42318; --ok:#067647; --warn:#b54708; }
+  /* No state colour of this page's own (#559): every state on this screen is
+     named in words by the shared primitives, which print them in greyscale, in
+     print, and aloud. What is left here paints structure only. */
+  :root { --line:#e2e2e2; --muted:#666; }
   * { box-sizing: border-box; }
   /* Explicit light canvas. Without a background the browser supplies a dark
      one under prefers-color-scheme: dark, and #111 text disappears into it.
@@ -46,25 +85,18 @@
   .rail .muted { color:var(--muted); }
   .rail span.done { color:var(--muted); }
   .rail span.done .outcome { margin-left:auto; font-size:.72rem; }
-  .rail span.done .outcome.accepted, .rail span.done .outcome.merged { color:var(--ok); }
-  .rail span.done .outcome.rejected { color:var(--bad); }
+  /* The decision itself is the word in the span; it needs no colour. */
 
   /* --- The read view: judging is the job; the form is behind `e`. --- */
   .rowcard { border:1px solid var(--line); border-radius:6px; padding:.8rem .9rem;
              margin-bottom:.9rem; background:#fff; }
   .rowcard .id-line { display:flex; align-items:baseline; gap:.6rem; }
   .rowcard .uid { font-size:1.25rem; font-weight:700; }
-  .rowcard .badge { font-size:.7rem; padding:.1rem .45rem; border-radius:10px;
-                    border:1px solid; font-weight:600; }
-  .badge.flip { color:var(--warn); border-color:#fedf89; background:#fffaeb; }
-  .badge.blocked { color:var(--bad); border-color:#fecdca; background:#fef3f2; }
-  .badge.new { color:var(--ok); border-color:#abefc6; background:#ecfdf3; }
   .rowcard .facts { color:#333; margin-top:.25rem; }
   .rowcard .facts b { font-weight:600; }
-  .rowcard .notes { margin-top:.4rem; color:var(--warn); font-size:.85rem; }
-  .changes { border:1px solid #fedf89; background:#fffaeb; border-radius:6px;
+  .rowcard .notes { margin-top:.4rem; font-size:.85rem; }
+  .changes { border:1px solid var(--line); border-radius:6px;
              padding:.6rem .9rem; margin-bottom:.9rem; font-size:.88rem; }
-  .changes b.title { color:var(--warn); }
   .changes table { border-collapse:collapse; margin-top:.25rem; }
   .changes td { padding:.08rem .6rem .08rem 0; }
   .changes .before { color:var(--muted); text-decoration:line-through; }
@@ -82,13 +114,11 @@
   table.fields td { padding:.15rem 0; }
   table.fields input { width:100%; font:inherit; padding:.25rem .4rem;
                        border:1px solid var(--line); border-radius:3px; background:#fff; }
-  .banner { padding:.5rem .7rem; border-radius:4px; margin-bottom:1rem; font-size:.9rem; }
-  .banner.bad { background:#fef3f2; color:var(--bad); border:1px solid #fecdca; }
-  .banner.ok  { background:#ecfdf3; color:var(--ok); border:1px solid #abefc6; }
-  .ordinary-work { padding:.7rem; margin-bottom:1rem; border:1px solid #fedf89;
-                   border-radius:4px; background:#fffaeb; color:#7a2e0e; }
+  .banner { padding:.5rem .7rem; border-radius:4px; margin-bottom:1rem;
+            font-size:.9rem; border:1px solid var(--line); }
+  .ordinary-work { padding:.7rem; margin-bottom:1rem; border:1px solid var(--line);
+                   border-radius:4px; }
   .ordinary-work ul { margin:.35rem 0 0; padding-left:1.25rem; }
-  .ordinary-work small { color:#8a4b20; }
   .quote { font-family: ui-monospace, monospace; font-size:.82rem; background:#fff;
            border:1px solid var(--line); border-radius:4px; padding:.5rem; margin:.6rem 0 1rem; }
   /* A worksheet's evidence is its text — there is no page to render. Rows
@@ -99,9 +129,13 @@
            max-height:60vh; overflow:auto; white-space:pre; margin:0; }
   .imgwrap { position:relative; display:inline-block; max-width:100%; }
   .imgwrap img { max-width:100%; display:block; border:1px solid var(--line); }
-  .hl { position:absolute; background:rgba(255,214,0,.42); outline:1px solid rgba(180,140,0,.6);
+  /* The citation window on the page image. It points at a location; it says
+     nothing a reader could only learn from its colour, because the quote it
+     marks is printed as text beside it. A neutral wash is therefore enough,
+     and it keeps this page inside the shared no-state-by-colour rule. */
+  .hl { position:absolute; background:#00000024; outline:1px solid #0000008c;
         pointer-events:none; }
-  .hl.band { background:rgba(255,214,0,.22); outline:1px solid rgba(180,140,0,.8); }
+  .hl.band { background:#00000012; outline:1px solid #000000b3; }
   /* The page at its natural 200-DPI resolution, always — a fit-to-width
      landscape table is unreadable at any pane width. The window is a
      band scrolled to the cited row; expanding only makes the window
@@ -114,11 +148,10 @@
   .crophint { color:var(--muted); font-size:.75rem; margin:.25rem 0 0; }
 
   /* --- Post-accept coordination: one pass, not two. --- */
-  .coordinate { border:1px solid #abefc6; background:#ecfdf3; border-radius:6px;
+  .coordinate { border:1px solid var(--line); border-radius:6px;
                 padding:.7rem .9rem; margin-bottom:.9rem; }
   .coordinate-head { display:flex; gap:.6rem; align-items:baseline; }
-  .coordinate-head .record { color:#06c; font-size:.82rem; }
-  .coordinate-head .report { color:#06c; font-size:.82rem; }
+  .coordinate-head .record, .coordinate-head .report { font-size:.82rem; }
   .coordinate-head .skip { margin-left:auto; color:#333; font-size:.82rem; }
   .coordinate-forms { display:flex; flex-direction:column; gap:.4rem; margin-top:.5rem; }
   .coordinate-forms form { display:flex; gap:.4rem; }
@@ -138,12 +171,11 @@
   table.diff td { padding:.2rem .6rem .2rem 0; vertical-align:top;
                   border-top:1px solid var(--line); }
   table.diff td.a { font-weight:600; }
-  table.diff td.b { color:var(--warn); }
 
   .ev + .ev { margin-top:1.2rem; padding-top:1.2rem;
               border-top:1px solid var(--line); }
   .evhead { margin-bottom:.1rem; }
-  .evlabel { color:var(--warn); font-weight:600; }
+  .evlabel { font-weight:600; }
 
   .pane.left { display:flex; flex-direction:column; padding:0; overflow:hidden; }
   .pane.left .scroll { flex:1; overflow:auto; padding:1.2rem 1.2rem 0; }
@@ -163,14 +195,12 @@
   .mergerow { display:flex; align-items:center; gap:.6rem; padding:.15rem 0; }
   .mergerow .score { font-variant-numeric:tabular-nums; font-weight:600; min-width:3rem; }
   .mergerow .sig { color:var(--muted); font-size:.78rem; }
+  .identity-card { border:1px solid var(--line); border-radius:6px;
+                   padding:.9rem; margin:.8rem 0; }
 </style>
+{{ ui.styles() }}
 
 {% set fieldmap = dict(view.fields) %}
-{% set badge_labels = {
-     "conflict_flag_n_to_y": ("flip", "flipped N → Y"),
-     "verification_blocked": ("blocked", "verification blocked"),
-     "newly_added": ("new", "newly added"),
-   } %}
 
 <header>
   <div class="identity">
@@ -202,12 +232,10 @@
         {{ decided|length }} of {{ rail|length }} decided ·
         changes outside this fixed set are not permitted</span>
     </div>
-    {% for key, group_label in [("conflict_flag_n_to_y", "Flipped N → Y"),
-                          ("verification_blocked", "Verification blocked"),
-                          ("newly_added", "Newly added")] %}
-      {% set group = rail|selectattr("classification", "equalto", key)|list %}
+    {% for group_classification in reading.classifications %}
+      {% set group = reading.rail_members(group_classification) %}
       {% if group %}
-        <h3>{{ group_label }} ({{ group|length }})</h3>
+        <h3>{{ group_classification.heading }} ({{ group|length }})</h3>
         <ol>
           {% for entry in group %}
             <li>
@@ -259,7 +287,7 @@
     {% endif %}
 
     {% if identity_card %}
-      <div class="identity-confirm" style="border:1px solid #d0d5dd;border-radius:6px;padding:.9rem;margin:.8rem 0">
+      <div class="identity-confirm identity-card">
         <b>The source names “{{ identity_card.stated_wording }}”.</b>
         <p style="margin:.4rem 0">No registered organization is determined by the
           retained evidence. Choose the organization it means, or create it —
@@ -314,8 +342,7 @@
         <span class="uid">{{ fieldmap.get("utility_id") or "row" }}</span>
         <span>{{ fieldmap.get("external_org") or "—" }}</span>
         {% if classification %}
-          {% set css, badge_text = badge_labels.get(classification, ("new", classification)) %}
-          <span class="badge {{ css }}">{{ badge_text }}</span>
+          {{ ui.state(state_label('neutral', classification.badge)) }}
         {% endif %}
       </div>
       <div class="facts">
@@ -333,14 +360,14 @@
       {% endif %}
     </div>
 
-    {% if classification == "newly_added" %}
+    {% if reading.row_is_new %}
       <div class="changes">
-        <b class="title">Not in the December revision</b> — this row is new
+        {{ ui.state(state_label('attention', 'Not in the December revision')) }} — this row is new
         in February.
       </div>
     {% elif changes %}
       <div class="changes">
-        <b class="title">Changed since December</b>
+        {{ ui.state(state_label('attention', 'Changed since December')) }}
         <table>
           {% for change in changes %}
             <tr>
@@ -355,15 +382,16 @@
     {% endif %}
 
     {% if not view.citations_verified %}
-      <div class="banner bad">
-        <b>Source passage check: not found at cited location.</b> The quote could not be found on the cited page.
+      <div class="banner">
+        {{ ui.state(state_label('refused', 'Source passage check: not found at cited location')) }}
+        The quote could not be found on the cited page.
         Not dropped, and sorted last — treat the extracted values as unsupported.
       </div>
     {% endif %}
 
     {% if view.unverified_fields or view.low_confidence_tokens %}
-      <div class="banner bad">
-        <b>Values not found on the cited page:</b>
+      <div class="banner">
+        {{ ui.state(state_label('refused', 'Values not found on the cited page')) }}
         {{ view.unverified_fields|join(', ') or '—' }}
         {%- if view.low_confidence_tokens %}
           · digits the model hesitated on: {{ view.low_confidence_tokens|join(', ') }}
@@ -374,9 +402,8 @@
     {% endif %}
 
     {% if view.unmapped_columns %}
-      <div class="banner" style="background:#fffaeb;
-           border:1px solid #fedf89;color:#b54708">
-        <b>The document prints columns the record has no field for:</b>
+      <div class="banner">
+        {{ ui.state(state_label('attention', 'The document prints columns the record has no field for')) }}
         {{ view.unmapped_columns|join(' · ') }}
       </div>
     {% endif %}

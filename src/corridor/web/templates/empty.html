@@ -1,3 +1,24 @@
+{#
+  Nothing is left to adjudicate in this lane. Every fact comes from
+  `corridor.web.queue_view`; the names below are the reading's own fields,
+  including the plan-form names the shared coordination strip reads.
+#}
+{% set lane = reading.lane %}
+{% set lane_url = reading.lane_url %}
+{% set summary_url = reading.summary_url %}
+{% set next_coordinate_url = reading.next_coordinate_url %}
+{% set rail = reading.rail %}
+{% set cohort_receipt = reading.cohort_receipt %}
+{% set coordinate_dependency = reading.coordinate_dependency %}
+{% set waiting_statements = reading.waiting_statements %}
+{% set candidate_count = reading.candidate_count %}
+{% set support_update_count = reading.support_update_count %}
+{% set ordinary_reviews = reading.ordinary_reviews %}
+{% set plan_roster = reading.plan.roster if reading.plan else [] %}
+{% set plan_next_action_choices = reading.plan.next_action_choices if reading.plan else [] %}
+{% set plan_unknown_date_reasons = reading.plan.unknown_date_reasons if reading.plan else [] %}
+{% set coordinate_expected_internal_owner_decision_id = reading.plan.expected_internal_owner_decision_id if reading.plan else "" %}
+{% set coordinate_expected_next_action_decision_id = reading.plan.expected_next_action_decision_id if reading.plan else "" %}
 <!doctype html>
 <meta charset="utf-8">
 <title>Proposed constraints — {{ project.name }}</title>

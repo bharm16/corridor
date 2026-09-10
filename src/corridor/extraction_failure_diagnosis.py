@@ -33,7 +33,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Iterable, Mapping, Sequence
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -341,6 +341,18 @@ def current_configuration(
     ).first()
 
 
+def failed_runs_among(runs: Iterable[ExtractionRun]) -> list[ExtractionRun]:
+    """The failed attempts among rows a caller has already loaded, in id order.
+
+    The same set as ``failed_extraction_runs``, for a screen that has already
+    read every run of every document in one query. The definition of "an
+    attempt offered for diagnosis" stays here either way.
+    """
+    return sorted(
+        (run for run in runs if run.outcome != "completed"), key=lambda run: run.id
+    )
+
+
 def failed_extraction_runs(
     session: Session, document_id: int
 ) -> list[ExtractionRun]:
@@ -349,18 +361,54 @@ def failed_extraction_runs(
     Ordered by id. A completed run is a reading to declare, not a failure to
     diagnose, so it is never offered here.
     """
-    runs = session.scalars(
-        select(ExtractionRun)
-        .where(ExtractionRun.document_id == document_id)
-        .order_by(ExtractionRun.id)
-    ).all()
-    return [run for run in runs if run.outcome != "completed"]
+    return failed_runs_among(
+        session.scalars(
+            select(ExtractionRun)
+            .where(ExtractionRun.document_id == document_id)
+            .order_by(ExtractionRun.id)
+        )
+    )
 
 
 def _quarantine_reason(quarantine: DocumentQuarantine | None) -> str:
     if quarantine is None:
         return "none"
     return sanitize_text(quarantine.reason, max_len=_MAX_TEXT)
+
+
+def _page_state(pages: Iterable[DocPage]) -> list[dict]:
+    return [
+        {
+            "page_no": page.page_no,
+            "text_len": len(page.text or ""),
+            "text_source": page.text_source,
+            "has_image": page.image_path is not None
+            and str(page.image_path).strip() != "",
+        }
+        for page in sorted(pages, key=lambda page: page.page_no)
+    ]
+
+
+def _failure_state_token(
+    *,
+    document_id: int,
+    superseded_by: object,
+    run: ExtractionRun,
+    quarantine: DocumentQuarantine | None,
+    pages: Iterable[DocPage],
+) -> str:
+    return _sha(
+        {
+            "document_id": document_id,
+            "superseded_by": superseded_by,
+            "extraction_run_id": run.id,
+            "outcome": run.outcome,
+            "page_errors": run.page_errors,
+            "has_error_detail": run.error_detail is not None,
+            "quarantine_reason": _quarantine_reason(quarantine),
+            "pages": _page_state(pages),
+        }
+    )
 
 
 def failure_diagnosis_state_token(
@@ -373,33 +421,55 @@ def failure_diagnosis_state_token(
     request refuse rather than diagnosing a screen the operator never saw.
     """
     document = session.get(Document, document_id)
-    quarantine = session.get(DocumentQuarantine, document_id)
-    pages = session.scalars(
-        select(DocPage)
-        .where(DocPage.document_id == document_id)
-        .order_by(DocPage.page_no)
-    ).all()
-    return _sha(
-        {
-            "document_id": document_id,
-            "superseded_by": document.superseded_by if document is not None else None,
-            "extraction_run_id": run.id,
-            "outcome": run.outcome,
-            "page_errors": run.page_errors,
-            "has_error_detail": run.error_detail is not None,
-            "quarantine_reason": _quarantine_reason(quarantine),
-            "pages": [
-                {
-                    "page_no": page.page_no,
-                    "text_len": len(page.text or ""),
-                    "text_source": page.text_source,
-                    "has_image": page.image_path is not None
-                    and str(page.image_path).strip() != "",
-                }
-                for page in pages
-            ],
-        }
+    return _failure_state_token(
+        document_id=document_id,
+        superseded_by=document.superseded_by if document is not None else None,
+        run=run,
+        quarantine=session.get(DocumentQuarantine, document_id),
+        pages=session.scalars(
+            select(DocPage)
+            .where(DocPage.document_id == document_id)
+            .order_by(DocPage.page_no)
+        ),
     )
+
+
+def failure_diagnosis_state_tokens(
+    session: Session,
+    *,
+    documents: Sequence[Document],
+    quarantines: Mapping[int, DocumentQuarantine],
+    runs_by_document: Mapping[int, Sequence[ExtractionRun]],
+) -> dict[int, dict[int, str]]:
+    """Every failed attempt's token for a whole project, in one page query.
+
+    The operations screen renders a Diagnose control per failed attempt, and
+    each token needs the document's pages. Asked one document at a time that is
+    a query per document; the screen already holds the documents, quarantines
+    and runs, so the only thing left to read is the pages, once.
+    """
+    document_ids = [document.id for document in documents]
+    pages_by_document: dict[int, list[DocPage]] = {}
+    if document_ids:
+        for page in session.scalars(
+            select(DocPage)
+            .where(DocPage.document_id.in_(document_ids))
+            .order_by(DocPage.document_id, DocPage.page_no)
+        ):
+            pages_by_document.setdefault(page.document_id, []).append(page)
+    return {
+        document.id: {
+            run.id: _failure_state_token(
+                document_id=document.id,
+                superseded_by=document.superseded_by,
+                run=run,
+                quarantine=quarantines.get(document.id),
+                pages=pages_by_document.get(document.id, ()),
+            )
+            for run in failed_runs_among(runs_by_document.get(document.id, ()))
+        }
+        for document in documents
+    }
 
 
 def _failure_snapshot(

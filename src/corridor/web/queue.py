@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import audit
+from corridor.cohort import CLASSIFICATION_ORDER
 from corridor.merge import rank_matches
 from corridor.models import Candidate, Dependency, DocPage, Document
 from corridor.storage import stored_pdf
@@ -413,13 +414,6 @@ class ChangeEntry:
     after: str
 
 
-RAIL_GROUPS = (
-    ("conflict_flag_n_to_y", "Flipped N → Y"),
-    ("verification_blocked", "Verification blocked"),
-    ("newly_added", "Newly added"),
-)
-
-
 def build_cohort_rail(
     session: Session, receipt, current_candidate_id: int | None
 ) -> list[RailEntry]:
@@ -451,7 +445,6 @@ def build_cohort_rail(
         )
     )
 
-    group_order = {key: index for index, (key, _) in enumerate(RAIL_GROUPS)}
     entries = []
     for member in receipt.members:
         matching_candidates = candidates_by_utility.get(member["utility_id"], [])
@@ -495,7 +488,7 @@ def build_cohort_rail(
     entries.sort(
         key=lambda entry: (
             _rail_work_rank(entry),
-            group_order.get(entry.classification, 99),
+            CLASSIFICATION_ORDER.get(entry.classification, len(CLASSIFICATION_ORDER)),
             entry.utility_id,
         )
     )

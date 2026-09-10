@@ -17,12 +17,11 @@ from __future__ import annotations
 
 import logging
 from dataclasses import replace
-from hashlib import sha256
 import json
 import secrets
 from datetime import date, datetime, time, timezone
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Callable, Literal
 from urllib.parse import parse_qs, quote, urlsplit
 
 from fastapi import (
@@ -229,18 +228,19 @@ from corridor.web.follow_up_view import chase_view
 from corridor.web.issue_section import issue_view
 from corridor.analytics import EventFamily
 from corridor.measurement_collection import binding_for_session, emit_presentation
-from corridor.web.queue import (
-    build_cohort_rail,
-    build_evidence,
-    build_supersession_review_view,
-    build_view,
-    change_strip,
-    cohort_openable_dependency_ids,
-    default_cohort_dependency_id,
-    member_classification,
-    next_incomplete_cohort_dependency_id,
-    next_candidate,
-    pending_counts,
+from corridor.web.dependency_view import (
+    NoSuchConstraint,
+    active_project_roster,
+    dependency_view,
+)
+from corridor.web.operations_view import operations_view, policy_offer_state
+from corridor.web.queue_view import (
+    LaneManifestRequired,
+    NoSuchLaneManifest,
+    REVIEW_REASONS,
+    ReturnContextRefused,
+    queue_view,
+    safe_cohort_return,
 )
 from corridor.disputes import (
     DisputeMovedOn,
@@ -830,50 +830,6 @@ def _safe_return(redirect_to: str, fallback: str) -> str:
     return fallback
 
 
-def _safe_cohort_return(
-    return_to: str,
-    *,
-    project: Project,
-    dependency_id: int,
-    session: Session,
-) -> str:
-    """Only this Dependency's exact pinned rehearsal context may return."""
-
-    candidate = _safe_return(return_to, "")
-    parsed = urlsplit(candidate)
-    values = parse_qs(parsed.query, keep_blank_values=True)
-    allowed_keys = {"lane", "cohort_receipt_id", "coordinate", "summary"}
-    if (
-        parsed.path != f"/queue/{project.slug}"
-        or parsed.fragment
-        or set(values) - allowed_keys
-        or values.get("lane") != ["rehearsal"]
-        or len(values.get("cohort_receipt_id", ())) != 1
-        or (("coordinate" in values) == ("summary" in values))
-    ):
-        raise HTTPException(400, "return_to must name this test coordination context")
-    try:
-        receipt_id = int(values["cohort_receipt_id"][0])
-    except (TypeError, ValueError):
-        raise HTTPException(400, "return_to must name this test coordination context")
-    receipt = session.get(CohortReceipt, receipt_id)
-    if receipt is None or receipt.project_id != project.id:
-        raise HTTPException(400, "return_to must name this test coordination context")
-    rail = build_cohort_rail(session, receipt, None)
-    if dependency_id not in cohort_openable_dependency_ids(rail):
-        raise HTTPException(400, "return_to must name this test coordination context")
-    if "coordinate" in values:
-        try:
-            coordinate_id = int(values["coordinate"][0])
-        except (TypeError, ValueError):
-            raise HTTPException(400, "return_to must name this test coordination context")
-        if values["coordinate"] != [str(coordinate_id)] or coordinate_id != dependency_id:
-            raise HTTPException(400, "return_to must name this test coordination context")
-    elif values.get("summary") != ["1"]:
-        raise HTTPException(400, "return_to must name this test coordination context")
-    return candidate
-
-
 def _decision_location(
     slug: str,
     historical_document_id: int | None,
@@ -902,32 +858,6 @@ def _decision_location(
     if historical_document_id is not None:
         return _queue_location(slug, historical_document_id)
     return f"/work/{slug}"
-
-
-def _cohort_summary_location(lane_url: str) -> str:
-    """Explicitly clear a deep-linked cohort item without leaving the lane."""
-
-    return f"{lane_url}&summary=1"
-
-
-def _next_cohort_coordinate_url(
-    lane_url: str,
-    rail,
-    current_dependency_id: int | None,
-) -> str:
-    """Skip forward inside the incomplete admitted set, then fall back."""
-
-    summary_url = _cohort_summary_location(lane_url)
-    if current_dependency_id is None:
-        return summary_url
-    next_dependency_id = next_incomplete_cohort_dependency_id(
-        rail, current_dependency_id
-    )
-    return (
-        f"{lane_url}&coordinate={next_dependency_id}"
-        if next_dependency_id is not None
-        else summary_url
-    )
 
 
 def _require_cohort_scope(
@@ -974,61 +904,6 @@ def _require_event_cohort_scope(
         )
     except CohortScopeViolation as exc:
         raise HTTPException(409, str(exc))
-
-
-def _event_lane_dependency_ids(
-    session: Session, receipt: EventCohortReceipt
-) -> frozenset[int]:
-    """The admission phase serves only dependency Candidates; events wait
-    for the ADR-0026 policy machinery."""
-    ids = event_cohort_candidate_ids(session, receipt)
-    if not ids:
-        return frozenset()
-    return frozenset(
-        session.scalars(
-            select(Candidate.id).where(
-                Candidate.id.in_(ids), Candidate.kind == "dependency"
-            )
-        )
-    )
-
-
-def _sibling_revisions(
-    session: Session,
-    allowed_ids: frozenset[int],
-    candidate: Candidate,
-) -> list[dict]:
-    """Other pending revisions of the same conflict, offered as merges.
-
-    The registry holds no supersession chain for these documents, so no
-    revision is machine-current; the reviewer's gesture is the explicit
-    choice (#199)."""
-    schemes = document_numbering_schemes(session, candidate.project_id)
-    aliases = party_canonical_names(session)
-    if conflict_key(candidate, schemes, aliases) is None:
-        return []
-    siblings = []
-    others = session.scalars(
-        select(Candidate).where(
-            Candidate.id.in_(allowed_ids),
-            Candidate.id != candidate.id,
-            Candidate.state == "pending",
-        )
-    ).all()
-    for other in others:
-        # The same predicate the accept path refuses on, so the lane never
-        # offers a merge the mutation would then reject.
-        if not same_conflict(candidate, other, schemes, aliases):
-            continue
-        document = session.get(Document, other.source_document_id)
-        siblings.append(
-            {
-                "id": other.id,
-                "filename": document.filename if document else "?",
-                "doc_date": document.doc_date if document else None,
-            }
-        )
-    return sorted(siblings, key=lambda s: (s["doc_date"] or date.min))
 
 
 def _project(
@@ -1098,56 +973,6 @@ def _project_for_document(session: Session, document_id: int) -> Project:
     return project
 
 
-def _review_reason(
-    session: Session, project: Project, candidate: Candidate
-) -> str | None:
-    """Why this row is in front of a human, in the machine's own words.
-
-    Under the admission policies a row reaches Adjudication only because
-    the machine refused to admit it, and the refusal is recorded with a
-    stated reason. Leading with that reason is the difference between
-    "judge this row" and "judge this row, and here is what to look at".
-    """
-    return session.scalar(
-        select(DependencyAdmissionOutcome.reason)
-        .join(
-            PolicyRun,
-            PolicyRun.id == DependencyAdmissionOutcome.policy_run_id,
-        )
-        .where(
-            PolicyRun.project_id == project.id,
-            DependencyAdmissionOutcome.candidate_id == candidate.id,
-            DependencyAdmissionOutcome.outcome == "abstained",
-        )
-        .order_by(DependencyAdmissionOutcome.id.desc())
-        .limit(1)
-    )
-
-
-def _identity_card(session: Session, candidate: Candidate) -> dict | None:
-    """The one card behind an unresolved External Organization spelling.
-
-    ADR-0051: after every deterministic evidence kind came up empty or
-    ambiguous, the remaining question lives in a person's head.  The card
-    shows the unresolved source wording, the evidence the stack already
-    considered, and the explicit existing-or-new choices — nothing
-    preselected, nothing scored.
-    """
-
-    try:
-        residue = resolve_candidate_identity(session, candidate, permit_advanced=True)
-    except OrganizationIdentityRefusal:
-        return None
-    return {
-        "stated_wording": residue.stated_wording,
-        "evidence": residue.evidence,
-        "surviving_ids": residue.candidate_ids,
-        "organizations": session.scalars(
-            select(ExternalOrg).order_by(ExternalOrg.name)
-        ).all(),
-    }
-
-
 # What each unplaced statement means to the person now holding it. The
 # machine's vocabulary names the check; the reviewer needs the question.
 STATEMENT_REASONS = {
@@ -1195,119 +1020,6 @@ STATEMENT_REASONS = {
         "Check the page for what it actually says.",
     ),
 }
-
-
-# What each abstention means to the person now holding the row. The
-# machine's vocabulary is precise and the reviewer's question is
-# different: not "which check failed" but "what am I deciding".
-REVIEW_REASONS = {
-    "revisions_disagree": (
-        "The revisions disagree about this conflict.",
-        "Both pages are shown. Add the revision that is right, or edit "
-        "the values before adding the record.",
-    ),
-    "missing_from_agreement_document": (
-        "Only one revision has this conflict.",
-        "It was added or dropped between revisions. Add it if the "
-        "record should carry it.",
-    ),
-    "multiple_rows_in_agreement_document": (
-        "One revision lists this conflict twice.",
-        "Two rows share an identifier. Add the one that is right and "
-        "choose Do not add for the other.",
-    ),
-    "citations_unverified": (
-        "The quote could not be found on the cited page.",
-        "Check the page before adding anything from this row.",
-    ),
-    "already_admitted": (
-        "A record already carries this identifier.",
-        "Merge into the existing record to avoid adding a duplicate.",
-    ),
-    "same_document_replay_unproven": (
-        "This source row was previously handled, but safe replay is not proven.",
-        "Its extracted facts or current Constraint association no longer prove "
-        "an exact replay. Keep it pending and review the cited passages.",
-    ),
-    "external_org_identity_unresolved": (
-        "External Organization identity not established.",
-        "The source wording does not yet determine one registered organization. "
-        "Confirm the organization from its source context; Corridor will not create one silently.",
-    ),
-    "asserts_nothing": (
-        "This row states nothing.",
-        "An identifier with no values is bookkeeping, not a conflict.",
-    ),
-    "write_refused": (
-        "The record could not be written from this row.",
-        "Something in the row's own shape stopped it. Read the fields "
-        "before deciding.",
-    ),
-    "no_utility_id": (
-        "This row has no identifier.",
-        "Nothing can name it in the record as it stands.",
-    ),
-    "revisions_disagree_on_party": (
-        "The revisions name different organizations for this conflict.",
-        "That asks whether these are one conflict at all, which is not "
-        "something the machine may answer. Read both pages and add the "
-        "one that is right.",
-    ),
-    "no_row_identity": (
-        "This row's number needs an organization to identify it.",
-        "This document numbers each organization's conflicts separately, and the "
-        "row states no organization — check the page and fill in what it shows.",
-    ),
-}
-
-
-def _revision_panels(
-    session: Session, project: Project, candidate: Candidate
-) -> tuple[list, list[dict]]:
-    """The other pending revisions of this conflict, and the fields that
-    differ — the whole of a disagreement judgment, side by side."""
-    uid = (candidate.payload_json or {}).get("fields", {}).get("utility_id")
-    if not uid:
-        return [], []
-    siblings = [
-        other
-        for other in session.scalars(
-            select(Candidate)
-            .join(
-                ActiveExtractionRun,
-                ActiveExtractionRun.extraction_run_id
-                == Candidate.extraction_run_id,
-            )
-            .where(
-                Candidate.project_id == project.id,
-                Candidate.kind == "dependency",
-                Candidate.state == "pending",
-                Candidate.id != candidate.id,
-            )
-            .order_by(Candidate.id)
-        ).all()
-        if str((other.payload_json or {}).get("fields", {}).get("utility_id"))
-        == str(uid)
-    ]
-    if not siblings:
-        return [], []
-
-    mine = (candidate.payload_json or {}).get("fields", {})
-    differences = []
-    for other in siblings:
-        theirs = (other.payload_json or {}).get("fields", {})
-        document = session.get(Document, other.source_document_id)
-        for name in sorted(set(mine) | set(theirs)):
-            if (mine.get(name) or "") != (theirs.get(name) or ""):
-                differences.append(
-                    {
-                        "field": name,
-                        "mine": mine.get(name) or "—",
-                        "theirs": theirs.get(name) or "—",
-                        "other_document": document.filename if document else "?",
-                    }
-                )
-    return siblings, differences
 
 
 @app.post("/projects/{slug}/statements/{candidate_id}/attach")
@@ -3913,196 +3625,18 @@ async def save_operations_checks(
 # --- Processing operations (#344) -----------------------------------------
 
 
-def _operations_state_fingerprint(value: dict) -> str:
-    """Bind an operations form to the exact facts its screen rendered.
-
-    This is a stale-state guard, not an authorization token: every mutation
-    still obtains its scope and authority server-side.  A canonical digest
-    makes a changed declaration chain, completed-run set, proof, or permitted
-    policy action refuse rather than silently applying an obsolete choice.
-    """
-    return sha256(
-        json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-    ).hexdigest()
-
-
-def _run_offer_state(session: Session, document_id: int) -> str:
-    current = session.get(ActiveExtractionRun, document_id)
-    tail = current_active_run_declaration(session, document_id)
-    completed_ids = [
-        run.id
-        for run in session.scalars(
-            select(ExtractionRun)
-            .where(ExtractionRun.document_id == document_id)
-            .order_by(ExtractionRun.id)
-        )
-        if is_completed_run(run)
-    ]
-    return _operations_state_fingerprint(
-        {
-            "document_id": document_id,
-            "active_run_id": None if current is None else current.extraction_run_id,
-            "declaration_id": None if tail is None else tail.id,
-            "completed_run_ids": completed_ids,
-        }
-    )
-
-
-def _policy_offer_state(status) -> str:
-    return _operations_state_fingerprint(
-        {
-            "status": status.status,
-            "proof_status": status.proof_status,
-            "latest_receipt_id": status.latest_receipt_id,
-            "latest_action_id": status.latest_action_id,
-            "allowed_operations": list(status.allowed_operations),
-        }
-    )
-
-
-def _operations_processing_context(session: Session, project: Project) -> dict:
-    """Read the bounded operations facts without inventing a second authority.
-
-    The screen joins existing records only: Active Run declarations own the
-    chosen reading, Event Admission owns effective policy status, and Due Work
-    owns recovery state.  Keeping this composite read here prevents an operator
-    UI from reimplementing any of their safety decisions.
-    """
-    documents = session.scalars(
-        select(Document)
-        .where(Document.project_id == project.id)
-        .order_by(Document.doc_date, Document.id)
-    ).all()
-    quarantines = {
-        row.document_id: row
-        for row in session.scalars(
-            select(DocumentQuarantine)
-            .join(Document, Document.id == DocumentQuarantine.document_id)
-            .where(Document.project_id == project.id)
-        )
-    }
-    declared = {
-        row.document_id: row
-        for row in session.scalars(
-            select(ActiveExtractionRun)
-            .join(Document, Document.id == ActiveExtractionRun.document_id)
-            .where(Document.project_id == project.id)
-        )
-    }
-    history_by_document: dict[int, list[ActiveRunDeclaration]] = {}
-    for row in session.scalars(
-        select(ActiveRunDeclaration)
-        .join(Document, Document.id == ActiveRunDeclaration.document_id)
-        .where(Document.project_id == project.id)
-        .order_by(ActiveRunDeclaration.document_id, ActiveRunDeclaration.id)
-    ):
-        history_by_document.setdefault(row.document_id, []).append(row)
-    runs_by_document: dict[int, list[ExtractionRun]] = {}
-    for row in session.scalars(
-        select(ExtractionRun)
-        .join(Document, Document.id == ExtractionRun.document_id)
-        .where(Document.project_id == project.id)
-        .order_by(ExtractionRun.document_id, ExtractionRun.id)
-    ):
-        runs_by_document.setdefault(row.document_id, []).append(row)
-
-    document_rows = []
-    for document in documents:
-        current = declared.get(document.id)
-        competing = competing_production_runs(session, document.id)
-        failed_runs = failed_extraction_runs(session, document.id)
-        document_rows.append(
-            {
-                "document": document,
-                "active_run_id": current.extraction_run_id if current else None,
-                "runs": runs_by_document.get(document.id, []),
-                "history": history_by_document.get(document.id, []),
-                "quarantine": quarantines.get(document.id),
-                "offer_state": _run_offer_state(session, document.id),
-                # An explanation is offered only when there is an actual choice:
-                # two or more completed runs competing to be declared.
-                "competing_run_ids": [run.id for run in competing],
-                "explanation_offered": len(competing) >= 2,
-                "explain_state": competing_runs_state_token(session, document.id),
-                # A diagnosis is offered per failed attempt; the token binds the
-                # exact run and failure context the operator is looking at.
-                "diagnosis_offered": bool(failed_runs),
-                "failed_run_tokens": {
-                    run.id: failure_diagnosis_state_token(session, document.id, run)
-                    for run in failed_runs
-                },
-            }
-        )
-
-    schedules = session.scalars(
-        select(DueWorkSchedule)
-        .where(
-            DueWorkSchedule.project_id == project.id,
-            DueWorkSchedule.handler_key.in_(
-                (HANDLER_PROJECT_PROCESSING, HANDLER_REVISION_RECONCILIATION)
-            ),
-            DueWorkSchedule.disabled_at.is_(None),
-        )
-        .order_by(DueWorkSchedule.handler_key, DueWorkSchedule.id.desc())
-    ).all()
-    schedule_ids = [schedule.id for schedule in schedules]
-    recovery_rows = []
-    if schedule_ids:
-        receipts_by_occurrence: dict[int, list[DueWorkReceipt]] = {}
-        for receipt in session.scalars(
-            select(DueWorkReceipt)
-            .where(DueWorkReceipt.project_id == project.id)
-            .order_by(DueWorkReceipt.occurrence_id, DueWorkReceipt.attempt_number)
-        ):
-            receipts_by_occurrence.setdefault(receipt.occurrence_id, []).append(receipt)
-        for occurrence in session.scalars(
-            select(DueWorkOccurrence)
-            .where(DueWorkOccurrence.scheduled_job_id.in_(schedule_ids))
-            .order_by(DueWorkOccurrence.id.desc())
-            .limit(50)
-        ):
-            recovery_rows.append(
-                {
-                    "occurrence": occurrence,
-                    "receipts": receipts_by_occurrence.get(occurrence.id, []),
-                }
-            )
-
-    handoff = session.get(RecordInclusionRequest, project.id)
-    event_policy = read_event_admission_policy_status(session, project.id)
-    # Technical replacement-support failures — a missing or failed extraction,
-    # an undeclared run, a missing, corrupt, or duplicate comparison, or broken
-    # admission lineage — are operations problems, never a customer question
-    # (ADR-0034).  They surface here with their plain project consequence.
-    support_update_failures = operations_consequences(session, project.id)
-    return {
-        "documents": document_rows,
-        "event_policy": event_policy,
-        "policy_offer_state": _policy_offer_state(event_policy),
-        "record_inclusion_pending": (
-            handoff is not None and handoff.dirty_seq > handoff.reconciled_seq
-        ),
-        "schedules": schedules,
-        "recovery_rows": recovery_rows,
-        "run_explanation_configuration": current_run_explanation_configuration(
-            session, project.id
-        ),
-        "run_explanation_prompt_version": RUN_EXPLANATION_PROMPT_VERSION,
-        "support_update_failures": support_update_failures,
-        "failure_diagnosis_configuration": current_failure_diagnosis_configuration(
-            session, project.id
-        ),
-        "failure_diagnosis_prompt_version": FAILURE_DIAGNOSIS_PROMPT_VERSION,
-    }
-
-
 def _render_processing_operations(
     request: Request, session: Session, project: Project, *, notice: str | None = None
 ):
+    """Render the operator's reading; every rule in it belongs to its owner."""
     return TEMPLATES.TemplateResponse(
         request,
         "operations.html",
-        {"project": project, "notice": notice, **_operations_processing_context(session, project)},
+        {
+            "project": project,
+            "notice": notice,
+            "reading": operations_view(session, project_id=project.id),
+        },
     )
 
 
@@ -4158,7 +3692,7 @@ async def declare_operations_active_run(
     offered_state = str(form.get("state_fingerprint") or "")
     try:
         lock_project(session, project.id)
-        if offered_state != _run_offer_state(session, document.id):
+        if offered_state != competing_runs_state_token(session, document.id):
             raise ValueError("the production-run choices changed; refresh first")
         declaration = declare_active_run(
             session, document.id, run_id, principal=principal
@@ -4318,7 +3852,7 @@ def read_run_explanation(
             "runs": (receipt.comparison_json or {}).get("runs", []),
             "competing_runs": competing_production_runs(session, document.id),
             "current_active_run_id": current.extraction_run_id if current else None,
-            "offer_state": _run_offer_state(session, document.id),
+            "offer_state": competing_runs_state_token(session, document.id),
         },
     )
 
@@ -4561,7 +4095,7 @@ async def suspend_operations_unknown_scope(
         status = read_event_admission_policy_status(session, project.id)
         if "suspend" not in status.allowed_operations:
             raise ValueError("unknown-scope Event Admission is not active")
-        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+        if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
             raise ValueError("the policy status changed; refresh first")
         suspend_unknown_scope_admission(
             session,
@@ -4602,7 +4136,7 @@ async def lift_operations_unknown_scope(
         status = read_event_admission_policy_status(session, project.id)
         if "lift" not in status.allowed_operations:
             raise ValueError("unknown-scope Event Admission is not suspended")
-        if str(form.get("state_fingerprint") or "") != _policy_offer_state(status):
+        if str(form.get("state_fingerprint") or "") != policy_offer_state(status):
             raise ValueError("the policy status changed; refresh first")
         lift_unknown_scope_admission(
             session, project_id=project.id, recorded_by=principal.subject
@@ -6011,289 +5545,36 @@ def queue(
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
 ):
+    """Present the one Extracted Proposal this lane opens, and why it is open."""
+
     project = _project(session, slug, principal)
-    cohort_receipt = None
-    if lane == "rehearsal":
-        if cohort_receipt_id is None:
-            raise HTTPException(400, "test coordination requires its input manifest")
-        cohort_receipt = session.get(CohortReceipt, cohort_receipt_id)
-        if cohort_receipt is None or cohort_receipt.project_id != project.id:
-            raise HTTPException(404, "no such test input manifest in this project")
-    event_cohort_receipt = None
-    if lane == "events":
-        if event_cohort_receipt_id is None:
-            raise HTTPException(
-                400, "statement test coordination requires its input manifest"
-            )
-        event_cohort_receipt = session.get(
-            EventCohortReceipt, event_cohort_receipt_id
-        )
-        if (
-            event_cohort_receipt is None
-            or event_cohort_receipt.project_id != project.id
-        ):
-            raise HTTPException(
-                404, "no such statement test input manifest in this project"
-            )
-    worklist = build_reviewer_worklist(session, project.id)
-    ordinary_candidate_ids = frozenset(
-        candidate_id
-        for review in worklist.ordinary
-        for candidate_id in review.successor_candidate_ids
-    )
-    allowed_candidate_ids = (
-        None if historical_document_id is not None else ordinary_candidate_ids
-    )
-    if cohort_receipt is not None:
-        # The lane presents exactly the receipt's members — the pinned set
-        # intersected with what is ordinarily actionable, never widened.
-        allowed_candidate_ids = (
-            ordinary_candidate_ids
-            & cohort_candidate_ids(session, cohort_receipt)
-        )
-    if event_cohort_receipt is not None:
-        allowed_candidate_ids = (
-            ordinary_candidate_ids
-            & _event_lane_dependency_ids(session, event_cohort_receipt)
-        )
-    # Only the technical failures a customer cannot act on are shown here as a
-    # plain "supporting documents unavailable" note; a changed, dropped,
-    # ambiguous, or edited row is a routed coordination question that appears
-    # once on the Work List, never twice (ADR-0034, ADR-0037).
-    ordinary_reviews = [
-        build_supersession_review_view(session, review)
-        for review in worklist.ordinary
-        if not review.successor_candidate_ids
-        and review.dependency_id is not None
-        and classify_review(review).is_operations
-    ]
-    # The retired generic reconfirmation lane is gone; the count that used to
-    # invite a customer to reconfirm now points at the specific routed
-    # coordination questions on the Work List.
-    support_update_count = len(
-        customer_consequences_by_dependency(session, project.id)
-    )
-    total, _verified = pending_counts(
-        session,
-        project.id,
-        historical_document_id=historical_document_id,
-        allowed_candidate_ids=allowed_candidate_ids,
-    )
-    lane_context = {
-        "project": project,
-        "remaining": total,
-        # A count, not the pile itself: the queue points at it and never
-        # becomes a second place to work statements.
-        "waiting_statements": len(waiting_statements(session, project.id)),
-        "lane": lane,
-        "cohort_receipt": cohort_receipt,
-        "candidate_count": total + len(ordinary_reviews),
-        "support_update_count": support_update_count,
-        "ordinary_reviews": ordinary_reviews,
-    }
-    if lane == "reconfirmation":
-        # Exact unchanged support now moves through the managed automatic path
-        # with no customer confirmation; the specific consequence of every other
-        # case is a Work List question.  The retired ceremony redirects there.
-        return RedirectResponse(f"/work/{slug}", status_code=303)
-
-    lane_url = f"/queue/{slug}?lane=candidate"
-    if cohort_receipt is not None:
-        lane_url = (
-            f"/queue/{slug}?lane=rehearsal&cohort_receipt_id={cohort_receipt.id}"
-        )
-    if event_cohort_receipt is not None:
-        lane_url = (
-            f"/queue/{slug}?lane=events"
-            f"&event_cohort_receipt_id={event_cohort_receipt.id}"
-        )
-    summary_url = _cohort_summary_location(lane_url)
-
-    candidate = None
-    if candidate_id is not None:
-        # Direct selection from the rail: still resolved through the same
-        # actionable scope the default pick uses — the rail is navigation,
-        # never a widening.
-        candidate = next_candidate(
+    try:
+        reading = queue_view(
             session,
-            project.id,
+            project=project,
+            lane=lane,
             historical_document_id=historical_document_id,
-            allowed_candidate_ids=(
-                (allowed_candidate_ids or frozenset()) & {candidate_id}
-                if allowed_candidate_ids is not None
-                else frozenset({candidate_id})
-            ),
+            cohort_receipt_id=cohort_receipt_id,
+            event_cohort_receipt_id=event_cohort_receipt_id,
+            candidate_id=candidate_id,
+            coordinate=coordinate,
+            summary=bool(summary),
         )
-    if candidate is None:
-        candidate = next_candidate(
-            session,
-            project.id,
-            historical_document_id=historical_document_id,
-            allowed_candidate_ids=allowed_candidate_ids,
+    except LaneManifestRequired as refusal:
+        raise HTTPException(400, str(refusal))
+    except NoSuchLaneManifest as refusal:
+        raise HTTPException(404, str(refusal))
+    if reading.redirect_to is not None:
+        return RedirectResponse(reading.redirect_to, status_code=303)
+    if reading.candidate is not None and reading.candidate.state == "pending":
+        observe_shadow_review(
+            session, reading.candidate.id, boundary="start", principal=principal
         )
-
-    rail = (
-        build_cohort_rail(
-            session,
-            cohort_receipt,
-            candidate.id if candidate is not None else None,
-        )
-        if cohort_receipt is not None
-        else None
-    )
-
-    coordinate_dependency = None
-    openable_dependency_ids = frozenset(cohort_openable_dependency_ids(rail))
-    if coordinate is not None and (
-        cohort_receipt is not None or event_cohort_receipt is not None
-    ):
-        coordinate_dependency = session.get(Dependency, coordinate)
-        if (
-            coordinate_dependency is None
-            or coordinate_dependency.project_id != project.id
-            or (
-                cohort_receipt is not None
-                and coordinate_dependency.id not in openable_dependency_ids
-            )
-        ):
-            coordinate_dependency = None
-    if (
-        candidate is None
-        and coordinate_dependency is None
-        and cohort_receipt is not None
-        and coordinate is None
-        and not summary
-    ):
-        default_coordinate_id = default_cohort_dependency_id(rail)
-        if default_coordinate_id is not None:
-            coordinate_dependency = session.get(Dependency, default_coordinate_id)
-    next_coordinate_url = (
-        lane_url
-        if candidate is not None
-        else _next_cohort_coordinate_url(
-            lane_url,
-            rail,
-            coordinate_dependency.id if coordinate_dependency is not None else None,
-        )
-    )
-
-    if candidate is None and coordinate_dependency is None:
-        return TEMPLATES.TemplateResponse(
-            request,
-            "empty.html",
-            {
-                **lane_context,
-                "rail": rail,
-                "lane_url": lane_url,
-                "summary_url": summary_url,
-                "next_coordinate_url": next_coordinate_url,
-            },
-        )
-
-    if candidate is None:
-        # Every member decided, but a coordination strip is still open for
-        # the last admitted record.
-        return TEMPLATES.TemplateResponse(
-            request,
-            "empty.html",
-            {
-                **lane_context,
-                "rail": rail,
-                "coordinate_dependency": coordinate_dependency,
-                **_coordinate_plan_context(session, coordinate_dependency),
-                "lane_url": lane_url,
-                "summary_url": summary_url,
-                "next_coordinate_url": next_coordinate_url,
-            },
-        )
-
-    if candidate.state == "pending" and observe_shadow_review(
-        session, candidate.id, boundary="start", principal=principal
-    ) is not None:
-        pass
-
-    reason = _review_reason(session, project, candidate)
-    headline, guidance = REVIEW_REASONS.get(reason or "", (None, None))
-    identity_card = (
-        _identity_card(session, candidate)
-        if reason == "external_org_identity_unresolved"
-        else None
-    )
-    candidate_authority_gap = pending_candidate_authority_gap(
-        session,
-        project.id,
-        candidate.id,
-    )
-    unresolved_acknowledgments = tuple(
-        session.scalars(
-            select(AuditLog)
-            .where(
-                AuditLog.entity_type == audit.CANDIDATE,
-                AuditLog.entity_id == candidate.id,
-                AuditLog.action == audit.KEEP_CANDIDATE_UNRESOLVED,
-            )
-            .order_by(AuditLog.id)
-        ).all()
-    )
-    siblings, differences = (
-        _revision_panels(session, project, candidate)
-        if reason == "revisions_disagree"
-        else ([], [])
-    )
-    evidence_panels = [
-        build_evidence(
-            session,
-            other,
-            label="the other revision",
-        )
-        for other in siblings
-    ]
-
     response = TEMPLATES.TemplateResponse(
-        request,
-        "queue.html",
-        {
-            "project": project,
-            "review_headline": headline,
-            "review_guidance": guidance,
-            "identity_card": identity_card,
-            "candidate_authority_gap": candidate_authority_gap,
-            "unresolved_acknowledgments": unresolved_acknowledgments,
-            "differences": differences,
-            "evidence_panels": evidence_panels,
-            "view": build_view(
-                session,
-                candidate,
-                historical_document_id=historical_document_id,
-                allowed_candidate_ids=allowed_candidate_ids,
-            ),
-            "event_cohort_receipt": event_cohort_receipt,
-            "siblings": (
-                _sibling_revisions(
-                    session, allowed_candidate_ids or frozenset(), candidate
-                )
-                if event_cohort_receipt is not None
-                else []
-            ),
-            "rail": rail,
-            "classification": (
-                member_classification(cohort_receipt, candidate)
-                if cohort_receipt is not None
-                else None
-            ),
-            "changes": (
-                change_strip(session, cohort_receipt, candidate)
-                if cohort_receipt is not None
-                else []
-            ),
-            "coordinate_dependency": coordinate_dependency,
-            **_coordinate_plan_context(session, coordinate_dependency),
-            "lane_url": lane_url,
-            "summary_url": summary_url,
-            "next_coordinate_url": next_coordinate_url,
-            **lane_context,
-        },
+        request, reading.template, {"project": project, "reading": reading}
     )
+    if reading.candidate is None:
+        return response
     record_frontend_request(
         session,
         principal=principal,
@@ -6303,10 +5584,10 @@ def queue(
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
-            candidate_id=candidate.id,
+            candidate_id=reading.candidate.id,
             dependency_id=(
-                coordinate_dependency.id
-                if coordinate_dependency is not None
+                reading.coordinate_dependency.id
+                if reading.coordinate_dependency is not None
                 else None
             ),
         ),
@@ -6327,7 +5608,16 @@ def ledger(
     owner: str | None = None,
     principal: HumanPrincipal = Depends(get_human_principal),
     session: Session = Depends(get_session),
+    now: Callable[[], datetime] = Depends(get_review_clock),
 ):
+    """The Constraint Log, read at the declared review instant like its siblings.
+
+    The clock is the same ``get_review_clock`` seam eight other routes already
+    take, rather than ``date.today()`` inside the body: the alert this page
+    prints beside a Next Action past its date is then a fact a test can state
+    instead of one that depends on the day the suite runs.
+    """
+
     project = _project(session, slug, principal)
     # This page is its own publication, so it takes its own evaluation —
     # stated here rather than defaulted inside `browse`, where a caller who
@@ -6380,7 +5670,7 @@ def ledger(
             ],
             "strategies": RESOLUTION_STRATEGIES,
             "owners": owners,
-            "today": date.today(),
+            "today": now().date(),
         },
     )
 
@@ -6410,179 +5700,38 @@ def _dependency_detail_response(
     plan_error: str | None = None,
     status_code: int = 200,
 ):
+    """Render one Constraint's record, and record nothing else about it."""
+
     try:
-        view = load_dependency(session, dependency_id)
-    except LookupError:
-        raise HTTPException(404, "no such constraint")
-    if view.dependency.project_id != project.id:
-        raise HTTPException(404, "no such constraint in this project")
-    safe_return = (
-        _safe_cohort_return(
-            return_to,
-            project=project,
-            dependency_id=dependency_id,
-            session=session,
-        )
-        if return_to
-        else ""
-    )
-    owner_decision = current_internal_owner_decision(session, dependency_id)
-    action_decision = current_next_action_decision(session, dependency_id)
-    support = resolve_operative_support(session, (dependency_id,))[dependency_id]
-    checklist = read_checklist(
-        session, dependency_id, legacy_ready=support.current_readiness != ()
-    )
-    condition_proposals = propose_condition_clears(
-        session, dependency_id, checklist.conditions
-    )
-    all_assessments = {
-        assessment.field_name: assessment
-        for assessment in history_assessments_for(session, dependency_id)
-    }
-    amendment_fields = {
-        field_name
-        for field_name, assessment in all_assessments.items()
-        if assessment.outcome == "contractual_amendment"
-    }
-    all_disputes = {
-        dispute.field_name: dispute
-        for dispute in disputes_for(session, dependency_id, include_settled=True)
-    }
-    disputes = {
-        field_name: dispute
-        for field_name, dispute in all_disputes.items()
-        if field_name not in amendment_fields
-    }
-    assessments = {
-        field_name: assessment
-        for field_name, assessment in all_assessments.items()
-        if field_name in disputes
-    }
-    # A stale executed agreement is coordination work, not a pick-one card:
-    # the why-line and both quotes render without any settle control.
-    amendments = {
-        field_name: all_assessments[field_name]
-        for field_name in amendment_fields
-        if field_name in all_disputes
-    }
-    timelines = {
-        field_name: build_dispute_timeline(session, dependency_id, field_name)
-        for field_name in disputes
-    }
-    roster = session.scalars(
-        select(ProjectRosterEntry)
-        .where(
-            ProjectRosterEntry.project_id == project.id,
-            ProjectRosterEntry.active.is_(True),
-        )
-        .order_by(ProjectRosterEntry.display_name, ProjectRosterEntry.id)
-    ).all()
-    # The routed consequence of ineligible replacement support for this exact
-    # Constraint, with the retained before/after read back from the verified
-    # comparison — the changed-source context the retired ceremony never gave.
-    support_consequence = customer_consequences_by_dependency(
-        session, project.id
-    ).get(dependency_id)
-    support_context = (
-        changed_source_context(session, support_consequence)
-        if support_consequence is not None
-        else None
-    )
-    # An optional, read-only explanation of the exact verified comparison the
-    # question already selected (#360). The binding and any retained receipt are
-    # an adjunct: the deterministic question and change context above stand on
-    # their own whether or not one exists, is stale, or was refused.
-    revision_change_binding = (
-        revision_change_explanation_binding(
+        reading = dependency_view(
             session, project_id=project.id, dependency_id=dependency_id
         )
-        if support_context is not None
-        else None
-    )
-    revision_change_explanation = (
-        latest_revision_change_explanation(
-            session,
-            project_id=project.id,
-            dependency_id=dependency_id,
-            comparison_id=revision_change_binding.comparison_id,
-            finding_id=revision_change_binding.finding_id,
+    except NoSuchConstraint as refusal:
+        raise HTTPException(404, str(refusal))
+    try:
+        safe_return = (
+            safe_cohort_return(
+                return_to,
+                project=project,
+                dependency_id=dependency_id,
+                session=session,
+            )
+            if return_to
+            else ""
         )
-        if revision_change_binding is not None
-        else None
-    )
+    except ReturnContextRefused as refusal:
+        raise HTTPException(400, str(refusal))
     return TEMPLATES.TemplateResponse(
         request,
         "dependency.html",
         {
             "project": project,
-            "view": view,
-            "owner_decision": owner_decision,
-            "action_decision": action_decision,
-            "deferral_decision": current_deferral_decision(session, dependency_id),
-            "plan_roster": _active_project_roster(session, project.id),
-            "plan_next_action_choices": FOLLOW_UP_NEXT_ACTION_CHOICES,
-            "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
-            "plan_no_follow_up_reasons": sorted(NO_FOLLOW_UP_REASONS),
-            "plan_cancellation_reasons": sorted(CANCELLATION_REASONS),
-            "plan_deferral_reasons": sorted(DEFERRAL_REASONS),
-            "plan_receipt": current_follow_up_plan_receipt(session, dependency_id),
-            "plan_error": plan_error,
-            "sufficient_evidence_ids": {
-                item.evidence_link_id for item in support.readiness
-            },
-            "checklist": checklist,
-            "condition_proposals": condition_proposals,
+            "reading": reading,
             "return_to": safe_return,
-            "disputes": disputes,
-            "dispute_assessments": assessments,
-            "dispute_amendments": amendments,
-            "dispute_timelines": timelines,
-            "roster": roster,
-            "dismiss_reasons": DISMISS_REASONS,
-            "support_consequence": support_consequence,
-            "support_context": support_context,
-            "revision_change_binding": revision_change_binding,
-            "revision_change_explanation": revision_change_explanation,
-            "revision_change_configuration": current_revision_change_configuration(
-                session, project.id
-            ),
-            "revision_change_prompt_version": (
-                REVISION_CHANGE_EXPLANATION_PROMPT_VERSION
-            ),
+            "plan_error": plan_error,
         },
         status_code=status_code,
     )
-
-
-def _coordinate_plan_context(session: Session, dependency: Dependency | None) -> dict:
-    """The roster-backed plan form context for the queue coordination strip."""
-    if dependency is None:
-        return {}
-    owner_decision = current_internal_owner_decision(session, dependency.id)
-    action_decision = current_next_action_decision(session, dependency.id)
-    return {
-        "plan_roster": _active_project_roster(session, dependency.project_id),
-        "plan_next_action_choices": FOLLOW_UP_NEXT_ACTION_CHOICES,
-        "plan_unknown_date_reasons": sorted(UNKNOWN_DUE_DATE_REASONS),
-        "coordinate_expected_internal_owner_decision_id": (
-            owner_decision.id if owner_decision else ""
-        ),
-        "coordinate_expected_next_action_decision_id": (
-            action_decision.id if action_decision else ""
-        ),
-    }
-
-
-def _active_project_roster(session: Session, project_id: int):
-    """The active project-team members a Follow-up Plan may assign."""
-    return session.scalars(
-        select(ProjectRosterEntry)
-        .where(
-            ProjectRosterEntry.project_id == project_id,
-            ProjectRosterEntry.active.is_(True),
-        )
-        .order_by(ProjectRosterEntry.display_name)
-    ).all()
 
 
 def _verbal_timing_from_form(
