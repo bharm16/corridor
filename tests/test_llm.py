@@ -489,7 +489,7 @@ def test_the_run_gives_up_after_the_declared_attempt_ceiling(monkeypatch):
 
     with pytest.raises(RuntimeError, match=f"failed after {MAX_ATTEMPTS} attempts"):
         client.complete(system="s", user="u", schema=SCHEMA)
-    assert len(slept) == MAX_ATTEMPTS
+    assert len(slept) == MAX_ATTEMPTS - 1
 
 
 def test_backoff_grows_and_is_jittered_so_workers_do_not_synchronise(monkeypatch):

@@ -60,8 +60,12 @@ from dataclasses import dataclass, field as dataclass_field
 from hashlib import sha256
 import json
 from pathlib import Path
+import posixpath
 import re
 from tempfile import TemporaryDirectory
+from xml.etree import ElementTree
+
+from openpyxl.utils.cell import column_index_from_string, range_boundaries
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -98,7 +102,7 @@ from corridor.spreadsheet_conversion import canonical_package
 # was bound to, for the same reason `IMPORTER_VERSION` is recorded on an
 # adoption: a workbook written by a later renderer is a different rendering of
 # the same record, and the two are never assumed interchangeable.
-RENDERER_VERSION = "workbook_render_v1"
+RENDERER_VERSION = "workbook_render_v2"
 
 # The one optional workbook variant this renderer offers, under the name the
 # rest of the product already prints for the same thing (`presentation.label`).
@@ -963,12 +967,12 @@ def _apply(
             part = _extend_ref(part, b"autoFilter", last)
             differences.append(f"{sheet_part}: the sheet filter range follows the rows")
         if insertion is not None and insertion.extend_table_ref:
-            for name in sorted(parts):
-                if name.startswith("xl/tables/"):
-                    rendered[name] = _extend_ref(parts[name], b"table", last)
-                    if rendered[name] != parts[name]:
-                        changed.add(name)
-                        differences.append(f"{name}: the table range follows the rows")
+            name = _insertion_table(parts, sheet_part, reading, plan)
+            rendered[name] = _extend_ref(parts[name], b"table", last)
+            rendered[name] = _extend_ref(rendered[name], b"autoFilter", last)
+            if rendered[name] != parts[name]:
+                changed.add(name)
+                differences.append(f"{name}: the owning table and its filter follow the rows")
 
     if part != parts[sheet_part]:
         rendered[sheet_part] = part
@@ -988,6 +992,75 @@ def _apply(
         "named above"
     )
     return rendered, changed, tuple(differences)
+
+
+def _insertion_table(
+    parts: dict[str, bytes], sheet_part: str, reading: OperationsReading, plan: _Plan,
+) -> str:
+    """Resolve one table owning the appended matrix cells, never all ZIP tables.
+
+    Worksheet relationships own table parts. A second worksheet's lookup table
+    or a table beside the matrix has no connection to these inserted rows.
+    Ambiguous ownership, totals and mismatched filters need an explicit renderer
+    capability rather than a guessed edit to a customer's workbook.
+    """
+    rel_part = posixpath.join(
+        posixpath.dirname(sheet_part), "_rels", posixpath.basename(sheet_part) + ".rels"
+    )
+    try:
+        sheet = ElementTree.fromstring(parts[sheet_part])
+        table_refs = sheet.findall(f"{{{_MAIN_NS}}}tableParts/{{{_MAIN_NS}}}tablePart")
+        relationships = ElementTree.fromstring(parts[rel_part]) if table_refs else ()
+        columns = [
+            column_index_from_string(column)
+            for _, cells in plan.appended for column in cells
+        ]
+        first_row = min(row for row, _ in plan.appended)
+        owners = []
+        seen = set()
+        for reference in table_refs:
+            identifier = reference.get(f"{{{_RELS_NS}}}id")
+            matches = [rel for rel in relationships if rel.get("Id") == identifier]
+            if not identifier or identifier in seen or len(matches) != 1:
+                raise ValueError("table relationship is absent or ambiguous")
+            seen.add(identifier)
+            rel = matches[0]
+            if rel.get("Type") != _RELS_NS + "/table" or rel.get("TargetMode", "Internal") != "Internal":
+                raise ValueError("table relationship is not an internal table")
+            target = rel.attrib["Target"]
+            name = posixpath.normpath(
+                target.lstrip("/") if target.startswith("/") else
+                posixpath.join(posixpath.dirname(sheet_part), target)
+            )
+            if not name.startswith("xl/tables/"):
+                raise ValueError("table relationship leaves the table inventory")
+            table = ElementTree.fromstring(parts[name])
+            if table.tag != f"{{{_MAIN_NS}}}table":
+                raise ValueError("table relationship does not name a table")
+            left, top, right, bottom = range_boundaries(table.attrib["ref"])
+            if not all(isinstance(value, int) for value in (left, top, right, bottom)):
+                raise ValueError("table has no bounded cell range")
+            if not columns or not (
+                top == reading.header_row_number and bottom >= first_row - 1
+                and left <= min(columns) <= max(columns) <= right
+            ):
+                continue
+            if table.get("totalsRowCount", "0") != "0":
+                raise ValueError("insertion into a table with totals is unsupported")
+            filters = table.findall(f"{{{_MAIN_NS}}}autoFilter")
+            if len(filters) > 1 or any(f.get("ref") != table.get("ref") for f in filters):
+                raise ValueError("the owning table and its filter disagree")
+            # Byte surgery intentionally supports the same unprefixed tags as
+            # the worksheet editor, not silent success for an uneditable part.
+            for tag in (b"table",) + ((b"autoFilter",) if filters else ()):
+                if not re.search(rb"<" + tag + rb'\b[^>]*?\bref="[^"]*"', parts[name]):
+                    raise ValueError("the owning table markup cannot be edited safely")
+            owners.append(name)
+        if len(owners) != 1:
+            raise ValueError("row insertion requires exactly one owning table")
+        return owners[0]
+    except (KeyError, ValueError, ElementTree.ParseError) as exc:
+        raise UnsupportedWorkbookFeature(f"cannot extend the adopted worksheet table: {exc}") from exc
 
 
 def _sheet_part_name(parts: dict[str, bytes], sheet_name: str) -> str:

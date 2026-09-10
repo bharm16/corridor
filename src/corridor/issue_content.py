@@ -174,7 +174,7 @@ _PRESENTATION_LABELS: Mapping[str, str] = {
 # equals the producing module's own constant, so there is exactly one authority
 # and a rename cannot pass unnoticed.
 UCM_RENDERER_IDENTITY = "workbook_render"
-UCM_RENDERER_VERSION = "workbook_render_v1"
+UCM_RENDERER_VERSION = "workbook_render_v2"
 CHANGE_SUMMARY_IDENTITY = "change_summary_from_accepted_revisions"
 CHANGE_SUMMARY_VERSION = "v1"
 WEEKLY_REPORT_IDENTITY = "weekly_coordination_report_from_accepted_revision"

@@ -208,7 +208,11 @@ class OpenAIClient:
         effort: str = "none",
         flex: bool = False,
         max_output_tokens: int | None = None,
+        max_attempts: int = MAX_ATTEMPTS,
     ):
+        if type(max_attempts) is not int or max_attempts < 1:
+            raise ValueError("max_attempts must be a positive integer")
+        self.max_attempts = max_attempts
         self.api_key = api_key or settings.openai_api_key
         self.max_workers = max_workers
         self.timeout = FLEX_TIMEOUT if flex else timeout
@@ -241,6 +245,23 @@ class OpenAIClient:
                 max_connections=max_workers * 2,
                 max_keepalive_connections=max_workers,
             ),
+        )
+
+    @classmethod
+    def from_spend_authorization(cls, configuration):
+        """Bind the declared assistance limits to real transport attempts.
+
+        Extraction deliberately retries transient failures. Assistance declares
+        one request with no retry; counting one `complete` call used to hide
+        the extraction client's four HTTP attempts behind that declaration.
+        """
+        if configuration.max_requests != 1 or configuration.retry_policy != "none":
+            raise ValueError("assistance permits one request and no automatic retry")
+        return cls(
+            model=configuration.model,
+            timeout=configuration.timeout_seconds,
+            max_output_tokens=configuration.max_output_tokens,
+            max_attempts=configuration.max_requests,
         )
 
     def configuration(self) -> RequestConfiguration:
@@ -296,7 +317,7 @@ class OpenAIClient:
         )
 
         last_error = ""
-        for attempt in range(MAX_ATTEMPTS):
+        for attempt in range(self.max_attempts):
             try:
                 response = self._http.post(
                     f"{self.base_url}/responses",
@@ -305,12 +326,14 @@ class OpenAIClient:
                 )
             except httpx.HTTPError as exc:
                 last_error = f"transport: {exc}"
-                self._backoff(attempt)
+                if attempt + 1 < self.max_attempts:
+                    self._backoff(attempt)
                 continue
 
             if response.status_code in RETRY_STATUSES:
                 last_error = f"{response.status_code}: {response.text[:200]}"
-                self._backoff(attempt, response)
+                if attempt + 1 < self.max_attempts:
+                    self._backoff(attempt, response)
                 continue
             if response.status_code != 200:
                 raise RuntimeError(
@@ -321,7 +344,7 @@ class OpenAIClient:
             return self._read(response.json())
 
         raise RuntimeError(
-            f"{self.model} failed after {MAX_ATTEMPTS} attempts: {last_error}"
+            f"{self.model} failed after {self.max_attempts} attempts: {last_error}"
         )
 
     def _read(self, body: dict) -> dict:
