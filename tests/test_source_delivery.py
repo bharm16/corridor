@@ -10,6 +10,7 @@ cursor derived from an append-only relation rather than from a receipt.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from hashlib import sha256
 from uuid import uuid4
 
@@ -280,3 +281,57 @@ def test_both_transports_derive_one_identity_from_the_same_parts(session, projec
     assert key == sha256(
         f"{identity}:{observation.content_digest}".encode("utf-8")
     ).hexdigest()
+
+
+def test_one_function_reads_a_retained_delivery_back_as_its_envelope(session, project):
+    """Row to envelope was built three ways; it is one function (ADR-0089).
+
+    ``envelope_of`` filled it from the objects a writer happened to hold,
+    ``envelope_for_delivery`` reads it from the row, and ``push_intake`` had a
+    third for its own transport. ``require_stored_envelope`` compares a
+    consumer's envelope against the retained one for equality, so a second
+    construction that formats one field differently does not read differently —
+    it refuses the delivery.
+    """
+
+    from corridor import source_delivery
+    from corridor.source_delivery import envelope_for_delivery, require_stored_envelope
+
+    pulled = take_delivery(
+        session,
+        _pull_binding(project),
+        _observation(b"%PDF read back"),
+        service_identity="corridor.connector_polling",
+        run_identity="due-attempt:1",
+    )
+    pushed = take_delivery(
+        session,
+        _push_binding(session, project),
+        _observation(b"%PDF pushed back", item="mta-9"),
+        service_identity="corridor.push_intake",
+        run_identity="push-intake:1",
+    )
+
+    # One function, both transports, and it is what the gate admits.
+    for recorded in (pulled, pushed):
+        envelope = envelope_for_delivery(session, recorded.delivery_id)
+        assert envelope.project == project.slug
+        assert envelope.delivery_identity == recorded.delivery_identity
+        assert envelope.idempotency_key == recorded.idempotency_key
+        assert require_stored_envelope(session, envelope).id == recorded.delivery_id
+
+    envelope = envelope_for_delivery(session, pulled.delivery_id)
+    for altered in (
+        replace(envelope, customer="another-customer"),
+        replace(envelope, project="another-project"),
+        replace(envelope, bytes_reference="ab/somewhere-else.pdf"),
+        replace(envelope, metadata={"filename": "renamed.pdf"}),
+    ):
+        with pytest.raises(SourceDeliveryRefused, match="exact stored"):
+            require_stored_envelope(session, altered)
+
+    # And there is no second construction left to disagree with it.
+    assert {name for name in vars(source_delivery) if "envelope" in name} == {
+        "envelope_for_delivery",
+        "require_stored_envelope",
+    }

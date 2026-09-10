@@ -31,6 +31,16 @@ where the coverage is written, by a trigger on
 ``connector_checkpoint_advance_deliveries``, so it is not a rule a caller has
 to remember.
 
+**The envelope names the project the way the identity does.**  A consumer needs
+a project id, and the envelope carries a slug, so the question of adding the id
+to ``SourceEnvelope`` is a fair one.  It is not added: the identity ADR-0083
+fixed is derived from the customer, the *slug*, the channel and the external
+version, and the database re-derives it from the stored row, so an id in the
+envelope would be a second reference to the project that could disagree with
+the row the identity was checked against.  Every consumer already holds the row
+— ``require_stored_envelope`` hands it back — so ``project_id`` and the binding
+are read from there, through ``binding_of_delivery``, rather than rebuilt.
+
 **The cursor lives with the configuration, not with a receipt.**
 ``connector_polling``'s docstring recorded a rejected alternative — "a
 checkpoint table was rejected: the migration window is closed" — and ADR-0089
@@ -308,28 +318,6 @@ def take_delivery(
     )
 
 
-def envelope_of(
-    binding: DeliveryBinding,
-    observation: DeliveryObservation,
-    recorded: RecordedDelivery,
-) -> SourceEnvelope:
-    """The shared ingress record #496 defined, filled from one ledger row."""
-
-    return SourceEnvelope(
-        customer=binding.customer,
-        project=binding.project_slug,
-        channel=binding.channel,
-        external_identity=observation.external_identity,
-        external_version=observation.external_version,
-        original_timestamps=dict(observation.original_timestamps),
-        content_digest=recorded.content_digest,
-        bytes_reference=recorded.bytes_reference,
-        metadata=dict(observation.metadata),
-        delivery_identity=recorded.delivery_identity,
-        idempotency_key=recorded.idempotency_key,
-    )
-
-
 def stored_delivery(
     session: Session, *, idempotency_key: str
 ) -> SourceDelivery | None:
@@ -348,8 +336,38 @@ def stored_delivery(
     ).first()
 
 
+def binding_of_delivery(session: Session, row: SourceDelivery) -> DeliveryBinding:
+    """The binding one retained delivery arrived under, read back from its row.
+
+    A consumer used to rebuild this from the row's own columns beside a
+    hard-coded transport, which is the same "two definitions of one identity"
+    ADR-0089 removed from the envelope: the row already says which transport,
+    channel and configuration carried the delivery, so it says so once here.
+    """
+
+    return DeliveryBinding(
+        customer=row.customer,
+        project_id=row.project_id,
+        project_slug=session.get_one(Project, row.project_id).slug,
+        transport=row.transport,
+        channel=row.channel,
+        configuration_identity=row.configuration_identity,
+        configuration_version=row.configuration_version or "",
+        credential_id=row.credential_id,
+    )
+
+
 def envelope_for_delivery(session: Session, delivery_id: int) -> SourceEnvelope:
-    """Read the one retained ingress envelope for any source-specific consumer."""
+    """Read the one retained ingress envelope for any source-specific consumer.
+
+    The only construction of an ingress envelope from a delivery there is.  It
+    was three: this reader, one filled from whatever objects a writer happened
+    to hold, and a third inside ``push_intake`` for its own transport.  They had
+    to agree exactly rather than approximately, because
+    ``require_stored_envelope`` admits a consumer's envelope by comparing it
+    with this one for equality — a second construction that formatted one field
+    differently would not read differently, it would refuse the delivery.
+    """
     row = session.get_one(SourceDelivery, delivery_id)
     project = session.get_one(Project, row.project_id)
     return SourceEnvelope(

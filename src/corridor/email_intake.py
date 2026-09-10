@@ -65,7 +65,11 @@ from corridor.push_intake import (
     bind_credential,
 )
 from corridor.source_intake import IntakeRefused, validate_and_stage
-from corridor.source_delivery import DeliveryBinding, require_stored_envelope
+from corridor.source_delivery import (
+    DeliveryBinding,
+    binding_of_delivery,
+    require_stored_envelope,
+)
 from corridor.connectors.pull_connector import SourceEnvelope
 
 
@@ -311,10 +315,7 @@ def receive_pulled_message(session: Session, *, envelope: SourceEnvelope,
         raise InboundMailRefused("source is not a stored shared-mailbox pull delivery")
     raw = content_store().get(delivery.bytes_reference, sha256=delivery.content_sha256)
     path = store_bytes(raw, sha256=delivery.content_sha256, suffix=".eml")
-    binding = DeliveryBinding(customer=delivery.customer, project_id=delivery.project_id,
-        project_slug=envelope.project, transport="pull", channel=delivery.channel,
-        configuration_identity=delivery.configuration_identity,
-        configuration_version=delivery.configuration_version)
+    binding = binding_of_delivery(session, delivery)
     return _register_bound_message(session, binding=binding, envelope=envelope,
         delivery_id=delivery.id, staged_path=path, raw_bytes=raw,
         attachment_doc_types=attachment_doc_types)
