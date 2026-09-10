@@ -15,9 +15,11 @@ records, and the checks over those fields.
 own boundary, the exact source digests the run intends to send, and the
 campaign budget. It matches all of them against the recorded provider posture
 and against each other, and refuses with zero outbound requests when anything
-is absent or uncovered. Only then does it construct the mapper. The
-posture-status rule is the declared one for this provider: every request is
-refused while the posture is not `approved`, experiments included.
+is absent or uncovered. Only then does it construct the mapper. The posture
+records the experimental approval its document states (#557) and no
+customer-processing approval, so an experiment scope over `native_matrix`
+material opens the boundary and a customer authorization is refused naming
+the missing approval (ADR-0098).
 
 The transport is the seam. One `send` is one outbound request, counted as a
 call, a retry or a failed attempt, so the receipt can separate what was
@@ -123,6 +125,14 @@ POSTURE = ProviderPosture(
     customer_processing="blocked",
     pdf_licensing="unresolved",
     status="approved",
+    experimental_approval=provider_authorization.TransmissionApproval(
+        source_classes=("native_matrix",),
+        purposes=(NATIVE_MATRIX_PURPOSE, MEASUREMENT_PURPOSE),
+        unverified=(),
+        approved_by="the maintainer, on issue #557",
+        approved_on="2026-09-03",
+    ),
+    customer_processing_approval=None,
 )
 
 
@@ -220,7 +230,6 @@ class _NativeAuthorizationCheck(
     budget: Budget
 
     implementer = "the boundary"
-    posture_status = provider_authorization.EVERY_REQUEST_NEEDS_APPROVED
     record_kinds = (ExperimentScope, CustomerAuthorization)
 
     def request_mismatches(self, request: RequestBoundary, posture: ProviderPosture) -> list[str]:

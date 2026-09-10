@@ -5,7 +5,7 @@ ever asked to send anything: a refusal that still opened a socket is not a
 refusal. The authorized tests use a recording transport, so nothing here needs
 a network or a key. The properties every provider adapter shares (an absent
 record, every failing field named, the experiment stage, the posture digest,
-the posture-status rule) are proved for this adapter in
+the posture approval rule) are proved for this adapter in
 `tests/test_provider_authorization.py`; this file keeps the model provider's
 own fields.
 """
@@ -128,6 +128,16 @@ def _open(transport, *, record=_DEFAULT, request=None, budget=None, sources=(SOU
 def test_the_posture_records_the_approved_model_configuration():
     assert POSTURE.model == "gpt-5.6-luna" and POSTURE.reasoning_effort == "none"
     assert POSTURE.store is False and POSTURE.customer_processing == "blocked"
+
+
+def test_the_posture_records_the_approvals_its_document_states():
+    """The document is approved for the experiment stage on public and synthetic
+    `native_matrix` material and blocked for every customer stage (ADR-0098)."""
+    approval = POSTURE.experimental_approval
+    assert approval is not None
+    assert approval.source_classes == POSTURE.permitted_source_classes == ("native_matrix",)
+    assert approval.purposes == POSTURE.permitted_purposes and approval.unverified == ()
+    assert POSTURE.customer_processing_approval is None
 
 
 def test_a_refusal_names_every_failing_model_configuration_field_not_only_the_first():
