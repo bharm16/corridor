@@ -113,11 +113,7 @@ from corridor.baseline_workbook import (
     read_baseline_workbook,
 )
 from corridor.connectors.pull_connector import SourceEnvelope
-from corridor.delta_generation import (
-    COMPARABLE_FACT_TYPES,
-    accepted_values,
-    revision_label,
-)
+from corridor.delta_generation import COMPARABLE_FACT_TYPES
 from corridor.extraction_runs import record_extraction_run
 from corridor.fact_values import scalar_fact_value
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
@@ -132,12 +128,20 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
-from corridor.proposed_deltas import (
-    ExistingSubjectTarget,
-    ProposedDeltaValues,
-    ProposedSubjectTarget,
-    create_proposed_delta_group,
+from corridor.proposed_delta_comparison import (
+    AMBIGUITY_BEFORE_SEAL,
+    COMPARED,
+    ENTIRE_SUBJECT,
+    RowPlan,
+    SourcePlan,
+    StatedSubject,
+    accepted_values,
+    compare_stated_subjects,
+    removal_disposition,
+    require_bound_delivery,
+    revision_label,
 )
+from corridor.proposed_deltas import ProposedDeltaValues, create_proposed_delta_group
 from corridor.row_accounting import RowAccounting
 from corridor.source_append import append_fact
 from corridor.source_delivery import stored_delivery
@@ -169,15 +173,10 @@ REVISION_READER_PATH = "spreadsheet_cells"
 # is identified by (`baseline_workbook` reads it into `business_identity`).
 BUSINESS_IDENTITY_FIELD = "utility_id"
 
-# The `target_field` an apparent removal names.  A removal is not about one
-# column, and the whole-subject spelling already in use for one is kept so the
-# word never means two things across the seam.
-ENTIRE_SUBJECT = "entire_subject"
-
 # What became of one row of the later revision.  Closed, because every row of
 # the adopted worksheet reaches exactly one of them and an unaccounted row is a
-# defect rather than a new case.
-COMPARED = "compared"
+# defect rather than a new case.  `COMPARED` is the comparison's own word for a
+# row paired with an accepted subject and is imported rather than restated.
 NEW_SUBJECT = "new_subject"
 AMBIGUOUS_IDENTITY = "ambiguous_identity"
 UNCHANGED_UNDER_AMBIGUOUS_IDENTITY = "unchanged_under_ambiguous_identity"
@@ -459,10 +458,6 @@ def capture_later_revision(
         plan=plan,
         actor=actor,
     )
-    # The comparison reads the *captured* value, never the cell text: the
-    # accepted projection hands back a typed value and a workbook hands back
-    # whatever the customer typed, so comparing the two spellings would call a
-    # date written another way a change.
     proposals, agreed, unchanged = _proposals(
         plan, captured, accepted, baseline_revision
     )
@@ -534,18 +529,13 @@ def _refuse_unbound_delivery(
     staged: StagedSource,
     envelope: SourceEnvelope,
 ) -> SourceDelivery:
-    """The exact bytes, digest, source identity, and external version are held.
+    """No baseline, no revision; then the shared binding every capture checks.
 
-    Checked rather than trusted: the ledger row is what retains the customer's
-    own identity for the source and the external version it arrived at, and a
-    capture that cannot name one has no revision identity to compare under.
-
-    The proven row is returned rather than discarded, because it is also the
-    delivery this revision's Document came in on (#687). Every check a caller
-    would otherwise have to repeat has already happened here: the disposition
-    is ``stored``, the digest is the staged revision's own, and the project is
-    this one. Re-deriving that link downstream would be a second rule that
-    could disagree with this one.
+    Adoption first is this path's own refusal: a project that adopted nothing
+    has nothing for a later revision to be a revision *of*.  Everything after
+    it — the exact bytes, their digest, the customer's own identity for the
+    source and the external version it arrived at — is the same check
+    `key_date_table` makes, and `proposed_delta_comparison` holds it once.
     """
 
     if adopted_baseline_source(session, project.id) is None:
@@ -553,26 +543,16 @@ def _refuse_unbound_delivery(
             f"{project.slug} has adopted no baseline, so there is nothing for a "
             "later revision to be a revision of; Adopt Baseline runs first"
         )
-    if envelope.content_digest != staged.sha256:
-        raise LaterRevisionRefused(
-            "the delivered digest is not the staged revision's digest"
-        )
-    if not envelope.external_identity.strip() or not envelope.external_version.strip():
-        raise LaterRevisionRefused(
-            "a later revision names the customer's own identity for the source "
-            "and the external version it arrived at"
-        )
-    delivery = stored_delivery(session, idempotency_key=envelope.idempotency_key)
-    if delivery is None or delivery.content_sha256 != staged.sha256:
-        raise LaterRevisionRefused(
-            "no stored delivery holds these exact bytes; take delivery of the "
-            "revision before capturing it"
-        )
-    if delivery.project_id != project.id:
-        raise LaterRevisionRefused(
-            "this delivery was taken for another project"
-        )
-    return delivery
+    return require_bound_delivery(
+        session,
+        project,
+        staged,
+        envelope,
+        refusal=LaterRevisionRefused,
+        source_noun="revision",
+        identity_noun="source",
+        act_noun="a later revision",
+    )
 
 
 def _registered_mapping(
@@ -630,38 +610,11 @@ def _registered_mapping(
 # --- the comparison plan ----------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _RowPlan:
-    """One later-revision row, its resolved subject, and what to do with it."""
+# The dispositions whose values are captured as Source Facts.  A row that
+# resolved to no subject at all is not one of them.
+CAPTURED_DISPOSITIONS = (COMPARED, NEW_SUBJECT, AMBIGUOUS_IDENTITY)
 
-    row: PreviewRow
-    subject_identity: str
-    disposition: str
-
-    @property
-    def source(self):
-        """The workbook row itself, under the preview that resolved its subject."""
-
-        return self.row.row
-
-
-@dataclass(frozen=True)
-class _Plan:
-    """Every row's resolution, the removal candidates, and the accounting."""
-
-    rows: tuple[_RowPlan, ...]
-    removals: tuple[RemovalCandidate, ...]
-    accounting: RevisionAccounting
-
-    @property
-    def captured(self) -> tuple[_RowPlan, ...]:
-        """The rows whose values are captured as Source Facts."""
-
-        return tuple(
-            item
-            for item in self.rows
-            if item.disposition in (COMPARED, NEW_SUBJECT, AMBIGUOUS_IDENTITY)
-        )
+_RevisionPlan = SourcePlan[PreviewRow, RevisionAccounting]
 
 
 def _plan(
@@ -670,7 +623,7 @@ def _plan(
     *,
     is_complete_enumerative_source: bool,
     row_accounting_sealed: bool,
-) -> _Plan:
+) -> _RevisionPlan:
     """Resolve every row against the accepted record, and account for all of them."""
 
     revision_rows = assign_record_subjects(reading.rows)
@@ -689,7 +642,7 @@ def _plan(
             item.row.source_row_key, page=1, row_number=item.row.row_number
         )
 
-    plans: list[_RowPlan] = []
+    plans: list[RowPlan[PreviewRow]] = []
     records: list[RevisionRow] = []
     for item in revision_rows:
         identity = item.row.business_identity
@@ -719,7 +672,7 @@ def _plan(
         )
         if subject is not None:
             plans.append(
-                _RowPlan(row=item, subject_identity=subject, disposition=disposition)
+                RowPlan(row=item, subject_identity=subject, disposition=disposition)
             )
         records.append(
             RevisionRow(
@@ -739,18 +692,19 @@ def _plan(
             )
         )
 
+    sealed = is_complete_enumerative_source and row_accounting_sealed
     removals = _removal_candidates(
         accepted,
         accepted_by_identity,
         revision_by_identity,
         revision_rows,
-        is_complete_enumerative_source=is_complete_enumerative_source,
-        row_accounting_sealed=row_accounting_sealed,
+        sealed=sealed,
     )
     receipt = accounting.finish(plans).row_accounting
-    return _Plan(
+    return SourcePlan(
         rows=tuple(plans),
         removals=removals,
+        sealed=sealed,
         accounting=RevisionAccounting(
             sheet_name=reading.adopted_sheet,
             header_row_number=reading.header_row_number,
@@ -814,42 +768,23 @@ def _proposed_identity(
     return identity
 
 
-def _stands_accepted(
-    stated: dict[str, Any],
-    subjects: Sequence[str],
-    accepted: dict[tuple[str, str], Any],
-) -> bool:
-    """Whether this row's complete set of captured values already stands accepted.
-
-    Asked only of an ambiguous conflict number, and asked of the *whole* row:
-    the accepted subjects carrying that number cannot be told apart, so the only
-    safe reading is that a row reproducing one of them exactly says nothing new,
-    and a row that does not is a difference somebody has to place.
-    """
-
-    for subject in subjects:
-        standing = {
-            field_name: value
-            for (candidate, field_name), value in accepted.items()
-            if candidate == subject
-        }
-        if standing == stated:
-            return True
-    return False
-
-
 def _removal_candidates(
     accepted: dict[tuple[str, str], Any],
     accepted_by_identity: dict[str, tuple[str, ...]],
     revision_by_identity: dict[str, list[PreviewRow]],
     revision_rows: Sequence[PreviewRow],
     *,
-    is_complete_enumerative_source: bool,
-    row_accounting_sealed: bool,
+    sealed: bool,
 ) -> tuple[RemovalCandidate, ...]:
-    """Accepted subjects this revision does not carry, and whether to propose one."""
+    """Accepted subjects this revision does not carry, and whether to propose one.
 
-    sealed = is_complete_enumerative_source and row_accounting_sealed
+    An ambiguous conflict number is a property of the accepted record, true
+    whether or not this delivery is sealed — nobody can say *which* of two
+    identically numbered facilities went — so it is the reason reported even for
+    a partial revision.  That is this reader's withholding precedence, and
+    `key_date_table` declares the other one.
+    """
+
     not_adoptable = {
         item.row.business_identity
         for item in revision_rows
@@ -873,17 +808,18 @@ def _removal_candidates(
         )
         ambiguous = len(subjects) > 1
         for subject in subjects:
-            withheld = (
-                WITHHELD_AMBIGUOUS
-                if ambiguous
-                else (None if sealed else WITHHELD_UNSEALED)
+            proposed, withheld = removal_disposition(
+                sealed=sealed,
+                unsealed_reason=WITHHELD_UNSEALED,
+                blocking_reason=WITHHELD_AMBIGUOUS if ambiguous else None,
+                precedence=AMBIGUITY_BEFORE_SEAL,
             )
             candidates.append(
                 RemovalCandidate(
                     subject_identity=subject,
                     business_identity=identity,
                     reason=reason,
-                    proposed=withheld is None,
+                    proposed=proposed,
                     withheld_reason=withheld,
                 )
             )
@@ -943,7 +879,7 @@ def _capture_facts(
     project: Project,
     document_id: int,
     reading: OperationsReading,
-    plan: _Plan,
+    plan: _RevisionPlan,
     actor: HumanPrincipal,
 ) -> tuple[int, tuple[int, ...], dict[str, dict[str, Fact]]]:
     """Capture what the revision says, under the resolved subject identity.
@@ -981,8 +917,10 @@ def _capture_facts(
     assessed_at = _capture_instant(session, document_id)
     fact_ids: list[int] = []
     captured: dict[str, dict[str, Fact]] = {}
-    for item in plan.captured:
-        for value in item.source.values:
+    for item in plan.rows:
+        if item.disposition not in CAPTURED_DISPOSITIONS:
+            continue
+        for value in item.row.row.values:
             if value.field not in COMPARABLE_FACT_TYPES:
                 continue
             segment = segments.get((value.sheet_name, value.cell_range))
@@ -1079,91 +1017,60 @@ def _revision_fact_digest(
 
 
 def _proposals(
-    plan: _Plan,
+    plan: _RevisionPlan,
     captured: dict[str, dict[str, Fact]],
     accepted: dict[tuple[str, str], Any],
     baseline_revision: int | None,
 ) -> tuple[tuple[ProposedDeltaValues, ...], int, frozenset[str]]:
     """The typed differences, the values the record already held, and the no-ops.
 
-    A stated value equal to the accepted one produces nothing, which is the
-    whole point of comparing at all: a revision of five hundred rows that
-    changed three of them proposes three changes.
+    The comparison is `proposed_delta_comparison`, shared with every other
+    Propose Delta producer.  What this reader contributes is the *captured*
+    value of every comparable field — never the cell text, because the accepted
+    projection hands back a typed value and a workbook hands back whatever the
+    customer typed, so comparing the two spellings would call a date written
+    another way a change — the conflict-number identity that paired each row,
+    the accepted subjects an ambiguous number could not be told apart from, and
+    its own rule version.
     """
 
-    label = revision_label(baseline_revision)
     by_identity = _accepted_by_business_identity(accepted)
-    proposals: list[ProposedDeltaValues] = []
-    agreed = 0
-    unchanged: set[str] = set()
-    for item in plan.rows:
-        stated = {
-            field_name: scalar_fact_value(fact)
-            for field_name, fact in captured.get(item.subject_identity, {}).items()
-        }
-        if item.disposition == COMPARED:
-            for field_name, value in sorted(stated.items()):
-                key = (item.subject_identity, field_name)
-                if key in accepted:
-                    if accepted[key] == value:
-                        agreed += 1
-                        continue
-                    change_type = "modify"
-                else:
-                    change_type = "add"
-                proposals.append(
-                    ProposedDeltaValues(
-                        change_type=change_type,
-                        target=ExistingSubjectTarget(
-                            subject_identity=item.subject_identity, field=field_name
+    comparison = compare_stated_subjects(
+        accepted=accepted,
+        stated=tuple(
+            StatedSubject(
+                subject_identity=item.subject_identity,
+                values=tuple(
+                    sorted(
+                        (
+                            (field_name, scalar_fact_value(fact))
+                            for field_name, fact in captured.get(
+                                item.subject_identity, {}
+                            ).items()
                         ),
-                        accepted_value=accepted.get(key),
-                        proposed_value=value,
-                        comparison_rule_version=REVISION_COMPARISON_RULE_VERSION,
-                        accepted_baseline_revision=label,
+                        key=lambda pair: pair[0],
                     )
-                )
-            continue
-        source_row = item.source
-        if item.disposition == AMBIGUOUS_IDENTITY and _stands_accepted(
-            stated, by_identity.get(source_row.business_identity or "", ()), accepted
-        ):
-            agreed += len(stated)
-            unchanged.add(source_row.source_row_key)
-            continue
-        proposals.append(
-            ProposedDeltaValues(
-                change_type="add",
-                target=ProposedSubjectTarget(
-                    subject_identity=item.subject_identity,
-                    proposed_fields=tuple(sorted(stated)),
                 ),
-                proposed_value=dict(sorted(stated.items())),
-                comparison_rule_version=REVISION_COMPARISON_RULE_VERSION,
-                accepted_baseline_revision=label,
-            )
-        )
-    for candidate in plan.removals:
-        if not candidate.proposed:
-            continue
-        proposals.append(
-            ProposedDeltaValues(
-                change_type="apparent_removal",
-                target=ExistingSubjectTarget(
-                    subject_identity=candidate.subject_identity,
-                    field=ENTIRE_SUBJECT,
+                paired=item.disposition == COMPARED,
+                row_key=item.row.row.source_row_key,
+                unresolved_accepted_subjects=(
+                    by_identity.get(item.row.row.business_identity or "", ())
+                    if item.disposition == AMBIGUOUS_IDENTITY
+                    else ()
                 ),
-                accepted_value={
-                    field_name: value
-                    for (subject, field_name), value in sorted(accepted.items())
-                    if subject == candidate.subject_identity
-                },
-                proposed_value=None,
-                comparison_rule_version=REVISION_COMPARISON_RULE_VERSION,
-                accepted_baseline_revision=label,
             )
-        )
-    return tuple(proposals), agreed, frozenset(unchanged)
+            for item in plan.rows
+        ),
+        removals=tuple(
+            candidate.subject_identity
+            for candidate in plan.removals
+            if candidate.proposed
+        ),
+        sealed=plan.sealed,
+        comparison_rule_version=REVISION_COMPARISON_RULE_VERSION,
+        accepted_baseline_revision=revision_label(baseline_revision),
+    )
+    return comparison.deltas, comparison.values_agreed, comparison.restated_rows
 
 
 def _settled(

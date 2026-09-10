@@ -169,7 +169,7 @@ def test_the_sessionless_reader_refuses_a_satellite_fact_type(fact_type):
 
 
 def test_the_column_reader_reports_a_satellite_field_as_no_scalar_value():
-    """The restriction ``delta_generation.accepted_values`` depends on, stated."""
+    """The restriction ``proposed_delta_comparison.accepted_values`` depends on."""
 
     assert scalar_column_value("applies_to", None, None, None, None) is None
     assert scalar_column_value("station_from", "1149+00", None, None, None) == "1149+00"

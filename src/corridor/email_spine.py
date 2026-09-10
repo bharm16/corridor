@@ -21,7 +21,6 @@ from sqlalchemy import func, select
 
 from corridor.connectors.pull_connector import SourceEnvelope
 from corridor.analytics import AnalyticsEvent, EventFamily, emit_event
-from corridor.delta_generation import accepted_values, revision_label
 from corridor.email_segments import append_email_segments
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import injected_extractor_config, token_usage_delta, usage_snapshot, zero_token_usage
@@ -31,9 +30,10 @@ from corridor.models import (
     DeltaSupersession, Document, ExtractionRun, Fact, InboundMessage, InboundThread, InboundThreadReading,
     Project, ProjectRecordRevision, SourceDelivery,
 )
-from corridor.proposed_deltas import (
-    ExistingSubjectTarget, ProposedDeltaValues, ProposedSubjectTarget, create_proposed_delta_group,
+from corridor.proposed_delta_comparison import (
+    StatedSubject, accepted_values, compare_stated_subjects, revision_label,
 )
+from corridor.proposed_deltas import create_proposed_delta_group
 from corridor.source_append import append_email_thread_reading, append_fact
 from corridor.storage import stored_file
 from corridor.source_delivery import envelope_for_delivery
@@ -220,20 +220,23 @@ def capture_email_thread(session, envelope: SourceEnvelope, *, client):
                 raise EmailCaptureRefused("concluded thread requires unambiguous sender attribution")
             value = materialize_prose_wording(selected, senders[0], attribution=senders[0].exact_text)
             fact = _append_value(session, document, runs[document.id], subject, value)
-            key = (subject, "statement_wording")
-            if accepted.get(key) != fact.text_value:
-                known = any(item[0] == subject for item in accepted)
+            # One shared comparison: the wording this thread concluded with,
+            # against the accepted record. A wording the record already holds
+            # proposes nothing.
+            comparison = compare_stated_subjects(
+                accepted=accepted,
+                stated=(StatedSubject(
+                    subject_identity=subject,
+                    values=(("statement_wording", fact.text_value),),
+                    paired=any(item[0] == subject for item in accepted),
+                ),),
+                comparison_rule_version=PROMPT_VERSION,
+                accepted_baseline_revision=revision_label(revision),
+            )
+            if comparison.deltas:
                 (delta,) = create_proposed_delta_group(session, project_id=thread.project_id,
                     source_family=subject, source_revision=input_digest, document_id=document.id,
-                    deltas=(ProposedDeltaValues(
-                        change_type="modify" if key in accepted else "add",
-                        target=ExistingSubjectTarget(subject, "statement_wording") if known
-                            else ProposedSubjectTarget(subject, ("statement_wording",)),
-                        accepted_value=accepted.get(key),
-                        proposed_value=fact.text_value if known else {"statement_wording": fact.text_value},
-                        comparison_rule_version=PROMPT_VERSION,
-                        accepted_baseline_revision=revision_label(revision),
-                    ),))
+                    deltas=comparison.deltas)
         context = [{**item, "extraction_run_id": runs[turn.document_id].id,
                     "read_segment_ids": [s["id"] for s in item["segments"] if s["id"] in read_ids],
                     "unread_segment_ids": [s["id"] for s in item["segments"] if s["id"] not in read_ids]}

@@ -221,9 +221,9 @@ def scalar_column_value(
 ) -> Any:
     """The same reading, for a projection row read as plain columns.
 
-    ``delta_generation.accepted_values`` selects the scalar columns of the
-    current-record view and no satellites, so it names the reading it performs
-    rather than passing a row object that does not exist.
+    ``proposed_delta_comparison.accepted_values`` selects the scalar columns of
+    the current-record view and no satellites, so it names the reading it
+    performs rather than passing a row object that does not exist.
     """
 
     if fact_type in SATELLITE_FACT_TYPES:

@@ -14,6 +14,11 @@ accepted value replaced by this pass on any path. And a genuinely new subject
 becomes **one** delta carrying its initial fields rather than an unrelated
 delta per field, which is what ADR-0082 means by one atomic source change.
 
+The comparison itself — when a stated value is agreed, a modify, an add, or a
+new subject — is ``proposed_delta_comparison``, shared with the four capture
+paths that also produce deltas. This module owns which Facts are considered,
+where the pass resumes, and the rule version it compares under.
+
 Where the pass resumes was the design question. A watermark column was
 rejected: the migration window is closed (``corridor.migrations.policy``), and
 the runtime already retains one durable, append-only, ordered receipt per
@@ -31,11 +36,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.fact_types import SINGLE_VALUED_FACT_TYPES
-from corridor.fact_values import scalar_column_value, scalar_fact_value
+from corridor.fact_values import scalar_fact_value
 from corridor.models import (
     Document,
     DueWorkOccurrence,
@@ -46,12 +51,13 @@ from corridor.models import (
     ProposedDelta,
 )
 from corridor.operating_mode import project_operating_mode
-from corridor.proposed_deltas import (
-    ExistingSubjectTarget,
-    ProposedDeltaValues,
-    ProposedSubjectTarget,
-    create_proposed_delta_group,
+from corridor.proposed_delta_comparison import (
+    StatedSubject,
+    accepted_values,
+    compare_stated_subjects,
+    revision_label,
 )
+from corridor.proposed_deltas import create_proposed_delta_group
 
 # The one server-owned handler key this module's work runs under.  It matches
 # ``due_work.HANDLER_DELTA_GENERATION``; the constant lives here because this
@@ -151,41 +157,31 @@ def execute_delta_generation(
                 if lineage is None:
                     continue
                 source_family, source_revision = lineage
-                proposals: list[ProposedDeltaValues] = []
+                stated: list[StatedSubject] = []
                 for subject_key, subject_facts in _by_subject(document_facts):
                     considered += len(subject_facts)
-                    if subject_key not in accepted_subjects:
-                        proposals.append(
-                            _proposed_subject(
-                                subject_key, subject_facts, baseline_revision
-                            )
+                    stated.append(
+                        StatedSubject(
+                            subject_identity=subject_key,
+                            values=tuple(
+                                (fact.fact_type, scalar_fact_value(fact))
+                                for fact in subject_facts
+                            ),
+                            # A subject the record does not hold becomes one
+                            # delta carrying its initial fields, which is what
+                            # ADR-0082 means by one atomic source change; the
+                            # comparison owns that shape for every producer.
+                            paired=subject_key in accepted_subjects,
                         )
-                        continue
-                    for fact in subject_facts:
-                        proposed_value = scalar_fact_value(fact)
-                        key = (subject_key, fact.fact_type)
-                        if key in accepted:
-                            if accepted[key] == proposed_value:
-                                agreed += 1
-                                continue
-                            change_type = "modify"
-                        else:
-                            change_type = "add"
-                        proposals.append(
-                            ProposedDeltaValues(
-                                change_type=change_type,
-                                target=ExistingSubjectTarget(
-                                    subject_identity=subject_key,
-                                    field=fact.fact_type,
-                                ),
-                                accepted_value=accepted.get(key),
-                                proposed_value=proposed_value,
-                                comparison_rule_version=COMPARISON_RULE_VERSION,
-                                accepted_baseline_revision=revision_label(
-                                    baseline_revision
-                                ),
-                            )
-                        )
+                    )
+                comparison = compare_stated_subjects(
+                    accepted=accepted,
+                    stated=tuple(stated),
+                    comparison_rule_version=COMPARISON_RULE_VERSION,
+                    accepted_baseline_revision=revision_label(baseline_revision),
+                )
+                agreed += comparison.values_agreed
+                proposals = comparison.deltas
                 if not proposals:
                     continue
                 # The Proposed Delta's identity is the database's since #457,
@@ -240,44 +236,6 @@ def execute_delta_generation(
     }
 
 
-def accepted_values(session: Session, project_id: int) -> dict[tuple[str, str], Any]:
-    """The accepted record as one comparable scalar per subject and field.
-
-    The projection is read through ``current_project_record``, the view
-    ``current_record`` proves, and the value is read by ``fact_values`` so the
-    accepted side and the source side of every comparison share one shape.
-
-    Only the scalar columns are selected, deliberately: this pass compares
-    ``COMPARABLE_FACT_TYPES`` and a satellite field's key stays in the mapping
-    with a ``None`` value, so an already-appended delta's ``accepted_value``
-    keeps meaning what it meant.  Reading the satellites here would change
-    every open delta on a satellite field, which is a comparison change and
-    belongs with widening ``COMPARABLE_FACT_TYPES``, not with a reader split.
-    """
-
-    rows = session.execute(
-        text(
-            "select subject_key, fact_type, text_value, date_value, "
-            "external_org_value_id, document_value_id "
-            "from current_project_record where project_id = :project_id"
-        ),
-        {"project_id": project_id},
-    ).all()
-    return {
-        (subject_key, fact_type): scalar_column_value(
-            fact_type, text_value, date_value, external_org_value_id, document_value_id
-        )
-        for (
-            subject_key,
-            fact_type,
-            text_value,
-            date_value,
-            external_org_value_id,
-            document_value_id,
-        ) in rows
-    }
-
-
 def _lineage(
     session: Session, project_id: int, document_id: int
 ) -> tuple[str, str] | None:
@@ -296,23 +254,6 @@ def _lineage(
 
 
 
-def _proposed_subject(
-    subject_key: str, facts: list[Fact], baseline_revision: int | None
-) -> ProposedDeltaValues:
-    """One delta carrying a new subject's initial fields, not one per field."""
-
-    fields = tuple(sorted({fact.fact_type for fact in facts}))
-    return ProposedDeltaValues(
-        change_type="add",
-        target=ProposedSubjectTarget(
-            subject_identity=subject_key, proposed_fields=fields
-        ),
-        proposed_value={fact.fact_type: scalar_fact_value(fact) for fact in facts},
-        comparison_rule_version=COMPARISON_RULE_VERSION,
-        accepted_baseline_revision=revision_label(baseline_revision),
-    )
-
-
 def _by_document(facts) -> list[tuple[int, list[Fact]]]:
     grouped: dict[int, list[Fact]] = {}
     for fact in facts:
@@ -325,10 +266,6 @@ def _by_subject(facts: list[Fact]) -> list[tuple[str, list[Fact]]]:
     for fact in facts:
         grouped.setdefault(fact.subject_key, []).append(fact)
     return sorted(grouped.items())
-
-
-def revision_label(revision_id: int | None) -> str | None:
-    return f"revision:{revision_id}" if revision_id is not None else None
 
 
 def _aware_utc(value: datetime) -> datetime:
