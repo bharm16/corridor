@@ -12,8 +12,14 @@ every dependency version, the corpus manifest digest, the split digest, the
 key digests, the command lines, the wall times and the machine.
 
 The holdout is scored because loop-020 scored it, and only for that reason:
-this is a reproduction, no tuning follows from it, and `--retain` appends the
-access to `bootstrap/LOOP-LOG.md` so it does not sit outside the ledger.
+this is a reproduction, no tuning follows from it, and `--retain` records the
+access twice on purpose. The prose entry in `bootstrap/LOOP-LOG.md` stays,
+because the loop log is where every earlier access to this holdout was
+recorded and a log is not rewritten; the same spend is also appended to the
+paired-rendition holdout ledger through `corridor.holdout_ledger`, so an
+access recorded as prose is also accounted for where ADR-0008 counts them.
+`--retain` therefore needs `--holdout-actor`: an access nobody is answerable
+for is not a record of a spend.
 
 If a number differs from loop-020, the receipt records the difference
 exactly and says so; nothing here adjusts anything to close it.
@@ -36,7 +42,7 @@ import time
 from pathlib import Path
 from typing import Any
 
-from corridor_pdf_reader import provenance
+from corridor_pdf_reader import provenance, registry
 from corridor_pdf_reader.execution import MEASURED_DPI, MEASURED_ENGINE
 
 PACKAGE_ROOT = provenance.PACKAGE_ROOT
@@ -241,8 +247,60 @@ def loop_log_entry(receipt: dict[str, Any]) -> str:
     )
 
 
-def retain(output: Path, receipt: dict[str, Any]) -> Path:
-    """Copy the receipt set into the package and append the holdout access to the loop log."""
+def holdout_access_entry(receipt: dict[str, Any], *, actor: str) -> dict[str, Any]:
+    """The spend the loop log states as prose, as one ledger line (ADR-0008)."""
+    holdout = receipt["results"]["holdout"]
+    verdict = "reproduces loop-020 exactly" if receipt["loop_020"]["matches"] else (
+        "differs from loop-020: " + "; ".join(receipt["loop_020"]["differences"])
+    )
+    return {
+        "run": receipt["run"],
+        "accessed_at": receipt["date"],
+        "actor": actor,
+        "purpose": "reproducibility check inside Corridor, no tuning before or after (ADR-0008)",
+        "reason": (
+            "reproduce loop-020 from the declared Corridor environment after importing the reader "
+            "unchanged (#729); the holdout was scored because loop-020 scored it, and nothing was "
+            "changed before or after"
+        ),
+        "configuration": {
+            "name": "the frozen reader, imported (#729)",
+            "commit": receipt["source"]["commit"],
+            "package_digest": receipt["source"]["package_digest"],
+            "engine": receipt["reader"]["engine"],
+            "dpi": receipt["reader"]["dpi"],
+            "jobs": receipt["reader"]["jobs"],
+            "pypdfium2": receipt["environment"]["packages"]["pypdfium2"],
+            "pypdf": receipt["environment"]["packages"]["pypdf"],
+            "pdfium": receipt["environment"]["pdfium_build"],
+        },
+        "dataset": {
+            "answer_key": (
+                f"loop-reference-v6, rebuilt and byte-identical on "
+                f"{receipt['keys']['identical_bytes']} of {receipt['keys']['keys']} keys"
+            ),
+            "corpus_manifest_sha256": receipt["corpus"]["manifest_sha256"],
+            "split_sha256": receipt["split"]["sha256"],
+        },
+        "holdout": {"all": True, "pairs": holdout["pairs"][1], "pages": holdout["pages"][1]},
+        "receipt": f"{RECEIPTS.name}/{receipt['run']}/receipt.json",
+        "result": {
+            "status": "scored",
+            "pairs": holdout["pairs"],
+            "pages": holdout["pages"],
+            "cells_exact": holdout["cells_exact"],
+            "failing_pairs": holdout["failing_pairs"],
+            "loop_020": verdict,
+        },
+    }
+
+
+def retain(output: Path, receipt: dict[str, Any], *, actor: str) -> Path:
+    """Copy the receipt set into the package and record the holdout access twice.
+
+    Once as prose in the loop log, where this holdout's earlier accesses are
+    recorded, and once in the one holdout ledger (ADR-0008).
+    """
     target = RECEIPTS / receipt["run"]
     if target.exists():
         raise RuntimeError(f"{target} already holds a receipt; choose another run name")
@@ -262,6 +320,7 @@ def retain(output: Path, receipt: dict[str, Any]) -> Path:
         shutil.copyfile(output / name, target / name)
     with open(LOOP_LOG, "a", encoding="utf-8") as handle:
         handle.write(loop_log_entry(receipt))
+    registry.append_holdout_access(holdout_access_entry(receipt, actor=actor))
     return target
 
 
@@ -272,9 +331,14 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--retain",
         action="store_true",
-        help="copy the receipt set into the package's receipts/ and append the holdout access to bootstrap/LOOP-LOG.md",
+        help="copy the receipt set into the package's receipts/, append the holdout access to bootstrap/LOOP-LOG.md and record it in the holdout ledger",
     )
+    parser.add_argument("--holdout-actor", help="who is answerable for this holdout access; required with --retain")
     args = parser.parse_args(argv)
+
+    if args.retain and not args.holdout_actor:
+        print("--retain records a holdout access and needs --holdout-actor (ADR-0008)", file=sys.stderr)
+        return 2
 
     from corridor_pdf_reader.bootstrap.corpus import PAIRS_FILE, TRUE_PAIRS, load_pairs, load_split
 
@@ -416,8 +480,8 @@ def main(argv: list[str] | None = None) -> int:
     (args.output / "receipt.json").write_text(json.dumps(receipt, indent=1) + "\n")
     print(json.dumps({"development": development_counts, "holdout": holdout_counts, "loop_020": receipt["loop_020"], "keys": keys_comparison, "wall_seconds": receipt["wall_seconds"]}, indent=1))
     if args.retain:
-        target = retain(args.output, receipt)
-        print(f"retained in {target}; holdout access appended to {LOOP_LOG}")
+        target = retain(args.output, receipt, actor=args.holdout_actor)
+        print(f"retained in {target}; holdout access appended to {LOOP_LOG} and {registry.HOLDOUT_LEDGER}")
     return 0
 
 

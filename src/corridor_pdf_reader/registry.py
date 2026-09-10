@@ -14,7 +14,9 @@ cited by every receipt the measurement command writes.
 Three ledgers sit beside it, in the shape `gold/pdf/v1` already uses:
 `holdout-access.jsonl` (ADR-0008: every access to the spent holdout, the
 three that happened before this module included, appended and never
-edited), `receipts.json` (the baseline receipts with their configuration
+edited; appending, reading and validating it belong to
+`corridor.holdout_ledger`, which owns the one schema both spent datasets
+are recorded in), `receipts.json` (the baseline receipts with their configuration
 identities, referenced by path and digest, never copied) and
 `receipts/<run>/` (what the measurement command retains).
 
@@ -34,6 +36,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from corridor import holdout_ledger
 from corridor_pdf_reader import provenance
 
 PACKAGE_ROOT = provenance.PACKAGE_ROOT
@@ -45,7 +48,7 @@ RECEIPT_INDEX = REGISTRY_ROOT / "receipts.json"
 RETAINED_RECEIPTS = REGISTRY_ROOT / "receipts"
 
 DATASET_SCHEMA = "corridor.pdf-pairs-dataset.v1"
-LEDGER_SCHEMA = "corridor.pdf-pairs-holdout-access.v1"
+LEDGER_SCHEMA = holdout_ledger.SCHEMA
 INDEX_SCHEMA = "corridor.pdf-pairs-receipts.v1"
 RECEIPT_SCHEMA = "corridor.pdf-pairs-receipt.v1"
 DATASET_VERSION = "2026-09-06.1"
@@ -446,21 +449,12 @@ def registration_identity(path: Path = REGISTRATION) -> dict[str, Any]:
 
 
 def append_holdout_access(entry: dict[str, Any], ledger: Path = HOLDOUT_LEDGER) -> dict[str, Any]:
-    """Append one access to the ledger (ADR-0008). The ledger is never rewritten."""
-    record = {"schema_version": LEDGER_SCHEMA, **entry}
-    for field in ("run", "actor", "reason", "purpose", "configuration", "result"):
-        if field not in record:
-            raise ValueError(f"a holdout access entry needs {field}")
-    ledger.parent.mkdir(parents=True, exist_ok=True)
-    with open(ledger, "a", encoding="utf-8") as handle:
-        handle.write(json.dumps(record, sort_keys=True, ensure_ascii=False) + "\n")
-    return record
+    """Append one access to this dataset's ledger file (ADR-0008, one shared ledger)."""
+    return holdout_ledger.append(entry, ledger=ledger)
 
 
 def load_holdout_ledger(ledger: Path = HOLDOUT_LEDGER) -> list[dict[str, Any]]:
-    if not ledger.is_file():
-        return []
-    return [json.loads(line) for line in ledger.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return holdout_ledger.read(ledger)
 
 
 def load_receipt_index(index: Path = RECEIPT_INDEX) -> dict[str, Any]:
