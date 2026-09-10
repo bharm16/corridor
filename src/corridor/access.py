@@ -1284,12 +1284,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "a policy for a reader that does not exist; a route that needs it "
         "again has to partition it first"
     ),
-    "event_admission_activations": (
-        "project-scoped, and no enabled live-pilot route reads it. #680 "
-        "revoked every `corridor_web` privilege on it rather than writing "
-        "a policy for a reader that does not exist; a route that needs it "
-        "again has to partition it first"
-    ),
     "event_admission_outcomes": (
         "carries no project column, so a partition policy has nothing to "
         "test. Its project is reached through `audit_log`, "
@@ -1504,12 +1498,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "every `corridor_web` privilege on it, so the live-pilot web "
         "capability cannot reach it by any id at all"
     ),
-    "organization_identity_activations": (
-        "project-scoped, and no enabled live-pilot route reads it. #680 "
-        "revoked every `corridor_web` privilege on it rather than writing "
-        "a policy for a reader that does not exist; a route that needs it "
-        "again has to partition it first"
-    ),
     "organization_identity_receipts": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
@@ -1527,6 +1515,13 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "test. Its project is reached through `documents`, and #680 "
         "revoked every `corridor_web` privilege on it, so the live-pilot "
         "web capability cannot reach it by any id at all"
+    ),
+    "policy_activations": (
+        "project-scoped, and no enabled live-pilot route reads it. One "
+        "relation now carries every ADR-0050 activation ledger, keyed by "
+        "policy family; #680 revoked every `corridor_web` privilege on the "
+        "four it replaced rather than writing a policy for a reader that does "
+        "not exist, and the consolidated relation inherits that boundary"
     ),
     "policy_approvals": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
@@ -1649,12 +1644,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "a policy for a reader that does not exist; a route that needs it "
         "again has to partition it first"
     ),
-    "schedule_link_activations": (
-        "project-scoped, and no enabled live-pilot route reads it. #680 "
-        "revoked every `corridor_web` privilege on it rather than writing "
-        "a policy for a reader that does not exist; a route that needs it "
-        "again has to partition it first"
-    ),
     "schedule_link_receipts": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
@@ -1765,12 +1754,6 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
         "revoked every `corridor_web` privilege on it, so the live-pilot "
         "web capability cannot reach it by any id at all"
     ),
-    "unreadable_cell_admission_activations": (
-        "project-scoped, and no enabled live-pilot route reads it. #680 "
-        "revoked every `corridor_web` privilege on it rather than writing "
-        "a policy for a reader that does not exist; a route that needs it "
-        "again has to partition it first"
-    ),
     "unreadable_cell_reading_profiles": (
         "project-scoped, and no enabled live-pilot route reads it. #680 "
         "revoked every `corridor_web` privilege on it rather than writing "
@@ -1812,7 +1795,7 @@ NOT_YET_PARTITIONED_RELATIONS: dict[str, str] = {
     ),
 }
 
-NOT_YET_PARTITIONED_CEILING = 124
+NOT_YET_PARTITIONED_CEILING = 121
 
 
 def classify_relation(name: str) -> tuple[str, str]:

@@ -32,6 +32,7 @@ from corridor import audit
 from corridor import dependency_events
 from corridor import identity
 from corridor import policy
+from corridor import replay_gate
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -50,7 +51,6 @@ from corridor.models import (
     Document,
     EvidenceLink,
     EventAdmissionAcceptanceReceipt,
-    EventAdmissionActivation,
     EventAdmissionOutcome,
     ExternalOrg,
     PolicyRun,
@@ -1754,11 +1754,10 @@ def read_event_admission_policy_status(
         .order_by(EventAdmissionAcceptanceReceipt.id.desc())
         .limit(1)
     )
-    latest_action = session.scalar(
-        select(EventAdmissionActivation)
-        .where(EventAdmissionActivation.project_id == project_id)
-        .order_by(EventAdmissionActivation.id.desc())
-        .limit(1)
+    latest_action = replay_gate.latest_ledger_entry(
+        session,
+        family=replay_gate.FAMILY_EVENT_ADMISSION,
+        project_id=project_id,
     )
 
     proof_status = "no_applicable_proof"

@@ -69,8 +69,9 @@ COORDINATE_COMMAND_HEAD = "7d8e9f0a1b23"
 SUPPORTED_HEAD = "a1c4e7b0d2f3"
 CURRENT_HEAD = "b2d5f8a1c4e7"
 EXPECTED_SCHEMA_SHA256 = (
-    # Isolated shadow receipts and original-authored history/support convergence.
-    "9bec8cc48be2668c4b48ed8ad50fd1b994651d43930347d10355b09dc74db9e1"
+    # One `policy_activations` relation replaces the four per-family ADR-0050
+    # activation ledgers (-4 tables and -4 sequences, +1 of each).
+    "9269030c91eb9d46834ed8c5774b3286c88c84206e4cae4e0b36dbd00487748c"
 )
 
 pytestmark = [pytest.mark.slow, pytest.mark.migration]
@@ -178,6 +179,7 @@ COMPOSED_UPGRADE = (
     "partition_declaration",
     "partition_seal",
     "coverage_preparation",
+    "replay_gate",
     "web_capability",
     "preparation_supervisor",
     "native_segments",
@@ -213,6 +215,7 @@ COMPOSED_DOWNGRADE = (
     "outgoing_requests",
     "preparation_supervisor",
     "web_capability",
+    "replay_gate",
     "coverage_preparation",
     "partition_seal",
     "partition_declaration",

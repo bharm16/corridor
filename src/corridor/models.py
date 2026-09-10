@@ -5634,37 +5634,141 @@ class EventAdmissionAcceptanceReceipt(Base):
     )
 
 
-class EventAdmissionActivation(Base):
-    """Append-only activation or suspension of one proved policy version."""
+class PolicyActivation(Base):
+    """ADR-0050's one activation ledger, keyed by policy family and fingerprint.
 
-    __tablename__ = "event_admission_activations"
+    Four automatic Record Inclusion expansions each grew their own activation
+    table with the same seven columns: the automatic location link rule, the
+    corroborated unreadable-cell admission class, the whole-row organization
+    identity tiers, and the unknown-scope Event Admission class. Nothing about
+    ADR-0050's gate is per-family — the pass is void when the rule's own
+    fingerprint changes, a human suspension outranks it, and only an
+    attributable act lifts one — so the history is one relation with the family
+    as a column, and each family is a typed view onto it (single-table
+    inheritance on ``family``). A query written for one family cannot read
+    another family's rows, and an operator screen reads every family at once.
+
+    Two columns are per-family shape rather than optional data, and the check
+    constraints say which is which:
+
+    - ``policy_sha256`` is the digest of the canonical policy the pass stands
+      on. Three families bind their pass to it. The Event Admission family
+      binds a pass to an immutable acceptance receipt instead, so it carries no
+      digest here and the digest families cannot omit one.
+    - ``acceptance_receipt_id`` is that receipt, and only the Event Admission
+      family has one.
+
+    Rows are append-only: a suspension is a new row, never an edit, and a lift
+    is an ``activate`` row under the lifting person's own subject.
+    """
+
+    __tablename__ = "policy_activations"
     __table_args__ = (
         CheckConstraint(
             "action in ('activate', 'suspend')",
-            name="ck_event_admission_activation_action",
+            name="ck_policy_activation_action",
+        ),
+        CheckConstraint(
+            "length(trim(family)) > 0",
+            name="ck_policy_activation_family",
         ),
         CheckConstraint(
             "length(trim(reason)) > 0",
-            name="ck_event_admission_activation_reason",
+            name="ck_policy_activation_reason",
         ),
         CheckConstraint(
             "length(trim(recorded_by)) > 0",
-            name="ck_event_admission_activation_actor",
+            name="ck_policy_activation_actor",
+        ),
+        # A digest family carries a well-formed digest; the receipt-bound family
+        # carries none. A `case`, not two `or`ed clauses: a null digest makes
+        # ``policy_sha256 ~ '...'`` null, and a check that evaluates to null
+        # passes, so the two-clause form admitted exactly the row it refuses.
+        CheckConstraint(
+            "case when family = 'event_admission' "
+            "then policy_sha256 is null "
+            "else policy_sha256 is not null "
+            "and policy_sha256 ~ '^[0-9a-f]{64}$' end",
+            name="ck_policy_activation_sha256",
+        ),
+        # Only the receipt-bound family names a receipt, and it always does.
+        CheckConstraint(
+            "(family = 'event_admission') = (acceptance_receipt_id is not null)",
+            name="ck_policy_activation_receipt",
+        ),
+        # A suspension proves nothing, so it never carries a case count. An
+        # activation carries the count its replay compared, except in the
+        # receipt-bound family, where the immutable acceptance receipt holds the
+        # population and the ledger row points at it.
+        CheckConstraint(
+            "action <> 'suspend' or replay_case_count is null",
+            name="ck_policy_activation_case_count",
         ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
     project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    acceptance_receipt_id: Mapped[int] = mapped_column(
-        ForeignKey("event_admission_acceptance_receipts.id")
-    )
+    family: Mapped[str] = mapped_column(String(48))
     action: Mapped[str] = mapped_column(String(16))
     policy_version: Mapped[str] = mapped_column(String(64))
-    reason: Mapped[str] = mapped_column(String(128))
+    policy_sha256: Mapped[str | None] = mapped_column(String(64))
+    # How many recorded human decisions the replay compared against. Null for a
+    # suspension, which needs no proof.
+    replay_case_count: Mapped[int | None] = mapped_column(Integer)
+    # The immutable clone-based acceptance receipt an Event Admission pass is
+    # bound to. Null for every fingerprint-bound family.
+    acceptance_receipt_id: Mapped[int | None] = mapped_column(
+        ForeignKey("event_admission_acceptance_receipts.id")
+    )
+    reason: Mapped[str] = mapped_column(String(160))
     recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+    __mapper_args__ = {
+        "polymorphic_on": "family",
+        # The base is never a stored family; it exists so a reader can ask one
+        # question of every family at once.
+        "polymorphic_identity": "policy_activation",
+    }
+
+
+class EventAdmissionActivation(PolicyActivation):
+    """Append-only activation or suspension of one proved policy version."""
+
+    __mapper_args__ = {"polymorphic_identity": "event_admission"}
+
+
+class OrganizationIdentityActivation(PolicyActivation):
+    """Append-only ADR-0050 gate for whole-row automatic identity tiers."""
+
+    __mapper_args__ = {"polymorphic_identity": "organization_identity"}
+
+
+class ScheduleLinkActivation(PolicyActivation):
+    """Append-only activation or suspension of the automatic location link rule.
+
+    The exact location-link rule is a new automatic matching class, so ADR-0050
+    governs it: it may not auto-write until a regression replay of the project's
+    own recorded human link decisions passes with at least one real case and no
+    contradiction. A brand-new rule with no history has no passing replay and so
+    never auto-links until a person has linked by hand.
+    """
+
+    __mapper_args__ = {"polymorphic_identity": "schedule_link"}
+
+
+class UnreadableCellAdmissionActivation(PolicyActivation):
+    """Append-only activation/suspension of corroborated cross-document admission.
+
+    Admitting a corroborated cell value across documents expands automatic
+    Record Inclusion behavior, so ADR-0050 governs it exactly as it governs the
+    location-link rule. Shipped inactive — a project with no passing replay
+    never auto-admits.
+    """
+
+    __mapper_args__ = {"polymorphic_identity": "unreadable_cell_admission"}
 
 
 class DueWorkSchedule(Base):
@@ -6343,42 +6447,6 @@ class OrganizationIdentityReceipt(Base):
     recorded_by: Mapped[str] = mapped_column(String(128))
     policy_version: Mapped[str | None] = mapped_column(String(64))
     policy_sha256: Mapped[str | None] = mapped_column(String(64))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class OrganizationIdentityActivation(Base):
-    """Append-only ADR-0050 gate for whole-row automatic identity tiers."""
-
-    __tablename__ = "organization_identity_activations"
-    __table_args__ = (
-        CheckConstraint(
-            "action in ('activate', 'suspend')",
-            name="ck_organization_identity_activation_action",
-        ),
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_organization_identity_activation_sha256",
-        ),
-        CheckConstraint(
-            "length(trim(reason)) > 0",
-            name="ck_organization_identity_activation_reason",
-        ),
-        CheckConstraint(
-            "length(trim(recorded_by)) > 0",
-            name="ck_organization_identity_activation_actor",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    action: Mapped[str] = mapped_column(String(16))
-    policy_version: Mapped[str] = mapped_column(String(64))
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    replay_case_count: Mapped[int | None] = mapped_column(Integer)
-    reason: Mapped[str] = mapped_column(String(160))
-    recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -10364,54 +10432,6 @@ class ScheduleLinkReceipt(Base):
     )
 
 
-class ScheduleLinkActivation(Base):
-    """Append-only activation or suspension of the automatic location link rule.
-
-    The exact location-link rule is a new automatic matching class, so ADR-0050
-    governs it: it may not auto-write until a regression replay of the project's
-    own recorded human link decisions passes with at least one real case and no
-    contradiction. A passing replay writes an ``activate`` row (system actor); a
-    deliberate human ``suspend`` beats any passing test, and only a human act
-    lifts it (an ``activate`` under their own subject). A brand-new rule with no
-    history has no passing replay and so never auto-links until a person has
-    linked by hand — exactly ADR-0050's rule.
-    """
-
-    __tablename__ = "schedule_link_activations"
-    __table_args__ = (
-        CheckConstraint(
-            "action in ('activate', 'suspend')",
-            name="ck_schedule_link_activation_action",
-        ),
-        CheckConstraint(
-            "length(trim(reason)) > 0",
-            name="ck_schedule_link_activation_reason",
-        ),
-        CheckConstraint(
-            "length(trim(recorded_by)) > 0",
-            name="ck_schedule_link_activation_actor",
-        ),
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_schedule_link_activation_sha256",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    action: Mapped[str] = mapped_column(String(16))
-    policy_version: Mapped[str] = mapped_column(String(64))
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    # How many recorded human decisions the replay compared against. Null for a
-    # suspension, which needs no proof.
-    replay_case_count: Mapped[int | None] = mapped_column(Integer)
-    reason: Mapped[str] = mapped_column(String(160))
-    recorded_by: Mapped[str] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
 class UnreadableCellReadingProfile(Base):
     """One declared, versioned eligibility profile for the second-read harness.
 
@@ -10645,51 +10665,6 @@ class UnreadableCellResolution(Base):
     # Set only for an origin='human_decision' row; the answer key for the
     # ADR-0050 replay. Null for every machine origin.
     recorded_by: Mapped[str | None] = mapped_column(String(128))
-    created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
-    )
-
-
-class UnreadableCellAdmissionActivation(Base):
-    """Append-only activation/suspension of corroborated cross-document admission.
-
-    Admitting a corroborated cell value across documents expands automatic Record
-    Inclusion behavior, so ADR-0050 governs it: the class may not auto-admit until
-    a regression replay of the project's own recorded human cell-value decisions
-    passes with at least one real case and no contradiction. A passing replay
-    writes an ``activate`` row under the system actor; a deliberate human
-    ``suspend`` beats any passing test; only a human act lifts it. Shipped
-    inactive — a project with no passing replay never auto-admits.
-    """
-
-    __tablename__ = "unreadable_cell_admission_activations"
-    __table_args__ = (
-        CheckConstraint(
-            "action in ('activate', 'suspend')",
-            name="ck_unreadable_cell_admission_action",
-        ),
-        CheckConstraint(
-            "length(trim(reason)) > 0",
-            name="ck_unreadable_cell_admission_reason",
-        ),
-        CheckConstraint(
-            "length(trim(recorded_by)) > 0",
-            name="ck_unreadable_cell_admission_actor",
-        ),
-        CheckConstraint(
-            "policy_sha256 ~ '^[0-9a-f]{64}$'",
-            name="ck_unreadable_cell_admission_sha",
-        ),
-    )
-
-    id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
-    project_id: Mapped[int] = mapped_column(ForeignKey("projects.id"), index=True)
-    action: Mapped[str] = mapped_column(String(16))
-    policy_version: Mapped[str] = mapped_column(String(64))
-    policy_sha256: Mapped[str] = mapped_column(String(64))
-    replay_case_count: Mapped[int | None] = mapped_column(Integer)
-    reason: Mapped[str] = mapped_column(String(160))
-    recorded_by: Mapped[str] = mapped_column(String(128))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
