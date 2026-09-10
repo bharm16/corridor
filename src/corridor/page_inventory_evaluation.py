@@ -5,29 +5,39 @@ keeps the discarded short-text rule only as an experiment comparator so a
 measurement can say whether the inventory reduced missed OCR and unnecessary
 OCR. The earlier ingest tests proved examples but produced no comparable,
 document-bound receipt; this evaluator is the durable boundary for that claim.
+
+`main` is `make page-inventory-eval`. It was a 44-line module of its own whose
+only job was to read two artifacts, call `evaluate_stage1` and write the
+result; a separate module for that implied a second consumer that never
+appeared, and left the receipt's shape one import away from the contract that
+defines it. It still opens no source document and reruns no OCR, so recording
+a measurement cannot accidentally spend a holdout.
 """
 
 from __future__ import annotations
 
+import argparse
+import json
 from collections import defaultdict
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import (
-    BaseModel,
-    ConfigDict,
     Field,
     StringConstraints,
     computed_field,
     model_validator,
 )
 
+from corridor.typed_output import ClosedModel
+
 
 Sha256 = Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
 RETIRED_RULE_MAX_NATIVE_LENGTH = 49
 
 
-class Stage1Model(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class Stage1Model(ClosedModel):
+    """Every Stage 1 routing receipt shape: declared fields only, and frozen."""
 
 
 class RoutingCase(Stage1Model):
@@ -188,3 +198,29 @@ def evaluate_stage1(gold: RoutingGoldSet, run: RoutingRun) -> Stage1Evaluation:
             for page_class in sorted(inventory_by_class)
         },
     )
+
+
+def _parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(prog="corridor-page-inventory-eval")
+    parser.add_argument("--gold", type=Path, required=True)
+    parser.add_argument("--run", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    return parser
+
+
+def main(argv: list[str] | None = None) -> int:
+    """Write the Stage 1 page-routing comparison receipt from explicit artifacts."""
+    arguments = _parser().parse_args(argv)
+    gold = RoutingGoldSet.model_validate_json(arguments.gold.read_text())
+    run = RoutingRun.model_validate_json(arguments.run.read_text())
+    report = evaluate_stage1(gold, run)
+    arguments.output.parent.mkdir(parents=True, exist_ok=True)
+    arguments.output.write_text(
+        json.dumps(report.model_dump(mode="json"), indent=2, sort_keys=True) + "\n"
+    )
+    print(arguments.output)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

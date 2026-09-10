@@ -11,7 +11,9 @@ from __future__ import annotations
 from corridor import digests
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import Field, model_validator
+
+from corridor.typed_output import ClosedModel
 
 
 def canonical_text(value: Any) -> str:
@@ -21,8 +23,8 @@ def canonical_text(value: Any) -> str:
 content_digest = digests.canonical_sha256
 
 
-class PipelineContract(BaseModel):
-    model_config = ConfigDict(extra="forbid", frozen=True)
+class PipelineContract(ClosedModel):
+    """Every immutable pipeline experiment input: declared fields only."""
 
 
 class PipelineScope(PipelineContract):

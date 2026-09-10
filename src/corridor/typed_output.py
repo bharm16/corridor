@@ -4,6 +4,9 @@ Model-backed modules previously accepted generic dictionaries and each rebuilt
 its own partial shape checks.  That let coercion, undeclared fields, and factual
 reference checks differ by caller.  This module owns the common boundary:
 strict schema generation, strict local parsing, and typed factual validators.
+It also owns `ClosedModel`, the one declaration of the closed-and-frozen model
+configuration that the measurement contracts, the pipeline contracts and the
+sealed render and token identities each used to repeat for themselves.
 It has no database dependency and grants no write authority.
 """
 
@@ -20,10 +23,29 @@ class TypedOutputValidationError(ValueError):
     """A provider result failed its declared or factual local contract."""
 
 
-class StrictOutputModel(BaseModel):
-    """Base for model outputs that reject coercion and undeclared fields."""
+class ClosedModel(BaseModel):
+    """Base for a shape whose fields are exactly the declared ones, and fixed.
 
-    model_config = ConfigDict(extra="forbid", frozen=True, strict=True)
+    Six modules declared this same configuration for themselves - the two
+    evaluation contracts, the pipeline contracts, the render profiles, the
+    token layers and the reader page inventory - because a receipt, a frozen
+    experiment input and a sealed identity all need the same two guarantees:
+    an undeclared field is an error rather than a silent extra, and a value
+    cannot change after the shape carrying it was built. Only the declaration
+    is shared; what a subclass means is still its own module's business.
+    """
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+class StrictOutputModel(ClosedModel):
+    """A closed shape that also rejects coercion: the provider boundary's rule.
+
+    Strictness belongs to a value that arrived from a model, not to every
+    declared shape, so it is added here rather than in `ClosedModel`.
+    """
+
+    model_config = ConfigDict(strict=True)
 
 
 OutputT = TypeVar("OutputT", bound=StrictOutputModel)
