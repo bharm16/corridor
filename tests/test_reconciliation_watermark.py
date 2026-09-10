@@ -190,13 +190,19 @@ def test_a_request_is_pending_to_a_session_that_already_loaded_the_row(
 ):
     # The upsert runs outside the ORM identity map. A session holding the clean
     # row must still see the bump without a manual refresh; the revision copy
-    # failed this before the two copies became one module.
+    # failed this before the two copies became one module. ``held`` is what
+    # makes the session hold the row: the identity map only weakly references
+    # a clean object, so without a live reference the row is collected as soon
+    # as ``request`` returns and the next ``pending`` selects it afresh, and
+    # the stale path this test exists for is never taken.
     watermark.request(session, project.id, "first_change")
     watermark.reconcile(session, project.id, CountingPass())
+    held = session.get(watermark.model, project.id)
     assert watermark.pending(session, project.id) is False
 
     watermark.request(session, project.id, "second_change")
     assert watermark.pending(session, project.id) is True
+    assert (held.dirty_seq, held.reconciled_seq) == (2, 1)
 
 
 @pytest.mark.parametrize("watermark", WATERMARKS)
