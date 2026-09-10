@@ -55,6 +55,10 @@ CHAIN_SOURCES = (
     "src/corridor/source_append.py", "src/corridor/pdf_evaluation.py",
     "src/corridor/access.py",
     "src/corridor/migrations/baseline_versions/b2d5f8a1c4e7_source_append_commands.py",
+    *sorted(
+        str(path.relative_to(ROOT))
+        for path in (ROOT / "src/corridor/migrations/source_append_commands").glob("*.py")
+    ),
 )
 
 
