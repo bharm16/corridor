@@ -27,7 +27,7 @@ from corridor.automatic_carry_forward import (
     automatic_carry_forward_status,
     run_automatic_carry_forward,
 )
-from corridor.db import Session, engine
+from corridor.db import Session
 from corridor.exceptions import evaluate as evaluate_exceptions
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
@@ -78,29 +78,6 @@ REVIEWER = HumanPrincipal("local:carry-forward-reviewer")
 APPROVER = HumanPrincipal("local:carry-forward-approver")
 POLICY_VERSION = "automatic-carry-forward-v2"
 MACHINE_ACTOR = "corridor:automatic-carry-forward"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug=f"carry-forward-policy-{uuid4().hex}",
-        name="Carry-Forward Policy",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    return project
 
 
 @dataclass(frozen=True)

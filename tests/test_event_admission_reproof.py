@@ -16,7 +16,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.due_work import (
     DueWorkRefusal,
     EventAdmissionReproofDeclaration,
@@ -110,17 +109,6 @@ def acceptance_receipt(session, project, *, source_revision, migration_head, eli
     }
     receipt["gates"] = _receipt_promotion_gates(receipt)
     return receipt
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

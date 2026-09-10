@@ -10,13 +10,14 @@ import pytest
 from sqlalchemy import select, text
 
 from corridor.current_record import (
-    freeze_project_reading_from_current_view,
     measure_current_record_view,
-    prove_reader_equivalence,
     read_current_project_record,
     read_project_record_as_of_revision,
 )
-from corridor.db import Session, engine
+from corridor.reader_equivalence import (
+    freeze_project_reading_from_current_view,
+    prove_reader_equivalence,
+)
 from corridor.fact_decisions import include_stationing_fact_by_policy
 from corridor.models import (
     ActiveExtractionRun,
@@ -34,18 +35,6 @@ from corridor.models import (
 
 from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture
@@ -258,7 +247,7 @@ def test_release_pdf_text_comparison_discriminates_content_not_the_timestamp():
     """
     from pdf_fixture_support import PdfFixture
 
-    from corridor.current_record import _pdf_text
+    from corridor.reader_equivalence import _pdf_text
 
     def release(stamp: str, statement: str, *, extra_page: bool = False) -> bytes:
         fixture = PdfFixture()

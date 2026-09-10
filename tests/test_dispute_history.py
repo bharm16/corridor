@@ -8,7 +8,6 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.disputes import (
     apply_staleness_resolutions,
     disputes_for,
@@ -17,39 +16,9 @@ from corridor.disputes import (
     record_dispute_clarification,
     settle_dispute,
 )
-from corridor.models import (
-    Assertion,
-    Dependency,
-    DisputeHistoryResolution,
-    DisputeSettlement,
-    DocPage,
-    Document,
-    EvidenceLink,
-    Project,
-    ProjectRosterEntry,
-    WorkDecision,
-)
+from corridor.models import Assertion, Dependency, DisputeHistoryResolution, DisputeSettlement, DocPage, Document, EvidenceLink, ProjectRosterEntry, WorkDecision
 from corridor.principals import HumanPrincipal
 from corridor.work_list import build_work_list
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(slug="dispute-history", name="Dispute history", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
 
 
 def _claim(session, dependency, *, filename, doc_date, value, doc_type="matrix"):

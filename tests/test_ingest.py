@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.ingest import (
     DocumentParseFailure,
     _extract_pages,
@@ -13,14 +12,7 @@ from corridor.ingest import (
     ingest_document,
 )
 from corridor.page_inventory import READER_COORDINATE_FRAME, READER_ROUTER_VERSION
-from corridor.models import (
-    DocPage,
-    Document,
-    PageProcessingFailure,
-    PageRenderDerivative,
-    Project,
-    TokenLayerManifest,
-)
+from corridor.models import DocPage, Document, PageProcessingFailure, PageRenderDerivative, TokenLayerManifest
 from corridor.token_layers import (
     READER_ENGINE,
     load_token_layer,
@@ -28,25 +20,6 @@ from corridor.token_layers import (
 )
 
 from pdf_fixture_support import PdfFixture, scan_image
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="ingest-test", name="Ingest Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 @pytest.fixture

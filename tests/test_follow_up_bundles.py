@@ -43,7 +43,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.follow_up_bundles import (
     APPROACHING_COMMITMENT_BAND,
     ASK_ANSWER_OPEN_QUESTION,
@@ -124,18 +123,6 @@ POWER = "Northline Power"
 FIRST = 42
 SECOND = 43
 THIRD = 44
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -16,7 +16,6 @@ from sqlalchemy import select
 
 from access_support import seed_membership
 from corridor.current_record import read_current_project_record
-from corridor.db import Session, engine
 from corridor.external_statements import StatementScope, StatementTiming
 from corridor.facts import (
     replay_recorded_applies_to_fact,
@@ -46,17 +45,6 @@ from corridor.verbal import (
 
 
 RECORDER = HumanPrincipal("local:phone-coordinator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -6,10 +6,9 @@ import pytest
 
 from corridor.native_reader_coverage import collect_native_reader_coverage
 from test_native_accepted_readers import _follow_up_plan
-from test_native_reader_coverage import adopted as _adopted_fixture, session as _session_fixture, surfaces
+from test_native_reader_coverage import adopted as _adopted_fixture, surfaces
 
-# Reuse the collector's rollback-scoped fixture boundary.
-session = _session_fixture
+# Reuse the collector's adopted-project fixture; the session fixture is shared.
 adopted = _adopted_fixture
 
 

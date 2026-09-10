@@ -57,17 +57,6 @@ FIELDS = {
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def document(session):
     project = Project(slug="adj-test", name="Adjudication Test", is_synthetic=True)
     session.add(project)

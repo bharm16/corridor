@@ -20,7 +20,6 @@ import pytest
 from sqlalchemy import select
 
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import ProcessingArtifact, Project
 from corridor.object_storage import (
     ObjectConflict,
@@ -44,17 +43,6 @@ from corridor.storage_operations import migrate_local_content, reconcile
 
 ACTOR = HumanPrincipal("local:storage-operator")
 AS_OF = datetime(2026, 9, 1, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(params=["filesystem", "s3"])

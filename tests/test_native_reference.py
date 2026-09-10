@@ -12,7 +12,6 @@ import sys
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.eval import (
     NothingToMeasure,
     load_gold,
@@ -40,28 +39,6 @@ def stored_source_fixture(monkeypatch):
         "corridor.gold.stored_file",
         lambda document: getattr(document, "_pdf_path", None),
     )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug="native-reference-test", name="Native reference test", is_synthetic=True
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 ROWS = [

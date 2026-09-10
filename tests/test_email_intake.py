@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 
 from corridor import email_intake, push_intake
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import (
     Dependency,
     DocPage,
@@ -35,17 +34,6 @@ from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
 from access_support import seed_membership
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(autouse=True)

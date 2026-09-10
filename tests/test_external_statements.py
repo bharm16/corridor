@@ -13,7 +13,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor.models import (
     Candidate,
     Dependency,
@@ -30,17 +29,6 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

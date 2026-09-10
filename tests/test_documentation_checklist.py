@@ -7,7 +7,6 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.documentation_checklist import (
     DocumentationClarificationRefusal,
     DocumentationConfirmationRefusal,
@@ -35,17 +34,6 @@ from corridor.work_decisions import (
 
 
 REVIEWER = HumanPrincipal("local:checklist-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

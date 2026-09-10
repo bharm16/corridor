@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import delete, func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor.extraction_runs import (
     extractor_configuration,
     record_extraction_run,
@@ -57,17 +56,6 @@ def _row_accounting(prompt_version: str, *, unaccounted: bool = False):
 
 def _run_id(run):
     return run.id if hasattr(run, "id") else run
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

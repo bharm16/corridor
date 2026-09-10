@@ -24,7 +24,7 @@ from typing import Iterable
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor import audit, notifications
+from corridor import audit, notifications, refusals
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.fact_types import FACT_TYPE_CONTRACTS
 from corridor.models import (
@@ -38,21 +38,41 @@ from corridor.models import (
     ExtractedProposal,
     Fact,
     FactDecision,
-    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
 from corridor.measurement_cases import record_dispute_settlement_case
-from corridor.work_decisions import assign_internal_owner, set_next_action
+from corridor.work_decisions import (
+    active_roster_member,
+    assign_internal_owner,
+    set_next_action,
+)
 
 
-class NoSuchDispute(ValueError):
+class DisputeRefusal(refusals.Refusal, ValueError):
+    """A Dispute act refused; nothing was written.
+
+    The family declares its own kind (#794 card 22) so an adapter maps it once
+    instead of standing a generic sentence in front of a bare ``ValueError``.
+    ``CONFLICT`` is the base kind because the acts this refuses contradict what
+    the record already holds; the two named subclasses say something narrower.
+    Still a ``ValueError`` so callers that already catch one keep working.
+    """
+
+    refusal_kind = refusals.CONFLICT
+
+
+class NoSuchDispute(DisputeRefusal):
     """The field is not in dispute, so there is nothing to settle."""
 
+    refusal_kind = refusals.NOT_OFFERED
 
-class DisputeMovedOn(ValueError):
+
+class DisputeMovedOn(DisputeRefusal):
     """A claim arrived after the page was read; the judgment would cover
     evidence the reviewer never saw."""
+
+    refusal_kind = refusals.STALE
 
 
 @dataclass(frozen=True)
@@ -555,13 +575,9 @@ def record_dispute_clarification(
         raise NoSuchDispute(
             f"{field_name!r} is not a current contested field — clarification is unnecessary"
         )
-    roster = session.get(ProjectRosterEntry, roster_entry_id)
-    if (
-        roster is None
-        or roster.project_id != dependency.project_id
-        or not roster.active
-    ):
-        raise ValueError("the assignee must be an active member of this project roster")
+    roster = active_roster_member(
+        session, roster_entry_id, project_id=dependency.project_id
+    )
 
     with session.begin_nested():
         owner = assign_internal_owner(
@@ -806,7 +822,7 @@ def settle_dispute(
     lock_project(session, dependency.project_id)
     session.refresh(dependency)
     if dependency.dismissed_at is not None:
-        raise ValueError(
+        raise DisputeRefusal(
             f"{dependency.ref_code} was dismissed — a Dispute on a record "
             "nobody is working needs no verdict"
         )

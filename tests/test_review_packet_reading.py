@@ -21,10 +21,9 @@ from typing import Sequence
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import select, text
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.delta_resolution import (
     REJECT,
     ChildDecisionRequest,
@@ -50,6 +49,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
+from harness_support import adopt_baseline_fact
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packet_reading import (
     ACTIONABLE,
@@ -91,30 +91,6 @@ ALICE = HumanPrincipal("local:alice")
 CUTOFF = datetime(2026, 9, 3, 12, 0, tzinfo=timezone.utc)
 DECIDED_AT = datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"packet-reading-{uuid4().hex[:8]}",
-        name="Packet Reading",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 # --- fixture helpers ------------------------------------------------------
@@ -245,34 +221,7 @@ class _Capture:
 def _accept(session: Session, project: Project, fact: Fact) -> int:
     """One accepted decision for a subject and field, at its own revision."""
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, idempotency_key"
-            ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-            " returning id"
-        ),
-        {"project_id": project.id, "key": f"accept:{uuid4().hex[:12]}"},
-    )
-    session.execute(
-        text(
-            "insert into fact_decisions ("
-            "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-            ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-            " :revision_id, 'include')"
-        ),
-        {
-            "project_id": project.id,
-            "fact_id": fact.id,
-            "subject_key": fact.subject_key,
-            "fact_type": fact.fact_type,
-            "revision_id": revision_id,
-        },
-    )
-    session.execute(text("reset role"))
-    session.expire_all()
-    return int(revision_id)
+    return adopt_baseline_fact(session, project, fact, f"accept:{uuid4().hex[:12]}")
 
 
 def _reject(session: Session, project: Project, delta: ProposedDelta) -> None:

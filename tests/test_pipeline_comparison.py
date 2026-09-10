@@ -8,7 +8,6 @@ from pathlib import Path
 import pytest
 
 from corridor.extractor_lineage import DEPLOYED_NATIVE_MATRIX_REQUEST
-from corridor.db import Session, engine
 from corridor.models import Document, Project
 from corridor.native_matrix import extract_native_matrix, render_native_matrix_context
 from corridor.pipeline_comparison import canonical_native_output, compare_pipeline_outputs
@@ -16,18 +15,6 @@ from corridor.reader_segments import read_native_pdf
 from corridor.source_segment_errors import SourceSegmentLocatorMismatch
 from corridor_pdf_reader.replacement import semantics
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(scope="module")

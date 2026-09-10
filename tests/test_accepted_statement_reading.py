@@ -7,10 +7,8 @@ import re
 
 import pytest
 from sqlalchemy import event, select
-from sqlalchemy.orm import Session
 
 from corridor.accepted_statement_reading import AcceptedStatementReadingRefused, read_native_statements
-from corridor.db import engine
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.facts import append_recorded_applies_to_fact, append_recorded_statement_timing_fact, append_recorded_statement_wording_fact
 from corridor.models import Document, Fact, Project, ProjectRecordRevision, RecordedVerbalOrigin, SourceSegment
@@ -20,16 +18,6 @@ from corridor.statement_values import StatementTiming
 
 
 RECORDED_AT = datetime(2025, 3, 3, 14, 30, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as scoped:
-            yield scoped
-        if transaction.is_active:
-            transaction.rollback()
 
 
 @pytest.fixture

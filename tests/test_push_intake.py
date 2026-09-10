@@ -20,7 +20,6 @@ from sqlalchemy import func, select, text
 from corridor import email_intake, push_intake
 from corridor.config import settings
 from corridor.connectors.pull_connector import SourceEnvelope, build_delivery_identity
-from corridor.db import Session, engine
 from corridor.models import (
     Dependency,
     Document,
@@ -37,17 +36,6 @@ from pdf_fixture_support import PdfFixture
 
 ALPHA_ALIAS = "intake+alpha-a1b2c3@corridor.test"
 BRAVO_ALIAS = "intake+bravo-d4e5f6@corridor.test"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(autouse=True)

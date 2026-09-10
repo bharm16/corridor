@@ -30,7 +30,7 @@ from corridor.pipeline_qualification import record_acceptance, select_qualified_
 from corridor.retained_history import replay_retained_reading
 from corridor.source_append import SegmentValues, append_source_segments
 from corridor.source_segments import dereference_source_segment
-from test_native_matrix import project, session
+from test_native_matrix import project
 from test_native_pipeline import ACTOR
 from test_native_provider_boundary import RecordingTransport, _body, _experiment, _request
 

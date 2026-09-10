@@ -13,7 +13,6 @@ from pypdf import PdfReader
 from sqlalchemy import event, select, text
 
 from corridor.changes import record_run as record_report_run
-from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -57,17 +56,6 @@ from corridor.web.app import app, get_human_principal, get_session
 TEST_PRINCIPAL = HumanPrincipal("local:report-releaser")
 PDF_A = b"%PDF-1.7\nsealed report A\n%%EOF"
 PDF_B = b"%PDF-1.7\nsealed report B\n%%EOF"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

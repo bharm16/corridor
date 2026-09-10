@@ -8,7 +8,6 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.key_date_drafting import (
     KeyDateDraftBudget,
     KeyDateDraftRow,
@@ -32,17 +31,6 @@ from corridor.principals import HumanPrincipal
 
 
 RECORDER = HumanPrincipal("local:key-date-draft-test")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -24,7 +24,6 @@ from corridor.candidate_model import (
     render_comparison,
     run_candidate_comparison,
 )
-from corridor.db import Session, engine
 from corridor.experimental_database import ProductionDatabaseRefusal
 from corridor.extraction_runs import (
     active_run_for_document,
@@ -51,17 +50,6 @@ TEST_EXPERIMENTAL_DATABASE_URL = (
 def allow_test_experimental_database(database_url, *, session=None):
     assert database_url == TEST_EXPERIMENTAL_DATABASE_URL
     assert session is not None
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

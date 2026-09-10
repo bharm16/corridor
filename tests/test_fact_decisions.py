@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db import Session, engine
 from corridor.fact_decisions import (
     FactDecisionRefused,
     STRUCTURED_CELL_INCLUSION_POLICY,
@@ -31,18 +30,6 @@ from corridor.models import (
     ProjectRecordRevision,
     SourceSegment,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

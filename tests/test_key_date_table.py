@@ -22,7 +22,6 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.delta_resolution import (
     ACCEPT,
     RESOLVED,
@@ -83,34 +82,10 @@ RELO = key_date_subject("RELO-CONSTR")
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     return tmp_path / "files"
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"key-date-table-{uuid4().hex[:8]}",
-        name="Key Date Table Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 @pytest.fixture

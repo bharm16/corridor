@@ -23,7 +23,6 @@ from sqlalchemy import func, select
 from corridor import audit
 from corridor import source_intake
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.due_work import (
     DueWorkRefusal,
     HANDLER_LOCATION_DISCOVERY,
@@ -189,17 +188,6 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     return tmp_path / "files"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

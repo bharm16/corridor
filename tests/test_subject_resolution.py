@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
 from corridor.models import (
     Dependency,
     Document,
@@ -32,18 +31,6 @@ from corridor.subject_resolution import (
 
 
 ALICE = HumanPrincipal("local:subject-resolution-alice")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def _project(session, slug: str, *, project_side_parties=()):

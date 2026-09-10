@@ -13,11 +13,9 @@ from types import SimpleNamespace
 from PIL import Image
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from corridor import audit
 from corridor.config import settings
-from corridor.db import engine
 from corridor.extraction_runs import (
     declare_active_run,
     declare_active_run_by_policy,
@@ -50,19 +48,6 @@ from corridor.product_proving_database import (
 )
 from corridor.product_proving_run import ExpectedPreflight, ObservedPreflight
 from corridor.work_decisions import assign_internal_owner
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    try:
-        yield db
-    finally:
-        db.close()
-        transaction.rollback()
-        connection.close()
 
 
 def _extraction_run(session, project, document):

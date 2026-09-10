@@ -10,7 +10,6 @@ on the policy family and the rule fingerprint.
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.models import (
     EventAdmissionActivation,
     OrganizationIdentityActivation,
@@ -42,17 +41,6 @@ from corridor.replay_gate import (
 
 FINGERPRINT = RuleFingerprint("schedule-conflict-link-v1", "a" * 64)
 CHANGED = RuleFingerprint("schedule-conflict-link-v1", "b" * 64)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

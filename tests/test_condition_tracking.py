@@ -25,7 +25,6 @@ from corridor.condition_tracking import (
     resolve_condition_target,
     FieldCandidate,
 )
-from corridor.db import Session, engine
 from corridor.documentation_checklist import (
     confirm_interpretation,
     read_checklist,
@@ -50,17 +49,6 @@ from access_support import seed_membership
 
 
 REVIEWER = HumanPrincipal("local:condition-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture
@@ -626,6 +614,64 @@ def test_a_contradicting_human_clear_keeps_the_gate_inactive(session, project):
     assert replay.passed is False
     assert replay.contradictions  # the inspection passage != the cited walkthrough
     assert inspection_link.id != walkthrough_link.id
+
+
+def test_the_condition_clear_replay_refuses_zero_cases_and_allows_abstention(
+    session, project
+):
+    """ADR-0050's two rules for this family, through the shared replay gate.
+
+    Zero recorded human clears never passes, and the rule declining to answer a
+    case a person decided by judgment is not a contradiction here (the
+    condition-clear family does not block on an abstention).
+    """
+    empty = replay_matches_human_condition_clears(session, project.id)
+    assert (empty.case_count, empty.contradictions, empty.passed) == (0, (), False)
+
+    # Two later passages each mechanically meet the same condition, so the rule
+    # has no sole passage and abstains on the case the person decided.
+    dependency = _relocate_dep(session, project, ref="DOC-1")
+    _conditional_letter(
+        session, project, dependency, "Approved pending final inspection."
+    )
+    for name, quote in (
+        ("inspa", "The final inspection passed on 3/4."),
+        ("inspb", "The final inspection passed, per the district."),
+    ):
+        _link(
+            session,
+            dependency,
+            _document(session, project, name=name, text="final inspection passed"),
+            quote,
+        )
+    conditions = read_checklist(session, dependency.id).conditions
+    assert len(conditions) == 1  # the hedged letter is still the only condition
+    condition = conditions[0]
+    basis = session.scalars(
+        select(EvidenceLink)
+        .where(
+            EvidenceLink.dependency_id == dependency.id,
+            EvidenceLink.id != condition.evidence_link_id,
+        )
+        .order_by(EvidenceLink.id)
+    ).first()
+    clear = clear_condition(
+        session,
+        dependency,
+        condition.evidence_link_id,
+        principal=REVIEWER,
+        entries=read_checklist(session, dependency.id).conditions,
+        basis_evidence_link_id=basis.id,
+    )
+    session.flush()
+
+    replay = replay_matches_human_condition_clears(session, project.id)
+    assert replay.case_count == 1
+    assert replay.contradictions == ()
+    assert replay.abstentions == (clear.id,)
+    assert replay.passed is True
+    # An abstaining rule writes nothing, so no condition auto-clears either.
+    assert run_condition_clearing_admission(session, project.id).cleared_count == 0
 
 
 # --------------------------------------------------------------------------- #

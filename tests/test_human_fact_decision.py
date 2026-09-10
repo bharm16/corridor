@@ -7,7 +7,6 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.current_record import read_current_project_record
 from corridor.fact_decisions import (
     FactDecisionRefused,
@@ -28,18 +27,6 @@ from corridor.principals import HumanPrincipal
 
 
 RECORDER = HumanPrincipal("local:dana-fields")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -7,7 +7,6 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.key_date_drafting import (
     KeyDateDraftRow,
     KeyDateDraftRuntimeOutput,
@@ -36,17 +35,6 @@ def xer_bytes():
         "%E",
     ]
     return "\n".join(lines).encode("cp1252")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

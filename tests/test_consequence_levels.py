@@ -34,7 +34,6 @@ from corridor.consequence_levels import (
     consequence_level,
     headline_level,
 )
-from corridor.db import engine
 from corridor.issue_content import (
     CHANGE_SUMMARY_IDENTITY,
     CHANGE_SUMMARY_VERSION,
@@ -166,18 +165,6 @@ LABEL_POLICY = DecisionBlockingPolicy(
     required_decision=f"{SELECT_FIELD}:promised_for",
     statement="Promised For changes must be decided before this issue.",
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

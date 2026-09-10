@@ -18,7 +18,6 @@ from sqlalchemy.exc import DBAPIError
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_profile import (
     ArtifactEntry,
     CoverageRequirement,
@@ -35,6 +34,7 @@ from corridor.issue_profile import (
 from corridor.models import IssueProfile, Project
 from corridor.principals import HumanPrincipal
 
+from harness_support import as_record_decision_role
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 
 
@@ -63,18 +63,6 @@ OTHER_ROWS = [
      "2249+00", "2250+00", "Adjust", "2027-03-01", "2027-02-01",
      "vault at station", "UCM-9001", "https://ucm.example/records/9001"],
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture
@@ -614,11 +602,10 @@ def _writer_refused(session, pattern: str, statement: str, **params):
     leaves a usable transaction to reset it in.
     """
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    with pytest.raises(DBAPIError, match=pattern):
-        with session.begin_nested():
-            session.execute(text(statement), params)
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        with pytest.raises(DBAPIError, match=pattern):
+            with session.begin_nested():
+                session.execute(text(statement), params)
 
 
 def test_the_database_refuses_a_second_entry_of_one_artifact_type(session, project):

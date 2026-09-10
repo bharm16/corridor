@@ -459,12 +459,18 @@ def implementation_identity() -> dict[str, str]:
     names = (
         "native_matrix_measurement.py", "native_matrix.py", "native_matrix_bindings.py",
         "facts.py", "materializer.py", "fact_types.py", "source_append.py",
-        "models.py", "extractor_lineage.py", "extraction_runs.py", "row_accounting.py",
+        "extractor_lineage.py", "extraction_runs.py", "row_accounting.py",
         "reader_segments.py", "token_layers.py",
+    )
+    # The schema is a package of family modules since card 21; every one of them
+    # is read, so a family added later cannot drop out of the recorded identity.
+    schema = tuple(
+        f"models/{path.name}"
+        for path in sorted((REPO_ROOT / "src" / "corridor" / "models").glob("*.py"))
     )
     return {
         f"src/corridor/{name}": sha256((REPO_ROOT / "src/corridor" / name).read_bytes()).hexdigest()
-        for name in names
+        for name in (*names, *schema)
     }
 
 

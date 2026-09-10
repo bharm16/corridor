@@ -2,7 +2,6 @@ import pytest
 
 from corridor.adjudicate import accept_candidate
 from corridor.candidates import citations_verified, dedupe_hint, propose
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.vocabulary import dedupe_hint as matrix_hint
 from corridor.models import DocPage, Document, ExternalOrg, Project
@@ -22,17 +21,6 @@ PAYLOAD_KEYS = {
     "dedupe_hint",
     "text_source",
 }
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

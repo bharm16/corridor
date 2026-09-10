@@ -25,7 +25,6 @@ import pytest
 
 from corridor import policy
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.event_admission import (
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
@@ -56,17 +55,6 @@ from corridor.models import Project
 # that Alembic does not load. It is written here on purpose: this is the one
 # place that proves what such a receipt is, and it must not track the window.
 RETIRED_PREDECESSOR = "a257c9e6f204"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

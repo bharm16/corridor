@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import text, update
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor import policy
 from corridor.models import (
     DependencyAdmissionOutcome,
@@ -23,17 +22,6 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

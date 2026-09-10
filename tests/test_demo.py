@@ -4,24 +4,12 @@ from sqlalchemy import func, select
 from corridor import audit
 from corridor.adjudicate import accept_candidate
 from corridor.demo import _reset
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import AuditLog, Candidate, Dependency, DocPage, Document, ExternalOrg, Project
 from corridor.principals import HumanPrincipal
 from corridor.demo import DEMO_SLUG, DemoIsolationError
 
 DECLARER = HumanPrincipal("local:demo-declarer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor.dependency_admission import (
     DEPENDENCY_ADMISSION_POLICY_VERSION,
     run_dependency_admission,
@@ -26,48 +25,11 @@ from corridor.extraction_runs import (
     declare_single_run_documents_by_policy,
     record_extraction_run,
 )
-from corridor.models import (
-    Assertion,
-    AuditLog,
-    Candidate,
-    Dependency,
-    DependencyAdmissionOutcome,
-    EvidenceLink,
-    ExternalOrg,
-    ExtractionRun,
-    PolicyRun,
-    DocPage,
-    Document,
-    Project,
-    is_placeholder_party,
-)
+from corridor.models import Assertion, AuditLog, Candidate, Dependency, DependencyAdmissionOutcome, EvidenceLink, ExternalOrg, ExtractionRun, PolicyRun, DocPage, Document, is_placeholder_party
 from corridor.principals import HumanPrincipal
 
 OPERATOR = HumanPrincipal("local:dependency-admission-operator")
 PIPELINE = "Tejas Pipeline Co"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    p = Project(
-        slug="dependency-admission-test",
-        name="Dependency Admission Test",
-        is_synthetic=True,
-    )
-    session.add(p)
-    session.flush()
-    return p
 
 
 def _document(session, project, *, filename):

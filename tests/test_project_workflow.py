@@ -35,7 +35,6 @@ from sqlalchemy.orm import Session
 
 from corridor.consequence_levels import AFFECTS_ISSUE, LEVEL_HEADINGS
 from corridor.analytics import EventFamily, capture_events
-from corridor.db import engine
 from corridor.issue_content import NO_ISSUE_PROFILE
 from corridor.models import (
     DeltaDisposition,
@@ -109,18 +108,6 @@ OTHER = 43
 # derivation rather than respelled here, so this file cannot drift from the
 # words the decision settled.
 VISIBLE_LEVELS = tuple(LEVEL_HEADINGS.values())
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def _project(session: Session, name: str) -> Project:

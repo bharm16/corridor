@@ -16,7 +16,6 @@ from sqlalchemy import select
 
 from corridor import access
 from corridor import policy
-from corridor.db import Session, engine
 from corridor.event_admission import (
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
@@ -47,17 +46,6 @@ from access_support import seed_membership
 
 
 OPERATOR = HumanPrincipal("local:operations")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    current = Session(bind=connection)
-    yield current
-    current.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

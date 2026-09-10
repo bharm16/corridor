@@ -97,28 +97,3 @@ class NotOffered(Refusal):
     """This control was not offered in the state the record is actually in."""
 
     refusal_kind = NOT_OFFERED
-
-
-class MalformedSave(Refusal):
-    """This submission is not one the screen produces; nothing was written.
-
-    One of the two classes an adapter stands in front of a domain command with
-    while that command still refuses by raising a bare ``ValueError``.  The
-    adapter answers with its own customer sentence rather than forwarding an
-    internal message to a browser, because the set of messages a bare
-    ``ValueError`` can carry is unbounded: an incidental parse error inside the
-    command reads to a browser exactly like a refusal.  The command declaring
-    its own family is the better fix, and retires the stand-in.
-    """
-
-    refusal_kind = MALFORMED_INPUT
-
-
-class ConflictingSave(Refusal):
-    """This act contradicts the record; nothing was written.
-
-    The conflict-kind half of ``MalformedSave``, for the same reason and with
-    the same retirement.
-    """
-
-    refusal_kind = CONFLICT

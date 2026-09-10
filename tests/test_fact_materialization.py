@@ -16,7 +16,6 @@ from openpyxl import Workbook
 import pytest
 from sqlalchemy import func, select
 
-from corridor.db import Session, engine
 from corridor.extract_sheet import PROMPT_VERSION, SCHEMA_VERSION, extract_document
 from corridor.extraction_runs import append_source_facts
 from corridor.ingest import ingest_document
@@ -27,17 +26,7 @@ from corridor.materializer import (
     materialize_quoted_statement_wording,
     materialize_segment_value,
 )
-from corridor.models import (
-    Candidate,
-    Dependency,
-    ExtractedProposal,
-    ExtractionRun,
-    ExternalOrg,
-    Fact,
-    Project,
-    SourceFactAppendReceipt,
-    SourceSegment,
-)
+from corridor.models import Candidate, Dependency, ExtractedProposal, ExtractionRun, ExternalOrg, Fact, SourceFactAppendReceipt, SourceSegment
 from corridor.prose_interpretation import interpret_prose_document
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 from corridor.typed_output import TypedOutputValidationError
@@ -51,28 +40,6 @@ from pdf_fixture_support import PdfFixture
 MISREADS = Path(__file__).parent / "fixtures" / "vision-misreads.json"
 STATEMENT = "Equistar will submit the signed exhibit by March 2025."
 ATTRIBUTION = "Equistar coordination subject."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug="fact-materialization", name="Fact Materialization", is_synthetic=True
-    )
-    session.add(project)
-    session.flush()
-    return project
 
 
 def _cells(session, project, texts, *, filename="cells.xlsx"):

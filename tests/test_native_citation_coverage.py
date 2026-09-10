@@ -11,7 +11,7 @@ from corridor.facts import append_recorded_statement_wording_fact
 from corridor.native_reader_coverage import collect_native_reader_coverage
 from corridor.source_append import append_recorded_verbal_origin
 from corridor.source_segments import append_source_segment, recorded_verbal_statement_segment
-from test_native_reader_coverage import session, adopted
+from test_native_reader_coverage import adopted
 from test_native_accepted_readers import PRINCIPAL, TODAY, _follow_up_plan
 
 

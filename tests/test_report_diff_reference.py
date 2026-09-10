@@ -17,7 +17,6 @@ from sqlalchemy import select, text
 from corridor.adjudicate import dismiss_dependency, set_resolution_strategy
 from corridor import changes
 from corridor.changes import diff_since_last, record_run
-from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.fact_decisions import include_structured_cell_fact_by_policy
 from corridor.models import (
@@ -55,18 +54,6 @@ from corridor.report_diff_reference import (
 
 ACTOR = "local:diff-reference-reviewer"
 PRINCIPAL = HumanPrincipal(ACTOR)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

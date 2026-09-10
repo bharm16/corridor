@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor import access, audit
-from corridor.db import Session, engine
 from corridor.models import (
     AuditLog,
     Dependency,
@@ -41,17 +40,6 @@ from corridor.web.app import app, get_session
 from corridor.work_decisions import FOLLOW_UP_NEXT_ACTION_CHOICES
 
 OPERATOR = HumanPrincipal("local:operations")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

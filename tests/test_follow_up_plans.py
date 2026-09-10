@@ -13,7 +13,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from access_support import seed_membership
-from corridor.db import Session, engine
 from corridor.models import (
     Dependency,
     ExternalOrg,
@@ -45,17 +44,6 @@ from corridor.work_decisions import (
 RECORDER = HumanPrincipal("local:plan-coordinator")
 ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[0]
 OTHER_ACTION = FOLLOW_UP_NEXT_ACTION_CHOICES[1]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

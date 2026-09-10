@@ -5,10 +5,8 @@ from __future__ import annotations
 from datetime import date
 from hashlib import sha256
 
-import pytest
 from sqlalchemy import text
 
-from corridor.db import Session, engine
 from corridor.models import (
     Candidate,
     Dependency,
@@ -23,17 +21,6 @@ from corridor.models import (
 from corridor.storage_baseline import BaselineSelection, build_storage_baseline
 
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _pdf_bytes(text: str) -> bytes:

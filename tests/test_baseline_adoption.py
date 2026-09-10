@@ -44,7 +44,6 @@ from corridor.baseline_workbook import (
     read_baseline_workbook,
 )
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.field_mapping_manifest import (
     DEMO_EXTERNAL_REFERENCES,
     MappingDeclaration,
@@ -128,36 +127,12 @@ ROWS = [
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def store(tmp_path, monkeypatch):
     """Point the content-addressed store and page renders at a temp directory."""
 
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     return tmp_path / "files"
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"adopt-baseline-{uuid4().hex[:8]}",
-        name="Adopt Baseline Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _workbook_bytes(

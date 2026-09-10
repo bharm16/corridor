@@ -31,7 +31,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.models import (
     DeltaDisposition,
     DeltaFollowUpPlan,
@@ -100,18 +99,6 @@ RETURNS_AT = datetime(2026, 9, 24, 0, 0, tzinfo=timezone.utc)
 CONFLICT = 42
 OTHER = 43
 THIRD = 44
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

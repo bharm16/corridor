@@ -6,7 +6,7 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
+from corridor.db import engine
 from corridor.extraction_runs import append_source_facts
 from corridor.models import DocPage, Document, ExtractionRun, Fact, Project, SourceFactAppendReceipt, SourceSegment
 from corridor.reader_replay import replay_native_segments
@@ -181,18 +181,6 @@ def test_native_batch_rechecks_original_bytes_and_refuses_unsealed_readings(
         replay_native_segments(document, _segments(document, values), path, native_reading=reading)
     with pytest.raises(SourceSegmentLocatorMismatch, match="sealed reading"):
         replay_native_segments(document, (), source, native_reading=object())
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def _registered(session, path, reading):

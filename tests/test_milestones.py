@@ -3,7 +3,6 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.milestones import (
     CHANGED,
     NEW,
@@ -112,25 +111,6 @@ XER_ROWS = [
     ("103", "1", "ROW-START", "Right of way start", "TT_Mile", "2026-09-15 00:00", ""),
     ("104", "1", "", "Blank code milestone", "TT_Mile", "2026-10-01 00:00", ""),
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="ms-test", name="Milestone Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def write(tmp_path, text=CSV, name="milestones.csv"):

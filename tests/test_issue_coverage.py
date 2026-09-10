@@ -27,7 +27,6 @@ from corridor.consequence_levels import (
     consequence_level,
 )
 from corridor.packet_review import read_review_items
-from corridor.db import Session, engine
 from corridor.issue_content import (
     COVERAGE_ALL_REQUIRED_SOURCES_READ,
     UCM_RENDERER_IDENTITY,
@@ -97,18 +96,6 @@ EVERY_SOURCE_READ = CoverageRequirement(
     requirement=COVERAGE_ALL_REQUIRED_SOURCES_READ,
     statement="Every source delivered for this issue is read before it goes out.",
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

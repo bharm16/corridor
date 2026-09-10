@@ -16,7 +16,7 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate
-from corridor.db import Session, engine
+from corridor.db import Session
 from corridor.extraction_runs import (
     declare_active_run,
     record_extraction_run,
@@ -92,17 +92,6 @@ def _set_direct_readiness(session, evidence: EvidenceLink, ready: bool) -> None:
     elif not ready and role is not None:
         session.delete(role)
     session.flush()
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _document(

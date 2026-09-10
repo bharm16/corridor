@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db import Session, engine
 from corridor.candidates import propose
 from corridor.current_record import (
     read_current_project_record,
@@ -91,26 +90,6 @@ needs_corpus = pytest.mark.skipif(
     not REAL_WORKBOOK.exists(),
     reason="run `make corpus` to fetch the I-35 NEX South workbook",
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(slug="fact-test", name="Fact Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
 
 
 def _workbook(tmp_path, name, rows):

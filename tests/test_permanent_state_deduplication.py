@@ -20,26 +20,14 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.materializer import materialize_quoted_statement_wording
-from corridor.models import (
-    DeltaDeferral,
-    DeltaGroup,
-    Document,
-    Fact,
-    Project,
-    ProjectRecordRevision,
-    ProposedDelta,
-    SourceDelivery,
-    SourceSegment,
-)
+from corridor.models import DeltaDeferral, DeltaGroup, Document, Fact, ProjectRecordRevision, ProposedDelta, SourceDelivery, SourceSegment
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
     ProposedDeltaValues,
@@ -47,37 +35,14 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from corridor import push_intake
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 
 
-DECISION_ROLE = "corridor_fact_decision_writer"
+DECISION_ROLE = RECORD_DECISION_ROLE
 DEFERRED_AT = datetime(2026, 6, 1, 15, 30, tzinfo=timezone.utc)
 DEFERRED_UNTIL = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)
 WORDS = "Equistar will submit the exhibit."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"dedup-{uuid4().hex[:12]}",
-        name="Permanent-state de-duplication",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 @pytest.fixture(autouse=True)

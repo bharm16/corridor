@@ -27,7 +27,6 @@ from sqlalchemy.exc import DBAPIError
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.analytics import AnalyticsBinding, EventFamily, capture_events
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_content import (
     CHANGE_SUMMARY_IDENTITY,
     CHANGE_SUMMARY_VERSION,
@@ -94,6 +93,7 @@ from corridor.release_candidate import (
 )
 from corridor.report_preparation import AUTHORIZED_PACKAGE_COMPARISON
 
+from harness_support import as_record_decision_role
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
@@ -158,18 +158,6 @@ BINDING = AnalyticsBinding(
     packetizer_rules_version="delta-partition-v2",
     enabled_feature_flags=("release_candidate",),
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture
@@ -647,16 +635,15 @@ def test_the_profile_term_is_not_the_whole_staleness_contract(
     _, _, candidate = _prepare(session, adopted, store)
     assert candidate_is_stale(session, candidate, as_of=CUTOFF) == ()
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    session.execute(
-        text(
-            "insert into project_record_revisions (project_id, command_type, "
-            "human_principal, idempotency_key) values (:project, 'test', "
-            "'local:coordinator', :key)"
-        ),
-        {"project": adopted.project.id, "key": f"later-{uuid4().hex[:8]}"},
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        session.execute(
+            text(
+                "insert into project_record_revisions (project_id, command_type, "
+                "human_principal, idempotency_key) values (:project, 'test', "
+                "'local:coordinator', :key)"
+            ),
+            {"project": adopted.project.id, "key": f"later-{uuid4().hex[:8]}"},
+        )
 
     reasons = candidate_is_stale(session, candidate, as_of=CUTOFF)
     assert any("accepted record moved" in reason for reason in reasons)
@@ -1010,16 +997,15 @@ def test_an_accepted_record_that_moved_while_rendering_attaches_no_candidate(
         bound, template_bytes=adopted.template_bytes, session=session, store=store
     )
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    session.execute(
-        text(
-            "insert into project_record_revisions (project_id, command_type, "
-            "human_principal, idempotency_key) values (:project, 'test', "
-            "'local:coordinator', :key)"
-        ),
-        {"project": adopted.project.id, "key": f"moved-{uuid4().hex[:8]}"},
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        session.execute(
+            text(
+                "insert into project_record_revisions (project_id, command_type, "
+                "human_principal, idempotency_key) values (:project, 'test', "
+                "'local:coordinator', :key)"
+            ),
+            {"project": adopted.project.id, "key": f"moved-{uuid4().hex[:8]}"},
+        )
 
     with pytest.raises(PreparationRefused) as refused:
         attach_candidate(

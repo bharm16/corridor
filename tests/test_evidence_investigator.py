@@ -12,7 +12,6 @@ import httpx
 from sqlalchemy import delete
 from sqlalchemy.orm import attributes
 
-from corridor.db import Session, engine
 from corridor.evidence_investigator import (
     INVESTIGATION_CASE_SCHEMA,
     INVESTIGATION_PACKET_SCHEMA,
@@ -90,17 +89,6 @@ def _identity(**overrides):
     }
     values.update(overrides)
     return RuntimeIdentity(**values)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

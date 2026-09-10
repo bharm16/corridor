@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from harness_support import as_record_decision_role
 from access_support import seed_membership
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -657,17 +658,6 @@ def test_a_scheduled_prepared_pdf_is_released_only_by_a_human_and_keeps_its_byte
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def project(session):
     project_id = _seed_project(session, slug=f"pub-http-{uuid4().hex[:12]}")
     return session.get(Project, project_id)
@@ -765,16 +755,15 @@ def _seed_accepted_revision(session, project_id: int, key: str) -> int:
     """
 
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision = ProjectRecordRevision(
-        project_id=project_id,
-        command_type="record_verbal_statement",
-        human_principal="local:publication-reviewer",
-        idempotency_key=key,
-    )
-    session.add(revision)
-    session.flush()
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        revision = ProjectRecordRevision(
+            project_id=project_id,
+            command_type="record_verbal_statement",
+            human_principal="local:publication-reviewer",
+            idempotency_key=key,
+        )
+        session.add(revision)
+        session.flush()
     return revision.id
 
 

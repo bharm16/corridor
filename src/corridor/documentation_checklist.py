@@ -28,7 +28,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session, undefer
 
-from corridor import audit, condition_tracking
+from corridor import audit, condition_tracking, refusals
 from corridor.condition_tracking import ConditionEntry, ConditionLink, FieldCandidate
 from corridor.models import (
     Dependency,
@@ -36,11 +36,14 @@ from corridor.models import (
     DocumentationFieldConfirmation,
     Document,
     EvidenceLink,
-    ProjectRosterEntry,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.project_lock import lock_project
-from corridor.work_decisions import assign_internal_owner, set_next_action
+from corridor.work_decisions import (
+    active_roster_member,
+    assign_internal_owner,
+    set_next_action,
+)
 
 
 AS_BUILT = "as_built"
@@ -509,8 +512,14 @@ class DocumentationClarification:
     next_action_decision_id: int
 
 
-class DocumentationClarificationRefusal(ValueError):
-    """This requirement is already met, so a clarification is unnecessary."""
+class DocumentationClarificationRefusal(refusals.Refusal, ValueError):
+    """This requirement is already met, so a clarification is unnecessary.
+
+    The family declares its own kind (#794 card 22), so the adapter answers
+    with this sentence under one status instead of picking one per route.
+    """
+
+    refusal_kind = refusals.CONFLICT
 
 
 def record_documentation_clarification(
@@ -545,15 +554,9 @@ def record_documentation_clarification(
         raise DocumentationClarificationRefusal(
             "this constraint has no open documentation requirement to clarify"
         )
-    roster = session.get(ProjectRosterEntry, roster_entry_id)
-    if (
-        roster is None
-        or roster.project_id != dependency.project_id
-        or not roster.active
-    ):
-        raise ValueError(
-            "the assignee must be an active member of this project roster"
-        )
+    roster = active_roster_member(
+        session, roster_entry_id, project_id=dependency.project_id
+    )
 
     with session.begin_nested():
         owner = assign_internal_owner(

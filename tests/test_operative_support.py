@@ -5,7 +5,6 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.models import (
@@ -37,17 +36,6 @@ FIELDS = {
     "station_from": "1149+00",
     "station_to": "1153+17",
 }
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

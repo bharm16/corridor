@@ -12,7 +12,6 @@ import pytest
 from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
 from corridor.materializer import (
     materialize_document_reference,
     materialize_quoted_statement_wording,
@@ -23,18 +22,6 @@ from corridor.source_append import (
     append_fact,
     append_source_segments,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

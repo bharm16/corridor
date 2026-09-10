@@ -9,7 +9,6 @@ import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.models import (
@@ -41,17 +40,6 @@ from corridor.supersession_review import build_reviewer_worklist
 
 
 REVIEWER = HumanPrincipal("local:revision-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _document(

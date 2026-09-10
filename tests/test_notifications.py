@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import func, select
 
 from corridor import notifications
-from corridor.db import Session, engine
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
     configure_assignment_notification,
@@ -47,25 +46,6 @@ from corridor.work_decisions import (
 
 RECORDER = HumanPrincipal("local:notify-coordinator")
 ASSIGNEE = HumanPrincipal("local:notify-assignee")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(slug="notify-test", name="Notify Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
 
 
 @pytest.fixture

@@ -7,7 +7,6 @@ import pytest
 from sqlalchemy import delete, select
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
 from corridor.coordination_summary import current_configuration
 from corridor.models import (
     CoordinationSummaryConfiguration,
@@ -34,17 +33,6 @@ from corridor.retention import (
 
 ACTOR = HumanPrincipal("local:retention-operator")
 AS_OF = datetime(2026, 8, 31, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _request(session, *, completed_at=AS_OF - timedelta(days=31)):

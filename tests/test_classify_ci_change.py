@@ -66,7 +66,7 @@ def repository(tmp_path: Path) -> Path:
         "roadmap.md",
         "prompts/agreement_v3.md",
         "src/corridor/ledger.py",
-        "src/corridor/models.py",
+        "src/corridor/models/spine.py",
         "src/corridor/migrations/baseline_versions/0001_base.py",
         ".github/workflows/release-gate.yml",
         "Makefile",
@@ -282,7 +282,7 @@ def test_the_migration_path_set_covers_schema_and_the_database_harness():
 
     assert set(module.MIGRATION_PATHS) == {
         "src/corridor/migrations/**",
-        "src/corridor/models.py",
+        "src/corridor/models/**",
         "src/corridor/shadow_schema.py",
         "src/corridor/legacy_history_inventory.py",
         "src/corridor/db.py",

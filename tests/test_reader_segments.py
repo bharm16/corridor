@@ -11,7 +11,6 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError
 
 from corridor.config import Settings, settings
-from corridor.db import Session, engine
 from corridor.ingest import ingest_document, ingest_native_reader
 from corridor.models import (
     DocPage,
@@ -51,26 +50,6 @@ from corridor.source_segments import (
 )
 from corridor.token_layers import page_text_projection
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
-def project(session):
-    project = Project(slug="native-segments", name="Native segments", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
 
 
 def native_pdf(tmp_path, *, rotation=0, name="native.pdf", clipped=False):

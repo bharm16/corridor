@@ -15,8 +15,6 @@ from dataclasses import fields
 from datetime import date
 from pathlib import Path
 
-import pytest
-
 from corridor import constraint_reading
 from corridor.accepted_field_reading import read_accepted_field_population
 from corridor.constraint_reading import (
@@ -29,7 +27,6 @@ from corridor.constraint_reading import (
     available,
     legacy_constraint_reading,
 )
-from corridor.db import Session, engine
 from corridor.exceptions import accepted_record_readings
 from corridor.models import Dependency, Project
 from corridor.operative_support import resolve_operative_support
@@ -56,18 +53,6 @@ LEGACY_ORM_CLASSES = frozenset(
         "EvidenceLink",
     }
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def test_the_accepted_projection_adapter_imports_no_legacy_orm_class():

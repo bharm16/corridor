@@ -1,7 +1,6 @@
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extract_agreement import PROMPT_VERSION, extract_document
 from corridor.models import Candidate, Dependency, DocPage, Document, Project
 
@@ -39,17 +38,6 @@ def obligation(**over):
     }
     base.update(over)
     return base
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

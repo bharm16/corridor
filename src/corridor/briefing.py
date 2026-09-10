@@ -508,7 +508,7 @@ def assemble_native_citables(population, evaluation, publication, *, project_sco
     for plan in population.follow_up_plans:
         citables.append(Citable(ref=f"A{len(citables)+1}", kind="decision",
             text=f"Follow-up Plan {plan.plan_id} for Proposed Delta {plan.delta_id}: {plan.open_question}. "
-                 f"Responsible: {plan.responsible_principal or plan.responsible_organization}; "
+                 f"Responsible: {plan.responsible}; "
                  f"return date {plan.return_date or 'not yet known'}; decided by {plan.recorded_by} "
                  f"in revision {plan.revision_id}. The proposed value remains unaccepted."))
     if project_scope:

@@ -45,7 +45,6 @@ from corridor.m8_acceptance_bundle import (
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     disposable_database_prefix,
-    ProvisionedDatabase,
 )
 from corridor.models import (
     ActiveExtractionRun,

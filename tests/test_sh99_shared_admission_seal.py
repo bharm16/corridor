@@ -17,7 +17,6 @@ from sqlalchemy import select
 pytestmark = pytest.mark.slow
 
 from corridor.admission import load_project
-from corridor.db import Session, engine
 from corridor.event_admission import (
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
     UNKNOWN_SCOPE_POLICY_VERSION,
@@ -59,17 +58,6 @@ from corridor.sh99_admission_acceptance import (
     verify_sh99_shared_admission_seal_bundle,
 )
 from corridor.config import settings
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    value = Session(bind=connection)
-    yield value
-    value.close()
-    transaction.rollback()
-    connection.close()
 
 
 def test_exact_ordinary_load_is_one_statement_then_zero_new_outcomes(session):

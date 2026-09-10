@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.delta_generation import COMPARABLE_FACT_TYPES, accepted_values
 from corridor.fact_decisions import include_stationing_fact_by_policy
 from corridor.fact_types import (
@@ -26,40 +25,13 @@ from corridor.fact_values import (
     scalar_fact_value,
     typed_fact_value,
 )
-from corridor.models import (
-    ActiveExtractionRun,
-    Candidate,
-    Dependency,
-    Document,
-    ExtractedProposal,
-    ExtractedProposalFact,
-    ExtractionRun,
-    Fact,
-    FactAppliesTo,
-    FactClosureResult,
-    FactSource,
-    FactStatementTiming,
-    Project,
-    SourceSegment,
-)
+from corridor.models import ActiveExtractionRun, Candidate, Dependency, Document, ExtractedProposal, ExtractedProposalFact, ExtractionRun, Fact, FactAppliesTo, FactClosureResult, FactSource, FactStatementTiming, SourceSegment
 from corridor.record_projection import (
     CurrentRecordValue,
     CurrentStatementTiming,
     read_current_project_record,
     record_value_payload,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 # --- The shape, one Fact type at a time ------------------------------------
@@ -192,16 +164,6 @@ def test_the_comparison_pass_compares_only_single_valued_fields():
 
 
 # --- Reading captured Facts out of the database ----------------------------
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"fact-values-{uuid4().hex[:8]}", name="Fact Values", is_synthetic=True
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 @pytest.fixture

@@ -3,11 +3,9 @@
 from datetime import date
 from hashlib import sha256
 
-import pytest
 from sqlalchemy import select
 
 from corridor.candidate_statement_facts import prepare_candidate_statement_facts
-from corridor.db import Session, engine
 from corridor.models import (
     Candidate,
     DocPage,
@@ -24,17 +22,6 @@ from corridor.models import (
     SubjectResolutionAttempt,
 )
 from corridor.subject_resolution import unresolved_subject_work_items
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    value = Session(bind=connection)
-    yield value
-    value.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _candidate_with_page(session, *, quote, page_text, fields):

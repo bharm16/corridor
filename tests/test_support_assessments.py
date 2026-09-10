@@ -23,7 +23,6 @@ from sqlalchemy.orm import Session as OrmSession
 from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import (
     ActiveExtractionRun,
     Candidate,
@@ -56,18 +55,6 @@ from corridor.support_assessments import (
 ALICE = HumanPrincipal("local:alice")
 BOB = HumanPrincipal("local:bob")
 POLICY = ReleasedPolicy("structured-cell-support-v1", "ruleset-2026-09")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def _rendition(session, project, name, values, prompt_version="support_fixture_v1"):

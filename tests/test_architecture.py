@@ -25,6 +25,28 @@ def _module_paths() -> tuple[Path, ...]:
     )
 
 
+MODELS_PACKAGE = SOURCE_ROOT / "models"
+
+
+def _models_submodules() -> tuple[Path, ...]:
+    """Every family module in the schema package, `__init__.py` excluded."""
+    return tuple(
+        sorted(path for path in MODELS_PACKAGE.glob("*.py") if path.name != "__init__.py")
+    )
+
+
+def _declares_the_schema(path: Path) -> bool:
+    """True for the schema declaration itself, which no rule below reads as a reader.
+
+    Card 21 split one 11.6k-line `models.py` into one module per bounded
+    context. Rules that used to exempt `models.py` by name now exempt the
+    package: declaring a relation is not consuming one, whichever family module
+    the declaration landed in.
+    """
+
+    return MODELS_PACKAGE in path.parents
+
+
 def _tree(path: Path) -> ast.Module:
     return read_python(path).tree
 
@@ -154,14 +176,85 @@ def test_no_module_silently_replaces_a_top_level_interface_name():
 
 
 def test_source_modules_do_not_import_another_module_private_implementation():
-    """Every import form, so `from corridor import _x` cannot slip past."""
+    """Every import form, so `from corridor import _x` cannot slip past.
+
+    A module may still reach its own package's private implementation: the
+    schema package's family modules share `corridor.models.base`, whose `_enum`
+    builds every named PostgreSQL enumeration in the schema. That is the
+    boundary a package draws, and the rule is about crossing someone else's.
+    """
     private_imports: list[str] = []
     for path in _module_paths():
+        package = _module_name(path).rpartition(".")[0]
+        own = f"corridor.{package}." if package else None
         for imported, lineno in _imported_module_names(read_python(path).nodes):
-            if imported.startswith("corridor.") and imported.split(".")[-1].startswith("_"):
-                private_imports.append(f"{path.name}:{lineno} imports {imported}")
+            if not imported.startswith("corridor."):
+                continue
+            if not imported.split(".")[-1].startswith("_"):
+                continue
+            if own is not None and imported.startswith(own):
+                continue
+            private_imports.append(f"{path.name}:{lineno} imports {imported}")
 
     assert sorted(set(private_imports)) == []
+
+
+def test_the_schema_package_imports_and_reexports_every_family_it_declares():
+    """`corridor.models` is a package, and importing it still declares everything.
+
+    Card 21 split the schema by bounded context. Two things had to stay true and
+    neither is automatic. `Base.metadata` is only complete once every family has
+    been imported -- Alembic autogenerate reads that metadata, so a family this
+    package forgot would silently drop out of the schema and out of the
+    fingerprint. And roughly two hundred modules import their relations from
+    `corridor.models`, so every public name each family declares has to arrive
+    there. This test holds both: the package star-imports exactly the family
+    modules that exist, each family declares an `__all__` equal to its own
+    public definitions, and the package's `__all__` is their union.
+    """
+    import importlib
+
+    init = read_python(MODELS_PACKAGE / "__init__.py")
+    star_imported = {
+        node.module
+        for node in init.nodes
+        if isinstance(node, ast.ImportFrom)
+        and any(alias.name == "*" for alias in node.names)
+    }
+    families = _models_submodules()
+    assert star_imported == {f"corridor.models.{path.stem}" for path in families}
+
+    package = importlib.import_module("corridor.models")
+    problems: list[str] = []
+    union: set[str] = set()
+    for path in families:
+        module = importlib.import_module(f"corridor.models.{path.stem}")
+        defined = {
+            node.name
+            for node in _tree(path).body
+            if isinstance(node, (ast.ClassDef, ast.FunctionDef))
+        } | {
+            target.id
+            for node in _tree(path).body
+            if isinstance(node, ast.Assign)
+            for target in node.targets
+            if isinstance(target, ast.Name)
+        }
+        public = {name for name in defined if not name.startswith("_")}
+        declared = set(getattr(module, "__all__", ()))
+        if declared != public:
+            problems.append(
+                f"{path.name}: __all__ is {sorted(declared)}, "
+                f"its public definitions are {sorted(public)}"
+            )
+        for name in public:
+            if getattr(package, name, None) is not getattr(module, name):
+                problems.append(f"corridor.models does not re-export {name}")
+        union |= public
+
+    assert problems == []
+    assert set(package.__all__) == union
+    assert len(package.__all__) == len(set(package.__all__))
 
 
 # The import cycles that exist today, edge by edge (ADR-0081).
@@ -197,17 +290,6 @@ _SUPPORT_TRANSFER = (
     "each other, operative_support and revision_comparison; the support-"
     "assessment card gives that group one downward direction"
 )
-_NATIVE_READER_COVERAGE = (
-    "the native-coverage and equivalence reports import the readers they "
-    "measure while those readers import current_record; the reader-equivalence "
-    "card measures through a declared registry instead"
-)
-_RELEASE_ASSEMBLY = (
-    "release candidate assembly, packet review and the issue renderers import "
-    "each other; the release-assembly card separates assembling a release from "
-    "rendering one"
-)
-
 CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     # extraction lineage
     ("admission", "dependency_admission", _EXTRACTION_LINEAGE),
@@ -269,25 +351,6 @@ CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
     ("support_transfer_lineage", "extraction_runs", _SUPPORT_TRANSFER),
     ("support_transfer_lineage", "operative_support", _SUPPORT_TRANSFER),
     ("support_transfer_lineage", "revision_comparison", _SUPPORT_TRANSFER),
-    # native reader coverage
-    ("current_record", "reader_equivalence", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "packet_review", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "release_authorization", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "release_candidate", _NATIVE_READER_COVERAGE),
-    ("native_reader_coverage", "workbook_render", _NATIVE_READER_COVERAGE),
-    ("reader_equivalence", "native_reader_coverage", _NATIVE_READER_COVERAGE),
-    ("workbook_render", "current_record", _NATIVE_READER_COVERAGE),
-    # release assembly
-    ("follow_up_bundles", "project_workflow", _RELEASE_ASSEMBLY),
-    ("issue_coverage", "issue_rendering", _RELEASE_ASSEMBLY),
-    ("issue_rendering", "current_record", _RELEASE_ASSEMBLY),
-    ("packet_review", "issue_coverage", _RELEASE_ASSEMBLY),
-    ("project_workflow", "packet_review", _RELEASE_ASSEMBLY),
-    ("release_authorization", "release_candidate", _RELEASE_ASSEMBLY),
-    ("release_candidate", "follow_up_bundles", _RELEASE_ASSEMBLY),
-    ("release_candidate", "issue_coverage", _RELEASE_ASSEMBLY),
-    ("release_candidate", "issue_rendering", _RELEASE_ASSEMBLY),
-    ("release_candidate", "workbook_render", _RELEASE_ASSEMBLY),
 )
 
 
@@ -634,7 +697,7 @@ def test_no_application_module_constructs_an_accepted_authority_row():
 
     constructors = []
     for path in _module_paths():
-        if path.name == "models.py":
+        if _declares_the_schema(path):
             continue
         for node in read_python(path).nodes:
             if (
@@ -927,18 +990,22 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
 def _legacy_table_consumers() -> dict[str, tuple[str, ...]]:
     """Every source module that names one of the legacy ORM classes.
 
-    Two forms count as consuming: importing the class from `corridor.models`,
-    and reaching it as `models.X` off an imported module. `models.py` declares
-    them and is not a consumer of them.
+    Three forms count as consuming: importing the class from `corridor.models`,
+    importing it from `corridor.models.legacy` directly, and reaching it as
+    `models.X` off an imported module. The schema package declares them and is
+    not a consumer of them.
     """
 
     consumers: dict[str, list[str]] = {name: [] for name in LEGACY_TABLE_CONSUMERS}
     for path in _module_paths():
-        if path.name == "models.py":
+        if _declares_the_schema(path):
             continue
         found: set[str] = set()
         for node in read_python(path).nodes:
-            if isinstance(node, ast.ImportFrom) and node.module == "corridor.models":
+            if isinstance(node, ast.ImportFrom) and node.module in (
+                "corridor.models",
+                "corridor.models.legacy",
+            ):
                 found.update(
                     imported.name
                     for imported in node.names
@@ -993,6 +1060,52 @@ def test_the_legacy_table_consumer_list_may_fall_and_may_never_rise():
             )
 
     assert problems == {}
+
+
+def test_every_frozen_relation_is_declared_in_the_legacy_family_and_nowhere_else():
+    """The freeze has one address: `corridor.models.legacy` (ADR-0081).
+
+    Before card 21 the frozen tables were declared in the middle of an
+    11.6k-line module, so "do not build on these" was a comment. Collecting
+    them in one family module makes it a location, which is what lets the rule
+    below be a scan for an import rather than a scan for a class name. The
+    satellites that cannot exist without one of them -- a statement's timing
+    rows, its scope memberships, its evidence links -- live there too, and are
+    allowed to; nothing else may.
+    """
+
+    declarations: dict[str, list[str]] = defaultdict(list)
+    for path in _models_submodules():
+        for node in _tree(path).body:
+            if isinstance(node, ast.ClassDef) and node.name in LEGACY_TABLE_CONSUMERS:
+                declarations[node.name].append(path.name)
+
+    assert {name: sorted(where) for name, where in sorted(declarations.items())} == {
+        name: ["legacy.py"] for name in sorted(LEGACY_TABLE_CONSUMERS)
+    }
+
+
+def test_no_module_outside_the_schema_package_imports_the_legacy_family():
+    """ADR-0081 stage 4's exit criterion, as one import rule.
+
+    The consumer ratchet above measures how far the readers are from the
+    criterion, class by class. This is the criterion itself, and it is already
+    true: nothing outside the schema package names the module the frozen
+    relations live in, so a reader that wants one has to reach it through
+    `corridor.models` and be counted by the ratchet. A module that imports
+    `corridor.models.legacy` directly would take a legacy dependency the
+    ratchet's list never had to admit to.
+    """
+
+    importers = []
+    for path in _module_paths():
+        if _declares_the_schema(path):
+            continue
+        for imported, lineno in _imported_module_names(read_python(path).nodes):
+            if imported == "corridor.models.legacy":
+                importers.append(f"{_module_name(path)}:{lineno}")
+
+    assert sorted(importers) == []
 
 
 def test_every_spine_dependent_table_is_covered_by_the_committed_scenario_cleanup():

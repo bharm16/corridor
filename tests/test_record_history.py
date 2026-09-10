@@ -34,7 +34,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import access, audit
-from corridor.db import engine
 from corridor.models import (
     AuditLog,
     DeltaDisposition,
@@ -99,18 +98,6 @@ DECISION_TOKENS = (
     "needs_coordination",
     "defer",
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -15,7 +15,6 @@ import pytest
 from sqlalchemy import select
 
 from corridor.admission import load_and_report, load_project
-from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
     ActiveExtractionRun,
@@ -32,17 +31,6 @@ from corridor.models import (
 )
 
 PIPELINE = "Tejas Pipeline Co"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

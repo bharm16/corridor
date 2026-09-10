@@ -4,9 +4,7 @@ import io
 from uuid import uuid4
 import zipfile
 import pytest
-from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.intake_hardening import (
     CleanScanner,
     FakeMalwareScanner,
@@ -19,17 +17,6 @@ from corridor.intake_hardening import (
 )
 from corridor.models import Document, DocumentQuarantine, Project
 from corridor.source_intake import IntakeRefused, validate_and_stage
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 def _create_zip_with_members(members: dict[str, bytes]) -> bytes:

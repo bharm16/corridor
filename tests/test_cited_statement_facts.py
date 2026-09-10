@@ -14,7 +14,6 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.facts import (
     append_recorded_applies_to_fact,
     append_recorded_statement_timing_fact,
@@ -28,18 +27,6 @@ from corridor.statement_values import StatementTiming
 
 
 _PASSAGE = "AT&T committed to relocate the conduit by June 15, 2025."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

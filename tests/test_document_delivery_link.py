@@ -23,7 +23,6 @@ from sqlalchemy import select
 
 from corridor import audit, email_intake, push_intake
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.document_delivery_backfill import (
     CAPTURE_RECEIPT_RULE,
     INBOUND_MESSAGE_RULE,
@@ -64,35 +63,11 @@ from later_revision_support import (
 from pdf_fixture_support import PdfFixture
 
 
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
-
-
 @pytest.fixture(autouse=True)
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     return tmp_path / "store"
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"delivery-link-{uuid4().hex[:8]}",
-        name="Delivery Link Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _delivery(session, envelope) -> SourceDelivery:
