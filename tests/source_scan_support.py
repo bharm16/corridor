@@ -1,8 +1,15 @@
-"""Share source parsing across static guards without caching filesystem state.
+"""Share source parsing and the import graph across static guards.
 
-Each lookup still reads the current bytes, so an edit with an unchanged size
-or timestamp cannot reuse an old tree. Only the latest parse of each path is
-kept within the current guard module; consumers treat its AST as read-only.
+Each guard used to re-implement "which modules import X" from raw `ast` nodes
+and the copies did not agree on what an import is, so a rule could be evaded
+by an import form its own scanner never learned. The graph lives here beside
+the parse cache instead: `imported_names` knows every form once, and each
+guard states only its policy.
+
+Filesystem state is never cached. Each lookup still reads the current bytes,
+so an edit with an unchanged size or timestamp cannot reuse an old tree. Only
+the latest parse of each path is kept within the current guard module;
+consumers treat its AST as read-only.
 The imported module-scoped fixture releases every tree before unrelated
 behavior tests run. Directory listings are always fresh and prune environment/
 cache directories before descending into their installed packages.
@@ -66,3 +73,51 @@ def python_files(root: Path) -> tuple[Path, ...]:
             if name.endswith(".py") and not name.startswith(".")
         )
     return tuple(sorted(paths))
+
+
+# Every absolute import form that names a module. Three forms reach one, and a
+# hand-written scanner keeps learning only some of them: #548 found a guard
+# seeing only `from pkg.module import name`, which "reported an acyclic graph
+# that was not one", and the provider-spend guard written after it still saw
+# two, so `from corridor_pdf_reader import textract_adapter` reached the
+# adapter unseen. `from pkg import module` names a module too, so each
+# imported name is offered as a submodule candidate and the caller's policy
+# decides. Relative imports do not occur in the scanned trees and are skipped
+# rather than guessed at.
+def imported_names(path: Path) -> tuple[tuple[str, int], ...]:
+    """(dotted module candidate, line) for every absolute import in one file."""
+    names: list[tuple[str, int]] = []
+    for node in read_python(path).nodes:
+        if isinstance(node, ast.ImportFrom):
+            if node.level or not node.module:
+                continue
+            names.append((node.module, node.lineno))
+            names.extend(
+                (f"{node.module}.{imported.name}", node.lineno)
+                for imported in node.names
+            )
+        elif isinstance(node, ast.Import):
+            names.extend((alias.name, node.lineno) for alias in node.names)
+    return tuple(names)
+
+
+def importers_of(
+    prefix: str, roots: tuple[Path, ...]
+) -> dict[Path, tuple[tuple[str, int], ...]]:
+    """Every file under the roots that imports `prefix` or a module beneath it.
+
+    The caller states which tree and which policy; it never learns what an
+    `ast.ImportFrom` is. Each value holds the matching names and their lines,
+    so a policy that allows one submodule and refuses its siblings can say so.
+    """
+    found: dict[Path, tuple[tuple[str, int], ...]] = {}
+    for root in roots:
+        for path in python_files(root):
+            matches = tuple(
+                (name, lineno)
+                for name, lineno in imported_names(path)
+                if name == prefix or name.startswith(f"{prefix}.")
+            )
+            if matches:
+                found[path] = matches
+    return found

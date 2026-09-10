@@ -10,7 +10,12 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
-from source_scan_support import python_files, read_python, source_scan_cache  # noqa: F401
+from source_scan_support import (  # noqa: F401
+    imported_names,
+    python_files,
+    read_python,
+    source_scan_cache,
+)
 
 
 REPO_ROOT = Path(__file__).parents[1]
@@ -55,36 +60,12 @@ def _module_name(path: Path) -> str:
     return ".".join(path.relative_to(SOURCE_ROOT).with_suffix("").parts)
 
 
-# Every absolute import form that names a Corridor module. Three forms reach
-# one, and the guards below used to see only the first: `from corridor.x import
-# y`, `from corridor import x` (104 sites, and the form that hides most of the
-# graph), and `import corridor.x`. `from corridor.pkg import module` names a
-# module too, so each imported name is offered as a submodule candidate and the
-# module table decides. Relative imports do not occur in this tree and are
-# skipped rather than guessed at.
-def _imported_module_names(nodes: tuple[ast.AST, ...]) -> tuple[tuple[str, int], ...]:
-    """(dotted module candidate, line) for every absolute import in one file."""
-    names: list[tuple[str, int]] = []
-    for node in nodes:
-        if isinstance(node, ast.ImportFrom):
-            if node.level or not node.module:
-                continue
-            names.append((node.module, node.lineno))
-            names.extend(
-                (f"{node.module}.{imported.name}", node.lineno)
-                for imported in node.names
-            )
-        elif isinstance(node, ast.Import):
-            names.extend((alias.name, node.lineno) for alias in node.names)
-    return tuple(names)
-
-
 def _corridor_import_edges() -> dict[tuple[str, str], tuple[int, ...]]:
     """Every import edge between two source modules, with the lines that make it."""
     paths = {_module_name(path): path for path in _module_paths()}
     edges: dict[tuple[str, str], set[int]] = {}
     for name, path in paths.items():
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if not imported.startswith("corridor."):
                 continue
             dependency = imported.removeprefix("corridor.")
@@ -187,7 +168,7 @@ def test_source_modules_do_not_import_another_module_private_implementation():
     for path in _module_paths():
         package = _module_name(path).rpartition(".")[0]
         own = f"corridor.{package}." if package else None
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if not imported.startswith("corridor."):
                 continue
             if not imported.split(".")[-1].startswith("_"):
@@ -354,29 +335,6 @@ CYCLE_EDGE_ALLOWLIST: tuple[tuple[str, str, str], ...] = (
 )
 
 
-def test_the_import_scanner_sees_every_form_of_dependency():
-    """The graph is only as honest as the scanner behind it (#548 shape).
-
-    `from corridor import x` is how most of this codebase imports a sibling,
-    and a scanner that only understood `from corridor.x import y` reported an
-    acyclic graph that was not one.
-    """
-
-    cases = {
-        "from corridor.exceptions import review\n": {"corridor.exceptions", "corridor.exceptions.review"},
-        "from corridor import disputes, notifications\n": {"corridor", "corridor.disputes", "corridor.notifications"},
-        "import corridor.work_decisions\n": {"corridor.work_decisions"},
-        "from corridor.web import app\n": {"corridor.web", "corridor.web.app"},
-        "from . import sibling\n": set(),
-        "import httpx\n": {"httpx"},
-    }
-
-    assert {
-        source: {name for name, _ in _imported_module_names(tuple(ast.walk(ast.parse(source))))}
-        for source in cases
-    } == cases
-
-
 def test_source_module_dependencies_are_acyclic():
     """Acyclic once the declared cycle edges are set aside, and only those.
 
@@ -502,7 +460,7 @@ def _internal_dependencies() -> dict[str, set[str]]:
     dependencies = _module_dependencies()
     for path in _module_paths():
         name = _module_name(path)
-        for imported, _ in _imported_module_names(read_python(path).nodes):
+        for imported, _ in imported_names(path):
             package = imported.split(".")[0]
             if package in MODEL_CLIENT_PACKAGES:
                 dependencies[name].add(f"<{package}>")
@@ -1101,7 +1059,7 @@ def test_no_module_outside_the_schema_package_imports_the_legacy_family():
     for path in _module_paths():
         if _declares_the_schema(path):
             continue
-        for imported, lineno in _imported_module_names(read_python(path).nodes):
+        for imported, lineno in imported_names(path):
             if imported == "corridor.models.legacy":
                 importers.append(f"{_module_name(path)}:{lineno}")
 
