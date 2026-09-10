@@ -168,9 +168,9 @@ from corridor.migrations.source_append_commands import (
     web_capability,
 )
 
-# The Fact identity recipe frozen below reads the family's own link map.
+# The Fact identity recipe frozen below reads the family's own role map.
 from corridor.migrations.source_append_commands.recorded_verbal import (
-    _MATERIALIZED_SOURCE_LINKS,
+    MATERIALIZED_SOURCE_LINKS,
 )
 from corridor.migrations.source_append_commands.roles import (
     ASSESSMENTS_SQL,
@@ -184,11 +184,12 @@ from corridor.migrations.source_append_commands.roles import (
     SUPPORT_TABLES,
 )
 
-# Names moved out of this file that a reader outside it still asks for by
-# this path: the two frozen boundary copies `tests/test_architecture.py`
-# compares with `corridor.web_boundary`, and the native segment command
-# `corridor.migrations.email_spine` is handed below.  Everything else a
-# family owns is read from that family's own module.
+# `APPEND_NATIVE_SOURCE_SEGMENTS` is handed to `corridor.migrations.email_spine`
+# below.  The rest are re-exports rather than uses: `tests/test_architecture.py`
+# loads this file by path and compares the frozen #680 and #693 boundary copies
+# the revision carries against `corridor.web_boundary`, so those names must keep
+# resolving here.  Every other name a family owns is read from that family's own
+# module.
 from corridor.migrations.source_append_commands.native_segments import (
     APPEND_NATIVE_SOURCE_SEGMENTS,
 )
@@ -1323,7 +1324,7 @@ def _frozen_fact_digest(
         "structured_value": structured_value,
         "source_links": [
             {"role": role, "source_segment_id": source_segment_id}
-            for role in _MATERIALIZED_SOURCE_LINKS[fact_type]
+            for role in MATERIALIZED_SOURCE_LINKS[fact_type]
         ],
     }
     return sha256(

@@ -434,7 +434,12 @@ def _with_append_only_guards_lifted(bind, work) -> None:
                 sa.text(f"alter table public.{table} enable trigger {trigger}")
             )
 
-_MATERIALIZED_SOURCE_LINKS = {
+
+# Which source roles a materialized Fact of each type carries.  The recipe that
+# digests them is frozen in the revision module, which reads this map: the
+# backfill reproduces each stored digest with that recipe before it replaces
+# one, so a recipe that has drifted refuses instead of rewriting.
+MATERIALIZED_SOURCE_LINKS = {
     "statement_wording": ("value_source", "attribution_source"),
     "statement_timing": ("value_source",),
     "applies_to": ("value_source",),
@@ -606,7 +611,7 @@ def _backfill_recorded_verbal_origins(bind, fact_digest, revision) -> None:
         ).scalar_one()
 
         for fact in facts:
-            if fact.fact_type not in _MATERIALIZED_SOURCE_LINKS:
+            if fact.fact_type not in MATERIALIZED_SOURCE_LINKS:
                 raise RuntimeError(
                     f"#512 backfill refuses: Fact {fact.id} of type "
                     f"{fact.fact_type!r} takes its value from a recorded verbal "
