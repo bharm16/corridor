@@ -14,12 +14,22 @@ restores a data-only dump into a disposable database at the same revision,
 upgrades only the clone to the checkout's exact head, and rechecks the shared
 head and state after disposal.  Direct database repair, raw technical
 identifiers, and test-only screens remain disqualifying in the timed journey.
+
+Its clone loop is deliberately not
+``rehearsal_environment.rehearse_on_disposable_clone``: this rehearsal starts
+its clone at the *predecessor* head and upgrades it mid-rehearsal, so the shared
+loop's "the clone is at the checkout head, and matches the source" contract is
+not what this one claims.  The parsers below are page objects, and every one of
+them exists for a claim only a page can answer: finding the work, following a
+visible control, filling a form from the labels and browser-carried values the
+screen offered, or proving what the screen did and did not display.  Every claim
+about the record itself is re-read from the clone's database after the timed
+journey commits — see `docs/operations/rehearsal-harness-posture.md`.
 """
 
 from __future__ import annotations
 
 from corridor import digests
-from functools import partial
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
 from html import unescape
@@ -55,7 +65,6 @@ from corridor.m8_acceptance_bundle import (
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
     disposable_database_prefix,
-    provision_disposable_postgres,
     read_migration_head,
     upgrade_provisioned_postgres,
 )
@@ -83,7 +92,10 @@ from corridor.report_release import (
 from corridor.sh99_admission_acceptance import (
     read_rehearsal_project_state,
 )
-from corridor.rehearsal_environment import SealedRehearsalEnvironment
+from corridor.rehearsal_environment import (
+    SealedRehearsalEnvironment,
+    disposable_provisioner,
+)
 from corridor.web.app import app, get_human_principal, get_session
 from corridor.work_list import build_work_list
 
@@ -492,8 +504,7 @@ def run_sh99_coordinator_rehearsal(
     """
 
     if provision_database is None:
-        provision_database = partial(
-            provision_disposable_postgres,
+        provision_database = disposable_provisioner(
             repo_root=Path(__file__).resolve().parents[2],
             label=DATABASE_LABEL,
         )

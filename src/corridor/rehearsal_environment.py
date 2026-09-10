@@ -1,32 +1,110 @@
-"""Pinned local PostgreSQL source and disposable-clone mechanics for rehearsals.
+"""Pinned local PostgreSQL source and disposable-clone rehearsals.
 
 Admission acceptance and the coordinator rehearsal both verify a clean source
 checkout, pin source and database migration identities, capture the shared
 database read-only, and restore it only into a disposable clone.  Those safety
 rules used to live as private helpers in one scenario and leak into the other.
 
-This module owns that local seam.  It never runs a domain operation and never
-authorizes shared-state mutation; each scenario retains its own assertions and
-receipt.
+The seam then stopped one layer too low.  Four harnesses each wrote the loop
+*above* it — capture, provision, refuse a migration-head mismatch, restore,
+check the clone against the source, run, read the state again — with four
+refusal messages for the one mismatch, and "observe the checkout" was written
+five times.  One engine migration therefore had to edit three harnesses (#748).
+``rehearse_on_disposable_clone`` owns that loop now: a harness supplies the
+operation, the state reader and its own claim boundary, and receives the
+before/after pair.
+
+This module still never runs a domain operation and never authorizes
+shared-state mutation.  Each harness keeps its own assertions, receipt and
+claim boundary: a Product Test Run, a Rehearsal Input Manifest and an
+Extraction Measurement are different things with different claim boundaries,
+and nothing here merges them.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from functools import partial
 import os
 from pathlib import Path
 import re
 import subprocess
+from typing import Any
 
 from sqlalchemy.engine import make_url
 
+from corridor import digests
 from corridor.m8_acceptance_database import (
+    DatabaseProvisioner,
+    ProvisionedDatabase,
+    provision_disposable_postgres,
     read_migration_head,
     require_local_postgres_host,
 )
 
 
 _DATABASE_NAME = re.compile(r"^[A-Za-z_][A-Za-z0-9_$]*$")
+
+StateReader = Callable[[str], Any]
+"""Read one comparable state from a database URL: the harness decides what."""
+
+
+@dataclass(frozen=True)
+class CheckoutObservation:
+    """One read of the source checkout HEAD and its worktree cleanliness."""
+
+    revision: str
+    clean: bool
+
+    @property
+    def status(self) -> str:
+        """The word an acceptance receipt records for this observation."""
+
+        return "clean" if self.clean else "dirty"
+
+
+def read_git_output(repo_root: Path, *args: str) -> str:
+    """Run one read-only Git command in the checkout under rehearsal."""
+
+    return _git(Path(repo_root), *args)
+
+
+def observe_checkout(repo_root: Path) -> CheckoutObservation:
+    """Observe the checkout once, for every harness that pins it.
+
+    A harness that also pins ``origin/main`` reads that reference itself with
+    ``read_git_output``; fetching is a network act and stays with the caller
+    that wants it.
+    """
+
+    root = Path(repo_root)
+    return CheckoutObservation(
+        revision=_git(root, "rev-parse", "HEAD"),
+        clean=not _git(root, "status", "--porcelain"),
+    )
+
+
+def disposable_provisioner(
+    *,
+    repo_root: Path,
+    label: str,
+    migration_revision: str = "head",
+    reuse_migrated_template: bool = False,
+) -> DatabaseProvisioner:
+    """One rehearsal's own labeled disposable-database namespace.
+
+    Every harness built this partial application itself; the label, the name and
+    the refusal belong to ``m8_acceptance_database``, and choosing the namespace
+    is the only decision left.
+    """
+
+    keywords: dict[str, Any] = {"repo_root": repo_root, "label": label}
+    if migration_revision != "head":
+        keywords["migration_revision"] = migration_revision
+    if reuse_migrated_template:
+        keywords["reuse_migrated_template"] = True
+    return partial(provision_disposable_postgres, **keywords)
 
 
 @dataclass(frozen=True)
@@ -56,8 +134,9 @@ class SealedRehearsalEnvironment:
         compose_root = (
             Path(compose_root).resolve() if compose_root is not None else repo_root
         )
-        revision = _git(repo_root, "rev-parse", "HEAD")
-        if _git(repo_root, "status", "--porcelain"):
+        observed = observe_checkout(repo_root)
+        revision = observed.revision
+        if not observed.clean:
             raise ValueError("SH 99 rehearsal requires a clean source checkout")
         if revision != expected_checkout_revision:
             raise ValueError("checkout revision does not match the caller-provided pin")
@@ -213,6 +292,111 @@ class SealedRehearsalEnvironment:
         )
 
 
+@dataclass(frozen=True)
+class RehearsalClone:
+    """The disposable clone one rehearsal operation is allowed to change."""
+
+    database_url: str
+    database_name: str
+    read_state: StateReader
+
+    def state(self) -> Any:
+        """Read the clone's state with the harness's own reader."""
+
+        return self.read_state(self.database_url)
+
+
+@dataclass(frozen=True)
+class RehearsedClone:
+    """One disposable clone of the pinned source, and what one operation did.
+
+    ``claim_boundary`` travels with the pair so a harness publishes the boundary
+    its own receipt claims and never another harness's.
+    """
+
+    claim_boundary: Mapping[str, bool]
+    database_name: str
+    database_url: str
+    source_dump_sha256: str
+    source_state: Any
+    before: Any
+    after: Any
+    result: Any
+
+
+def rehearse_on_disposable_clone(
+    environment: "SealedRehearsalEnvironment",
+    *,
+    postgres_admin_url: str,
+    provision_database: DatabaseProvisioner,
+    dump_path: Path,
+    read_state: StateReader,
+    operation: Callable[[RehearsalClone], Any],
+    claim_boundary: Mapping[str, bool],
+    require_source: Callable[[Any], None] | None = None,
+    require_database: Callable[[ProvisionedDatabase], None] | None = None,
+    error_cls: type[Exception] = ValueError,
+) -> RehearsedClone:
+    """Run one operation on a verified disposable clone of the pinned source.
+
+    The whole loop lives here: read the pinned source state, capture it
+    read-only, provision a disposable database, refuse a migration head that is
+    not the checkout's, restore, refuse a clone that does not match the source,
+    run the operation, and read the clone again.  The migration-head refusal is
+    one message; a harness that owes its own exception type passes ``error_cls``.
+
+    ``dump_path`` is captured only when it does not already hold a capture, so a
+    rehearsal that needs a second clone restores the *identical* bytes — two
+    clones are comparable only when they came from one capture.
+    ``require_source`` refuses a source that fails the harness's own pins before
+    anything is captured; ``require_database`` proves something further about the
+    database this rehearsal was handed before anything is restored into it.
+    """
+
+    if not claim_boundary or any(
+        not isinstance(value, bool) for value in claim_boundary.values()
+    ):
+        raise error_cls("a rehearsal must state the claim boundary it runs under")
+    dump_path = Path(dump_path)
+    source_state = read_state(environment.source_database_url)
+    if require_source is not None:
+        require_source(source_state)
+    if not dump_path.exists():
+        environment.capture(dump_path)
+    dump_bytes = dump_path.read_bytes()
+    if not dump_bytes:
+        raise error_cls("the captured source dump is empty")
+    with provision_database(postgres_admin_url) as database:
+        if require_database is not None:
+            require_database(database)
+        if database.migration_head != environment.checkout_migration_head:
+            raise error_cls(
+                "disposable clone was not provisioned at the pinned migration head"
+            )
+        environment.restore(dump_path, database.name)
+        clone = RehearsalClone(
+            database_url=environment.clone_url(postgres_admin_url, database.name),
+            database_name=database.name,
+            read_state=read_state,
+        )
+        before = clone.state()
+        if before != source_state:
+            raise error_cls(
+                "restored disposable clone does not match the pinned source state"
+            )
+        result = operation(clone)
+        return RehearsedClone(
+            claim_boundary=claim_boundary,
+            database_name=database.name,
+            database_url=clone.database_url,
+            source_dump_sha256=digests.sha256_bytes(dump_bytes),
+            source_state=source_state,
+            before=before,
+            after=clone.state(),
+            result=result,
+        )
+
+
 def _compose_service_is_running(compose_root: Path) -> bool:
     """Whether this checkout's own Compose stack is serving PostgreSQL here."""
 
@@ -230,13 +414,17 @@ def _compose_service_is_running(compose_root: Path) -> bool:
 
 
 def _git(repo_root: Path, *args: str) -> str:
-    return subprocess.run(
+    completed = subprocess.run(
         ["git", *args],
         cwd=repo_root,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
-    ).stdout.strip()
+    )
+    if completed.returncode:
+        detail = (completed.stderr or completed.stdout).strip()
+        raise ValueError(f"cannot observe Git checkout: {detail}")
+    return completed.stdout.strip()
 
 
 def _source_migration_head(repo_root: Path) -> str:

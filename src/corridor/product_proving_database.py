@@ -20,6 +20,7 @@ from corridor import digests
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass
+from functools import partial
 from datetime import datetime, timezone
 from hashlib import sha256
 import json
@@ -44,7 +45,11 @@ from corridor.m8_acceptance_database import (
     require_postgres_16,
 )
 from corridor.m8_acceptance_publication import publish_directory_once
-from corridor.rehearsal_environment import SealedRehearsalEnvironment
+from corridor.rehearsal_environment import (
+    RehearsalClone,
+    SealedRehearsalEnvironment,
+    rehearse_on_disposable_clone,
+)
 
 
 BASELINE_SCHEMA_VERSION = "corridor.product-proving-database-baseline.v2"
@@ -53,6 +58,13 @@ BASELINE_FILENAME = "baseline.json"
 DUMP_FILENAME = "baseline.dump"
 MANIFEST_FILENAME = "manifest.json"
 BASELINE_FILES = (BASELINE_FILENAME, DUMP_FILENAME)
+# What sealing one baseline claims, and what it does not: the seal proves the
+# dump restores to the exact source state, not that a Product Test Run passed.
+BASELINE_CLAIM_BOUNDARY = {
+    "restore_verified_against_the_source": True,
+    "shared_database_mutated": False,
+    "product_test_run_result": False,
+}
 DISPOSABLE_DATABASE_LABEL = "proving_restore"
 BACKUP_DATABASE_LABEL = "pre_proving"
 DISPOSABLE_DATABASE_PREFIX = disposable_database_prefix(DISPOSABLE_DATABASE_LABEL)
@@ -681,22 +693,28 @@ def capture_product_proving_database_baseline(
         prefix="corridor-product-proving-baseline-"
     ) as parent:
         dump_path = Path(parent) / DUMP_FILENAME
-        source_before = fingerprint_database(config.source_database_url)
-        environment.capture(dump_path)
+        rehearsed = rehearse_on_disposable_clone(
+            environment,
+            postgres_admin_url=config.postgres_admin_url,
+            provision_database=provision_database,
+            dump_path=dump_path,
+            read_state=fingerprint_database,
+            operation=_verify_the_restore_only,
+            claim_boundary=BASELINE_CLAIM_BOUNDARY,
+            require_database=partial(
+                _require_verification_database,
+                expected_migration_head=config.expected_migration_head,
+            ),
+            error_cls=ProductProvingDatabaseError,
+        )
+        source_before = rehearsed.source_state
+        restored = rehearsed.before
+        verification_database_name = rehearsed.database_name
         dump_bytes = dump_path.read_bytes()
         dump_sha256 = _sha256(dump_bytes)
-        if not dump_bytes:
-            raise ProductProvingDatabaseError("captured database dump is empty")
-
-        with provision_database(config.postgres_admin_url) as database:
-            _require_verification_database(database, config.expected_migration_head)
-            environment.restore(dump_path, database.name)
-            clone_url = environment.clone_url(config.postgres_admin_url, database.name)
-            restored = fingerprint_database(clone_url)
-            verification_database_name = database.name
-        if restored != source_before:
+        if rehearsed.after != restored:
             raise ProductProvingDatabaseError(
-                "restored verification database does not match the source fingerprint"
+                "verification database changed while its restore was checked"
             )
         source_after = fingerprint_database(config.source_database_url)
         if source_after != source_before:
@@ -964,7 +982,9 @@ def restore_shared_development_database(
 
     source_before = fingerprint_database(config.source_database_url)
     with provision_database(config.postgres_admin_url) as database:
-        _require_verification_database(database, config.expected_migration_head)
+        _require_verification_database(
+            database, expected_migration_head=config.expected_migration_head
+        )
         environment.restore(verified.bundle_dir / DUMP_FILENAME, database.name)
         clone_url = environment.clone_url(config.postgres_admin_url, database.name)
         clone_fingerprint = fingerprint_database(clone_url)
@@ -1682,6 +1702,12 @@ def _database_provisioner(
     return provision
 
 
+def _verify_the_restore_only(clone: RehearsalClone) -> None:
+    """Sealing a baseline runs no operation: the restore itself is the claim."""
+
+    return None
+
+
 def _require_environment_pins(
     environment: SealedRehearsalEnvironment,
     expected_migration_head: str,
@@ -1697,6 +1723,7 @@ def _require_environment_pins(
 
 def _require_verification_database(
     database: ProvisionedDatabase,
+    *,
     expected_migration_head: str,
 ) -> None:
     _require_database_name(database.name, "verification database")
