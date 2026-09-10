@@ -291,7 +291,7 @@ def run_extraction(
     import sys
     import time
 
-    from corridor.db import WorkerSession as DefaultSessionFactory
+    from corridor.db import WorkerSession
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
@@ -305,7 +305,7 @@ def run_extraction(
             "pass exactly one of extractor_config= or extractor_registry_key="
         )
 
-    with (session_factory or DefaultSessionFactory)() as session:
+    with (session_factory or WorkerSession)() as session:
         project = session.scalars(
             select(Project).where(Project.slug == slug)
         ).first()

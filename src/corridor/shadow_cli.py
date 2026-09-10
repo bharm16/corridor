@@ -22,6 +22,7 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.compatibility_intake import CompatibilityReceipt
 from corridor.models import Project, SourceDelivery
 from corridor.native_provider_boundary import CustomerAuthorization
@@ -158,7 +159,7 @@ def main(argv=None):
         url = make_url(os.environ[args.database_url_env])
         if url.drivername != "postgresql+psycopg" or not all((url.username, url.password, url.host, url.port, url.database)):
             raise ShadowRefused("an explicit PostgreSQL URL is required")
-        if args.command != "provision" and url.username != "corridor_worker":
+        if args.command != "provision" and url.username != WORKER_CAPABILITY_LOGIN:
             raise ShadowRefused("capture/export require the corridor_worker URL")
         if args.command == "provision" and url.username.startswith("corridor_"):
             raise ShadowRefused("provisioning requires the separate schema-owner URL")

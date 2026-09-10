@@ -65,13 +65,13 @@ from __future__ import annotations
 
 import sqlalchemy as sa
 
-from corridor.migrations.source_append_commands.operating_mode import (
-    OPERATING_MODE_ROLE,
-)
 from corridor.migrations.source_append_commands.project_partition import (
     _UNPARTITIONED_ROLES_SQL,
 )
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
+)
 
 
 ISSUE_PROFILE_TABLES = (
@@ -514,11 +514,11 @@ def upgrade(op) -> None:
             f"from {RUNTIME_LOGINS}"
         )
         op.execute(
-            f"grant select, insert on public.{table} to {OPERATING_MODE_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {OPERATING_MODE_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     # The command resolves the declared template and mapping against
     # `project_baseline_formats`, which the Adopt Baseline block above already
@@ -526,7 +526,7 @@ def upgrade(op) -> None:
     op.execute(
         f"alter function public.register_project_issue_profile"
         f"{REGISTER_PROJECT_ISSUE_PROFILE_SIGNATURE} owner to "
-        f"{OPERATING_MODE_ROLE}"
+        f"{RECORD_DECISION_ROLE}"
     )
     for function in (
         f"register_project_issue_profile{REGISTER_PROJECT_ISSUE_PROFILE_SIGNATURE}",

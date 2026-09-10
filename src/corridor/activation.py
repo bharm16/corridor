@@ -22,6 +22,7 @@ from typing import Callable
 
 from sqlalchemy import text
 
+from corridor.db_roles import WEB_CAPABILITY_LOGIN
 from corridor.web_boundary import PILOT_ROUTES, PROTECTED_RELATIONS
 
 VERSION = "activation-v1"
@@ -100,7 +101,7 @@ def collect_boundary_smoke(session, *, configuration: ActivationConfiguration,
     This collects observations, never accepts a caller-supplied pass flag.
     """
     role = session.execute(text("select current_user, session_user")).one()
-    if tuple(role) != ("corridor_web", "corridor_web"):
+    if tuple(role) != (WEB_CAPABILITY_LOGIN, WEB_CAPABILITY_LOGIN):
         raise ActivationRefused("boundary smoke requires actual corridor_web login")
     binding = session.execute(text("select customer_id, environment_id, deployment_id from customer_environment_binding")).all()
     expected_binding = (configuration.customer, configuration.environment, configuration.deployment_id)
@@ -218,7 +219,7 @@ def validate_activation_evidence(configuration: ActivationConfiguration, *,
         value for key, value in values.items() if key not in {"processes_pdf", "pulls_source", "source_configuration_version"}
     ):
         raise ActivationRefused("activation must identify every configuration, operator and revision")
-    if configuration.boundary_mode not in {"true", "1", "yes", "on"} or configuration.boundary_role != "corridor_web":
+    if configuration.boundary_mode not in {"true", "1", "yes", "on"} or configuration.boundary_role != WEB_CAPABILITY_LOGIN:
         raise ActivationRefused("live pilot web boundary is disabled or uses the wrong role")
     if configuration.boundary_route_digest != route_manifest_digest():
         raise ActivationRefused("activation route manifest is stale")
@@ -236,8 +237,8 @@ def validate_activation_evidence(configuration: ActivationConfiguration, *,
             raise ActivationRefused(f"prerequisite lacks observation time: {gate}") from exc
         if observed.tzinfo is None or observed > now:
             raise ActivationRefused(f"invalid prerequisite observation time: {gate}")
-        if gate == "web_boundary" and (payload.get("actual_login") != "corridor_web"
-            or payload.get("actual_database_role") != "corridor_web"
+        if gate == "web_boundary" and (payload.get("actual_login") != WEB_CAPABILITY_LOGIN
+            or payload.get("actual_database_role") != WEB_CAPABILITY_LOGIN
             or payload.get("database_binding") != {"customer": configuration.customer,
                 "environment": configuration.environment, "deployment_id": configuration.deployment_id}
             or payload.get("contract") != BOUNDARY_VERSION

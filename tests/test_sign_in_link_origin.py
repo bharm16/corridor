@@ -284,7 +284,7 @@ def lend_session_to_background(session, monkeypatch):
     def _lend():
         yield session
 
-    monkeypatch.setattr(app_module, "SessionFactory", _lend)
+    monkeypatch.setattr(app_module, "WebSession", _lend)
     return session
 
 

@@ -69,10 +69,10 @@ import sqlalchemy as sa
 
 from corridor.migrations.source_append_commands.resolve_delta import (
     DEFER_PROPOSED_DELTA_SIGNATURE,
-    RESOLVE_DELTA_ROLE,
 )
 from corridor.migrations.source_append_commands.roles import (
     COMMANDS,
+    RECORD_DECISION_ROLE,
     RUNTIME_LOGINS,
     SOURCE_APPEND_ROLE,
 )
@@ -458,7 +458,7 @@ def upgrade(op) -> None:
     op.execute(DEFER_PROPOSED_DELTA_DEDUPLICATED)
     op.execute(
         f"alter function public.defer_proposed_delta"
-        f"{DEFER_PROPOSED_DELTA_SIGNATURE} owner to {RESOLVE_DELTA_ROLE}"
+        f"{DEFER_PROPOSED_DELTA_SIGNATURE} owner to {RECORD_DECISION_ROLE}"
     )
     op.execute(
         f"revoke all on function public.defer_proposed_delta"

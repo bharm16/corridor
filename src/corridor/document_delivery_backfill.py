@@ -204,7 +204,8 @@ def main(argv: list[str], *, session_factory=None) -> int:
     slug = argv[1] if len(argv) == 2 else None
 
     if session_factory is None:
-        from corridor.db import WorkerSession as session_factory
+        from corridor.db import WorkerSession
+        session_factory = WorkerSession
 
     from corridor.models import Project
 

@@ -38,8 +38,10 @@ receipt and its children exactly as recorded.
 
 from __future__ import annotations
 
-from corridor.migrations.source_append_commands.resolve_delta import RESOLVE_DELTA_ROLE
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
+)
 
 
 REVIEW_PACKET_TABLES = (
@@ -843,11 +845,11 @@ def upgrade(op) -> None:
             f"from {RUNTIME_LOGINS}"
         )
         op.execute(
-            f"grant select, insert on public.{table} to {RESOLVE_DELTA_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {RESOLVE_DELTA_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     for body in (
         RECORD_DELTA_FOLLOW_UP_PLAN,
@@ -857,7 +859,7 @@ def upgrade(op) -> None:
         op.execute(body)
     for name, signature in REVIEW_PACKET_COMMANDS.items():
         op.execute(
-            f"alter function public.{name}{signature} owner to {RESOLVE_DELTA_ROLE}"
+            f"alter function public.{name}{signature} owner to {RECORD_DECISION_ROLE}"
         )
         op.execute(f"revoke all on function public.{name}{signature} from public")
         # Saving a packet, recording a Follow-up Plan, and undoing the act are

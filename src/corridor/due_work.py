@@ -59,6 +59,7 @@ from corridor.notifications import (
     ASSIGNMENT_NOTIFICATION_HANDLER,
     DUE_ACTION_NOTIFICATION_HANDLER,
 )
+from corridor.operating_mode import ADOPTED_BASELINE, LEGACY
 from corridor.telemetry import correlation_scope, log_event
 
 
@@ -2045,7 +2046,7 @@ def _validate_handler_result(contract: HandlerContract, result: dict[str, Any]) 
         }
         or result.get("health")
         not in {"healthy", "delta_generation_attention_required"}
-        or result.get("operating_mode") not in {"legacy", "adopted_baseline"}
+        or result.get("operating_mode") not in {LEGACY, ADOPTED_BASELINE}
     ):
         raise DueWorkRefusal("delta-generation handler result is invalid")
     if contract.key == HANDLER_REPORT_PREPARATION and (

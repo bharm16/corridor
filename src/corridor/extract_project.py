@@ -528,7 +528,7 @@ def render(project: Project, prompt_version: str, outcomes: list[Outcome]) -> st
 def main(argv: list[str]) -> int:
     """`make extract ARGS="<slug> [--redo]"`"""
     from corridor.admission import load_and_report
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
     from corridor.pipeline import production_extraction_routes
 
     args = [a for a in argv if not a.startswith("-")]
@@ -568,7 +568,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     slug = args[0]
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)

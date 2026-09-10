@@ -663,7 +663,7 @@ def main(argv: list[str]) -> int:
     """
     import sys
 
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
     from corridor.llm import OpenAIClient
     from corridor.models import Project
 
@@ -675,7 +675,7 @@ def main(argv: list[str]) -> int:
         return 2
 
     slug, ref_code = argv[0], argv[1] if len(argv) > 1 else None
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(
             select(Project).where(Project.slug == slug)
         ).first()

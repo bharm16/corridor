@@ -574,7 +574,7 @@ def main(argv: list[str]) -> int:
     """`make gold ARGS="<slug>"`"""
     import sys
 
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
 
     import argparse
 
@@ -598,7 +598,7 @@ def main(argv: list[str]) -> int:
         print("--reference-manifest requires --replay", file=sys.stderr)
         return 2
     slug, author = args.slug, args.author
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)

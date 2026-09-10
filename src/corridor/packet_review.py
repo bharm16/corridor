@@ -149,6 +149,7 @@ from corridor.issue_coverage import (
 from corridor.issue_profile import effective_issue_inventory
 from corridor.native_follow_up_reading import AcceptedFollowUpPlan, read_adopted_follow_up_plans
 from corridor.presentation import field_label, sentence_for
+from corridor.statement_values import UNKNOWN_SCOPE_LABEL
 from corridor.impact_derivations import ImpactReading, read_impact_derivations
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import (
@@ -1247,7 +1248,7 @@ def _value_text(value: Any, *, rows=None) -> str | None:
         if value.get("closure_kind") == "completion_reported":
             return "Completion Reported"
         if value.get("mode") == "unknown":
-            return "Applies To: not yet known"
+            return UNKNOWN_SCOPE_LABEL
         if value.get("mode") == "selected" and "subject_keys" in value:
             return "Applies To: " + ", ".join(_subject_name(key, (rows or {}).get(key)) for key in value["subject_keys"])
         if "statement_wording" in value:

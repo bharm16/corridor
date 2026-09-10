@@ -20,6 +20,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from corridor.activation import ActivationConfiguration, EvidenceArtifact, processing_authorized, route_manifest_digest
+from corridor.db_roles import WEB_CAPABILITY_LOGIN
 from corridor.config import settings
 from corridor.control_plane import RouteRefused
 from corridor.shadow_capabilities import verify_runtime
@@ -54,7 +55,7 @@ def current_activation():
             or configuration.data_region != settings.deployment_data_region
             or settings.live_pilot_web_boundary is not True
             or configuration.boundary_mode not in {"true", "1", "yes", "on"}
-            or configuration.boundary_role != "corridor_web"
+            or configuration.boundary_role != WEB_CAPABILITY_LOGIN
             or configuration.boundary_route_digest != route_manifest_digest()
         ):
             raise ValueError("deployment differs from activation")

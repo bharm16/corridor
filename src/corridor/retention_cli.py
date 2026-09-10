@@ -15,7 +15,7 @@ import json
 from sqlalchemy import select
 
 from corridor.config import settings
-from corridor.db import WorkerSession as Session
+from corridor.db import WorkerSession
 from corridor.models import RetentionManifestItem
 from corridor.principals import HumanPrincipal
 from corridor.retention import (
@@ -47,7 +47,7 @@ def _parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
     args = _parser().parse_args(argv)
     principal = HumanPrincipal(settings.human_principal)
-    factory = session_factory or Session
+    factory = session_factory or WorkerSession
     with factory() as session:
         if args.command == "plan":
             manifest = plan_retention(session, as_of=args.as_of, principal=principal)

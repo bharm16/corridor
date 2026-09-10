@@ -34,10 +34,10 @@ partial commit is not something a caller can construct.
 
 from __future__ import annotations
 
-from corridor.migrations.source_append_commands.operating_mode import (
-    OPERATING_MODE_ROLE,
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
 )
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
 
 
 BASELINE_RECORD_TABLES = (
@@ -511,22 +511,22 @@ def upgrade(op) -> None:
             f"from {RUNTIME_LOGINS}"
         )
         op.execute(
-            f"grant select, insert on public.{table} to {OPERATING_MODE_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {OPERATING_MODE_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     # Supersession is the one change a registered format ever sees, and the
     # guard trigger holds it to that column, once.
     op.execute(
         "grant update (superseded_by) on public.project_baseline_formats "
-        f"to {OPERATING_MODE_ROLE}"
+        f"to {RECORD_DECISION_ROLE}"
     )
     for name, signature in BASELINE_RECORD_COMMANDS.items():
         op.execute(
             f"alter function public.{name}{signature} owner to "
-            f"{OPERATING_MODE_ROLE}"
+            f"{RECORD_DECISION_ROLE}"
         )
         op.execute(f"revoke all on function public.{name}{signature} from public")
         # Adopt Baseline and a later format registration are attributable human

@@ -9,6 +9,9 @@ revision keeps working.
 from __future__ import annotations
 
 SOURCE_APPEND_ROLE = "corridor_source_append"
+# The one role that may make something effective. Three families each
+# bound it to their own constant name, which read as three roles.
+RECORD_DECISION_ROLE = "corridor_fact_decision_writer"
 RUNTIME_LOGINS = "corridor_web, corridor_worker"
 
 # Tables the application may now append to only through a command.

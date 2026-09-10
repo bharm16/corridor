@@ -76,8 +76,7 @@ from corridor.candidate_statement_facts import (
     CandidateStatementFacts,
     prepare_candidate_statement_facts,
 )
-from corridor.db import WebSession as SessionFactory
-from corridor.db import WorkerSession as MachineSessionFactory
+from corridor.db import WebSession, WorkerSession
 from corridor.web.customer_routing import (
     customer_session, set_customer_cookie, clear_customer_cookie,
     needs_customer_sign_in, clear_invalid_customer_cookies,
@@ -531,7 +530,7 @@ app.add_middleware(RequestCorrelationMiddleware)
 
 
 def get_session(request: Request):
-    with customer_session(request, SessionFactory) as session:
+    with customer_session(request, WebSession) as session:
         yield session
 
 
@@ -575,7 +574,7 @@ def get_session(request: Request):
 def get_machine_session(request: Request):
     """A session held by the operations capability, not the human web role."""
 
-    with customer_session(request, MachineSessionFactory, capability="worker") as session:
+    with customer_session(request, WorkerSession, capability="worker") as session:
         yield session
 
 
@@ -2315,7 +2314,7 @@ def _deliver_sign_in_link(
     try:
         # The originating request keeps the trusted customer route. A failed
         # delivery must retire its token in that same database (#656).
-        with customer_session(request, SessionFactory) as session:
+        with customer_session(request, WebSession) as session:
             retired = access.retire_undelivered_sign_in_token(session, raw_token)
             session.commit()
     except Exception:  # noqa: BLE001 - the response is already sent

@@ -21,10 +21,11 @@ import sqlalchemy as sa
 from corridor.migrations.source_append_commands.project_partition import (
     _UNPARTITIONED_ROLES_SQL,
 )
-from corridor.migrations.source_append_commands.roles import RUNTIME_LOGINS
+from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
+    RUNTIME_LOGINS,
+)
 
-
-OUTGOING_REQUEST_ROLE = "corridor_fact_decision_writer"
 
 OUTGOING_REQUEST_TABLES = ("outgoing_requests", "outgoing_request_responses")
 
@@ -323,17 +324,17 @@ def upgrade(op) -> None:
         op.execute(f"revoke all on public.{table} from {RUNTIME_LOGINS}")
         op.execute(f"grant select on public.{table} to {RUNTIME_LOGINS}")
         op.execute(
-            f"grant select, insert on public.{table} to {OUTGOING_REQUEST_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {OUTGOING_REQUEST_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     op.execute(APPEND_OUTGOING_REQUEST)
     op.execute(APPEND_OUTGOING_REQUEST_RESPONSE)
     for name, signature in OUTGOING_REQUEST_COMMANDS.items():
         op.execute(
-            f"alter function public.{name}{signature} owner to {OUTGOING_REQUEST_ROLE}"
+            f"alter function public.{name}{signature} owner to {RECORD_DECISION_ROLE}"
         )
         op.execute(f"revoke all on function public.{name}{signature} from public")
         # Retaining a sent request and recording its response are attributable

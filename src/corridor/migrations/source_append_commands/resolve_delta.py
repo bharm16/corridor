@@ -34,12 +34,11 @@ stays open and no Project Record revision exists (ADR-0084, ADR-0085).
 from __future__ import annotations
 
 from corridor.migrations.source_append_commands.roles import (
+    RECORD_DECISION_ROLE,
     RUNTIME_LOGINS,
     SOURCE_APPEND_ROLE,
 )
 
-
-RESOLVE_DELTA_ROLE = "corridor_fact_decision_writer"
 
 # Every refusal the statements below raise, listed once.  The plpgsql is the
 # authority and its tokens are its own words; this list exists so the agreement
@@ -161,7 +160,7 @@ create function public.enforce_delta_record_decision_write() returns trigger
     language plpgsql
     as $$
         begin
-            if current_user <> '{RESOLVE_DELTA_ROLE}' then
+            if current_user <> '{RECORD_DECISION_ROLE}' then
                 raise exception 'resolve_delta:unauthorized_writer Resolve Delta requires the typed decision command'
                     using errcode='23514';
             end if;
@@ -665,22 +664,22 @@ def upgrade(op) -> None:
             f"from {RUNTIME_LOGINS}"
         )
         op.execute(
-            f"grant select, insert on public.{table} to {RESOLVE_DELTA_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {RESOLVE_DELTA_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
     # Resolving a delta is a record decision, not a source append: the
     # disposition and the Work List scheduling receipt move to the role that
     # owns accepted authority, and the append role loses them.
     for table in RESOLVE_DELTA_ADOPTED_TABLES:
         op.execute(
-            f"grant select, insert on public.{table} to {RESOLVE_DELTA_ROLE}"
+            f"grant select, insert on public.{table} to {RECORD_DECISION_ROLE}"
         )
         op.execute(
             f"grant usage, select on sequence public.{table}_id_seq "
-            f"to {RESOLVE_DELTA_ROLE}"
+            f"to {RECORD_DECISION_ROLE}"
         )
         op.execute(f"revoke insert on public.{table} from {SOURCE_APPEND_ROLE}")
     # What the commands read to prove scope, lifecycle, and support.
@@ -692,7 +691,7 @@ def upgrade(op) -> None:
         "delta_deferrals",
         "support_assessments",
     ):
-        op.execute(f"grant select on public.{table} to {RESOLVE_DELTA_ROLE}")
+        op.execute(f"grant select on public.{table} to {RECORD_DECISION_ROLE}")
     for body in (
         OPEN_DELTA_RESOLUTION_REVISION,
         RESOLVE_PROPOSED_DELTA_DECISION,
@@ -701,7 +700,7 @@ def upgrade(op) -> None:
         op.execute(body)
     for name, signature in RESOLVE_DELTA_COMMANDS.items():
         op.execute(
-            f"alter function public.{name}{signature} owner to {RESOLVE_DELTA_ROLE}"
+            f"alter function public.{name}{signature} owner to {RECORD_DECISION_ROLE}"
         )
         op.execute(f"revoke all on function public.{name}{signature} from public")
         # Accept, edit, reject, and defer are attributable human acts, so they
@@ -719,7 +718,7 @@ def downgrade(op) -> None:
             f"do $$ begin "
             f"if exists (select 1 from pg_tables where schemaname = 'public' "
             f"and tablename = '{table}') then "
-            f"revoke select, insert on public.{table} from {RESOLVE_DELTA_ROLE}; "
+            f"revoke select, insert on public.{table} from {RECORD_DECISION_ROLE}; "
             f"grant insert on public.{table} to {SOURCE_APPEND_ROLE}; "
             f"end if; end $$;"
         )

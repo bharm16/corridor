@@ -24,6 +24,7 @@ from sqlalchemy.inspection import inspect as sqlalchemy_inspect
 from sqlalchemy.orm import Session, undefer
 
 from corridor import audit
+from corridor.db_roles import STATEMENT_RETIREMENT_ROLE
 from corridor.models import (
     Assertion,
     AuditLog,
@@ -58,7 +59,6 @@ _READABLE_ARCHIVE_FORMATS = frozenset(
     }
 )
 RETIREMENT_ACTOR = "system:legacy-ledger-retirement/v1"
-STATEMENT_RETIREMENT_ROLE = "corridor_statement_retirement"
 LEGACY_ADMISSION_ACTORS = frozenset({"agent", "demo"})
 _REF_CODE = re.compile(r"DEP-(\d+)$")
 

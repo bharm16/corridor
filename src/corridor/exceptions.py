@@ -916,11 +916,11 @@ def main(argv: list[str]) -> int:
     """`make exceptions ARGS="<slug>"`"""
     import sys
 
-    from corridor.db import WorkerSession as SessionFactory
+    from corridor.db import WorkerSession
     from corridor.models import Project
 
     slug = argv[0] if argv else "nhhip-3c2"
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         project = session.scalars(select(Project).where(Project.slug == slug)).first()
         if project is None:
             print(f"no project {slug!r}", file=sys.stderr)

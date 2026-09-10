@@ -15,7 +15,7 @@ from __future__ import annotations
 
 import argparse
 
-from corridor.db import WorkerSession as Session
+from corridor.db import WorkerSession
 from corridor.identity_audit import export
 
 
@@ -35,7 +35,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
     args = _parser().parse_args(argv)
-    factory = session_factory or Session
+    factory = session_factory or WorkerSession
     with factory() as session:
         print(export(session, fmt=args.fmt, after_id=args.after_id))
     return 0

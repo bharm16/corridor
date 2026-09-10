@@ -12,7 +12,7 @@ import argparse
 from pathlib import Path
 import sys
 
-from corridor.db import WorkerSession as Session
+from corridor.db import WorkerSession
 from corridor.storage_baseline import (
     BaselineSelection,
     build_storage_baseline,
@@ -49,7 +49,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
     args = _parser().parse_args(argv)
-    factory = session_factory or Session
+    factory = session_factory or WorkerSession
     with factory() as session:
         baseline = build_storage_baseline(
             session,

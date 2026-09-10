@@ -13,6 +13,11 @@ import stat
 
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session
+from corridor.db_roles import (
+    SOURCE_APPEND_ROLE,
+    WEB_CAPABILITY_LOGIN,
+    WORKER_CAPABILITY_LOGIN,
+)
 from corridor.legacy_history import (
     backfill_evidence_sources, capture_history, inventory_history, read_history, reverse_history,
 )
@@ -67,7 +72,8 @@ def main(argv=None):
                     where r.rolname=session_user and c.oid='public.projects'::regclass
                 """)).mappings().one()
                 if (not identity["operations"] or identity["overprivileged"]
-                    or identity["login"] in {"corridor_web", "corridor_worker", "corridor_source_append"}):
+                    or identity["login"] in {WEB_CAPABILITY_LOGIN, WORKER_CAPABILITY_LOGIN,
+                                         SOURCE_APPEND_ROLE}):
                     parser.error("history CLI requires a dedicated operations login without schema-owner/application authority")
                 if args.executor is not None and args.executor != identity["login"]:
                     parser.error("--executor must equal the authenticated operations database login")

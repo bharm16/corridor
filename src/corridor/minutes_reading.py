@@ -8,6 +8,7 @@ Proposed Delta disposition and supersession remain owned by their existing layer
 from dataclasses import dataclass
 from sqlalchemy import select
 from corridor.models import Document, MinutesCapture, SourceSegment
+from corridor.statement_values import UNKNOWN_SCOPE_LABEL
 
 
 REASONS = {
@@ -51,6 +52,6 @@ def read_minutes_work(session, *, project_id, as_of):
                 label = segment.exact_text.split(":", 1)[0]
                 contexts[delta_id] = {
                     "subject_name": f"Statement from {label}",
-                    "scope_attention": ("Applies To: not yet known",) if outcome["scope_state"] == "unknown" else (),
+                    "scope_attention": (UNKNOWN_SCOPE_LABEL,) if outcome["scope_state"] == "unknown" else (),
                 }
     return tuple(questions), contexts

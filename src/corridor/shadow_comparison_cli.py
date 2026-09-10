@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 
+from corridor.db_roles import WORKER_CAPABILITY_LOGIN
 from corridor.object_storage import content_key, content_store, store_bytes
 from corridor.shadow_comparison import (
     ComparisonPolicy, FrozenRevision, Prediction, compare_revisions, freeze_predictions,
@@ -48,7 +49,7 @@ def native_comparison(args):
     if not database_url:
         raise ValueError("the explicit worker database environment variable is not set")
     parsed = make_url(database_url)
-    if parsed.get_backend_name() != "postgresql" or parsed.username != "corridor_worker":
+    if parsed.get_backend_name() != "postgresql" or parsed.username != WORKER_CAPABILITY_LOGIN:
         raise ValueError("native comparison requires an explicit PostgreSQL corridor_worker URL")
     policy_payload = json.loads(args.policy.read_text())
     policy = ComparisonPolicy(**policy_payload)

@@ -13,7 +13,7 @@ import argparse
 import json
 import sys
 
-from corridor.db import WorkerSession as Session
+from corridor.db import WorkerSession
 from corridor.object_storage import content_store, default_storage_root
 from corridor.storage_operations import migrate_local_content, reconcile
 
@@ -50,7 +50,7 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None, *, session_factory=None) -> int:
     args = _parser().parse_args(argv)
-    factory = session_factory or Session
+    factory = session_factory or WorkerSession
     store = content_store()
     with factory() as session:
         if args.command == "migrate":

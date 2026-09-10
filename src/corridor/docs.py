@@ -16,7 +16,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from corridor.db import WorkerSession as SessionFactory
+from corridor.db import WorkerSession
 from corridor.models import DocPage, Document, Project
 from corridor.pipeline import ingest_manifest
 from corridor.storage import stored_file, stored_pdf
@@ -136,7 +136,7 @@ def _project(session: Session, slug: str) -> Project:
 def main(argv: list[str]) -> int:
     command = argv[0] if argv else "list"
 
-    with SessionFactory() as session:
+    with WorkerSession() as session:
         if command == "ingest":
             # Bulk ingest materializes only lockfiles still opted into default
             # project creation. An explicit slug still ingests that one lock.
