@@ -175,7 +175,9 @@ def assign_internal_owner(
     """Record who the project holds accountable for this subject's follow-up."""
     recorder = require_human_principal(principal)
     if not isinstance(owner, str) or not owner.strip():
-        raise ValueError("an Internal Owner is a named person, not a blank")
+        raise CoordinationDecisionRefusal(
+            "an Internal Owner is a named person, not a blank"
+        )
     owner = owner.strip()
 
     coordination_subject, projection = _locked_subject(session, subject)
@@ -211,9 +213,9 @@ def set_next_action(
     """Record the project's next step and either its date or why it is unknown."""
     recorder = require_human_principal(principal)
     if not isinstance(action, str) or not action.strip():
-        raise ValueError("a Next Action is a stated step, not a blank")
+        raise CoordinationDecisionRefusal("a Next Action is a stated step, not a blank")
     if due_date is not None and not isinstance(due_date, date):
-        raise ValueError("an Action Due Date must be a date")
+        raise CoordinationDecisionRefusal("an Action Due Date must be a date")
     reason = _due_date_reason(due_date, due_date_unknown_reason)
     composite = _composite(action.strip(), due_date)
 
@@ -273,7 +275,7 @@ def defer_work(
     """
     recorder = require_human_principal(principal)
     if not isinstance(return_date, date):
-        raise ValueError("a deferral needs a return date")
+        raise CoordinationDecisionRefusal("a deferral needs a return date")
     deferral_reason = _reason(
         reason,
         DEFERRAL_REASONS,
@@ -567,9 +569,13 @@ def _close_next_action(
     coordination_subject, projection = _locked_subject(session, subject)
     has_successor = isinstance(successor_action, str) and bool(successor_action.strip())
     if successor_action is not None and not has_successor:
-        raise ValueError("a successor Next Action is a stated step, not a blank")
+        raise CoordinationDecisionRefusal(
+            "a successor Next Action is a stated step, not a blank"
+        )
     if has_successor and no_follow_up_reason is not None:
-        raise ValueError("an action cannot have both a successor and no-follow-up reason")
+        raise CoordinationDecisionRefusal(
+            "an action cannot have both a successor and no-follow-up reason"
+        )
     if (
         has_successor
         and permitted_successor_actions is not None
@@ -598,7 +604,9 @@ def _close_next_action(
             "nothing was closed"
         )
     if tail is None or tail.after_value is None:
-        raise ValueError(f"{_subject_label(coordination_subject)} has no current Next Action")
+        raise CoordinationDecisionRefusal(
+            f"{_subject_label(coordination_subject)} has no current Next Action"
+        )
 
     if not has_successor:
         no_follow_up_reason = _reason(
@@ -613,7 +621,9 @@ def _close_next_action(
             "a cancelled action needs a structured cancellation reason",
         )
     elif cancellation_reason is not None:
-        raise ValueError("only a cancelled action carries a cancellation reason")
+        raise CoordinationDecisionRefusal(
+            "only a cancelled action carries a cancellation reason"
+        )
     note = _note(note)
 
     with session.begin_nested():
@@ -645,6 +655,26 @@ def _close_next_action(
     return decision
 
 
+def active_roster_member(
+    session: Session, roster_entry_id: int, *, project_id: int
+) -> ProjectRosterEntry:
+    """The roster identity a coordinated follow-up may name, or a refusal.
+
+    A Needs clarification on a Source Discrepancy and one on a Documentation
+    Review each name an accountable person before delegating the writes here,
+    and each checked the roster with its own copy of this ``if``.  The check is
+    the same one, so it lives beside the writers it guards and refuses with the
+    declared coordination family rather than a bare ``ValueError`` an adapter
+    has to guess a sentence for.
+    """
+    roster = session.get(ProjectRosterEntry, roster_entry_id)
+    if roster is None or roster.project_id != project_id or not roster.active:
+        raise CoordinationDecisionRefusal(
+            "the assignee must be an active member of this project roster"
+        )
+    return roster
+
+
 def _locked_subject(
     session: Session, subject: SubjectInput
 ) -> tuple[CoordinationSubject, SubjectProjection]:
@@ -656,7 +686,7 @@ def _locked_subject(
         lock_project(session, dependency.project_id)
         session.refresh(dependency)
         if dependency.dismissed_at is not None:
-            raise ValueError(
+            raise CoordinationDecisionRefusal(
                 f"{dependency.ref_code} was dismissed — no Work Decision can be recorded "
                 "on a record nobody is working"
             )
@@ -670,7 +700,9 @@ def _locked_subject(
     lock_project(session, lineage.project_id)
     session.refresh(lineage)
     if observe_current_statement(session, lineage.id) is None:
-        raise ValueError("only an accepted Commitment or Committed Date Change may coordinate")
+        raise CoordinationDecisionRefusal(
+            "only an accepted Commitment or Committed Date Change may coordinate"
+        )
     return coordination_subject, lineage
 
 
@@ -855,7 +887,9 @@ def _clear_deferral_if_current(
 def _due_date_reason(due_date: date | None, reason: str | None) -> str | None:
     if due_date is not None:
         if reason is not None:
-            raise ValueError("a dated Next Action cannot also claim an unknown-date reason")
+            raise CoordinationDecisionRefusal(
+            "a dated Next Action cannot also claim an unknown-date reason"
+        )
         return None
     return _reason(
         reason,
@@ -866,7 +900,7 @@ def _due_date_reason(due_date: date | None, reason: str | None) -> str | None:
 
 def _reason(value: str | None, allowed: frozenset[str], message: str) -> str:
     if not isinstance(value, str) or value not in allowed:
-        raise ValueError(message)
+        raise CoordinationDecisionRefusal(message)
     return value
 
 
@@ -874,7 +908,9 @@ def _note(value: str | None) -> str | None:
     if value is None:
         return None
     if not isinstance(value, str) or not value.strip():
-        raise ValueError("a Work Decision note must be meaningful when supplied")
+        raise CoordinationDecisionRefusal(
+            "a Work Decision note must be meaningful when supplied"
+        )
     return value.strip()
 
 

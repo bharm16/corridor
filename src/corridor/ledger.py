@@ -17,7 +17,7 @@ from pathlib import Path
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, undefer
 
-from corridor import audit
+from corridor import audit, refusals
 from corridor.accepted_field_reading import AcceptedConstraint, NativeReadingRefused
 from corridor.constraint_reading import (
     ACCEPTED_RECORD,
@@ -628,6 +628,18 @@ def load_dependency(
     )
 
 
+class ReadinessRefusal(refusals.Refusal, ValueError):
+    """Readiness cannot move on this Constraint as the record now stands.
+
+    Declared as its own family (#794 card 22) so the adapter maps it once by
+    kind.  Before, ``mark_satisfies`` refused a dismissed record with a bare
+    ``ValueError`` and the route stood a generic sentence in front of it, which
+    hid what the Ledger actually said.
+    """
+
+    refusal_kind = refusals.CONFLICT
+
+
 class NoSuchEvidence(Exception):
     """This evidence link does not belong to this Dependency."""
 
@@ -666,7 +678,7 @@ def mark_satisfies(
     lock_project(session, dependency.project_id)
     session.expire_all()
     if dependency.dismissed_at is not None:
-        raise ValueError(
+        raise ReadinessRefusal(
             f"{dependency.ref_code} was dismissed — readiness cannot move "
             "on a record nobody is working"
         )

@@ -127,7 +127,6 @@ from corridor.condition_tracking import (
     propose_condition_clears,
 )
 from corridor.documentation_checklist import (
-    DocumentationClarificationRefusal,
     DocumentationConfirmationRefusal,
     confirm_interpretation,
     read_checklist,
@@ -242,8 +241,6 @@ from corridor.web.queue_view import (
     safe_cohort_return,
 )
 from corridor.disputes import (
-    DisputeMovedOn,
-    NoSuchDispute,
     disputes_for,
     history_assessments_for,
     record_dispute_clarification,
@@ -5936,22 +5933,14 @@ def settle(
     dependency = session.get(Dependency, dependency_id)
     if dependency is None or dependency.project_id != project.id:
         raise HTTPException(404, "no such constraint in this project")
-    try:
-        settle_dispute(
-            session,
-            dependency_id,
-            field_name,
-            value=value.strip() or None,
-            principal=principal,
-            saw_claim_id=saw_claim_id,
-        )
-    except (NoSuchDispute, DisputeMovedOn) as exc:
-        raise HTTPException(409, str(exc))
-    except ValueError as exc:
-        raise refusals.MalformedSave(
-            "this Dispute answer does not match what the project record holds; "
-            "reload the Constraint and answer it again"
-        ) from exc
+    settle_dispute(
+        session,
+        dependency_id,
+        field_name,
+        value=value.strip() or None,
+        principal=principal,
+        saw_claim_id=saw_claim_id,
+    )
     session.commit()
     return RedirectResponse(
         f"/ledger/{slug}/{dependency_id}", status_code=303
@@ -5973,24 +5962,16 @@ def clarify_dispute(
     """Keep a source discrepancy open and record the coordinated follow-up."""
     project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
-    try:
-        clarification = record_dispute_clarification(
-            session,
-            dependency_id,
-            field_name,
-            roster_entry_id=internal_owner_roster_entry_id,
-            next_action=next_action,
-            due_date=due_date,
-            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
-            principal=principal,
-        )
-    except NoSuchDispute as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise refusals.MalformedSave(
-            "this Dispute follow-up does not match what the project record "
-            "holds; reload the Constraint and record it again"
-        ) from exc
+    clarification = record_dispute_clarification(
+        session,
+        dependency_id,
+        field_name,
+        roster_entry_id=internal_owner_roster_entry_id,
+        next_action=next_action,
+        due_date=due_date,
+        due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+        principal=principal,
+    )
     response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
     record_frontend_request(
         session,
@@ -6216,11 +6197,6 @@ def close_next_action(
             request, session, project, dependency_id, redirect_to,
             plan_error=str(exc), status_code=409,
         )
-    except ValueError as exc:
-        raise refusals.MalformedSave(
-            "this decision does not match the Next Action this Constraint "
-            "currently holds; reload the Constraint and decide it again"
-        ) from exc
     session.commit()
     return RedirectResponse(return_location, status_code=303)
 
@@ -6267,11 +6243,6 @@ def defer_dependency_action(
             request, session, project, dependency_id, redirect_to,
             plan_error=str(exc), status_code=409,
         )
-    except ValueError as exc:
-        raise refusals.MalformedSave(
-            "this decision does not match the Next Action this Constraint "
-            "currently holds; reload the Constraint and decide it again"
-        ) from exc
     session.commit()
     return RedirectResponse(return_location, status_code=303)
 
@@ -6304,12 +6275,7 @@ def mark_evidence_satisfies(
     except NoSuchEvidence as exc:
         raise HTTPException(404, str(exc))
     except UnverifiedEvidence as exc:
-        raise HTTPException(400, str(exc))
-    except ValueError as exc:
-        raise refusals.ConflictingSave(
-            "readiness cannot move on this Constraint as the record now "
-            "stands; reload the Constraint and look again"
-        ) from exc
+        raise HTTPException(400, str(exc)) from exc
     session.commit()
     return RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
 
@@ -6387,23 +6353,15 @@ def clarify_documentation_review(
 
     project = _project(session, slug, principal, designation=access.COORDINATION)
     _project_dependency(session, project, dependency_id)
-    try:
-        clarification = record_documentation_clarification(
-            session,
-            dependency_id,
-            roster_entry_id=internal_owner_roster_entry_id,
-            next_action=next_action,
-            due_date=due_date,
-            due_date_unknown_reason=due_date_unknown_reason.strip() or None,
-            principal=principal,
-        )
-    except DocumentationClarificationRefusal as exc:
-        raise HTTPException(409, str(exc)) from exc
-    except ValueError as exc:
-        raise refusals.MalformedSave(
-            "this documentation follow-up does not match what the project "
-            "record holds; reload the Constraint and record it again"
-        ) from exc
+    clarification = record_documentation_clarification(
+        session,
+        dependency_id,
+        roster_entry_id=internal_owner_roster_entry_id,
+        next_action=next_action,
+        due_date=due_date,
+        due_date_unknown_reason=due_date_unknown_reason.strip() or None,
+        principal=principal,
+    )
     response = RedirectResponse(f"/ledger/{slug}/{dependency_id}", status_code=303)
     record_frontend_request(
         session,

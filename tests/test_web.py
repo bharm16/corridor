@@ -5976,10 +5976,14 @@ def test_the_adapter_answers_every_kind_and_nothing_else():
         ("corridor.release_preparation", "PreparationRequestRefused",
          "conflict", 409),
         ("corridor.issue_coverage", "CoverageRefused", "conflict", 409),
+        ("corridor.disputes", "DisputeRefusal", "conflict", 409),
+        ("corridor.disputes", "NoSuchDispute", "not_offered", 409),
+        ("corridor.disputes", "DisputeMovedOn", "stale", 409),
+        ("corridor.ledger", "ReadinessRefusal", "conflict", 409),
+        ("corridor.documentation_checklist", "DocumentationClarificationRefusal",
+         "conflict", 409),
         ("corridor.refusals", "StaleOffer", "stale", 409),
         ("corridor.refusals", "NotOffered", "not_offered", 409),
-        ("corridor.refusals", "MalformedSave", "malformed_input", 400),
-        ("corridor.refusals", "ConflictingSave", "conflict", 409),
     ],
 )
 def test_each_refusal_family_maps_to_exactly_one_status(
@@ -6106,29 +6110,37 @@ def _state_fingerprint_of(body: str) -> str:
     return match.group(1)
 
 
-def test_a_dispute_answer_refuses_without_forwarding_an_internal_message(
+def test_a_dispute_answer_says_what_the_dispute_family_said(
     client, session, project, monkeypatch
 ):
-    """The Dispute routes keep answering 400, but with words a person reads.
+    """``settle_dispute`` declares its own family, so its own sentence answers.
 
-    ``settle_dispute`` still refuses with a bare ``ValueError``, so the adapter
-    stands in front of it with its own sentence rather than piping an internal
-    message such as ``dependency 41 does not exist`` into the browser.
+    The adapter no longer stands a generic sentence in front of the command:
+    the declared kind picks the status once, and the words the domain wrote
+    reach the person.  An incidental ``ValueError`` from inside a command is a
+    defect rather than an answer, so it is not dressed up as a refusal at all.
     """
     import corridor.web.app as web_app
 
     dependency = _disputed_record(session, project)
+
+    refused = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/settle",
+        data={"field_name": "cost_responsibility", "value": "the utility"},
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 409
+    assert "not in dispute on this record" in refused.text
 
     def _incidental(*args, **kwargs):
         raise ValueError("INCIDENTAL dependency 41 does not exist")
 
     monkeypatch.setattr(web_app, "settle_dispute", _incidental)
 
-    refused = client.post(
-        f"/ledger/{project.slug}/{dependency.id}/settle",
-        data={"field_name": "station_from", "value": "1105+00"},
-        follow_redirects=False,
-    )
-
-    assert refused.status_code == 400
-    assert "INCIDENTAL" not in refused.text
+    with pytest.raises(ValueError, match="INCIDENTAL"):
+        client.post(
+            f"/ledger/{project.slug}/{dependency.id}/settle",
+            data={"field_name": "station_from", "value": "1105+00"},
+            follow_redirects=False,
+        )
