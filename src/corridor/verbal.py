@@ -26,6 +26,7 @@ from hashlib import sha256
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor import audit
 from corridor.external_statements import (
     StatementRefusal,
@@ -65,12 +66,16 @@ from corridor.source_segments import (
 from corridor.statement_lifecycle import observe_current_statement
 
 
-class VerbalRefusal(ValueError):
+class VerbalRefusal(refusals.Refusal, ValueError):
     """A phone statement cannot become a commitment on this record."""
+
+    refusal_kind = refusals.MALFORMED_INPUT
 
 
 class StaleVerbalCorrection(VerbalRefusal):
     """The recorded verbal changed underneath a correction; reload and retry."""
+
+    refusal_kind = refusals.STALE
 
 
 def record_verbal(

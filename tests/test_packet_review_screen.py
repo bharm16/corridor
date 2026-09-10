@@ -732,3 +732,78 @@ def test_a_held_out_single_source_change_is_not_described_as_several_sources(
     assert "Sources that answer it differently" not in body
     assert "Sources answering it" in body
     assert "answer the others with" not in body
+
+
+# ── One refusal presentation, shared with the focused screen (#794 card 22) ──
+#
+# This handler and `save_focused_answers` built nine `{"heading", "detail",
+# "rows"}` dicts between them and wrote three of the sentences twice. The words
+# now live in one place; these bind this screen to that place, and
+# `tests/test_focused_review.py` binds the other screen to the same one.
+
+
+class _Moved:
+    """One refused child, shaped as the atomic packet result reports it."""
+
+    subject_identity = "Conflict 14"
+    field = "station_from"
+    detail = "the accepted value moved from revision 3"
+
+
+class _Result:
+    refusals = (_Moved(),)
+
+
+def test_the_two_review_screens_share_one_refusal_presentation():
+    """One heading, one shape, and the moved sentence written once.
+
+    The two screens differ by a single word — a coordinator *selects* changes
+    on this screen and *answers* them on the focused one — so that word is the
+    only thing either handler supplies.
+    """
+
+    from corridor.web.app import (
+        REVIEW_REFUSAL_HEADING,
+        _a_change_moved_under_the_reading,
+        _item_left_the_reading,
+    )
+
+    selected = _a_change_moved_under_the_reading(_Result(), chosen="selected")
+    answered = _a_change_moved_under_the_reading(_Result(), chosen="answered")
+
+    assert selected["heading"] == answered["heading"] == REVIEW_REFUSAL_HEADING
+    assert selected["detail"].replace("selected", "•") == answered[
+        "detail"
+    ].replace("answered", "•")
+    assert selected["rows"] == answered["rows"]
+    assert selected["rows"] == (
+        {
+            "subject": "Conflict 14 — station_from",
+            "detail": "the accepted value moved from revision 3",
+        },
+    )
+    assert set(_item_left_the_reading()) == {"heading", "detail", "rows"}
+
+
+def test_this_screens_left_the_reading_refusal_is_the_shared_sentence(
+    session: Session, project: Project, client
+):
+    """Criterion: the words a coordinator reads come from the shared place."""
+
+    from corridor.web.app import _item_left_the_reading
+
+    _revision(session, project, changes=1)
+
+    response = client.post(
+        f"/review/{project.slug}",
+        data={
+            "item_key": "source_revision:ucm-workbook@1999-01:record_cleanup",
+            "outcome": "apply",
+            "child": ["1"],
+        },
+    )
+
+    shared = _item_left_the_reading()
+    assert response.status_code == 409
+    assert shared["heading"] in response.text
+    assert shared["detail"] in response.text

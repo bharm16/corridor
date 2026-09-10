@@ -61,6 +61,7 @@ the section's one action label is the maintainer's own wording.
 
 from __future__ import annotations
 
+from corridor import refusals
 from corridor.analytics import EventFamily
 from corridor.measurement_collection import emit_preparation_interaction
 
@@ -115,8 +116,10 @@ REASON_LIMIT = 500
 DETAIL_LIMIT = 240
 
 
-class CoverageRefused(ValueError):
+class CoverageRefused(refusals.Refusal, ValueError):
     """A coordinator may not declare this coverage."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 @dataclass(frozen=True, slots=True)

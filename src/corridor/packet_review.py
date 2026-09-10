@@ -113,6 +113,7 @@ from urllib.parse import urlparse
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.analytics import (
     AnalyticsBinding,
     AnalyticsEvent,

@@ -82,6 +82,7 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.analytics import (
     AnalyticsBinding,
     AnalyticsEvent,
@@ -148,7 +149,7 @@ AUTHORIZATION_REFUSAL_REASONS: tuple[str, ...] = (
 _INSUFFICIENT_PRIVILEGE = "42501"
 
 
-class AuthorizationRefused(Exception):
+class AuthorizationRefused(refusals.Refusal):
     """Authorization cannot proceed, and says which bounded reason.
 
     Carried rather than raised as a bare ``ValueError`` because the reason code
@@ -157,6 +158,8 @@ class AuthorizationRefused(Exception):
     reading. Every refusal leaves the candidate exactly as it was and writes no
     part of a release.
     """
+
+    refusal_kind = refusals.CONFLICT
 
     def __init__(self, code: str, sentence: str) -> None:
         if code not in AUTHORIZATION_REFUSAL_REASONS:

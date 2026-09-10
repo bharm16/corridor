@@ -111,6 +111,7 @@ from typing import Any, Mapping, Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.delta_resolution import (
     DEFERRED,
     ORGANIZATION_FIELDS,
@@ -307,7 +308,7 @@ KEY_REASONS: Mapping[str, str] = {
 }
 
 
-class ReviewPacketReadingRefused(ValueError):
+class ReviewPacketReadingRefused(refusals.Refusal, ValueError):
     """A caller cannot build this reading, or cannot act on it as asked.
 
     One class covers both halves of ADR-0085's Work List, because the
@@ -322,6 +323,8 @@ class ReviewPacketReadingRefused(ValueError):
     without deciding anything a second time.  The rule lives in these modules;
     the screen only renders what they said.
     """
+
+    refusal_kind = refusals.CONFLICT
 
     def __init__(
         self,

@@ -52,6 +52,7 @@ from typing import Sequence
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor.models import (
     IssueCoverageDeclaration,
     ProjectRecordRevision,
@@ -76,8 +77,10 @@ REFUSED_OUTCOME = "refused"
 FAILED_OUTCOME = "failed"
 
 
-class PreparationRequestRefused(ValueError):
+class PreparationRequestRefused(refusals.Refusal, ValueError):
     """This request would ask for an issue nobody confirmed the coverage of."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 @dataclass(frozen=True, slots=True)

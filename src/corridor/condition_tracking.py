@@ -40,6 +40,7 @@ import re
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor import refusals
 from corridor import audit
 from corridor.dependency_events import (
     COMMITTED_EVENT_TYPES,
@@ -102,8 +103,10 @@ _HEDGE_OPENERS = frozenset(
 _APPROVAL_WORDS = frozenset("approved approval approve approves".split())
 
 
-class ConditionResolutionRefusal(ValueError):
+class ConditionResolutionRefusal(refusals.Refusal, ValueError):
     """The condition or its cited basis cannot lawfully receive this act."""
+
+    refusal_kind = refusals.CONFLICT
 
 
 # --------------------------------------------------------------------------- #

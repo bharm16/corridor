@@ -5896,3 +5896,239 @@ def test_documentation_needs_clarification_route_records_follow_up(
     detail = client.get(f"/ledger/{project.slug}/{dependency.id}")
     assert "Ask the utility for a clean approval letter" in detail.text
     assert "Documentation fields not complete" in detail.text
+
+
+# ── One refusal taxonomy the adapter maps once (#794 card 22) ──────────────
+#
+# Every refusal family declares one kind; the adapter holds one kind-to-status
+# table. These tests are the reason a handler may stop hand-picking a status:
+# the mapping is proved here, table-driven, rather than 99 times in app.py.
+
+
+def _every_refusal_class():
+    """Every declared refusal, found through the one shared base."""
+    # Importing the app imports every module that declares a refusal, so the
+    # subclass walk sees the whole taxonomy rather than whatever this test
+    # happened to import.
+    import corridor.web.app  # noqa: F401
+    from corridor.refusals import Refusal
+
+    found = {}
+
+    def _walk(cls):
+        for subclass in cls.__subclasses__():
+            found[subclass.__qualname__] = subclass
+            _walk(subclass)
+
+    _walk(Refusal)
+    return found
+
+
+def test_every_declared_refusal_names_one_of_the_five_kinds():
+    """A refusal an adapter cannot classify is a refusal it will guess about."""
+    from corridor.refusals import REFUSAL_KINDS
+
+    unclassified = {
+        name: getattr(cls, "refusal_kind", None)
+        for name, cls in _every_refusal_class().items()
+        if getattr(cls, "refusal_kind", None) not in REFUSAL_KINDS
+    }
+    assert unclassified == {}
+
+
+def test_the_adapter_answers_every_kind_and_nothing_else():
+    """One table, five entries: no kind falls through to a guessed status."""
+    from corridor.refusals import REFUSAL_KINDS
+    from corridor.web.app import REFUSAL_STATUS
+
+    assert set(REFUSAL_STATUS) == REFUSAL_KINDS
+
+
+@pytest.mark.parametrize(
+    "module_name, class_name, expected_kind, expected_status",
+    [
+        ("corridor.statement_coordination", "StatementCoordinationRefusal",
+         "malformed_input", 400),
+        ("corridor.statement_coordination", "StaleStatementCoordination",
+         "stale", 409),
+        ("corridor.statement_coordination", "StatementCoordinationUndoRefusal",
+         "conflict", 409),
+        ("corridor.packet_review", "ReviewScreenRefused", "conflict", 409),
+        ("corridor.report_release", "ReleaseRefusal", "conflict", 409),
+        ("corridor.report_release", "ReleasedArtifactIntegrityError",
+         "conflict", 409),
+        ("corridor.verbal", "VerbalRefusal", "malformed_input", 400),
+        ("corridor.verbal", "StaleVerbalCorrection", "stale", 409),
+        ("corridor.lane", "LaneRefusal", "conflict", 409),
+        ("corridor.source_intake", "IntakeRefused", "malformed_input", 400),
+        ("corridor.source_intake", "IntakeConflict", "conflict", 409),
+        ("corridor.cohort", "CohortScopeViolation", "conflict", 409),
+        ("corridor.cohort", "CohortDerivationError", "conflict", 409),
+        ("corridor.condition_tracking", "ConditionResolutionRefusal",
+         "conflict", 409),
+        ("corridor.work_decisions", "CoordinationDecisionRefusal",
+         "malformed_input", 400),
+        ("corridor.work_decisions", "StaleNextAction", "stale", 409),
+        ("corridor.work_decisions", "FollowUpPlanRefusal", "malformed_input", 400),
+        ("corridor.work_decisions", "StaleFollowUpPlan", "stale", 409),
+        ("corridor.work_decisions", "FollowUpPlanUndoRefusal", "conflict", 409),
+        ("corridor.release_authorization", "AuthorizationRefused", "conflict", 409),
+        ("corridor.release_preparation", "PreparationRequestRefused",
+         "conflict", 409),
+        ("corridor.issue_coverage", "CoverageRefused", "conflict", 409),
+        ("corridor.refusals", "StaleOffer", "stale", 409),
+        ("corridor.refusals", "NotOffered", "not_offered", 409),
+        ("corridor.refusals", "MalformedSave", "malformed_input", 400),
+        ("corridor.refusals", "ConflictingSave", "conflict", 409),
+    ],
+)
+def test_each_refusal_family_maps_to_exactly_one_status(
+    module_name, class_name, expected_kind, expected_status
+):
+    """The whole taxonomy, in one table, with the status each kind answers."""
+    from importlib import import_module
+
+    from corridor.refusals import Refusal
+    from corridor.web.app import refusal_status
+
+    # Three families carry a stable machine reason ahead of the sentence, so a
+    # caller can count refusals without reading them.
+    leading = {
+        "IntakeRefused": ("empty_file",),
+        "IntakeConflict": ("bytes_missing",),
+        "AuthorizationRefused": ("not_designated",),
+    }
+
+    refusal_class = getattr(import_module(module_name), class_name)
+    assert issubclass(refusal_class, Refusal)
+    assert refusal_class.refusal_kind == expected_kind
+    refusal = refusal_class(*leading.get(class_name, ()), "a refused act")
+    assert refusal_status(refusal) == expected_status
+    assert refusal.customer_sentence == "a refused act"
+
+
+def test_a_refusal_reaching_the_adapter_answers_its_own_customer_sentence():
+    """The body is what the refusal said, not a status the handler invented."""
+    from corridor.refusals import StaleOffer
+    from corridor.web.app import refusal_response
+
+    response = refusal_response(
+        StaleOffer("the production-run choices changed; refresh first")
+    )
+    assert response.status_code == 409
+    assert b"the production-run choices changed" in response.body
+
+
+def _operations_document_with_completed_run(session, project):
+    """One parsed document with one completed run, ready to declare."""
+    from corridor import access
+
+    seed_membership(
+        session, project, TEST_PRINCIPAL, designations=(access.TECHNICAL_OPERATIONS,)
+    )
+    document = Document(
+        project_id=project.id,
+        sha256=_document_sha(project.id, "refusal-taxonomy-matrix.pdf"),
+        filename="refusal-taxonomy-matrix.pdf",
+        doc_type="matrix",
+        parse_status="parsed",
+        pages=1,
+    )
+    session.add(document)
+    session.flush()
+    run = record_extraction_run(
+        session,
+        document,
+        prompt_version="refusal-taxonomy-v1",
+        candidate_count=0,
+        page_errors=0,
+        model="test-model",
+        allow_unsealed_legacy=True,
+    )
+    session.flush()
+    return document, run
+
+
+def test_an_incidental_value_error_inside_a_domain_call_is_never_a_4xx(
+    client, session, project, monkeypatch
+):
+    """A bare ValueError from inside a command is a defect, not a refusal.
+
+    The declare route used to wrap the whole call in ``except ValueError`` and
+    answer 409 with ``str(exc)``, so any incidental parse error inside
+    ``declare_active_run`` reached the browser as an internal message under a
+    status that told the operator to retry. The route's own staleness check is
+    now a declared refusal, and nothing else is caught: an unclassified failure
+    surfaces as a server error instead of masquerading as a refusal.
+    """
+    import corridor.web.app as web_app
+
+    document, run = _operations_document_with_completed_run(session, project)
+    offered = client.get(f"/operations/{project.slug}")
+
+    def _incidental(*args, **kwargs):
+        raise ValueError("INCIDENTAL invalid literal for int() with base 10")
+
+    monkeypatch.setattr(web_app, "declare_active_run", _incidental)
+
+    with pytest.raises(ValueError, match="INCIDENTAL"):
+        client.post(
+            f"/operations/{project.slug}/runs/{document.id}/declare",
+            data={
+                "extraction_run_id": str(run.id),
+                "state_fingerprint": _state_fingerprint_of(offered.text),
+            },
+            follow_redirects=False,
+        )
+
+
+def test_the_declare_routes_own_staleness_check_is_still_a_conflict(
+    client, session, project
+):
+    """The screen's own offer check keeps its 409; only the blanket catch went."""
+    document, run = _operations_document_with_completed_run(session, project)
+
+    refused = client.post(
+        f"/operations/{project.slug}/runs/{document.id}/declare",
+        data={"extraction_run_id": str(run.id), "state_fingerprint": "stale"},
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 409
+    assert "refresh first" in refused.text
+
+
+def _state_fingerprint_of(body: str) -> str:
+    import re
+
+    match = re.search(r'name="state_fingerprint" value="([a-f0-9]{64})"', body)
+    assert match, body
+    return match.group(1)
+
+
+def test_a_dispute_answer_refuses_without_forwarding_an_internal_message(
+    client, session, project, monkeypatch
+):
+    """The Dispute routes keep answering 400, but with words a person reads.
+
+    ``settle_dispute`` still refuses with a bare ``ValueError``, so the adapter
+    stands in front of it with its own sentence rather than piping an internal
+    message such as ``dependency 41 does not exist`` into the browser.
+    """
+    import corridor.web.app as web_app
+
+    dependency = _disputed_record(session, project)
+
+    def _incidental(*args, **kwargs):
+        raise ValueError("INCIDENTAL dependency 41 does not exist")
+
+    monkeypatch.setattr(web_app, "settle_dispute", _incidental)
+
+    refused = client.post(
+        f"/ledger/{project.slug}/{dependency.id}/settle",
+        data={"field_name": "station_from", "value": "1105+00"},
+        follow_redirects=False,
+    )
+
+    assert refused.status_code == 400
+    assert "INCIDENTAL" not in refused.text
