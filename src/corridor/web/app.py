@@ -104,6 +104,7 @@ from corridor.check_configuration import (
     preview_configuration,
     save_configuration,
 )
+from corridor.constraint_reading import available
 from corridor.exceptions import RULES, evaluate_project, format_exception_name
 from corridor.export import to_xlsx
 from corridor.report import build_report, render
@@ -504,6 +505,10 @@ TEMPLATES.env.globals.update(
     # never reads the retired `verified` flag itself.
     locator_validation_status=locator_validation_status,
     source_passage_check_label=source_passage_check_label,
+    # Whether a Constraint reading's field is a value at all, so a screen can
+    # print the reading's stated reason instead of an em dash that reads as an
+    # emptiness the population never claimed (``constraint_reading``).
+    available=available,
     csrf_field=_csrf_field,
 )
 # The shared accessibility primitives (#559): state and consequence words, the
@@ -3318,9 +3323,16 @@ def internal_report_alerts(
         )
         rows.append(
             {
-                "dependency_id": row.dependency.id,
-                "ref_code": row.dependency.ref_code,
-                "title": row.dependency.title,
+                # Read the Constraint reading, never the population's own
+                # subject: an adopted project's subject is an
+                # ``AcceptedConstraint`` with no ``title`` column at all, and
+                # reading one off it answered 500 on every alert facet of every
+                # adopted project. The reading is the one shape both
+                # populations have, and it composes the accepted record's title
+                # at its owner.
+                "dependency_id": row.reading.id,
+                "ref_code": row.reading.ref_code,
+                "title": row.reading.title,
                 "org_name": row.org_name,
                 "is_ready": row.is_ready,
                 "critical": found.critical if found is not None else False,
