@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from corridor import digests
 from dataclasses import asdict, dataclass
 from datetime import datetime
 import json
@@ -10,7 +11,11 @@ import re
 from typing import Any, Mapping, Protocol
 from uuid import UUID
 
-from corridor.m8_acceptance_bundle import publish_verified_bundle, verify_bundle
+from corridor.m8_acceptance_bundle import (
+    CorruptBundle,
+    publish_verified_bundle,
+    verify_bundle,
+)
 from corridor.product_proving_database import (
     SharedDevelopmentRestoreSummary,
     VerifiedProductProvingDatabaseBaseline,
@@ -148,11 +153,7 @@ def publish_product_proving_restore_bundle(
         canonical_content=canonical,
         bundle_schema_version=SCHEMA_VERSION,
         bundle_files=BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptProductProvingRestore,
-        canonical_json=_canonical_json,
-        sha256=_sha256_bytes,
-        json_sha256=_json_sha256,
+        encoding="ascii-escaped",
         temp_prefix="corridor-product-proving-restore",
         self_verification_failure="new Product Proving restore bundle is invalid",
     )
@@ -178,15 +179,16 @@ def verify_product_proving_restore_bundle(
     """Verify one restoration chain link without PostgreSQL."""
 
     root = Path(bundle_dir)
-    verified = verify_bundle(
-        root,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=SCHEMA_VERSION,
-        bundle_files=BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptProductProvingRestore,
-        sha256=_sha256_bytes,
-        json_sha256=_json_sha256,
-    )
+    try:
+        verified = verify_bundle(
+            root,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=SCHEMA_VERSION,
+            bundle_files=BUNDLE_FILES,
+            encoding="ascii-escaped",
+        )
+    except CorruptBundle as exc:
+        raise CorruptProductProvingRestore(str(exc)) from exc
     try:
         canonical = json.loads((root / "canonical-content.json").read_bytes())
         receipt_json = json.loads((root / "receipt.json").read_bytes())
@@ -280,15 +282,8 @@ def _validate_receipt(receipt: ProductProvingRestoreReceipt) -> None:
         raise ValueError("restore operation chronology is invalid")
 
 
-def _canonical_json(value) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
-
-
-def _sha256_bytes(value: bytes) -> str:
-    from hashlib import sha256
-
-    return sha256(value).hexdigest()
-
-
-def _json_sha256(value) -> str:
-    return _sha256_bytes(_canonical_json(value))
+# Retained encoding: published restore-rehearsal bundle manifests were
+# computed with non-ASCII escaped.
+_canonical_json = digests.ascii_escaped_json
+_sha256_bytes = digests.sha256_bytes
+_json_sha256 = digests.ascii_escaped_sha256

@@ -9,11 +9,10 @@ name imports, commands, arbitrary destinations, or model tools.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
-import hashlib
-import json
 import logging
 import re
 from types import MappingProxyType
@@ -5340,15 +5339,5 @@ def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode()
-
-
-def _sha256(value: Any) -> str:
-    return hashlib.sha256(_canonical_json(value)).hexdigest()
+_canonical_json = digests.canonical_json
+_sha256 = digests.canonical_sha256

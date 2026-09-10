@@ -40,6 +40,7 @@ import shutil
 from typing import Iterator, Protocol
 from uuid import uuid4
 
+from corridor import digests
 from corridor.config import settings
 
 
@@ -104,16 +105,8 @@ def parse_key(key: str) -> tuple[str, str] | None:
     return match.group("sha256"), match.group("suffix") or ""
 
 
-def digest_bytes(data: bytes) -> str:
-    return _sha256(data).hexdigest()
-
-
-def digest_file(path: Path) -> str:
-    digest = _sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(CHUNK_BYTES), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
+digest_bytes = digests.sha256_bytes
+digest_file = digests.sha256_file
 
 
 def local_staging_path(key: str) -> Path:

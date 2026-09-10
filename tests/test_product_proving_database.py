@@ -15,8 +15,13 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.pool import NullPool
 
 from corridor.config import settings
-from corridor.m8_acceptance_database import provision_disposable_postgres
+from corridor.m8_acceptance_database import (
+    disposable_database_name,
+    provision_disposable_postgres,
+)
 from corridor.product_proving_database import (
+    BACKUP_DATABASE_PREFIX,
+    DISPOSABLE_DATABASE_LABEL,
     DISPOSABLE_DATABASE_PREFIX,
     DatabaseConnectionIdentity,
     DatabaseFingerprint,
@@ -341,8 +346,7 @@ def test_same_migration_head_schema_drift_changes_the_canonical_fingerprint():
     with provision_disposable_postgres(
         admin_url,
         repo_root=REPO_ROOT,
-        error_cls=ProductProvingDatabaseError,
-        database_prefix=DISPOSABLE_DATABASE_PREFIX,
+        label=DISPOSABLE_DATABASE_LABEL,
         migration_revision=MIGRATION_HEAD,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
@@ -380,12 +384,11 @@ def test_fresh_databases_at_one_head_have_the_same_schema_fingerprint():
         hide_password=False
     )
     fingerprints = []
-    for suffix in ("a_", "b_"):
+    for suffix in ("a", "b"):
         with provision_disposable_postgres(
             admin_url,
             repo_root=REPO_ROOT,
-            error_cls=ProductProvingDatabaseError,
-            database_prefix=f"{DISPOSABLE_DATABASE_PREFIX}{suffix}",
+            label=f"{DISPOSABLE_DATABASE_LABEL}_{suffix}",
             migration_revision=MIGRATION_HEAD,
         ) as database:
             database_url = configured.set(database=database.name).render_as_string(
@@ -406,8 +409,7 @@ def test_quiescence_starts_its_snapshot_after_a_writer_commits_in_the_pid_window
     with provision_disposable_postgres(
         admin_url,
         repo_root=REPO_ROOT,
-        error_cls=ProductProvingDatabaseError,
-        database_prefix=DISPOSABLE_DATABASE_PREFIX,
+        label=DISPOSABLE_DATABASE_LABEL,
         migration_revision=MIGRATION_HEAD,
     ) as database:
         database_url = configured.set(database=database.name).render_as_string(
@@ -668,7 +670,10 @@ def test_shared_restore_refuses_a_different_postgresql_cluster_identity(tmp_path
 
 
 def test_verification_database_namespace_fits_postgresql_identifier_limit():
-    assert len(f"{DISPOSABLE_DATABASE_PREFIX}{'a' * 32}".encode()) <= 63
+    minted = disposable_database_name(DISPOSABLE_DATABASE_LABEL)
+
+    assert minted.startswith(DISPOSABLE_DATABASE_PREFIX)
+    assert len(minted.encode()) <= 63
 
 
 def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_path):
@@ -689,7 +694,7 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
         states[SOURCE_URL] = baseline
         return StagedDatabaseReplacement(
             request=request,
-            backup_database_name="corridor_pre_proving_backup",
+            backup_database_name=f"{BACKUP_DATABASE_PREFIX}backup",
             source_database_oid=101,
             replacement_database_oid=202,
         )
@@ -705,7 +710,7 @@ def test_shared_restore_verifies_clone_then_replaces_only_the_exact_source(tmp_p
         return DatabaseReplacementReceipt(
             source_database_name=request.request.source_database_name,
             replacement_database_name=request.request.replacement_database_name,
-            backup_database_name="corridor_pre_proving_backup",
+            backup_database_name=f"{BACKUP_DATABASE_PREFIX}backup",
             restored_fingerprint=baseline,
             previous_database_oid=request.source_database_oid,
             restored_database_oid=request.replacement_database_oid,
@@ -828,7 +833,7 @@ def test_shared_restore_rolls_back_before_finalization_on_post_swap_validation_f
     def stage(request):
         staged = StagedDatabaseReplacement(
             request=request,
-            backup_database_name="corridor_pre_proving_backup",
+            backup_database_name=f"{BACKUP_DATABASE_PREFIX}backup",
             source_database_oid=101,
             replacement_database_oid=202,
         )
@@ -889,14 +894,14 @@ def test_shared_restore_rolls_back_before_finalization_on_post_swap_validation_f
         ),
         (
             "postgresql+psycopg://corridor:corridor@localhost:5433/"
-            "corridor_proving_restore_fake",
-            "corridor_proving_restore_fake",
+            f"{DISPOSABLE_DATABASE_PREFIX}fake",
+            f"{DISPOSABLE_DATABASE_PREFIX}fake",
             "not an allowed exact target",
         ),
         (
             "postgresql+psycopg://corridor:corridor@localhost:5433/"
-            "corridor_pre_proving_fake",
-            "corridor_pre_proving_fake",
+            f"{BACKUP_DATABASE_PREFIX}fake",
+            f"{BACKUP_DATABASE_PREFIX}fake",
             "not an allowed exact target",
         ),
         (

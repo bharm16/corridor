@@ -8,19 +8,17 @@ than mutable nested dictionaries, are the retained identity boundary.
 
 from __future__ import annotations
 
-from hashlib import sha256
-import json
+from corridor import digests
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def canonical_text(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+    return digests.canonical_json(value).decode()
 
 
-def content_digest(value: Any) -> str:
-    return sha256(canonical_text(value).encode()).hexdigest()
+content_digest = digests.canonical_sha256
 
 
 class PipelineContract(BaseModel):

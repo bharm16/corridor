@@ -9,9 +9,9 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
-import re
 import sys
 
+from corridor import digests
 from corridor.product_proving_database import (
     ProductProvingDatabaseBaselineConfig,
     SharedDevelopmentRestoreConfig,
@@ -37,11 +37,10 @@ from corridor.product_proving_session import (
 )
 
 
-_SHA256 = re.compile(r"^[0-9a-f]{64}$")
 
 
 def _sha256(value: str) -> str:
-    if _SHA256.fullmatch(value) is None:
+    if not digests.is_digest(value):
         raise argparse.ArgumentTypeError(
             "must be exactly 64 lowercase hexadecimal characters"
         )

@@ -20,7 +20,6 @@ import os
 from pathlib import Path
 import re
 import runpy
-import subprocess
 import sys
 from tempfile import TemporaryDirectory
 from threading import Lock
@@ -433,8 +432,7 @@ def runtime_database():
     with provision_disposable_postgres(
         settings.database_url,
         repo_root=ROOT,
-        error_cls=RuntimeError,
-        database_prefix="corridor_due_work_test_",
+        label="due_work_test",
         reuse_migrated_template=True,
     ) as database:
         yield database
@@ -458,8 +456,8 @@ def customer_environment_databases():
     @contextmanager
     def customer():
         with provision_disposable_postgres(
-            source, repo_root=ROOT, error_cls=RuntimeError,
-            database_prefix="corridor_customer_test_", reuse_migrated_template=True,
+            source, repo_root=ROOT,
+            label="customer_test", reuse_migrated_template=True,
         ) as database:
             yield database
 
@@ -586,28 +584,21 @@ def _clone_database(admin_url: URL, template: str, database_name: str) -> None:
 
 
 def _migrate_database(database_url: URL) -> None:
-    environment = {
-        **os.environ,
-        "DATABASE_URL": database_url.render_as_string(hide_password=False),
-    }
-    completed = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "alembic",
-            "-c",
-            str(ROOT / "alembic.ini"),
-            "upgrade",
-            "head",
-        ],
-        cwd=ROOT,
-        env=environment,
-        capture_output=True,
-        text=True,
-        check=False,
+    """Upgrade one worker database through the module that owns the subprocess.
+
+    This body was a byte-for-byte copy of
+    `m8_acceptance_database.apply_schema_migrations` in a file that already
+    imports that module.
+    """
+
+    from corridor.m8_acceptance_database import apply_schema_migrations
+
+    apply_schema_migrations(
+        database_url,
+        repo_root=ROOT,
+        error_cls=RuntimeError,
+        revision="head",
     )
-    if completed.returncode != 0:
-        raise RuntimeError("parallel test worker database migration failed")
 
 
 def _worker_database_names(admin_url: URL) -> tuple[str, ...]:

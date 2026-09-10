@@ -188,7 +188,7 @@ def run_event_admission_acceptance(
     provision_database: DatabaseProvisioner | None = None,
 ) -> EventAdmissionAcceptanceResult:
     """Replay both policy versions and append only the resulting gate receipt."""
-    provision = provision_database or provision_acceptance_database
+    provision = provision_database or provision_acceptance_database()
     rehearsal = SealedRehearsalEnvironment.open(
         source_database_url=config.source_database_url,
         expected_checkout_revision=config.expected_clean_git_revision,
@@ -980,8 +980,7 @@ def _rehearse_predecessor_upgrade(
     with provision_disposable_postgres(
         postgres_admin_url,
         repo_root=REPO_ROOT,
-        error_cls=ValueError,
-        database_prefix="corridor_unknown_scope_upgrade_",
+        label="unknown_scope_upgrade",
         migration_revision=predecessor,
     ) as database:
         database_url = SealedRehearsalEnvironment.clone_url(

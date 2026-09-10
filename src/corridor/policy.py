@@ -24,13 +24,12 @@ policy's *decisions* quietly converge.
 from __future__ import annotations
 
 import hashlib
-import json
 from collections.abc import Callable, Iterable
 from functools import lru_cache
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor import audit
+from corridor import audit, digests
 from corridor.models import PolicyApproval, Project
 from corridor.principals import HumanPrincipal
 
@@ -46,27 +45,20 @@ __all__ = [
 
 
 def canonical_json(value: object) -> str:
-    """One encoding, so one value has one digest.
+    """This module's historical name for the one canonical encoding.
 
-    `ensure_ascii=False` because escaping is a rendering choice and must
-    not change what a digest covers: an External Party's name is the same
-    name whether or not its accented characters arrive as `\\uXXXX`.
-    `allow_nan=False` because `NaN` and `Infinity` are not JSON, and a
-    receipt that cannot be re-parsed cannot be re-verified — the strictest
-    of the three encodings this replaces, and the only one that refuses.
+    The encoding itself moved to `corridor.digests` once the same three-way
+    disagreement this module resolved was found fifty more times across the
+    codebase. The names stay here because authorized-policy callers read
+    them as policy vocabulary; `str` rather than `bytes` is likewise the
+    shape those callers already hold.
     """
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    )
+    return digests.canonical_json(value).decode()
 
 
 def canonical_sha256(value: object) -> str:
     """The digest of a policy, a configuration, or a set of fields."""
-    return hashlib.sha256(canonical_json(value).encode()).hexdigest()
+    return digests.canonical_sha256(value)
 
 
 def has_matching_abstention(

@@ -18,9 +18,10 @@ identifiers, and test-only screens remain disqualifying in the timed journey.
 
 from __future__ import annotations
 
+from corridor import digests
+from functools import partial
 from dataclasses import asdict, dataclass
 from datetime import date, datetime, timezone
-import hashlib
 from html import unescape
 from html.parser import HTMLParser
 from io import BytesIO
@@ -45,9 +46,15 @@ from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.pool import NullPool
 
-from corridor.m8_acceptance_bundle import VerificationResult, publish_verified_bundle, verify_bundle
+from corridor.m8_acceptance_bundle import (
+    CorruptBundle,
+    VerificationResult,
+    publish_verified_bundle,
+    verify_bundle,
+)
 from corridor.m8_acceptance_database import (
     DatabaseProvisioner,
+    disposable_database_prefix,
     provision_disposable_postgres,
     read_migration_head,
     upgrade_provisioned_postgres,
@@ -94,7 +101,8 @@ CLAIM_BOUNDARY = {
     "customer_usability_validation": False,
     "provisional_targets": True,
 }
-DATABASE_PREFIX = "corridor_sh99_coordinator_rehearsal_"
+DATABASE_LABEL = "sh99_coordinator"
+DATABASE_PREFIX = disposable_database_prefix(DATABASE_LABEL)
 
 # Bundle v3 is the immutable #265 replay contract.  Keep these values frozen
 # here instead of consulting future exception-engine defaults while verifying
@@ -258,11 +266,7 @@ def publish_coordinator_rehearsal_bundle(
         canonical_content=canonical_content,
         bundle_schema_version=BUNDLE_SCHEMA_VERSION,
         bundle_files=BUNDLE_FILES,
-        error_cls=ValueError,
-        corrupt_bundle_error_cls=CorruptSH99CoordinatorRehearsalBundle,
-        canonical_json=_canonical_json,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
+        encoding="ascii-escaped",
         temp_prefix="corridor-sh99-coordinator-rehearsal",
         self_verification_failure="new coordinator rehearsal bundle failed self-verification",
     )
@@ -284,15 +288,16 @@ def verify_coordinator_rehearsal_bundle(
     """Verify the closed export without a database or a mutable output path."""
 
     schema_version = _manifest_schema_version(bundle_dir)
-    verified = verify_bundle(
-        bundle_dir,
-        expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
-        bundle_schema_version=schema_version,
-        bundle_files=BUNDLE_FILES,
-        corrupt_bundle_error_cls=CorruptSH99CoordinatorRehearsalBundle,
-        sha256=_sha256,
-        json_sha256=_json_sha256,
-    )
+    try:
+        verified = verify_bundle(
+            bundle_dir,
+            expected_integrity_manifest_sha256=expected_integrity_manifest_sha256,
+            bundle_schema_version=schema_version,
+            bundle_files=BUNDLE_FILES,
+            encoding="ascii-escaped",
+        )
+    except CorruptBundle as exc:
+        raise CorruptSH99CoordinatorRehearsalBundle(str(exc)) from exc
     _verify_retained_release(bundle_dir)
     if schema_version == BUNDLE_SCHEMA_VERSION:
         _verify_v3_semantics(bundle_dir)
@@ -487,7 +492,11 @@ def run_sh99_coordinator_rehearsal(
     """
 
     if provision_database is None:
-        provision_database = _provision_database
+        provision_database = partial(
+            provision_disposable_postgres,
+            repo_root=Path(__file__).resolve().parents[2],
+            label=DATABASE_LABEL,
+        )
     repo_root = Path(__file__).resolve().parents[2]
     asset_root = Path.cwd().resolve()
     evaluation_thresholds = _v3_evaluation_thresholds()
@@ -554,7 +563,7 @@ def run_sh99_coordinator_rehearsal(
         source_dump_sha256 = _sha256(dump_path.read_bytes())
         with provision_database(
             config.postgres_admin_url,
-            config.expected_source_migration_head,
+            migration_revision=config.expected_source_migration_head,
         ) as database:
             database_name = database.name
             if database.migration_head != config.expected_source_migration_head:
@@ -585,7 +594,7 @@ def run_sh99_coordinator_rehearsal(
                 admin_url=config.postgres_admin_url,
                 repo_root=repo_root,
                 error_cls=ValueError,
-                database_prefix=DATABASE_PREFIX,
+                label=DATABASE_LABEL,
                 expected_current_revision=config.expected_source_migration_head,
                 target_revision=config.expected_target_migration_head,
             )
@@ -803,16 +812,6 @@ def run_sh99_coordinator_rehearsal(
         bundle=bundle,
         database_name=database_name,
         status=status,
-    )
-
-
-def _provision_database(admin_url: str, migration_revision: str):
-    return provision_disposable_postgres(
-        admin_url,
-        repo_root=Path(__file__).resolve().parents[2],
-        error_cls=ValueError,
-        database_prefix=DATABASE_PREFIX,
-        migration_revision=migration_revision,
     )
 
 
@@ -3245,13 +3244,8 @@ def _v3_evaluation_thresholds() -> dict[str, int]:
     return dict(_V3_EVALUATION_THRESHOLD_ITEMS)
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True).encode()
-
-
-def _sha256(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _json_sha256(value: Any) -> str:
-    return _sha256(_canonical_json(value))
+# Retained encoding: the published SH99 rehearsal bundle digests recorded in
+# `docs/nhhip-workflow-rehearsal.md` were computed with non-ASCII escaped.
+_canonical_json = digests.ascii_escaped_json
+_sha256 = digests.sha256_bytes
+_json_sha256 = digests.ascii_escaped_sha256

@@ -7,13 +7,12 @@ operates on the captured real-project lane.
 
 from __future__ import annotations
 
+from corridor import digests
 from collections import Counter
 from collections.abc import Sequence
 from copy import deepcopy
 from dataclasses import asdict, dataclass
 from datetime import date
-import hashlib
-import json
 from typing import Any
 from uuid import uuid4
 
@@ -441,22 +440,9 @@ def _canonical_automation_write_boundary(boundary: dict[str, Any]) -> dict[str, 
     }
 
 
-def _canonical_json(value: Any) -> bytes:
-    return json.dumps(
-        value,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=False,
-        allow_nan=False,
-    ).encode()
-
-
-def _json_sha256(value: Any) -> str:
-    return _sha256(_canonical_json(value))
-
-
-def _sha256(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
+_canonical_json = digests.canonical_json
+_json_sha256 = digests.canonical_sha256
+_sha256 = digests.sha256_bytes
 
 
 def _raw_comparison_export(

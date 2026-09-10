@@ -10,24 +10,21 @@ rates. They cannot resolve a Proposed Delta or change a Reference Dataset.
 from collections import defaultdict
 from datetime import datetime
 from hashlib import sha256
-import json
 import os
 from pathlib import Path
 import tempfile
 
+from corridor import digests
 from corridor.principals import HumanPrincipal
 
 
 CLASSIFICATIONS = frozenset({"matched", "corridor_only", "customer_only", "ambiguous"})
 
 
-def canonical_json(value):
-    """One deterministic encoding for private analytical artifacts and links."""
-    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False).encode("utf-8")
-
-
-def artifact_digest(value):
-    return sha256(canonical_json(value)).hexdigest()
+# Retained encoding: content-addressed private artifacts on disk are named by
+# a digest computed with non-ASCII escaped.
+canonical_json = digests.ascii_escaped_json
+artifact_digest = digests.ascii_escaped_sha256
 
 
 def retain_private_artifact(directory, payload):
