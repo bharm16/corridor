@@ -22,9 +22,11 @@ a client. Earlier drafts checked the first failing field and returned; a
 refusal that said "project" when region and stage were also wrong would have
 sent the maintainer back three times.
 
-The posture-status rule is the declared one for Textract: a customer record
-is refused while the posture is not `accepted`; an experiment scope is not
-gated on it. The model provider applies the other declared rule.
+The posture records no approval yet (ADR-0098): it is `proposed`, and its
+document states neither an experimental approval nor a customer-processing
+approval, so every new live Textract transmission is refused, experiments
+included, until the maintainer records the approval in a new revision.
+Offline replay of retained responses (`replay.py`) never enters this check.
 """
 
 from __future__ import annotations
@@ -46,7 +48,10 @@ class ProviderPosture(provider_authorization.ProviderPosture):
     `digest` is the SHA-256 of that document's bytes; the test that checks it
     is what makes "the adapter binds to the posture" a true sentence. The
     three `unverified` fields are the maintainer's to confirm, and confirming
-    them changes the document, the digest, and therefore this record.
+    them changes the document, the digest, and therefore this record. So does
+    recording either approval: an experimental approval names the public and
+    synthetic source classes and purposes it permits and the fields it leaves
+    unverified; a customer-processing approval comes with the verified fields.
     """
 
     operation: str
@@ -70,6 +75,8 @@ PROVIDER_POSTURE = ProviderPosture(
     ai_services_opt_out="unverified",
     permissions="unverified",
     status="proposed",
+    experimental_approval=None,
+    customer_processing_approval=None,
 )
 
 
@@ -103,7 +110,6 @@ class TextractAuthorizationCheck(
     """The shared check plus Textract's region and operations-evidence checks."""
 
     implementer = "the adapter"
-    posture_status = provider_authorization.CUSTOMER_RECORDS_NEED_ACCEPTED
     record_kinds = (CustomerAuthorization, ExperimentScope)
 
     def request_mismatches(self, request: RequestBoundary, posture: ProviderPosture) -> list[str]:

@@ -22,14 +22,25 @@ checks at the three seams the shared check leaves open, and constructs its
 client only after `authorized` returns. Every refusal sentence, reason string
 and receipt key is the one each adapter already emitted.
 
-The posture-status divergence is declared, not unified: `PostureStatusRule`
-carries both rules, each adapter names the one it applies, and the comment
-beside them says how they differ. Making them one rule is the maintainer's
-decision, not a side effect of removing a copy.
+The posture's own approval is one rule, not two (ADR-0098, #808). A posture
+declares two approval facts, each absent or stating what it permits: an
+experimental approval and a customer-processing approval. A new live
+transmission under an experiment scope needs the first and the recorded
+scope; one under a customer authorization needs the second and the signed
+record; a posture that is merely proposed, or that records no approval for
+the requested use, refuses with zero outbound requests and names the missing
+approval. The document's `status` word decides nothing here. Offline replay
+of a retained response is not a transmission: the replay modules never enter
+this check and never construct a client, and the tests hold them there.
 
 What was tried first: a Protocol over duck-typed records, so each adapter
 could keep its own dataclasses untouched. That kept the field lists apart
 but not the rule, which is where the drift was; the rule needs one home.
+Then (#805) the two adapters' readings of `status` were declared side by
+side as `PostureStatusRule` constants, Textract gating customer records on
+`accepted` and the model provider gating every request on `approved`; that
+made the drift visible and left a live experiment ungated under a proposed
+Textract posture, which #808 ended.
 """
 
 from __future__ import annotations
@@ -43,12 +54,34 @@ CUSTOMER_STAGES: tuple[str, ...] = ("compatibility", "shadow", "authoritative")
 
 
 @dataclass(frozen=True)
+class TransmissionApproval:
+    """One explicit approval, recorded in the posture document, for new live transmissions of one kind.
+
+    It names exactly what it permits (the source classes and purposes; the
+    region or model is the posture's own, and the approval belongs to that
+    posture and no other) and what it leaves unverified, and who recorded it.
+    An experimental approval can never authorize a customer stage: the check
+    reads it only for an experiment scope, and the customer-processing
+    approval only for a customer authorization.
+    """
+
+    source_classes: tuple[str, ...]
+    purposes: tuple[str, ...]
+    unverified: tuple[str, ...]
+    approved_by: str
+    approved_on: str
+
+
+@dataclass(frozen=True)
 class ProviderPosture:
     """What a provider is approved to do at all, once, bound to its document by digest.
 
     `digest` is the SHA-256 of the document's bytes, so confirming or changing
     anything the document records changes the digest, and with it every record
-    that accepted the old one. Each adapter adds the fields its provider needs.
+    that accepted the old one. `status` is the document's lifecycle word
+    (proposed, accepted, approved); the two approval facts are what the check
+    reads, each absent until the document records it (ADR-0098). Each adapter
+    adds the fields its provider needs.
     """
 
     identity: str
@@ -57,6 +90,8 @@ class ProviderPosture:
     provider: str
     permitted_purposes: tuple[str, ...]
     status: str
+    experimental_approval: TransmissionApproval | None
+    customer_processing_approval: TransmissionApproval | None
 
     def as_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -146,32 +181,6 @@ class RequestBoundary:
         return asdict(self)
 
 
-@dataclass(frozen=True)
-class PostureStatusRule:
-    """Which requests a posture's `status` gates, and the status that opens them."""
-
-    required: str
-    every_request: bool
-    consequence: str
-
-
-# The two adapters gate on posture status differently, and the difference is
-# declared here rather than unified. Textract refuses a *customer record*
-# while its posture is not `accepted`, and lets an experiment scope through:
-# replay of retained responses and any live measurement call are governed by
-# their own recorded scope. The model provider refuses *every request* while
-# its posture is not `approved`, experiments included. Whether one rule should
-# become the other is a decision for the maintainer, not for this module.
-CUSTOMER_RECORDS_NEED_ACCEPTED = PostureStatusRule(
-    required="accepted", every_request=False,
-    consequence="no customer page may be transmitted until the maintainer accepts it",
-)
-EVERY_REQUEST_NEEDS_APPROVED = PostureStatusRule(
-    required="approved", every_request=True,
-    consequence="no request may be sent under it",
-)
-
-
 class ProviderRefused(RuntimeError):
     """A refusal, with its reason, every failing field, and what went out.
 
@@ -256,9 +265,8 @@ class AuthorizationCheck(Generic[P, R, C, E]):
     """The shared check, extended by one subclass per provider adapter.
 
     A subclass declares `implementer` (how its refusals name the code that
-    implements the posture), `posture_status` (which of the two declared rules
-    it applies) and `record_kinds` (its own record types, in the order its
-    refusal names them), and overrides the three hooks with its own checks:
+    implements the posture) and `record_kinds` (its own record types, in the
+    order its refusal names them), and overrides the three hooks with its own checks:
     `request_mismatches` runs after the request's posture identity is checked,
     `customer_mismatches` runs for a customer record after the posture is
     matched, `record_mismatches` runs for either record kind before the
@@ -269,7 +277,6 @@ class AuthorizationCheck(Generic[P, R, C, E]):
     """
 
     implementer: str
-    posture_status: PostureStatusRule
     record_kinds: tuple[type[AuthorizationRecord], ...]
 
     def request_mismatches(self, request: R, posture: P) -> list[str]:
@@ -287,11 +294,11 @@ class AuthorizationCheck(Generic[P, R, C, E]):
         Each entry is `<field>: <what was asked>, <what the record or posture
         allows>`. The posture is checked first because a record naming another
         posture, or an old digest of this one, has accepted terms the adapter
-        does not implement, whatever else it says.
+        does not implement, whatever else it says. Which approval the posture
+        must record is decided by the record's kind, so an absent record is
+        refused as absent and the approval is read once a record is there.
         """
         found: list[str] = []
-        rule = self.posture_status
-        status_sentence = f"posture-status: the posture is {posture.status!r}; {rule.consequence}"
         if request.posture_identity != posture.identity:
             found.append(
                 f"posture-identity: request names {request.posture_identity!r}, "
@@ -303,8 +310,6 @@ class AuthorizationCheck(Generic[P, R, C, E]):
                 f"purpose: {request.purpose!r} is not a purpose the posture permits "
                 f"({', '.join(posture.permitted_purposes)})"
             )
-        if rule.every_request and posture.status != rule.required:
-            found.append(status_sentence)
         if record is None:
             named = " or ".join(kind.kind.replace("-", " ") for kind in self.record_kinds)
             found.append(f"authorization-absent: no {named} was given")
@@ -323,11 +328,9 @@ class AuthorizationCheck(Generic[P, R, C, E]):
                 f"posture-digest: record {matched.record_id!r} accepts digest {matched.posture_digest[:12]!r}, "
                 f"the posture document's digest is {posture.digest[:12]!r}"
             )
+        found.extend(self.approval_mismatches(matched, request, posture))
         if isinstance(matched, CustomerAuthorization):
-            customer = cast(C, matched)
-            if not rule.every_request and posture.status != rule.required:
-                found.append(status_sentence)
-            found.extend(self.customer_mismatches(customer, request, posture))
+            found.extend(self.customer_mismatches(cast(C, matched), request, posture))
         found.extend(self.record_mismatches(matched, request, posture))
         if request.source_class not in matched.source_classes:
             found.append(
@@ -369,6 +372,38 @@ class AuthorizationCheck(Generic[P, R, C, E]):
                     f"which covers {EXPERIMENT_STAGE!r} only"
                 )
         return tuple(found)
+
+    def approval_mismatches(self, record: C | E, request: R, posture: P) -> list[str]:
+        """The one live-transmission rule (ADR-0098): the approval the record kind needs, and what it permits.
+
+        A customer authorization needs the posture's customer-processing
+        approval; an experiment scope needs its experimental approval. An
+        absent approval, or one that does not permit the request's source
+        class or purpose, is named; the document's `status` is quoted so the
+        refusal says what the document currently is. A purpose the posture
+        itself never permits is already named above and is not named twice.
+        """
+        if isinstance(record, CustomerAuthorization):
+            approval, named, page = posture.customer_processing_approval, "customer-processing approval", "customer"
+        else:
+            approval, named, page = posture.experimental_approval, "experimental approval", "experiment"
+        if approval is None:
+            return [
+                f"posture-approval: the posture is {posture.status!r} and records no {named}; "
+                f"no {page} page may be transmitted until the maintainer records one"
+            ]
+        found: list[str] = []
+        if request.source_class not in approval.source_classes:
+            found.append(
+                f"posture-approval: the {named} permits source classes "
+                f"({', '.join(approval.source_classes)}), not {request.source_class!r}"
+            )
+        if request.purpose in posture.permitted_purposes and request.purpose not in approval.purposes:
+            found.append(
+                f"posture-approval: the {named} permits purposes "
+                f"({', '.join(approval.purposes)}), not {request.purpose!r}"
+            )
+        return found
 
     def authorized(self, record: object | None, request: R, posture: P, *, refuse: type[ProviderRefused]) -> C | E:
         """The record, once it covers the request on every field; otherwise the adapter's refusal.

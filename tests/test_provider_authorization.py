@@ -9,10 +9,14 @@ scope and covered request, which posture it binds to, and how to open it
 against a transport that fails the test on any outbound request. The adapter
 files keep only the fields that are theirs.
 
-The posture-status rule is the one place the two adapters differ on a shared
-field, and the difference is declared in `provider_authorization` rather than
-unified; the last test pins that declaration so a change to either rule is a
-visible decision.
+The posture's approval is one rule over both adapters (ADR-0098, #808): a
+customer authorization needs the posture's customer-processing approval, an
+experiment scope needs its experimental approval, a proposed posture with
+neither refuses every new live transmission with zero outbound requests, and
+offline replay of a retained response never enters the check at all. The
+tests here prove each of those through the same table. The test that pinned
+the earlier per-adapter divergence (Textract gating customer records only,
+the model provider every request) is retired with the divergence.
 """
 
 from __future__ import annotations
@@ -26,6 +30,8 @@ import pytest
 
 import test_native_provider_boundary as native
 import test_textract_adapter as textract
+from corridor import native_pipeline, provider_authorization
+from corridor import native_provider_boundary as native_boundary
 from corridor.native_provider_boundary import (
     POSTURE,
     Budget,
@@ -38,7 +44,10 @@ from corridor.provider_authorization import (
     EXPERIMENT_STAGE,
     OutboundCounts,
     ProviderRefused,
+    TransmissionApproval,
 )
+from corridor_pdf_reader.textract_adapter import boundary as textract_boundary
+from corridor_pdf_reader.textract_adapter import replay as textract_replay
 from corridor_pdf_reader.textract_adapter.boundary import TextractProcessingFailure, open_boundary
 from corridor_pdf_reader.textract_adapter.records import PROVIDER_POSTURE
 from corridor_pdf_reader.textract_adapter.records import mismatches as textract_mismatches
@@ -48,7 +57,14 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 
 @dataclass(frozen=True)
 class Adapter:
-    """One provider adapter, as the shared check sees it."""
+    """One provider adapter, as the shared check sees it.
+
+    `accepted` is the posture with both approvals recorded and every customer
+    field verified, so each test names exactly the field it is about;
+    `unaccepted` is the same posture proposed, with neither approval.
+    `replay` reads one retained response through the adapter's offline replay
+    path, which must never reach the check or a transport.
+    """
 
     posture: Any
     accepted: Any
@@ -62,7 +78,7 @@ class Adapter:
     other_purpose: str
     open: Callable[[Any, Any, Any, Path], Any]
     mismatches: Callable[[Any, Any, Any], tuple[str, ...]]
-    status_gates_every_request: bool
+    replay: Callable[[Path], None]
 
 
 def _open_textract(record: Any, request: Any, posture: Any, tmp_path: Path) -> Any:
@@ -80,6 +96,32 @@ def _open_native(record: Any, request: Any, posture: Any, tmp_path: Path) -> Any
     )
 
 
+def _replay_textract(tmp_path: Path) -> None:
+    """The four retained fixtures through the normalizer, as CI replays them."""
+    entries = textract_replay.replay_fixtures(passes=1)
+    assert len(entries) == 4 and all(entry["readings"][0]["tables"] >= 1 for entry in entries)
+
+
+def _replay_native(tmp_path: Path) -> None:
+    """One retained answer through the sealed recorded client, as offline qualification replays it."""
+    image = native._image(tmp_path)
+    retained = {
+        "system_sha256": sha256(b"system").hexdigest(),
+        "schema_sha256": native_pipeline.content_digest(native.SCHEMA),
+        "user": "page 1",
+        "image_sha256s": [sha256(image.read_bytes()).hexdigest()],
+        "answer": {"rows": ["r1"]},
+    }
+    client = native_pipeline.RecordedPipelineClient([retained])
+    assert client.complete(system="system", user="page 1", schema=native.SCHEMA, images=[image]) == {"rows": ["r1"]}
+    client.require_complete()
+
+
+NATIVE_CUSTOMER_APPROVAL = TransmissionApproval(
+    source_classes=POSTURE.permitted_source_classes, purposes=POSTURE.permitted_purposes,
+    unverified=(), approved_by="a named maintainer, in this test only", approved_on="2026-09-10",
+)
+
 ADAPTERS = {
     "textract": Adapter(
         posture=PROVIDER_POSTURE,
@@ -94,12 +136,13 @@ ADAPTERS = {
         other_purpose="image-region-reading",
         open=_open_textract,
         mismatches=textract_mismatches,
-        status_gates_every_request=False,
+        replay=_replay_textract,
     ),
     "native-model-provider": Adapter(
         posture=POSTURE,
-        accepted=POSTURE,
-        unaccepted=replace(POSTURE, status="proposed"),
+        accepted=replace(POSTURE, customer_processing="open", pdf_licensing="resolved",
+                         customer_processing_approval=NATIVE_CUSTOMER_APPROVAL),
+        unaccepted=replace(POSTURE, status="proposed", experimental_approval=None),
         refusal=NativeProviderRefused,
         refusal_kind="native-provider-refusal",
         customer=native._customer,
@@ -112,7 +155,7 @@ ADAPTERS = {
             record, request, source_sha256s=frozenset({native.SOURCE}),
             budget=Budget(max_calls=2, max_pages=2, max_total_tokens=10_000), posture=posture,
         ),
-        status_gates_every_request=True,
+        replay=_replay_native,
     ),
 }
 
@@ -258,20 +301,117 @@ def test_the_posture_is_bound_to_its_document_by_digest(adapter: Adapter, tmp_pa
     assert caught.value.outbound_requests == 0
 
 
-def test_posture_status_gates_customer_records_for_textract_and_every_request_for_the_model_provider(adapter: Adapter) -> None:
-    """The declared divergence (`provider_authorization.PostureStatusRule`).
+def _approval_entries(mismatches: tuple[str, ...]) -> list[str]:
+    return [entry for entry in mismatches if entry.startswith("posture-approval:")]
 
-    Textract refuses a customer record while its posture is not `accepted` and
-    lets an experiment scope through; the model provider refuses every request
-    while its posture is not `approved`. Neither rule is silently the other's."""
-    customer = adapter.mismatches(adapter.customer(), adapter.request(), adapter.unaccepted)
-    assert "posture-status" in _fields(customer)
-    assert any(entry.startswith(f"posture-status: the posture is {adapter.unaccepted.status!r}; ") for entry in customer)
 
-    experiment = adapter.mismatches(adapter.experiment(), adapter.experiment_request(), adapter.unaccepted)
-    assert ("posture-status" in _fields(experiment)) is adapter.status_gates_every_request
+def test_a_customer_record_needs_the_customer_processing_approval_and_the_signed_authorization(adapter: Adapter, tmp_path: Path) -> None:
+    """Rule 1 (ADR-0098): with both, no approval sentence; without the approval,
+    the refusal names it, quotes the document's status, and sends nothing."""
+    assert _approval_entries(adapter.mismatches(adapter.customer(), adapter.request(), adapter.accepted)) == []
 
-    assert "posture-status" not in _fields(adapter.mismatches(adapter.experiment(), adapter.experiment_request(), adapter.accepted))
+    without = replace(adapter.accepted, customer_processing_approval=None)
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.customer(), adapter.request(), without, tmp_path)
+    assert _approval_entries(caught.value.mismatches) == [
+        f"posture-approval: the posture is {without.status!r} and records no customer-processing approval; "
+        "no customer page may be transmitted until the maintainer records one"
+    ]
+    assert caught.value.reason == "authorization-refused" and caught.value.outbound_requests == 0
+
+    with pytest.raises(adapter.refusal) as absent:
+        adapter.open(None, adapter.request(), adapter.accepted, tmp_path)
+    assert _fields(absent.value.mismatches) == ["authorization-absent"], "an approval opens nothing without the signed record"
+
+
+def test_an_experiment_scope_needs_the_experimental_approval_and_the_recorded_scope(adapter: Adapter, tmp_path: Path) -> None:
+    """Rule 2 (ADR-0098): the experimental approval, not the customer one, and
+    only for what the approval names."""
+    assert adapter.mismatches(adapter.experiment(), adapter.experiment_request(), adapter.accepted) == ()
+    experiment_only = replace(adapter.accepted, customer_processing_approval=None)
+    assert adapter.mismatches(adapter.experiment(), adapter.experiment_request(), experiment_only) == ()
+
+    without = replace(adapter.accepted, experimental_approval=None)
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.experiment(), adapter.experiment_request(), without, tmp_path)
+    assert _approval_entries(caught.value.mismatches) == [
+        f"posture-approval: the posture is {without.status!r} and records no experimental approval; "
+        "no experiment page may be transmitted until the maintainer records one"
+    ]
+    assert caught.value.outbound_requests == 0
+
+    approval = adapter.accepted.experimental_approval
+    narrow = replace(adapter.accepted, experimental_approval=replace(approval, source_classes=("some-other-class",), purposes=("some-other-purpose",)))
+    request = adapter.experiment_request()
+    found = _approval_entries(adapter.mismatches(adapter.experiment(), request, narrow))
+    assert found == [
+        f"posture-approval: the experimental approval permits source classes (some-other-class), not {request.source_class!r}",
+        f"posture-approval: the experimental approval permits purposes (some-other-purpose), not {request.purpose!r}",
+    ]
+
+    with pytest.raises(adapter.refusal) as absent:
+        adapter.open(None, adapter.experiment_request(), adapter.accepted, tmp_path)
+    assert _fields(absent.value.mismatches) == ["authorization-absent"], "an approval opens nothing without the recorded scope"
+
+
+def test_an_experimental_approval_never_authorizes_a_customer_stage(adapter: Adapter, tmp_path: Path) -> None:
+    """An experimental approval is read for an experiment scope only. A customer
+    record under a posture that records only that approval is refused for the
+    missing customer-processing approval, and an experiment scope asked for a
+    customer stage is refused on the stage whatever the posture approves."""
+    experiment_only = replace(adapter.accepted, customer_processing_approval=None)
+
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.customer(), adapter.request(), experiment_only, tmp_path)
+    assert any("records no customer-processing approval" in entry for entry in caught.value.mismatches)
+    assert caught.value.outbound_requests == 0
+
+    for stage in CUSTOMER_STAGES:
+        with pytest.raises(adapter.refusal) as staged:
+            adapter.open(adapter.experiment(), adapter.experiment_request(stage=stage), experiment_only, tmp_path)
+        assert _fields(staged.value.mismatches) == ["stage"]
+        assert staged.value.outbound_requests == 0
+
+
+def test_replay_of_a_retained_response_is_not_gated_and_makes_zero_outbound_requests(adapter: Adapter, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Rule 3 (ADR-0098): offline replay is not a transmission. It never enters
+    the check and never constructs a client or a transport, so no approval is
+    consulted and nothing can leave the process."""
+    def never(*args: Any, **kwargs: Any) -> Any:
+        pytest.fail("a replay path reached the authorization check or a live transport")
+
+    monkeypatch.setattr(provider_authorization.AuthorizationCheck, "mismatches", never)
+    monkeypatch.setattr(provider_authorization.AuthorizationCheck, "authorized", never)
+    monkeypatch.setattr(textract_boundary, "live_service", never)
+    monkeypatch.setattr(textract_boundary, "open_boundary", never)
+    monkeypatch.setattr(native_boundary, "live_transport", never)
+    monkeypatch.setattr(native_boundary, "open_native_provider_boundary", never)
+
+    adapter.replay(tmp_path)
+
+
+def test_a_proposed_posture_refuses_a_live_experiment_with_zero_outbound_requests(adapter: Adapter, tmp_path: Path) -> None:
+    """Rule 4 (ADR-0098): the recorded Textract posture is proposed with no
+    approval, and the model provider's would be if its approval were withdrawn;
+    a live experiment under either refuses, naming the missing approval, with
+    the transport untouched and nothing on disk."""
+    proposed = adapter.unaccepted
+    assert proposed.status == "proposed" and proposed.experimental_approval is None and proposed.customer_processing_approval is None
+
+    with pytest.raises(adapter.refusal) as caught:
+        adapter.open(adapter.experiment(), adapter.experiment_request(), proposed, tmp_path)
+
+    assert _fields(caught.value.mismatches) == ["posture-approval"]
+    assert caught.value.mismatches[0] == (
+        "posture-approval: the posture is 'proposed' and records no experimental approval; "
+        "no experiment page may be transmitted until the maintainer records one"
+    )
+    assert caught.value.reason == "authorization-refused" and caught.value.outbound_requests == 0
+    assert not (tmp_path / "cache").exists()
+
+    with pytest.raises(adapter.refusal) as customer:
+        adapter.open(adapter.customer(), adapter.request(), proposed, tmp_path)
+    assert "posture-approval" in _fields(customer.value.mismatches) and customer.value.outbound_requests == 0
 
 
 def test_outbound_requests_are_calls_plus_retries_plus_failed_attempts() -> None:

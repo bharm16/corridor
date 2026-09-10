@@ -282,6 +282,7 @@ class _RecordedService:
 
 
 def _authorized_reader(project, tmp_path, service, *, dpi=36):
+    from corridor.provider_authorization import TransmissionApproval
     from corridor.scanned_reading import ScannedReader
     from corridor_pdf_reader.textract_adapter.boundary import open_boundary
     from corridor_pdf_reader.textract_adapter.identity import RequestConfiguration
@@ -326,6 +327,15 @@ def _authorized_reader(project, tmp_path, service, *, dpi=36):
             retention="verified",
             ai_services_opt_out="optOut",
             permissions="verified",
+            # The test's approval, not the document's (ADR-0098): the recorded posture has none.
+            experimental_approval=TransmissionApproval(
+                source_classes=("synthetic", "scanned-pdf"),
+                purposes=("scanned-page-reading",),
+                unverified=(),
+                approved_by="a named maintainer, in this test only",
+                approved_on="2026-09-10",
+            ),
+            customer_processing_approval=None,
         ),
         sleep=lambda seconds: None,
     )

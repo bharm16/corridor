@@ -50,6 +50,7 @@ from corridor_pdf_reader.textract_adapter.identity import (
     raw_response_digest,
     reading_digest,
 )
+from corridor.provider_authorization import TransmissionApproval
 from corridor_pdf_reader.textract_adapter.records import (
     NATIVE_GEOMETRY_PURPOSE,
     PROVIDER_POSTURE,
@@ -64,10 +65,29 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 PACKAGE_ROOT = REPO_ROOT / "src" / "corridor_pdf_reader"
 FIXTURES = PACKAGE_ROOT / "textract" / "tests" / "fixtures"
 POSTURE_DOCUMENT = REPO_ROOT / PROVIDER_POSTURE.document
-# The posture the maintainer has not yet accepted refuses every customer
-# record; the tests of the other fields run against an accepted copy so each
-# assertion names exactly the field it is about.
-ACCEPTED_POSTURE = replace(PROVIDER_POSTURE, status="accepted", retention="verified", ai_services_opt_out="optOut", permissions="verified")
+# The posture the maintainer has not yet approved for anything refuses every
+# new live transmission; the tests of the other fields run against an accepted
+# copy that records both approvals and every verified field, so each assertion
+# names exactly the field it is about. The approvals are the test's, not the
+# document's: the document records neither (ADR-0098).
+EXPERIMENTAL_APPROVAL = TransmissionApproval(
+    source_classes=("public-reference-corpus", "synthetic"),
+    purposes=("extraction-measurement",),
+    unverified=("retention", "ai_services_opt_out", "permissions"),
+    approved_by="a named maintainer, in this test only",
+    approved_on="2026-09-10",
+)
+CUSTOMER_APPROVAL = TransmissionApproval(
+    source_classes=("scanned-pdf", "mixed-pdf", "native-pdf"),
+    purposes=PROVIDER_POSTURE.permitted_purposes,
+    unverified=(),
+    approved_by="a named maintainer, in this test only",
+    approved_on="2026-09-10",
+)
+ACCEPTED_POSTURE = replace(
+    PROVIDER_POSTURE, status="accepted", retention="verified", ai_services_opt_out="optOut", permissions="verified",
+    experimental_approval=EXPERIMENTAL_APPROVAL, customer_processing_approval=CUSTOMER_APPROVAL,
+)
 POSTURE_HISTORY = REPO_ROOT / "docs/operations/textract-provider-postures/history.json"
 DATASET = "pdf-reader-comparison true-pairs/exact ten development pairs"
 
@@ -239,24 +259,32 @@ def test_a_covered_customer_request_has_no_mismatches_under_an_accepted_posture(
     assert mismatches(authorization(), request(), ACCEPTED_POSTURE) == ()
 
 
-def test_a_customer_record_is_refused_while_the_posture_is_only_proposed(tmp_path):
-    """The posture document says no customer page may be transmitted before the
-    maintainer accepts it; the boundary enforces that sentence rather than
-    relying on nobody signing a record against a proposed posture. An
-    experiment scope is not gated on it: replay of retained responses and any
-    live measurement call are governed by their own recorded scope."""
+def test_every_new_live_transmission_is_refused_while_the_posture_is_only_proposed(tmp_path):
+    """The posture document is proposed and records no approval of any kind,
+    so the boundary refuses a customer record for the missing customer-processing
+    approval and every unverified field, and refuses an experiment scope for the
+    missing experimental approval (ADR-0098). Until #808 the experiment went
+    through; a live measurement call is a transmission like any other, and only
+    offline replay of a retained response is not."""
     assert PROVIDER_POSTURE.status == "proposed"
+    assert PROVIDER_POSTURE.experimental_approval is None and PROVIDER_POSTURE.customer_processing_approval is None
     service = FailingService()
 
     with pytest.raises(TextractProcessingFailure) as caught:
         open_boundary(authorization(), request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service)
 
     assert [entry.split(":")[0] for entry in caught.value.mismatches] == [
-        "posture-status", "posture-retention", "posture-ai-services-opt-out", "posture-permissions",
+        "posture-approval", "posture-retention", "posture-ai-services-opt-out", "posture-permissions",
     ]
     assert caught.value.outbound_requests == 0
     assert service.calls == 0
-    assert mismatches(experiment(), experiment_request()) == ()
+
+    with pytest.raises(TextractProcessingFailure) as experiment_refused:
+        open_boundary(experiment(), experiment_request(), extraction_run="run-1", cache_root=tmp_path / "cache", service=service)
+
+    assert [entry.split(":")[0] for entry in experiment_refused.value.mismatches] == ["posture-approval"]
+    assert experiment_refused.value.outbound_requests == 0 and service.calls == 0
+    assert not (tmp_path / "cache").exists()
 
 
 @pytest.mark.parametrize(("field", "state", "reason"), [

@@ -38,6 +38,7 @@ from corridor.scanned_reading import (
 )
 from corridor.scanned_reading import TextractRescue
 from corridor.principals import HumanPrincipal
+from corridor.provider_authorization import TransmissionApproval
 from corridor.token_layers import (
     EngineIdentity,
     READER_ENGINE,
@@ -203,6 +204,21 @@ ACCEPTED_POSTURE = replace(
     retention="verified",
     ai_services_opt_out="optOut",
     permissions="verified",
+    # The test's approvals, not the document's (ADR-0098): the recorded posture has neither.
+    experimental_approval=TransmissionApproval(
+        source_classes=("public-reference-corpus", "synthetic"),
+        purposes=("extraction-measurement",),
+        unverified=("retention", "ai_services_opt_out", "permissions"),
+        approved_by="a named maintainer, in this test only",
+        approved_on="2026-09-10",
+    ),
+    customer_processing_approval=TransmissionApproval(
+        source_classes=("scanned-pdf",),
+        purposes=PROVIDER_POSTURE.permitted_purposes,
+        unverified=(),
+        approved_by="a named maintainer, in this test only",
+        approved_on="2026-09-10",
+    ),
 )
 CONFIGURATION = RequestConfiguration(dpi=36)
 DATASET = "pdf-reader-comparison true-pairs/exact ten development pairs"
