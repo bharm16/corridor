@@ -34,28 +34,18 @@
 
 <main>
   <h1>Approve coordination report for sharing</h1>
-  {% if issues_packages %}
-    <p class="lead">
-      This project's coordination report is approved for sharing as part of one
-      issue, together with the updated workbook, in the coordination week. There
-      is no separate report approval here, and nothing on this page is sent by
-      email or document control.
-    </p>
-    <p><a href="/work/{{ project.slug }}">Go to this week's issue to approve it</a></p>
-  {% else %}
-    <p class="lead">
-      Prepare one fixed PDF, review that exact file, then approve it for sharing.
-      Approval does not send the PDF by email or document control.
-    </p>
-    {% if released %}
-      <p class="empty"><b>This exact PDF is approved to share and retained.</b></p>
-    {% endif %}
-    <form method="post" action="/reports/{{ project.slug }}/render">
-      {{ csrf_field() }}
-      <input type="hidden" name="ordinary" value="1">
-      <button type="submit">Prepare fixed PDF for review</button>
-    </form>
+  <p class="lead">
+    Prepare one fixed PDF, review that exact file, then approve it for sharing.
+    Approval does not send the PDF by email or document control.
+  </p>
+  {% if released %}
+    <p class="empty"><b>This exact PDF is approved to share and retained.</b></p>
   {% endif %}
+  <form method="post" action="/reports/{{ project.slug }}/render">
+    {{ csrf_field() }}
+    <input type="hidden" name="ordinary" value="1">
+    <button type="submit">Prepare fixed PDF for review</button>
+  </form>
 
   <h2>Approval history (fixed PDFs)</h2>
   {% for release in history %}
@@ -113,16 +103,16 @@
           <dt>Compared against</dt>
           <dd>
             {% if pub.window_start %}
-              the last approved issue ({{ pub.window_start }}) · changes in the last {{ pub.comparison_window_days }} days
+              the last approved report ({{ pub.window_start }}) · changes in the last {{ pub.comparison_window_days }} days
             {% else %}
-              no approved issue yet — current state only
+              no approved report yet — current state only
             {% endif %}
           </dd>
           {% if pub.prepared_artifact_sha256 %}
             <dt>SHA-256 digest</dt><dd><code>{{ pub.prepared_artifact_sha256 }}</code></dd>
           {% endif %}
         </dl>
-        {% if pub.state == "prepared" and pub.prepared_artifact_id and not issues_packages %}
+        {% if pub.state == "prepared" and pub.prepared_artifact_id %}
           <a href="/reports/{{ project.slug }}/prepared/{{ pub.prepared_artifact_id }}">Review this prepared PDF</a>
         {% elif pub.state == "released" and pub.release_id %}
           <a href="/reports/{{ project.slug }}/releases/{{ pub.release_id }}/download">Download approved PDF</a>

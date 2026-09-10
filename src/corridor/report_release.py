@@ -5,22 +5,6 @@ release has the opposite job: it preserves the exact PDF a project person
 authorized, plus the Evaluation and frozen statement reading behind it.
 This module is the public authority for that act; callers may prepare a PDF,
 but none may substitute a Report URL, output path, or regenerating callback.
-
-**This act belongs to a legacy project and to no other.** ADR-0086 makes one
-authorized release package the external issue unit, and ADR-0091 makes its
-membership per-project configuration; an adopted-baseline project's external
-Coordination Report is rendered by ``issue_rendering.render_weekly_report`` into
-that sealed set, bound to the accepted Project Record revision, the source
-cutoff, the declared coverage and the template and mapping the package receipt
-enumerates.  This module's PDF is rendered by ``report`` from the legacy ledger
-and binds none of that, so for an adopted project it would be a second external
-release act, over a second byte format, with a weaker provenance story, capable
-of disagreeing with the package about what the record said.  Both human acts
-here — ``render_and_prepare_external_report`` and ``release_external_report`` —
-therefore refuse an adopted project outright rather than leaving the choice to
-whichever route reached them.  A legacy project has no accepted revision, no
-candidate and no package, so its release stays here, frozen, and is never a
-comparison baseline for anything (see ``external_report_release_history``).
 """
 
 from __future__ import annotations
@@ -42,7 +26,6 @@ from sqlalchemy.orm import Session
 from corridor.changes import record_run as record_report_run
 from corridor.changes import snapshot as report_snapshot
 from corridor.export import to_pdf_bytes
-from corridor.operating_mode import is_adopted_baseline
 from corridor.models import (
     DependencyEvent,
     ExternalReportArtifact,
@@ -239,21 +222,6 @@ def prepare_external_report(
     return artifact
 
 
-def _refuse_an_adopted_project(session: Session, project_id: int) -> None:
-    """One rule, both human acts: an adopted project issues packages, not PDFs.
-
-    Written once here rather than at each route, because the two acts are
-    reachable from two routes each and a check on a door leaves the other doors
-    open (ADR-0086).
-    """
-
-    if is_adopted_baseline(session, project_id):
-        raise ReleaseRefusal(
-            f"project {project_id} issues one authorized release package, not a "
-            "separately released Coordination Report PDF (ADR-0086)"
-        )
-
-
 def render_and_prepare_external_report(
     session: Session,
     *,
@@ -265,7 +233,6 @@ def render_and_prepare_external_report(
     rendered PDF with a Report Run captured from another Ledger reading.
     """
 
-    _refuse_an_adopted_project(session, project_id)
     rendered = render_external_report_pdf(session, project_id)
     report = rendered.report
     if report.evaluation is None:
@@ -345,7 +312,6 @@ def release_external_report(
     principal = require_human_principal(principal)
     if session.get(Project, project_id) is None:
         raise ReleaseRefusal(f"no project {project_id}")
-    _refuse_an_adopted_project(session, project_id)
     artifact = session.get(ExternalReportArtifact, artifact_id)
     if artifact is None or artifact.project_id != project_id:
         raise ReleaseRefusal(
