@@ -19,6 +19,7 @@ from corridor.environment_disposition import AwsEnvironmentDestroyer
 from corridor.disposition_contracts import (
     DispositionRefused, EnvironmentDestructionError,
     json_digest as digest, provider_rows, require_no_rds_replicas, automated_backup_rows,
+    retained_object_versions,
 )
 
 # Explicitly reviewed #489 resource kinds. Any new kind needs a disposition
@@ -44,6 +45,7 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
     Shared network, account audit and control-plane stacks are never selected.
     """
     cf = clients["cloudformation"]
+    bucket = resources.object_namespace_bucket
     result = []
     for role, stack_id in (("application", application_stack_id), ("data", data_stack_id)):
         prefix = f"arn:aws:cloudformation:{resources.region}:{resources.account_id}:stack/"
@@ -57,7 +59,7 @@ def observe_stack_inventory(clients, resources, *, application_stack_id, data_st
                      "DispositionEnvironmentId": resources.environment_id,
                      "DispositionDeploymentId": resources.deployment_id} if role == "application" else
                     {"DatabaseEndpoint": resources.database_host,
-                     "ArtifactBucketName": resources.object_namespace_ref.removeprefix("s3:").rstrip("/")})
+                     "ArtifactBucketName": bucket})
         if any(outputs.get(key) != value for key, value in expected.items()):
             raise DispositionRefused("stack outputs do not bind this registered environment")
         rows = provider_rows(cf, "list_stack_resources", "StackResourceSummaries", StackName=stack_id)
@@ -164,19 +166,12 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             raise DispositionRefused("KMS destruction inventory differs from the stack's dedicated keys")
 
     def _verify_export_census(self, manifest, *, allow_disposed_subset):
-        bucket = self.resources.object_namespace_ref.removeprefix("s3:").rstrip("/")
+        bucket = self.resources.object_namespace_bucket
         if bucket not in self._owned_buckets():
             if allow_disposed_subset:
                 return {"bucket_absent": True}
             raise DispositionRefused("source bucket disappeared before the execution boundary")
-        versions = []
-        for page in self._clients["s3"].get_paginator("list_object_versions").paginate(
-                Bucket=bucket, ExpectedBucketOwner=self.resources.account_id):
-            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": False}
-                            for r in page.get("Versions", []))
-            versions.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": True}
-                            for r in page.get("DeleteMarkers", []))
-        versions.sort(key=lambda row: (row["key"], row["version_id"], row["delete_marker"]))
+        versions = retained_object_versions(self._clients["s3"], bucket, self.resources.account_id)
         expected = manifest["object_versions"]
         actual_set = {(r["key"], r["version_id"], r["delete_marker"]) for r in versions}
         expected_set = {(r["key"], r["version_id"], r["delete_marker"]) for r in expected}

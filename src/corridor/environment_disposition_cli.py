@@ -97,6 +97,7 @@ def _run(arguments, configuration, control_plane, clients):
     if not arguments.principal:
         raise DispositionRefused("provider operations require an explicit named --principal")
     principal = HumanPrincipal(arguments.principal)
+    bucket = resources.object_namespace_bucket
     registration = control_plane.inspect(resources.environment_id)
     resources.require_registration(registration)
     destroyer = AwsStackEnvironmentDestroyer(live_activation="live-aws-535" if arguments.authorize_aws_535 else None,
@@ -159,7 +160,6 @@ def _run(arguments, configuration, control_plane, clients):
             from sqlalchemy.engine import make_url
             from corridor.object_storage import S3ObjectStore
             url = make_url(_environment_reference(arguments.restored_database_url_env)).set(drivername="postgresql")
-            bucket = resources.object_namespace_ref.removeprefix("s3:").rstrip("/")
             store = S3ObjectStore(bucket=bucket, client=clients["s3"])
             with psycopg.connect(url.render_as_string(hide_password=False)) as connection:
                 result["rehearsal_observation"] = rehearsal.verify(lambda target: sql_restore_probe(connection,

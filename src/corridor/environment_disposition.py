@@ -40,8 +40,13 @@ applicable" honestly where a step has nothing to do for it, so one executor
 path serves both. ``SyntheticEnvironmentDestroyer`` is the hermetic test double
 that operates on in-process state and a local object store.
 ``AwsEnvironmentDestroyer`` is exercised with SDK response stubs and requires a
-persisted, approved provider inventory before any real call. Pending deletion
-never means completion. As the
+persisted, approved provider inventory before any real call. Its S3 namespace
+is one dedicated bucket, never a key prefix inside a shared one: the first
+version emptied a slash-bounded prefix that the export step refused and the
+stack census could not address, so the same registration could never be
+disposed (#813); ``control_plane.s3_object_namespace_bucket`` now decides the
+shape once, at registration, and every seam reads that parsed bucket. Pending
+deletion never means completion. As the
 non-production runbook states, definitions and synthetic tests are
 implementation evidence, not evidence that a deployment occurred; actually
 destroying a running AWS environment, and the live point-in-time-restore
@@ -530,18 +535,12 @@ class AwsEnvironmentDestroyer:
 
     def delete_object_namespace(self, registration: EnvironmentRegistration) -> str:
         resource = self._binding(registration)
-        if not resource.object_namespace_ref.startswith("s3:"):
-            raise DispositionRefused("AWS object namespace must explicitly identify S3")
-        bucket, _, prefix = resource.object_namespace_ref.removeprefix("s3:").partition("/")
-        if not bucket or (prefix and not prefix.endswith("/")):
-            raise DispositionRefused("S3 namespace requires a bucket and a slash-bounded prefix")
+        bucket = resource.object_namespace_bucket
         client = self._clients["s3"]
-        parameters = {"Bucket": bucket, "Prefix": prefix, "ExpectedBucketOwner": resource.account_id}
+        parameters = {"Bucket": bucket, "ExpectedBucketOwner": resource.account_id}
         for page in client.get_paginator("list_object_versions").paginate(**parameters):
             objects = [{"Key": row["Key"], "VersionId": row["VersionId"]}
                        for row in page.get("Versions", []) + page.get("DeleteMarkers", [])]
-            if any(not item["Key"].startswith(prefix) for item in objects):
-                raise DispositionRefused("S3 returned an object outside the approved namespace")
             for offset in range(0, len(objects), 1000):
                 result = self._mutate(client.delete_objects, Bucket=bucket,
                     ExpectedBucketOwner=resource.account_id, Delete={"Objects": objects[offset:offset+1000], "Quiet": True})
@@ -549,8 +548,6 @@ class AwsEnvironmentDestroyer:
                     raise EnvironmentDestructionError("S3 reported object-version deletion failures")
         for page in client.get_paginator("list_multipart_uploads").paginate(**parameters):
             for upload in page.get("Uploads", []):
-                if not upload["Key"].startswith(prefix):
-                    raise DispositionRefused("S3 upload lies outside the approved namespace")
                 self._mutate(client.abort_multipart_upload, Bucket=bucket, Key=upload["Key"],
                     UploadId=upload["UploadId"], ExpectedBucketOwner=resource.account_id)
         for operation, fields in (("list_object_versions", ("Versions", "DeleteMarkers")),
