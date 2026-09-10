@@ -40,7 +40,7 @@ from corridor.models import (
     ExtractionRun,
     Project,
 )
-from corridor.pipeline import ExtractionRoute
+from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.principals import HumanPrincipal
 from corridor.project_processing import process_project, summarize_pass
 from corridor.record_inclusion import record_inclusion_pending
@@ -514,6 +514,7 @@ def _scripted_route(script):
             return [candidate]
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version=SCHEMA_VERSION,
             extract=extract,

@@ -28,7 +28,8 @@ from corridor.operating_mode import is_adopted_baseline
 from corridor.prose_interpretation import read_typed_prose
 from corridor.prose_spans import prose_segment_filter
 from corridor.project_lock import lock_project
-from corridor.proposed_deltas import ExistingSubjectTarget, ProposedDeltaValues, ProposedSubjectTarget, create_proposed_delta_group
+from corridor.proposed_delta_comparison import StatedSubject, compare_stated_subjects
+from corridor.proposed_deltas import create_proposed_delta_group
 from corridor.reader_segments import replay_native_segments
 from corridor.record_projection import read_project_record_as_of_revision, record_value_payload
 from corridor.source_append import (ClosureValues, ScopeSubjectValues, TimingValues, append_fact, append_minutes_capture)
@@ -333,20 +334,22 @@ def _capture_statement(session, document, run, statement, spans, accepted, organ
         canonical = {"closure_kind": "completion_reported"}
         facts.append((_append(session, document, run, subject, value, canonical=canonical,
             closure=ClosureValues("completion_reported", None, (span.segment.id,))), canonical))
-    deltas = []
-    known = any(key == subject for key, _ in accepted)
-    if not known:
-        deltas.append(ProposedDeltaValues("add", ProposedSubjectTarget(subject, tuple(fact.fact_type for fact, _ in facts)),
-            proposed_value={fact.fact_type: value for fact, value in facts}, comparison_rule_version=PROMPT_VERSION,
-            accepted_baseline_revision=f"revision:{revision}"))
-    else:
-        for fact, value in facts:
-            previous = accepted.get((subject, fact.fact_type))
-            old = record_value_payload(previous) if previous else None
-            if old != value:
-                deltas.append(ProposedDeltaValues("modify" if previous else "add", ExistingSubjectTarget(subject, fact.fact_type),
-                    accepted_value=old, proposed_value=value, comparison_rule_version=PROMPT_VERSION,
-                    accepted_baseline_revision=f"revision:{revision}"))
+    # One shared comparison (`proposed_delta_comparison`): this statement's
+    # canonical values against the accepted record, read through the same
+    # projection payload the record itself renders.
+    stated_types = {fact.fact_type for fact, _ in facts}
+    comparison = compare_stated_subjects(
+        accepted={key: record_value_payload(value) for key, value in accepted.items()
+                  if key[0] == subject and key[1] in stated_types},
+        stated=(StatedSubject(subject_identity=subject,
+            values=tuple((fact.fact_type, value) for fact, value in facts),
+            paired=any(key == subject for key, _ in accepted)),),
+        comparison_rule_version=PROMPT_VERSION,
+        # Retained label: this lane names its baseline without the absent-revision
+        # spelling `revision_label` gives, and a stored delta holds it.
+        accepted_baseline_revision=f"revision:{revision}",
+    )
+    deltas = comparison.deltas
     created = create_proposed_delta_group(session, project_id=project.id,
         source_family=sha256(f"minutes:{family}".encode()).hexdigest(), source_revision=_digest((version, document.sha256)),
         document_id=document.id, deltas=deltas)

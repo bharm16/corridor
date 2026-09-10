@@ -35,7 +35,7 @@ from corridor.models import (
     ExtractionRun,
     Project,
 )
-from corridor.pipeline import ExtractionRoute
+from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.row_accounting import (
     AccountedCandidates,
     RowAccounting,
@@ -142,6 +142,7 @@ def accounted_route(*, fail: bool = False):
             return accounting.finish([made])
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=ACCOUNTED_PROMPT_VERSION,
             schema_version="matrix_candidate_shape_v1",
             extract=extract,
@@ -210,6 +211,7 @@ def route_selector(**by_filename):
             return candidates
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=prompt_version,
             schema_version=schema_version or prompt_version,
             extract=extract,
@@ -526,6 +528,7 @@ def test_a_model_backed_zero_row_run_keeps_the_configured_model(session, project
     def select_route(document):
         assert document.id == doc.id
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version="schema-zero-row-v1",
             extract=lambda session, target: [],
@@ -942,6 +945,7 @@ def test_a_failed_document_writes_a_receipt_and_retries_on_the_next_run(
             return candidates
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version="schema-transient-v1",
             extract=extract,

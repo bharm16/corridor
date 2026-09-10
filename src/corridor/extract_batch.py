@@ -38,7 +38,7 @@ from corridor.extractor_lineage import (
     validate_runtime_config,
 )
 from corridor.llm import DEFAULT_WORKERS, complete_many
-from corridor.facts import carries_source_facts
+from corridor.facts import rows_carry_source_facts
 from corridor.models import Candidate, DocPage, Document
 from corridor.storage import stored_file
 
@@ -180,7 +180,10 @@ def extract_documents(
                 else "completed"
             )
             source_path = getattr(doc, "_stored_path", None) or stored_file(doc)
-            carries_facts = outcome == "completed" and carries_source_facts(
+            # This batch has no ExtractionRoute to declare an output class: one
+            # prompt reads many pages of many documents here, so what is known
+            # about each document's reading is the rows it produced.
+            carries_facts = outcome == "completed" and rows_carry_source_facts(
                 tuple(batch)
             )
             if carries_facts and source_path is None:

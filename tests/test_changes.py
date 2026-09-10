@@ -1,4 +1,5 @@
 from datetime import date, datetime, timedelta, timezone
+from hashlib import sha256
 
 import pytest
 from sqlalchemy import select, text
@@ -26,6 +27,8 @@ from corridor.models import (
     Document,
     EvidenceLink,
     ExternalOrg,
+    ExternalReportArtifact,
+    ExternalReportRelease,
     Project,
     ProjectRecordRevision,
     ReportRun,
@@ -1067,3 +1070,56 @@ def test_a_required_by_change_reaches_the_customer_under_its_glossary_term():
         "committed_date_change"
     )
     assert "required_by_change" not in _customer_change_name("required_by_change")
+
+
+def test_the_comparison_baseline_is_the_package_chain_not_the_release_clock(
+    session, project
+):
+    """This module defines no comparison baseline, and the clock has no vote.
+
+    ``last_released_report`` used to live here and selected
+    ``external_report_releases`` by ``released_at desc`` — a wall clock over a
+    relation that binds no accepted Project Record revision (#635).  ADR-0086
+    moved the marker to the last approved package, so the one predicate is
+    ``release_candidate.latest_authorized_package``, which reads the chain head
+    and nothing else.  A released legacy PDF, however recent, is not that
+    marker: this project has one and still has no comparison predecessor.
+    """
+
+    from corridor import changes
+    from corridor.release_candidate import latest_authorized_package
+
+    assert not hasattr(changes, "last_released_report")
+
+    pdf = b"%PDF-1.7\nlegacy release\n%%EOF"
+    artifact = ExternalReportArtifact(
+        project_id=project.id,
+        artifact_name="legacy.pdf",
+        format="pdf",
+        pdf_bytes=pdf,
+        pdf_sha256=sha256(pdf).hexdigest(),
+        evaluated_on=date(2026, 8, 24),
+        ruleset_version="v0.4",
+        evaluation_context_json={},
+        provenance_mode="all-supported-sources",
+        record_context_json={"dependencies": [], "party_statements": []},
+    )
+    session.add(artifact)
+    session.flush()
+    session.add(
+        ExternalReportRelease(
+            project_id=project.id,
+            artifact_id=artifact.id,
+            artifact_name=artifact.artifact_name,
+            format="pdf",
+            pdf_sha256=artifact.pdf_sha256,
+            evaluated_on=artifact.evaluated_on,
+            ruleset_version=artifact.ruleset_version,
+            provenance_mode=artifact.provenance_mode,
+            released_by="local:prior-releaser",
+            released_by_display="Prior Releaser",
+        )
+    )
+    session.flush()
+
+    assert latest_authorized_package(session, project.id) is None

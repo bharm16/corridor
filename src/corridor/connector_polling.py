@@ -28,6 +28,15 @@ through ``corridor.source_delivery``, and the checkpoint advance names the
 deliveries it covered — which is what lets the database refuse an advance past
 a transient failure.
 
+The pass also registers what it took delivery of.  Recording a delivery is not
+showing anybody a source, and for a long time this handler did only the first:
+it never passed ``on_envelope_stored``, so a production Box or TxDOT poll
+stored bytes, wrote a ledger row, advanced its cursor, and registered no
+Document at all.  ``corridor.delivery_registration`` is the one consumer of a
+stored delivery now, shared with the offline replay command that used to hold
+the only registering code, and this pass hands it each stored delivery in its
+own short transaction after that delivery has committed.
+
 Which connector a persisted schedule may name is a server-owned registry, for
 the same reason the Due Work handler registry is one: a stored row selects a
 built-in adapter and can never name an import, a command, or an arbitrary
@@ -40,32 +49,26 @@ idempotent work one claimed occurrence performs.
 
 from __future__ import annotations
 
-from collections import Counter
 from datetime import datetime, timezone
 from types import MappingProxyType
 from typing import Any, Callable, Mapping
 
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from corridor.connectors.box import BoxPullConnector
 from corridor.connectors.pull_connector import (
-    ChangeItem,
     PullConnector,
     sync_pull_connector,
 )
+from corridor.delivery_registration import DeliveryTransactions, PassLedger
 from corridor.models import (
     DueWorkSchedule,
     Project,
 )
 from corridor.source_delivery import (
-    DISPOSITION_STORED,
     DeliveryBinding,
-    DeliveryObservation,
     current_checkpoint_token,
     record_checkpoint_advance,
-    record_delivery,
-    take_delivery,
 )
 
 # The one server-owned handler key this module's work runs under.  It matches
@@ -101,66 +104,6 @@ CONNECTOR_FACTORIES: Mapping[str, Callable[[Mapping[str, Any]], PullConnector]] 
 )
 
 
-class LedgerWriter:
-    """Record one pass's deliveries, one committed transaction at a time.
-
-    Each delivery is written in its own short transaction rather than under one
-    long one held open across the fetches, which is the property #488 already
-    had and this must not give up: the pass holds no runtime transaction while
-    it talks to the external system.  Committing per delivery is also what makes
-    the refusal evidence durable *before* the pass decides whether it may
-    advance past it (ADR-0089).
-    """
-
-    def __init__(self, session_factory, binding: DeliveryBinding, run_identity: str):
-        from corridor.activation_runtime import DeliveryActivationContext
-        self.activation_context = DeliveryActivationContext(session_factory, binding)
-        self._session_factory = session_factory
-        self._binding = binding
-        self._run_identity = run_identity
-        self.dispositions: Counter[str] = Counter()
-
-    def record(
-        self,
-        item: ChangeItem,
-        *,
-        disposition: str,
-        content_digest: str,
-        bytes_reference: str,
-        refusal_reason: str | None,
-    ) -> int:
-        observation = DeliveryObservation(
-            external_identity=item.item_id,
-            external_version=item.version_id,
-            content_digest=content_digest,
-            bytes_reference=bytes_reference,
-            original_timestamps=dict(item.original_timestamps),
-            metadata=dict(item.metadata),
-        )
-        with self._session_factory() as writing:
-            with writing.begin():
-                if disposition == DISPOSITION_STORED:
-                    recorded = take_delivery(
-                        writing,
-                        self._binding,
-                        observation,
-                        service_identity=SERVICE_IDENTITY,
-                        run_identity=self._run_identity,
-                    )
-                else:
-                    recorded = record_delivery(
-                        writing,
-                        self._binding,
-                        observation,
-                        disposition=disposition,
-                        service_identity=SERVICE_IDENTITY,
-                        run_identity=self._run_identity,
-                        refusal_reason=refusal_reason,
-                    )
-        self.dispositions[recorded.disposition] += 1
-        return recorded.delivery_id
-
-
 def execute_connector_polling(
     session_factory,
     *,
@@ -175,8 +118,22 @@ def execute_connector_polling(
     outbound request; production leaves it unset and the declared adapter is
     built from the server-owned registry.  The pass holds no runtime
     transaction while it fetches and stores: each delivery is recorded in its
-    own committed transaction, and the advance is recorded last, so a crash
-    anywhere in the pass leaves the cursor where it was.
+    own committed transaction, the source it carried is registered in another
+    one straight after, and the advance is recorded last, so a crash anywhere
+    in the pass leaves the cursor where it was.
+
+    A registration that fails therefore raises out of the pass rather than
+    being counted and passed over.  Nothing is lost either way — the delivery
+    is already committed — but the cursor does not move, so the next attempt
+    re-lists that same change and registers it against the delivery the ledger
+    already holds.  Swallowing the failure and advancing would leave bytes
+    nobody can see and no record that anything was missing, which is the silent
+    outcome ADR-0089 refuses everywhere else.
+
+    What the pass reports is unchanged: ``due_work`` validates this result
+    against an exact key set for the ``connector-polling-result-v1`` schema, so
+    naming the registrations here is a schema revision rather than an extra
+    key, and every registration is already durable in the record it wrote.
     """
 
     observed_at = _aware_utc(clock.now())
@@ -211,7 +168,12 @@ def execute_connector_polling(
         configuration_identity=connector_identity,
         configuration_version=configuration_version,
     )
-    ledger = LedgerWriter(session_factory, binding, run_identity)
+    ledger = PassLedger(
+        DeliveryTransactions.committing(session_factory),
+        binding,
+        service_identity=SERVICE_IDENTITY,
+        run_identity=run_identity,
+    )
 
     sync = sync_pull_connector(
         connector,
@@ -220,6 +182,7 @@ def execute_connector_polling(
         channel=channel,
         cursor=cursor,
         ledger=ledger,
+        on_envelope_stored=ledger.register,
     )
 
     checkpoint_token = sync.checkpoint_token or cursor

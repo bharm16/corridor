@@ -67,6 +67,30 @@ SCHEMA_VERSION = "sheet_candidate_shape_v1"
 TIER_NATIVE = "native"
 
 
+def reads_conflict_matrix(path) -> bool:
+    """Whether this workbook reads as a conflict matrix rather than a SUE table.
+
+    One file format, two readings with different outputs: a conflict matrix's
+    cells are controlled values that materialize into Source Facts, and a SUE
+    probe or test-hole table has no controlled Fact type for any of its columns,
+    so it stays a legacy Extracted Proposal (ADR-0081). The route has to know
+    which before the reader runs, because the answer decides which command
+    records the reading -- and it cannot be recovered afterwards from the rows,
+    where an empty conflict matrix and an empty probe table look identical.
+
+    The cost is a second `read_workbook`, which is the same read-only openpyxl
+    pass the reader itself makes. A workbook this cannot read answers False, so
+    the failure is raised by the reader, which is where a failed attempt is
+    recorded rather than aborting route selection.
+    """
+
+    try:
+        conflict_sheet(read_workbook(path))
+    except Exception:
+        return False
+    return True
+
+
 def extract_document(session: Session, document: Document) -> list[Candidate]:
     """Every conflict row of one workbook.
 

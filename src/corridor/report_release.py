@@ -378,7 +378,18 @@ def retrieve_released_external_report(
 def external_report_release_history(
     session: Session, project_id: int
 ) -> tuple[ExternalReportReleaseHistory, ...]:
-    """Read immutable metadata without reopening a Report or loading PDF blobs."""
+    """Read immutable metadata without reopening a Report or loading PDF blobs.
+
+    **A display reader, never a predecessor selector.** It orders by
+    ``released_at`` because a person reading history wants the most recent
+    receipt first, and that is the only thing a clock may decide here. It must
+    never be used to choose a report's comparison baseline: ADR-0086 fixes that
+    marker to the last approved package, ``external_report_releases`` binds no
+    accepted Project Record revision to compare against (#635), and the one
+    predicate is ``release_candidate.latest_authorized_package``. The rows this
+    returns are retained legacy receipts a project already holds; nothing new is
+    written to them for an adopted project.
+    """
     receipts = session.execute(
         select(
             ExternalReportRelease.id,

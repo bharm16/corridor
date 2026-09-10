@@ -38,7 +38,7 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
-from corridor.pipeline import ExtractionRoute
+from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.project_processing import process_project, summarize_pass
 
 PIPELINE = "Tejas Pipeline Co"
@@ -119,6 +119,7 @@ def _scripted_route(script):
             return candidates
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version=SCHEMA_VERSION,
             extract=extract,

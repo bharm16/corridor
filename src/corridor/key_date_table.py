@@ -90,7 +90,19 @@ from corridor import audit
 from corridor.analytics import AnalyticsBinding
 from corridor.measurement_collection import binding_for_source
 from corridor.connectors.pull_connector import SourceEnvelope
-from corridor.delta_generation import accepted_values, revision_label
+from corridor.proposed_delta_comparison import (
+    COMPARED,
+    ENTIRE_SUBJECT,
+    SEAL_BEFORE_ROW_FAILURE,
+    RowPlan,
+    SourcePlan,
+    StatedSubject,
+    accepted_values,
+    compare_stated_subjects,
+    removal_disposition,
+    require_bound_delivery,
+    revision_label,
+)
 from corridor.fact_values import scalar_fact_value
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
@@ -110,10 +122,8 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal, require_human_principal
 from corridor.proposed_deltas import (
-    ExistingSubjectTarget,
     ImpactDerivation,
     ProposedDeltaValues,
-    ProposedSubjectTarget,
     create_proposed_delta_group,
 )
 from corridor.row_accounting import RowAccounting
@@ -165,11 +175,6 @@ KEY_DATE_SUBJECT_PREFIX = "key_date:"
 # The Fact type carrying a key date's scheduled date.
 SCHEDULED_DATE_FIELD = "need_date"
 
-# The `target_field` an apparent removal names.  A removal is not about one
-# column, and the whole-subject spelling `later_revision` already uses is kept
-# so the word never means two things across the seam.
-ENTIRE_SUBJECT = "entire_subject"
-
 # The impact rule this module evaluates, and what it reads.  Named and
 # versioned because it is a Derivation: a later rule is a later version, never
 # a silent re-reading of an old delta.
@@ -177,7 +182,8 @@ IMPACT_RULE = "key_date_change_impact_v1"
 
 # What became of one row of the table.  Closed: every populated row reaches
 # exactly one of these and an unaccounted row is a defect, not a new case.
-COMPARED = "compared"
+# `COMPARED` is the comparison's own word for a row paired with an accepted
+# subject and is imported rather than restated.
 NEW_KEY_DATE = "new_key_date"
 PROCESSING_FAILURE = "processing_failure"
 ROW_DISPOSITIONS = (COMPARED, NEW_KEY_DATE, PROCESSING_FAILURE)
@@ -370,7 +376,16 @@ def capture_key_date_table(
     impact_instant = impact_evaluated_at if impact_evaluated_at is not None else datetime.now(timezone.utc)
     if impact_instant.tzinfo is None:
         raise KeyDateTableRefused("impact evaluation needs an explicit timezone")
-    delivery = _refuse_unbound_delivery(session, project, staged, envelope)
+    delivery = require_bound_delivery(
+        session,
+        project,
+        staged,
+        envelope,
+        refusal=KeyDateTableRefused,
+        source_noun="export",
+        identity_noun="export",
+        act_noun="a Key Date table",
+    )
 
     path = staged_file(staged.sha256)
     if path is None:
@@ -488,43 +503,6 @@ def key_date_code(subject_identity: str) -> str | None:
 # --- refusals ---------------------------------------------------------------
 
 
-def _refuse_unbound_delivery(
-    session: Session,
-    project: Project,
-    staged: StagedSource,
-    envelope: SourceEnvelope,
-) -> SourceDelivery:
-    """The exact bytes, digest, source identity, and external version are held.
-
-    Checked rather than trusted: the ledger row is what retains the customer's
-    own identity for the export and the external version it arrived at, and a
-    capture that cannot name one has no revision identity to compare under.
-
-    The proven row is returned rather than discarded: it is also the delivery
-    this export's Document came in on (#687), already checked here to be
-    ``stored``, to hold these exact bytes, and to belong to this project.
-    """
-
-    if envelope.content_digest != staged.sha256:
-        raise KeyDateTableRefused(
-            "the delivered digest is not the staged export's digest"
-        )
-    if not envelope.external_identity.strip() or not envelope.external_version.strip():
-        raise KeyDateTableRefused(
-            "a Key Date table names the customer's own identity for the export "
-            "and the external version it arrived at"
-        )
-    delivery = stored_delivery(session, idempotency_key=envelope.idempotency_key)
-    if delivery is None or delivery.content_sha256 != staged.sha256:
-        raise KeyDateTableRefused(
-            "no stored delivery holds these exact bytes; take delivery of the "
-            "export before capturing it"
-        )
-    if delivery.project_id != project.id:
-        raise KeyDateTableRefused("this delivery was taken for another project")
-    return delivery
-
-
 # --- the reading ------------------------------------------------------------
 
 
@@ -632,25 +610,6 @@ def _populated_rows(sheet, header_row_number: int) -> tuple[int, ...]:
 # --- the comparison plan ----------------------------------------------------
 
 
-@dataclass(frozen=True)
-class _RowPlan:
-    """One export row, its resolved subject, and what to do with it."""
-
-    row: _RawRow
-    code: str
-    subject_identity: str
-    disposition: str
-
-
-@dataclass(frozen=True)
-class _Plan:
-    """Every row's resolution, the removal candidates, and the accounting."""
-
-    rows: tuple[_RowPlan, ...]
-    removals: tuple[RemovalCandidate, ...]
-    accounting: KeyDateTableAccounting
-
-
 def _plan(
     reading: _Reading,
     segments: dict[tuple[str, str], SourceSegment],
@@ -658,7 +617,7 @@ def _plan(
     *,
     is_complete_enumerative_source: bool,
     row_accounting_sealed: bool,
-) -> _Plan:
+) -> SourcePlan[_RawRow, KeyDateTableAccounting]:
     """Resolve every row against the accepted record, and account for all of them.
 
     The date is typed here, from the registered segment's own exact text and
@@ -678,8 +637,9 @@ def _plan(
     for row in reading.rows:
         accounting.detect(row.source_row_key, page=1, row_number=row.row_number)
 
-    plans: list[_RowPlan] = []
+    plans: list[RowPlan[_RawRow]] = []
     records: list[KeyDateRow] = []
+    carried: set[str] = set()
     failed_codes: set[str] = set()
     for row in reading.rows:
         code = _cell_text(segments, reading.sheet_name, row.code_cell_range)
@@ -701,13 +661,9 @@ def _plan(
             reason=reason or disposition,
         )
         if reason is None and code and subject is not None:
+            carried.add(code)
             plans.append(
-                _RowPlan(
-                    row=row,
-                    code=code,
-                    subject_identity=subject,
-                    disposition=disposition,
-                )
+                RowPlan(row=row, subject_identity=subject, disposition=disposition)
             )
         records.append(
             KeyDateRow(
@@ -724,17 +680,15 @@ def _plan(
             )
         )
 
+    sealed = is_complete_enumerative_source and row_accounting_sealed
     removals = _removal_candidates(
-        accepted_codes,
-        carried={item.code for item in plans},
-        failed=failed_codes,
-        is_complete_enumerative_source=is_complete_enumerative_source,
-        row_accounting_sealed=row_accounting_sealed,
+        accepted_codes, carried=carried, failed=failed_codes, sealed=sealed
     )
     receipt = accounting.finish(plans).row_accounting
-    return _Plan(
+    return SourcePlan(
         rows=tuple(plans),
         removals=removals,
+        sealed=sealed,
         accounting=KeyDateTableAccounting(
             sheet_name=reading.sheet_name,
             header_row_number=reading.header_row_number,
@@ -797,12 +751,15 @@ def _removal_candidates(
     *,
     carried: set[str],
     failed: set[str],
-    is_complete_enumerative_source: bool,
-    row_accounting_sealed: bool,
+    sealed: bool,
 ) -> tuple[RemovalCandidate, ...]:
-    """Accepted key dates this export does not carry, and whether to propose one."""
+    """Accepted key dates this export does not carry, and whether to propose one.
 
-    sealed = is_complete_enumerative_source and row_accounting_sealed
+    A filtered export withholds every removal for one reason, so the seal is
+    reported before anything about an individual row: that is this reader's
+    withholding precedence, and `later_revision` declares the other one.
+    """
+
     candidates: list[RemovalCandidate] = []
     for code, subject in sorted(accepted_codes.items()):
         if code in carried:
@@ -811,17 +768,18 @@ def _removal_candidates(
         # processing, is not an absent key date. Proposing its removal would
         # turn one unreadable cell into a proposal to drop the whole key date.
         reason = FAILED_IN_TABLE if code in failed else ABSENT_FROM_TABLE
-        withheld = (
-            WITHHELD_UNSEALED
-            if not sealed
-            else (FAILED_IN_TABLE if code in failed else None)
+        proposed, withheld = removal_disposition(
+            sealed=sealed,
+            unsealed_reason=WITHHELD_UNSEALED,
+            blocking_reason=FAILED_IN_TABLE if code in failed else None,
+            precedence=SEAL_BEFORE_ROW_FAILURE,
         )
         candidates.append(
             RemovalCandidate(
                 subject_identity=subject,
                 code=code,
                 reason=reason,
-                proposed=withheld is None,
+                proposed=proposed,
                 withheld_reason=withheld,
             )
         )
@@ -895,7 +853,7 @@ def _capture_facts(
     project: Project,
     document_id: int,
     segments: dict[tuple[str, str], SourceSegment],
-    plan: _Plan,
+    plan: SourcePlan[_RawRow, KeyDateTableAccounting],
     actor: HumanPrincipal,
 ) -> tuple[int, tuple[int, ...], dict[str, Fact]]:
     """Capture what the export says about every readable key date, changed or not.
@@ -1001,82 +959,40 @@ def _fact_digest(
 
 
 def _proposals(
-    plan: _Plan,
+    plan: SourcePlan[_RawRow, KeyDateTableAccounting],
     captured: dict[str, Fact],
     accepted: dict[tuple[str, str], Any],
     baseline_revision: int | None,
 ) -> tuple[tuple[ProposedDeltaValues, ...], int]:
     """The typed differences and the count of dates the record already held.
 
-    A stated date equal to the accepted one produces nothing, which is the whole
-    point of comparing: an export of two hundred key dates that moved three of
-    them proposes three changes.
+    The comparison is `proposed_delta_comparison`, shared with every other
+    Propose Delta producer.  What this reader contributes is the one date each
+    readable row states, the code identity that paired it with an accepted key
+    date, and its own rule version.
     """
 
-    label = revision_label(baseline_revision)
-    proposals: list[ProposedDeltaValues] = []
-    agreed = 0
-    for item in plan.rows:
-        fact = captured.get(item.subject_identity)
-        if fact is None:
-            continue
-        stated = scalar_fact_value(fact)
-        key = (item.subject_identity, SCHEDULED_DATE_FIELD)
-        if item.disposition == COMPARED:
-            if key in accepted:
-                if accepted[key] == stated:
-                    agreed += 1
-                    continue
-                change_type = "modify"
-            else:
-                change_type = "add"
-            proposals.append(
-                ProposedDeltaValues(
-                    change_type=change_type,
-                    target=ExistingSubjectTarget(
-                        subject_identity=item.subject_identity,
-                        field=SCHEDULED_DATE_FIELD,
-                    ),
-                    accepted_value=accepted.get(key),
-                    proposed_value=stated,
-                    comparison_rule_version=KEY_DATE_COMPARISON_RULE_VERSION,
-                    accepted_baseline_revision=label,
-                )
+    comparison = compare_stated_subjects(
+        accepted=accepted,
+        stated=tuple(
+            StatedSubject(
+                subject_identity=item.subject_identity,
+                values=((SCHEDULED_DATE_FIELD, scalar_fact_value(fact)),),
+                paired=item.disposition == COMPARED,
             )
-            continue
-        proposals.append(
-            ProposedDeltaValues(
-                change_type="add",
-                target=ProposedSubjectTarget(
-                    subject_identity=item.subject_identity,
-                    proposed_fields=(SCHEDULED_DATE_FIELD,),
-                ),
-                proposed_value={SCHEDULED_DATE_FIELD: stated},
-                comparison_rule_version=KEY_DATE_COMPARISON_RULE_VERSION,
-                accepted_baseline_revision=label,
-            )
-        )
-    for candidate in plan.removals:
-        if not candidate.proposed:
-            continue
-        proposals.append(
-            ProposedDeltaValues(
-                change_type="apparent_removal",
-                target=ExistingSubjectTarget(
-                    subject_identity=candidate.subject_identity,
-                    field=ENTIRE_SUBJECT,
-                ),
-                accepted_value={
-                    field_name: value
-                    for (subject, field_name), value in sorted(accepted.items())
-                    if subject == candidate.subject_identity
-                },
-                proposed_value=None,
-                comparison_rule_version=KEY_DATE_COMPARISON_RULE_VERSION,
-                accepted_baseline_revision=label,
-            )
-        )
-    return tuple(proposals), agreed
+            for item in plan.rows
+            if (fact := captured.get(item.subject_identity)) is not None
+        ),
+        removals=tuple(
+            candidate.subject_identity
+            for candidate in plan.removals
+            if candidate.proposed
+        ),
+        sealed=plan.sealed,
+        comparison_rule_version=KEY_DATE_COMPARISON_RULE_VERSION,
+        accepted_baseline_revision=revision_label(baseline_revision),
+    )
+    return comparison.deltas, comparison.values_agreed
 
 
 # --- the derived impact -----------------------------------------------------

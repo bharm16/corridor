@@ -12,7 +12,12 @@ from corridor.models import DocPage, Document, ExtractionRun, Fact, Project, Sou
 from corridor.reader_replay import replay_native_segments
 from corridor.reader_segments import native_segment_values
 from corridor.source_segment_errors import (
-    SourceDocumentDigestMismatch, SourceSegmentDigestMismatch, SourceSegmentLocatorMismatch,
+    NativeReaderUnavailable,
+    RecordedReadingNotReproduced,
+    SourceDocumentDigestMismatch,
+    SourceSegmentDigestMismatch,
+    SourceSegmentIntegrityError,
+    SourceSegmentLocatorMismatch,
 )
 from corridor.token_layers import read_native_pdf
 from corridor_pdf_reader.execution import PdfiumExecutor
@@ -116,11 +121,22 @@ def test_native_batch_refuses_every_changed_locator_field(native_source, documen
     setattr(changed, changed_field, changes[changed_field])
     if changed_field == "exact_text":
         changed.content_sha256 = sha256(changed.exact_text.encode()).hexdigest()
-    refusal = SourceSegmentDigestMismatch if changed_field == "content_sha256" else SourceSegmentLocatorMismatch
-    with pytest.raises(refusal):
+    # A batch is the same three answers the scalar reader gives, not one
+    # blurred refusal: a configuration this build does not have and a reading
+    # that no longer reproduces are availability refusals, and only a locator
+    # followed into the reproduced reading may speak about the source.
+    refusal = {
+        "content_sha256": SourceSegmentDigestMismatch,
+        "reader_identity": NativeReaderUnavailable,
+        "reading_sha256": RecordedReadingNotReproduced,
+    }.get(changed_field, SourceSegmentLocatorMismatch)
+    with pytest.raises(refusal) as raised:
         replay_native_segments(
             document, (*_segments(document, values), changed), path, native_reading=reading
         )
+    assert isinstance(raised.value, SourceSegmentIntegrityError) is (
+        refusal not in (NativeReaderUnavailable, RecordedReadingNotReproduced)
+    )
 
 
 def test_native_batch_preserves_distinct_historical_configurations(native_source, document, monkeypatch):
@@ -130,7 +146,7 @@ def test_native_batch_preserves_distinct_historical_configurations(native_source
     calls = _count_isolated_reads(monkeypatch)
     assert replay_native_segments(document, batch, path) == tuple(segment.exact_text for segment in batch)
     assert calls == ["read_document", "read_document"]
-    with pytest.raises(SourceSegmentLocatorMismatch, match="configuration/result"):
+    with pytest.raises(NativeReaderUnavailable, match="reader configuration"):
         replay_native_segments(document, batch, path, native_reading=first)
 
 

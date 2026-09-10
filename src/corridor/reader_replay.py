@@ -18,6 +18,8 @@ from corridor.models import Document, SourceSegment
 from corridor.native_matrix_bindings import native_replay_index
 from corridor.reader_segments import NATIVE_KINDS
 from corridor.source_segment_errors import (
+    NativeReaderUnavailable,
+    RecordedReadingNotReproduced,
     SourceDocumentDigestMismatch,
     SourceSegmentDigestMismatch,
     SourceSegmentLocatorMismatch,
@@ -37,6 +39,15 @@ def replay_native_segments(
     An operation that already captured a sealed reading can supply it. A batch
     containing historical configurations otherwise reads each configuration
     once; none is silently interpreted using another configuration's result.
+
+    Every refusal keeps its own family. A locator followed into the reproduced
+    reading that reaches different content is a ``SourceSegmentIntegrityError``;
+    an absent reader configuration or a reading the installed reader does not
+    reproduce is a ``FreshReadingUnavailable``, because no page was opened.
+    A write-time caller refuses either way, which is why the distinction used
+    to look free -- but the same segments are read later by the Source Passage
+    Check, and one family says *Not found at cited location* while the other
+    says *Cited location cannot be re-read*.
     """
     original = Path(path)
     identity = (document.id, document.project_id, document.sha256)
@@ -83,10 +94,17 @@ def replay_native_segments(
             reading = native_reading or read_native_pdf(
                 original, source_sha256=identity[2], engine=engine, dpi=dpi
             )
-            if (reader_identity != reading.identity
-                    or segment.reading_sha256 != reading.reading_sha256):
-                raise SourceSegmentLocatorMismatch(
-                    "recorded native reader/configuration/result is unavailable"
+            # The batch owes the same two availability answers the scalar
+            # reader gives. Both used to be one locator mismatch here, which
+            # made the Source Passage Check report *Not found at cited
+            # location* for a reading nothing ever opened.
+            if reader_identity != reading.identity:
+                raise NativeReaderUnavailable(
+                    PDF_SEGMENT_SCHEME, "the recorded native reader configuration"
+                )
+            if segment.reading_sha256 != reading.reading_sha256:
+                raise RecordedReadingNotReproduced(
+                    PDF_SEGMENT_SCHEME, "the recorded native reading"
                 )
             indexes[key] = native_replay_index(reading)
         encoded = indexes[key].get((segment.kind, segment.ordinal))

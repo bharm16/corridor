@@ -1483,3 +1483,22 @@ def test_ordinary_artifact_routes_refuse_another_project(client, session, projec
         ).status_code
         == 404
     )
+
+
+def _adopted_project(session, tmp_path, slug: str) -> Project:
+    """A project whose accepted record came from its own adopted workbook.
+
+    Its own project, not the shared fixture's: Adopt Baseline refuses to write
+    over an existing legacy accepted record, which is the ADR-0081 boundary
+    working rather than a fixture detail to route around.
+    """
+
+    from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
+
+    project = Project(slug=slug, name="Adopted Release", is_synthetic=True)
+    session.add(project)
+    session.flush()
+    seed_membership(session, project, TEST_PRINCIPAL, display_name="Coordinator")
+    body = workbook_bytes(tmp_path / f"{slug}.xlsx", BASELINE_ROWS)
+    adopt(session, project, body, tmp_path)
+    return project

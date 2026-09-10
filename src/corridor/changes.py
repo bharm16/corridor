@@ -41,6 +41,13 @@ published — and the disagreement is reported on the ``Diff``; for a project in
 ``legacy`` operating mode the legacy relations are still the accepted record,
 and two released legacy commands move an accepted value without writing any
 Fact.
+
+The *comparison baseline* is not defined here.  ``last_released_report`` was,
+and selected ``external_report_releases`` by ``released_at desc`` — a wall clock
+over a relation that binds no accepted revision (#635).  ADR-0086 moved the
+marker to the last approved package, so the one predicate is
+``release_candidate.latest_authorized_package`` and every consumer reads it
+there.
 """
 
 from __future__ import annotations
@@ -56,7 +63,6 @@ from corridor.exceptions import RULESET_VERSION, Evaluation
 from corridor.ledger import browse
 from corridor.models import (
     DependencyDismissal,
-    ExternalReportRelease,
     LegacyLedgerArchive,
     ProjectRecordRevision,
     ReportRun,
@@ -579,40 +585,6 @@ def diff_since_last(
 
     diff.changes.sort(key=lambda c: (c.kind, c.ref_code))
     return diff
-
-
-def last_released_report(
-    session: Session,
-    project_id: int,
-    *,
-    provenance_mode: str,
-) -> ExternalReportRelease | None:
-    """The predecessor a report compares against: the last released report.
-
-    ADR-0053 fixes one comparison baseline for every report — the last Report
-    Approved for Release — and nothing else moves it.  A prepared but unapproved
-    PDF, a retained weekly snapshot, or an ad hoc report never advances this
-    marker, so a scheduled occurrence records exactly the release its weekly
-    window is measured from.  Before a project's first release in this
-    provenance mode there is no predecessor and the reading stands on its own.
-
-    The predecessor is matched within one provenance mode because a
-    document-only release and an all-supported-sources release describe
-    different readings; comparing across them would leak a verbal date into an
-    otherwise citation-only surface.
-    """
-    return session.scalars(
-        select(ExternalReportRelease)
-        .where(
-            ExternalReportRelease.project_id == project_id,
-            ExternalReportRelease.provenance_mode == provenance_mode,
-        )
-        .order_by(
-            ExternalReportRelease.released_at.desc(),
-            ExternalReportRelease.id.desc(),
-        )
-        .limit(1)
-    ).first()
 
 
 def accepted_revision_id(session: Session, project_id: int) -> int | None:

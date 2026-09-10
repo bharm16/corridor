@@ -836,3 +836,52 @@ def test_the_inbound_webhook_keeps_the_refusal_it_recorded(session, monkeypatch)
     assert delivery.external_identity == "mta-hostile"
     assert delivery.refusal_reason.startswith("malware_detected:")
     assert session.scalar(select(func.count(InboundMessage.id))) == 0
+
+
+def test_the_pushed_delivery_identity_is_derived_in_exactly_one_place(session):
+    """Replay and acceptance asked the same question through two derivations.
+
+    ``delivery_identity_of`` computed the external identity for the replay
+    lookup and ``_observation`` computed it again for the row acceptance wrote.
+    Two derivations of one identity is the defect ADR-0089 names, and it is
+    silent while they agree: the day they stop agreeing, a retry stops finding
+    the delivery it already took and takes it a second time. Both now read one
+    observation, so the row's identity is the answer replay looks up.
+    """
+
+    alpha = make_project(session, "Alpha")
+    bind_alias(session, customer="acme-utilities", project=alpha, alias=ALPHA_ALIAS)
+    binding = push_intake.bind_credential(
+        session,
+        push_intake.PushCredential(channel="project_alias", material=ALPHA_ALIAS),
+    )
+
+    # The transport named this delivery, with the whitespace a transport adds.
+    named = push_intake.PushPayload(
+        body=raw(message_id="<named@example.test>", body="Named"),
+        filename="message.eml",
+        transport_delivery_id="  mta-42  ",
+    )
+    identity, key = push_intake.delivery_identity_of(binding, named)
+    assert push_intake.replay_delivery(session, binding, named) is None
+    receipt = push_intake.accept_delivery(session, binding, named)
+    row = session.get(SourceDelivery, receipt.delivery_id)
+    assert (row.delivery_identity, row.idempotency_key) == (identity, key)
+    assert row.external_identity == "mta-42"
+    replayed = push_intake.replay_delivery(session, binding, named)
+    assert replayed is not None and replayed.delivery_id == receipt.delivery_id
+
+    # The transport named nothing, so the digest names it — on both sides.
+    bare = push_intake.PushPayload(
+        body=raw(message_id="<bare@example.test>", body="Bare"),
+        filename="message.eml",
+    )
+    bare_identity, bare_key = push_intake.delivery_identity_of(binding, bare)
+    bare_row = session.get(
+        SourceDelivery, push_intake.accept_delivery(session, binding, bare).delivery_id
+    )
+    assert (bare_row.delivery_identity, bare_row.idempotency_key) == (
+        bare_identity,
+        bare_key,
+    )
+    assert bare_row.external_identity == sha256(bare.body).hexdigest()

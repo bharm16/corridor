@@ -41,7 +41,9 @@ ADR-0089 calls that an accidental implementation asymmetry and makes both
 transports write ``source_deliveries`` through ``corridor.source_delivery``.
 This module keeps the part that is genuinely a push concern — the credential
 that binds the boundary before anything parses — and hands the delivery itself
-to the shared ledger.
+to the shared ledger.  That includes reading the delivery back: the envelope a
+receipt carries is ``source_delivery.envelope_for_delivery``, the one reader
+both transports share, not a push-shaped copy of it.
 """
 
 from __future__ import annotations
@@ -55,19 +57,17 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from corridor.connectors.pull_connector import (
-    SourceEnvelope,
-    build_delivery_identity,
-    build_idempotency_key,
-)
+from corridor.connectors.pull_connector import SourceEnvelope
 from corridor.intake_hardening import HostileContentRefused, inspect_byte_gate
-from corridor.models import Project, PushIntakeCredential, SourceDelivery
+from corridor.models import Project, PushIntakeCredential
 from corridor.object_storage import content_key, store_bytes
 from corridor.source_delivery import (
     DISPOSITION_DUPLICATE,
     DISPOSITION_TERMINALLY_REFUSED,
     DeliveryBinding,
     DeliveryObservation,
+    delivery_identity_for,
+    envelope_for_delivery,
     record_delivery,
     stored_delivery,
     take_delivery,
@@ -307,20 +307,20 @@ def delivery_identity_of(binding: PushBinding, payload: PushPayload) -> tuple[st
     when the transport has none; the version is always the digest, so the same
     transport delivery re-sent with different bytes is a different version
     rather than a silent overwrite.
+
+    It reads the same observation ``accept_delivery`` records, through the same
+    ``delivery_identity_for`` the database re-derives from the stored row.  It
+    used to compute the external identity itself while ``_observation``
+    computed it again, which is silent while the two agree and, the day they
+    stop, means a retry no longer finds the delivery it already took.
     """
 
     if not isinstance(binding, PushBinding):
         raise PushIntakeRefused("a pushed delivery needs an established binding")
     digest = sha256(payload.body).hexdigest()
-    external_identity = (payload.transport_delivery_id or "").strip() or digest
-    delivery_identity = build_delivery_identity(
-        customer=binding.customer,
-        project=binding.project_slug,
-        channel=binding.channel,
-        external_identity=external_identity,
-        external_version=digest,
+    return delivery_identity_for(
+        _delivery_binding(binding), _observation(payload, digest)
     )
-    return delivery_identity, build_idempotency_key(delivery_identity, digest)
 
 
 def _delivery_binding(binding: PushBinding) -> DeliveryBinding:
@@ -342,8 +342,10 @@ def _delivery_binding(binding: PushBinding) -> DeliveryBinding:
 
 
 def _observation(
-    binding: PushBinding, payload: PushPayload, digest: str, bytes_reference: str
+    payload: PushPayload, digest: str, bytes_reference: str = ""
 ) -> DeliveryObservation:
+    """What the transport offered, and the one place its identity is derived."""
+
     return DeliveryObservation(
         external_identity=(payload.transport_delivery_id or "").strip() or digest,
         external_version=digest,
@@ -366,7 +368,7 @@ def replay_delivery(
     if row is None:
         return None
     return PushReceipt(
-        envelope=_envelope(row, binding),
+        envelope=envelope_for_delivery(session, row.id),
         delivery_id=row.id,
         staged_path=_stage(payload, row.content_sha256),
         replayed=True,
@@ -406,7 +408,7 @@ def accept_delivery(
         refused = record_delivery(
             session,
             delivery_binding,
-            _observation(binding, payload, digest, ""),
+            _observation(payload, digest),
             disposition=DISPOSITION_TERMINALLY_REFUSED,
             service_identity=SERVICE_IDENTITY,
             run_identity=run_identity,
@@ -421,7 +423,7 @@ def accept_delivery(
     # unreferenced object rather than a ledger row without its bytes.
     staged = _stage(payload, digest)
     observation = _observation(
-        binding, payload, digest, content_key(digest, _suffix(payload.filename))
+        payload, digest, content_key(digest, _suffix(payload.filename))
     )
     recorded = take_delivery(
         session,
@@ -435,28 +437,10 @@ def accept_delivery(
     # and a retry must reach the same one.
     taken = stored_delivery(session, idempotency_key=recorded.idempotency_key)
     return PushReceipt(
-        envelope=_envelope(taken, binding),
+        envelope=envelope_for_delivery(session, taken.id),
         delivery_id=taken.id,
         staged_path=staged,
         replayed=recorded.disposition == DISPOSITION_DUPLICATE,
-    )
-
-
-def _envelope(row: SourceDelivery, binding: PushBinding) -> SourceEnvelope:
-    """The shared ingress record #496 defined, filled from one pushed delivery."""
-
-    return SourceEnvelope(
-        customer=row.customer,
-        project=binding.project_slug,
-        channel=row.channel,
-        external_identity=row.external_identity,
-        external_version=row.external_version,
-        original_timestamps=dict(row.original_timestamps_json or {}),
-        content_digest=row.content_sha256,
-        bytes_reference=row.bytes_reference,
-        metadata=dict(row.metadata_json or {}),
-        delivery_identity=row.delivery_identity,
-        idempotency_key=row.idempotency_key,
     )
 
 

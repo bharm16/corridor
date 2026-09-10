@@ -52,7 +52,12 @@ from corridor.models import (
     PipelineObservation,
     Project,
 )
-from corridor.pipeline import ExtractionRoute, extraction_attempt, record_routed_run
+from corridor.pipeline import (
+    EXTRACTED_PROPOSALS,
+    ExtractionRoute,
+    extraction_attempt,
+    record_routed_run,
+)
 from corridor.row_accounting import RowAccountingFailure
 
 # An extractor reads one Document and returns the Candidates it produced,
@@ -129,6 +134,10 @@ def extract_project(
                 effective_prompt_version=prompt_version,
                 schema_version=prompt_version,
                 extract=extract,
+                # A caller-supplied extractor is the frozen legacy shape: it
+                # returns Candidates, and a reader that appends Source Facts
+                # arrives as a route that declares so.
+                output=EXTRACTED_PROPOSALS,
                 allow_unsealed_legacy=True,
             )
 

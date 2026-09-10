@@ -112,6 +112,20 @@ def build_delivery_identity(
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
+def delivered_metadata(item: ChangeItem) -> dict[str, Any]:
+    """The metadata both the ledger row and the envelope of one delivery carry.
+
+    The connector's own metadata, plus the name the source was delivered as —
+    which only ``ChangeItem.name`` holds and which a consumer needs before it
+    can register the source at all.  One function rather than one derivation
+    per writer, because ``require_stored_envelope`` compares a consumer's
+    envelope against the retained row for equality: two derivations that
+    disagree about one key do not read differently, they refuse the delivery.
+    """
+
+    return {"filename": item.name, **dict(item.metadata)}
+
+
 def build_idempotency_key(
     delivery_identity: str,
     content_digest: str,
@@ -282,7 +296,7 @@ def sync_pull_connector(
                 original_timestamps=dict(item.original_timestamps),
                 content_digest=digest,
                 bytes_reference=storage_key,
-                metadata=dict(item.metadata),
+                metadata=delivered_metadata(item),
                 delivery_identity=identity,
                 idempotency_key=build_idempotency_key(identity, digest),
             )

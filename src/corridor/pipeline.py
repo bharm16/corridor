@@ -18,8 +18,38 @@ from uuid import uuid4
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from corridor.email_spine import (
+    PROMPT_VERSION as EMAIL_THREAD_PROMPT_VERSION,
+    SCHEMA_VERSION as EMAIL_THREAD_SCHEMA_VERSION,
+    capture_email_thread,
+    email_extractor_config,
+    envelope_for_delivery,
+)
+from corridor.extract_minutes_v5 import (
+    PROMPT_VERSION as MESSAGE_BODY_PROMPT_VERSION,
+    extract_document as extract_message_body,
+)
+from corridor.extract_sheet import (
+    PROMPT_VERSION as SHEET_PROMPT_VERSION,
+    SCHEMA_VERSION as SHEET_SCHEMA_VERSION,
+    extract_document as extract_sheet,
+    reads_conflict_matrix,
+)
 from corridor.extraction_runs import append_source_facts, record_extraction_run
-from corridor.facts import carries_source_facts
+from corridor.facts import require_source_fact_class
+from corridor.llm import OpenAIClient
+from corridor.minutes_spine import capture_minutes, minutes_extractor_config
+from corridor.native_pipeline import (
+    RecordedPipelineClient,
+    native_pipeline_configuration,
+    run_selected_native_matrix,
+)
+from corridor.native_provider_boundary import AuthorizedNativeMapper, POSTURE
+from corridor.pipeline_contracts import ObservationPlan, content_digest
+from corridor.pipeline_qualification import (
+    PipelineQualificationRefused,
+    selected_pipeline_configuration,
+)
 from corridor.extractor_lineage import (
     ExtractorConfig,
     deployed_extractor_config,
@@ -30,7 +60,7 @@ from corridor.extractor_lineage import (
 )
 from corridor.extraction_errors import ExtractionFailed, NativeObservationFailed
 from corridor.extraction_errors import NoMatrixFound
-from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
+from corridor.ingest import SPREADSHEET_SUFFIXES, document_parse_failure, ingest_document
 from corridor.config import settings
 from corridor.native_matrix_runtime import NativeMatrixRuntime, configured_native_matrix_runtime
 from corridor.models import (
@@ -39,6 +69,7 @@ from corridor.models import (
     Document,
     DocumentRenditionDerivation,
     ExtractionRun,
+    InboundMessage,
     Project,
 )
 from corridor.row_accounting import RowAccountingFailure
@@ -48,6 +79,24 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 
 Extractor = Callable[[Session, Document], list[Candidate]]
 
+# What one completed reading of a route produces, and therefore which command
+# records it. This is a property of the reader that was selected, known before
+# it runs, and it used to be recomputed afterwards by looking at the rows the
+# reader happened to return -- so a native reading of the published empty
+# template took the legacy command purely for having read a form with no
+# conflicts on it.
+#
+# `extracted_proposals` is the frozen legacy path (ADR-0081): rows land as
+# Candidates and nothing else. `source_facts` reaches the scoped Fact command,
+# which appends the rendition's Source Segments and the typed Source Facts over
+# them in one transaction. `captured_reading` is a reader that already did all
+# of that and sealed its own Extraction Run; the route hands that run back
+# rather than recording a second one.
+EXTRACTED_PROPOSALS = "extracted_proposals"
+SOURCE_FACTS = "source_facts"
+CAPTURED_READING = "captured_reading"
+ROUTE_OUTPUTS = (EXTRACTED_PROPOSALS, SOURCE_FACTS, CAPTURED_READING)
+
 
 @dataclass(frozen=True)
 class ExtractionRoute:
@@ -56,6 +105,8 @@ class ExtractionRoute:
     effective_prompt_version: str
     schema_version: str
     extract: Extractor
+    # Declared, never inferred from the rows. See ROUTE_OUTPUTS above.
+    output: str
     # Configured independently of Candidate count so a model-backed zero-row
     # run still identifies the model that read the document. Deterministic
     # routes, such as native spreadsheet extraction, leave this null.
@@ -72,6 +123,28 @@ class ExtractionRoute:
     # Native selection must also be valid before a completed run can resume.
     validate: Callable[[Session, Document], None] | None = None
     pipeline_configuration_sha256: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.output not in ROUTE_OUTPUTS:
+            raise ValueError(f"unknown extraction route output {self.output!r}")
+
+    def declared_receipt(self, document: Document, row_count: int) -> tuple:
+        """The receipt this route promises for one completed reading.
+
+        A `captured_reading` route hands back a run it sealed itself, so the
+        run has to be checked against the route that claims it. One named tuple
+        on each side is that check; six separate field comparisons here read as
+        six unrelated rules and grew a seventh every time a column was added.
+        """
+
+        return (
+            document.id,
+            "completed",
+            self.effective_prompt_version,
+            self.schema_version,
+            row_count,
+            None if self.extractor_config is None else self.extractor_config.config_sha256,
+        )
 
 
 def ingest_manifest(
@@ -321,12 +394,40 @@ def extraction_attempt(session: Session):
         raise failure
 
 
-class CapturedCandidates(list[Candidate]):
-    """Candidates with the native pipeline's already sealed source run."""
+@dataclass(frozen=True)
+class CapturedReading:
+    """One reader's own sealed Extraction Run, and the rows attached to it.
 
-    def __init__(self, candidates, run: ExtractionRun):
-        super().__init__(candidates)
-        self.run = run
+    Returned only by a route that declares `captured_reading`. It used to be a
+    `list` subclass carrying the run as an attribute, which meant every caller
+    that took the value for an ordinary row list was silently right and
+    `record_routed_run` had to re-validate six of the run's fields to find out
+    whether the list in its hands was one of these. The rows and the run are
+    named separately now; `__len__` and `__iter__` remain because a caller
+    counting or reporting the rows of a completed reading should not have to
+    know which of the three output classes produced them.
+    """
+
+    run: ExtractionRun
+    rows: tuple[Candidate, ...] = ()
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    @property
+    def receipt(self) -> tuple:
+        """The same shape `ExtractionRoute.declared_receipt` promises."""
+        return (
+            self.run.document_id,
+            self.run.outcome,
+            self.run.prompt_version,
+            self.run.schema_version,
+            self.run.candidate_count,
+            self.run.extractor_config_sha256,
+        )
 
 
 def extraction_route(
@@ -339,28 +440,19 @@ def extraction_route(
     attempt has to be the version of the reader that actually ran.
     """
     if getattr(document, "doc_type", None) == "minutes":
-        from corridor.minutes_spine import capture_minutes, minutes_extractor_config
-        from corridor.llm import OpenAIClient
-
         minutes_client = client or OpenAIClient()
         configuration = minutes_extractor_config(minutes_client)
 
         def extract_minutes_source(session, doc):
             receipt = capture_minutes(session, doc, client=minutes_client)
-            return CapturedCandidates([], session.get_one(ExtractionRun, receipt.extraction_run_id))
+            return CapturedReading(session.get_one(ExtractionRun, receipt.extraction_run_id))
 
         return ExtractionRoute(effective_prompt_version=configuration.prompt_version,
             schema_version=configuration.schema_version, extract=extract_minutes_source,
+            output=CAPTURED_READING,
             model=configuration.model, extractor_config=configuration, usage_client=minutes_client)
     if getattr(document, "doc_type", None) == "email":
         if getattr(document, "source_delivery_id", None) is not None:
-            from corridor.email_spine import (
-                PROMPT_VERSION as EMAIL_PROMPT_VERSION,
-                SCHEMA_VERSION as EMAIL_SCHEMA_VERSION,
-                capture_email_thread, email_extractor_config, envelope_for_delivery,
-            )
-            from corridor.llm import OpenAIClient
-
             email_client = client or OpenAIClient()
 
             def extract_bound_email(session, doc):
@@ -368,37 +460,33 @@ def extraction_route(
                     envelope_for_delivery(session, doc.source_delivery_id), client=email_client)
                 # The thread's closing turn owns the statement; each input
                 # Document has its own captured run and attachment provenance.
-                from corridor.models import InboundMessage
-
                 message = session.scalar(select(InboundMessage).where(
                     InboundMessage.document_id == doc.id,
                     InboundMessage.project_id == doc.project_id))
                 context = next(item for item in reading.turn_context_json if item["message_id"] == message.id)
-                return CapturedCandidates([], session.get_one(ExtractionRun, context["extraction_run_id"]))
+                return CapturedReading(session.get_one(ExtractionRun, context["extraction_run_id"]))
 
             return ExtractionRoute(
-                effective_prompt_version=EMAIL_PROMPT_VERSION, schema_version=EMAIL_SCHEMA_VERSION,
-                extract=extract_bound_email, model=getattr(email_client, "model", None),
+                effective_prompt_version=EMAIL_THREAD_PROMPT_VERSION,
+                schema_version=EMAIL_THREAD_SCHEMA_VERSION,
+                extract=extract_bound_email, output=CAPTURED_READING,
+                model=getattr(email_client, "model", None),
                 extractor_config=email_extractor_config(email_client), usage_client=email_client,
             )
         # A routed inbound message body reads through the ordinary prose
         # statement extractor (ADR-0058): proposals with quotes verified
         # against the stored message, never a second reading pipeline.
-        from corridor.extract_minutes_v5 import (
-            PROMPT_VERSION as EMAIL_PROMPT_VERSION,
-            extract_document as extract_message_body,
-        )
-        from corridor.llm import OpenAIClient
-
         body_client = client or OpenAIClient()
 
         def extract_email(session: Session, doc: Document) -> list[Candidate]:
             return extract_message_body(session, doc, client=body_client)
 
         return ExtractionRoute(
-            effective_prompt_version=EMAIL_PROMPT_VERSION,
-            schema_version=EMAIL_PROMPT_VERSION,
+            effective_prompt_version=MESSAGE_BODY_PROMPT_VERSION,
+            schema_version=MESSAGE_BODY_PROMPT_VERSION,
             extract=extract_email,
+            # Quoted statement wording over the stored message's prose spans.
+            output=SOURCE_FACTS,
             model=getattr(body_client, "model", None),
             extractor_config=deployed_extractor_config("minutes", client=body_client),
             usage_client=body_client,
@@ -406,25 +494,19 @@ def extraction_route(
 
     path = getattr(document, "_stored_path", None) or stored_file(document)
     if path is not None and Path(path).suffix.lower() in SPREADSHEET_SUFFIXES:
-        from corridor.extract_sheet import (
-            PROMPT_VERSION as SHEET_PROMPT_VERSION,
-            SCHEMA_VERSION as SHEET_SCHEMA_VERSION,
-            extract_document as extract_sheet,
-        )
-
         return ExtractionRoute(
             effective_prompt_version=SHEET_PROMPT_VERSION,
             schema_version=SHEET_SCHEMA_VERSION,
             extract=extract_sheet,
+            # A conflict matrix's cells are controlled values appended over the
+            # workbook's own spreadsheet_cell segments -- including the
+            # published template with no conflict rows on it, which is exactly
+            # the reading the old row sniff sent down the legacy path. A SUE
+            # probe or test-hole table in the same format is an evidence
+            # proposal with no controlled Fact type for its columns.
+            output=SOURCE_FACTS if reads_conflict_matrix(path) else EXTRACTED_PROPOSALS,
             extractor_config=deployed_extractor_config("sheet", client=None),
         )
-
-    from corridor.native_pipeline import (
-        RecordedPipelineClient, native_pipeline_configuration, run_selected_native_matrix,
-    )
-    from corridor.native_provider_boundary import AuthorizedNativeMapper, POSTURE
-    from corridor.pipeline_contracts import ObservationPlan, content_digest
-    from corridor.pipeline_qualification import PipelineQualificationRefused, selected_pipeline_configuration
 
     runtime = native_runtime
     runtime_error = None
@@ -493,7 +575,7 @@ def extraction_route(
                 )
             doc.extraction_tiers = {"native_matrix_cells": len(result.extraction.mapping.pages)}
             doc.header_disagreements = 0
-            return CapturedCandidates(result.extraction.candidates, result.extraction.run)
+            return CapturedReading(result.extraction.run, tuple(result.extraction.candidates))
         except PipelineQualificationRefused as exc:
             raise ExtractionFailed(f"native matrix selection refused for deployment {deployment!r}: {exc}") from exc
         except (ValueError, OSError) as exc:
@@ -505,7 +587,7 @@ def extraction_route(
     return ExtractionRoute(
         effective_prompt_version=extractor_config.prompt_version,
         schema_version=extractor_config.schema_version,
-        extract=extract, model=extractor_config.model,
+        extract=extract, output=CAPTURED_READING, model=extractor_config.model,
         extractor_config=extractor_config, usage_client=matrix_client,
         validate=validate, pipeline_configuration_sha256=configuration_sha256,
     )
@@ -514,7 +596,6 @@ def extraction_route(
 @contextmanager
 def production_extraction_routes():
     """Own the prose client lazily; Matrix authorization belongs to its route."""
-    from corridor.llm import OpenAIClient
 
     with ExitStack() as resources:
         prose_client = None
@@ -544,7 +625,7 @@ def production_extraction_routes():
 
 def extract_any(
     session: Session, document: Document, *, client=None
-) -> list[Candidate]:
+) -> list[Candidate] | CapturedReading:
     """Read one matrix, whichever form it was published in (ADR-0005).
 
     Which reader runs is a property of the document rather than something a
@@ -648,16 +729,20 @@ def record_routed_run(
     usage_before: dict[str, int] | None,
     **values,
 ) -> ExtractionRun:
-    captured = values.get("candidates")
-    if isinstance(captured, CapturedCandidates):
-        run = captured.run
-        if (run.document_id != document.id or run.outcome != "completed"
-                or run.prompt_version != route.effective_prompt_version
-                or run.schema_version != route.schema_version
-                or run.candidate_count != len(captured)
-                or run.extractor_config_sha256 != route.extractor_config.config_sha256):
+    outcome = values.get("outcome", "completed")
+    # Not `or ()`: an empty CapturedReading is falsy, and a native reading of
+    # zero rows is exactly the case this dispatch exists to get right.
+    candidates = values.get("candidates", ())
+    if route.output == CAPTURED_READING and outcome == "completed":
+        if not isinstance(candidates, CapturedReading):
+            raise ValueError(
+                "a captured-reading route must return the run its reader sealed"
+            )
+        if candidates.receipt != route.declared_receipt(document, len(candidates.rows)):
             raise ValueError("native source run does not match its extraction route")
-        return run
+        return candidates.run
+    if isinstance(candidates, CapturedReading):
+        raise ValueError("a sealed reading arrived on a route that declared no capture")
     if route.extractor_config is None and not route.allow_unsealed_legacy:
         raise ValueError("a deployed extraction route must carry its configuration")
     token_usage = None if route.extractor_config is None else (
@@ -669,10 +754,16 @@ def record_routed_run(
             document_ids=[document.id],
         )
     )
+    # The route declared this before its reader ran; the rows only have to
+    # agree with it. A completed reading whose rows carry source Facts on a
+    # route that declared otherwise is a defect in the route, and refusing it
+    # here is what stops either command from being reached by accident.
+    require_source_fact_class(
+        tuple(candidates), declares_source_facts=route.output == SOURCE_FACTS
+    )
     command = (
         append_source_facts
-        if values.get("outcome", "completed") == "completed"
-        and carries_source_facts(tuple(values.get("candidates", ())))
+        if route.output == SOURCE_FACTS and outcome == "completed"
         else record_extraction_run
     )
     result = command(
@@ -740,6 +831,13 @@ def ingest_and_extract(
     document._stored_path = Path(path)
     if document.parse_status != "parsed":
         route = extraction_route(document, client=client)
+        # The receipt records why, not just that. `ingest parse_status is
+        # 'failed'` was the whole account of a reader exception, a rendition
+        # with no pages and source bytes that had drifted -- three different
+        # conditions with three different repairs. The reason the read attempt
+        # produced is durable here even though no relation yet owns a
+        # document-level Processing Failure row.
+        failure = document_parse_failure(document)
         record_routed_run(
             session,
             document,
@@ -749,10 +847,18 @@ def ingest_and_extract(
             page_errors=1,
             outcome="unreadable",
             model=route.model,
-            error_detail=f"ingest parse_status is {document.parse_status!r}",
+            error_detail=json.dumps(
+                {
+                    "parse_status": document.parse_status,
+                    **(failure.as_error_detail() if failure else {}),
+                },
+                sort_keys=True,
+            ),
         )
         return document, []
 
     # The same routing `make extract` uses, so a workbook here reads as a
-    # workbook rather than failing as a PDF with no page image.
-    return document, extract_any(session, document, client=client)
+    # workbook rather than failing as a PDF with no page image. The rows are
+    # what this signature promises: a captured reading's sealed run belongs to
+    # the run receipt, and a caller that needs it asks the route.
+    return document, list(extract_any(session, document, client=client))

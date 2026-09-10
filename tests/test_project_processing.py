@@ -32,7 +32,7 @@ from corridor.models import (
     PolicyRun,
     Project,
 )
-from corridor.pipeline import ExtractionRoute
+from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.project_processing import (
     ProcessingScopeRefused,
     process_project,
@@ -101,6 +101,7 @@ class ScriptedRoute:
 
     def __call__(self, document: Document) -> ExtractionRoute:
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version=SCHEMA_VERSION,
             extract=self._extract,

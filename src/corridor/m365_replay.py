@@ -1,10 +1,23 @@
 """Replay recorded Graph deliveries into synthetic projects through normal intake.
 
-This is #497's build-only entry point. The four-method adapter supplies exact
-bytes; the existing delivery ledger and MIME/document intake own registration.
-No tenant credential, model, accepted-record command or live factory is used.
-The caller commits before using the returned cursor; a failed transaction
-cannot publish an advance. Repeating a recording converges on retained input.
+This is #497's build-only entry point.  The four-method adapter supplies exact
+bytes; the shared delivery ledger and registration consumer
+(``corridor.delivery_registration``) own the rest.  No tenant credential, model,
+accepted-record command or live factory is used.  The caller commits before
+using the returned cursor; a failed transaction cannot publish an advance.
+Repeating a recording converges on retained input.
+
+What this module stopped being is as important as what it is.  It held the only
+code in the product that registered what a pull connector delivered, and around
+that it had grown a second polling runtime beside ``connector_polling``: its own
+delivery ledger, its own registration of a Document and a message, and its own
+transaction shape.  The ledger and the registration are now the shared ones, so
+what remains here is what is genuinely particular to replaying a recording: it
+supplies a recorded transport and a synthetic project, it finds or creates the
+disabled schedule that owns the cursor for this exact recording (no operator
+configured one, and ADR-0089 puts the cursor with the configuration), and it
+keeps one advance per run identity so replaying a recording twice is one
+outcome rather than two.
 """
 
 import argparse
@@ -17,32 +30,22 @@ from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
-from corridor.config import settings
 
 from corridor.connectors.microsoft365 import GraphLocation, Microsoft365PullConnector, RecordedGraphTransport
-from corridor.connectors.pull_connector import sync_pull_connector
-from corridor.email_intake import receive_pulled_message
-from corridor.ingest import ingest_document
+from corridor.connectors.pull_connector import SourceEnvelope, sync_pull_connector
+from corridor.delivery_registration import (
+    MESSAGE_CHANNELS,
+    DeliveryTransactions,
+    PassLedger,
+    SourceDeclaration,
+)
 from corridor.models import Project, DueWorkSchedule, ConnectorCheckpointAdvance
-from corridor.object_storage import content_store, store_bytes
-from corridor.source_delivery import (DeliveryBinding, DeliveryObservation, record_delivery,
-    require_stored_envelope, current_checkpoint_token, record_checkpoint_advance)
+from corridor.source_delivery import (DeliveryBinding,
+    current_checkpoint_token, record_checkpoint_advance)
 from corridor.due_work import ConnectorPollingDeclaration, configure_connector_polling
 from corridor.project_lock import lock_project
 
-
-class RecordingDeliveryLedger:
-    """The normal delivery relation, inside the replay's one transaction."""
-
-    def __init__(self, session: Session, binding: DeliveryBinding, run_identity: str):
-        self.session, self.binding, self.run_identity = session, binding, run_identity
-
-    def record(self, item, *, disposition, content_digest, bytes_reference, refusal_reason):
-        return record_delivery(self.session, self.binding,
-            DeliveryObservation(item.item_id, item.version_id, content_digest, bytes_reference,
-                                item.original_timestamps, item.metadata),
-            disposition=disposition, service_identity="corridor.m365-replay",
-            run_identity=self.run_identity, refusal_reason=refusal_reason).delivery_id
+SERVICE_IDENTITY = "corridor.m365-replay"
 
 
 def replay_graph(session: Session, *, project: Project, customer: str,
@@ -62,27 +65,29 @@ def replay_graph(session: Session, *, project: Project, customer: str,
         raise ValueError("Graph replay requires an aware observation time")
     binding = DeliveryBinding(customer, project.id, project.slug, "pull", location.channel,
                               "m365-graph-recording-v1", configuration)
-    registered: list[dict] = []
 
-    def register(envelope):
-        delivery = require_stored_envelope(session, envelope)
-        if location.kind == "mailbox":
-            message = receive_pulled_message(session, envelope=envelope,
-                attachment_doc_types=(attachment_doc_types or {}).get(envelope.metadata["native_id"]))
-            registered.append({"delivery_id": delivery.id, "message_id": message.message_id,
-                               "thread_id": message.thread_id})
-        else:
-            kind = (doc_types or {}).get(envelope.metadata["native_id"])
-            if not kind or kind == "email":
-                raise ValueError("each library item requires an explicit source type mapping")
-            filename = envelope.metadata["filename"]
-            body = content_store().get(envelope.bytes_reference, sha256=envelope.content_digest)
-            path = store_bytes(body, sha256=envelope.content_digest, suffix=Path(filename).suffix.lower())
-            document = ingest_document(session, project_id=project.id, path=path, doc_type=kind,
-                images_dir=settings.corpus_images,
-                filename=filename, expected_sha256=envelope.content_digest, source_delivery_id=delivery.id)
-            registered.append({"delivery_id": delivery.id, "document_id": document.id,
-                               "external_version": envelope.external_version})
+    def declare(envelope: SourceEnvelope) -> SourceDeclaration:
+        """The kinds the operator supplied with this recording, and only those.
+
+        A recorded round is replayed by an operator who has the recording in
+        front of them, so a library item whose kind nobody stated is refused
+        rather than registered with its kind unresolved: the input is
+        incomplete, and a build command may say so.  A live poll has nobody to
+        ask at delivery time and registers the source anyway (ADR-0007).
+        """
+
+        native_id = envelope.metadata["native_id"]
+        if envelope.channel in MESSAGE_CHANNELS:
+            return SourceDeclaration(
+                attachment_source_kinds=(attachment_doc_types or {}).get(native_id))
+        kind = (doc_types or {}).get(native_id)
+        if not kind or kind == "email":
+            raise ValueError("each library item requires an explicit source type mapping")
+        return SourceDeclaration(source_kind=kind)
+
+    ledger = PassLedger(DeliveryTransactions.within(session), binding,
+                        service_identity=SERVICE_IDENTITY, run_identity=run_identity,
+                        declare=declare)
 
     with session.begin_nested():
         lock_project(session, project.id)
@@ -104,7 +109,7 @@ def replay_graph(session: Session, *, project: Project, customer: str,
             raise ValueError("offline Graph cursor configuration must not schedule live work")
         input_digest = sha256(json.dumps({"recording": connector.transport.content_sha256,
             "doc_types": doc_types, "attachments": attachment_doc_types, "cursor": cursor}, sort_keys=True).encode()).hexdigest()
-        service = "corridor.m365-replay/" + input_digest
+        service = SERVICE_IDENTITY + "/" + input_digest
         existing = session.scalar(select(ConnectorCheckpointAdvance).where(
             ConnectorCheckpointAdvance.schedule_id == schedule.id,
             ConnectorCheckpointAdvance.run_identity == run_identity))
@@ -119,7 +124,7 @@ def replay_graph(session: Session, *, project: Project, customer: str,
             if existing is not None else current_cursor)
         sync = sync_pull_connector(connector, customer=customer, project=project.slug,
             channel=location.channel, cursor=start_cursor,
-            ledger=RecordingDeliveryLedger(session, binding, run_identity), on_envelope_stored=register)
+            ledger=ledger, on_envelope_stored=ledger.register)
         if set(attachment_doc_types or {}) - {e.metadata["native_id"] for e in sync.envelopes}:
             raise ValueError("attachment mappings name messages outside this recorded round")
         if sync.advanced and existing is None:
@@ -131,7 +136,8 @@ def replay_graph(session: Session, *, project: Project, customer: str,
             "project_id": project.id, "customer": customer, "configuration_sha256": configuration,
             "schedule_id": schedule.id,
             "checkpoint_token": sync.checkpoint_token, "advanced": sync.advanced,
-            "registered": registered, "dispositions": [row.disposition for row in sync.records]}
+            "registered": [row.as_dict() for row in ledger.registered],
+            "dispositions": [row.disposition for row in sync.records]}
 
 
 def main() -> None:

@@ -12,7 +12,6 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from hashlib import sha256
-import inspect
 import json
 from pathlib import Path
 
@@ -22,6 +21,11 @@ from corridor.reader_segments import native_segment_values
 from corridor.reference_methods import NATIVE_AUTHORING_SCHEMA
 from corridor.token_layers import read_native_pdf
 from corridor.vocabulary import RETIREMENT_PHRASES, is_retired_row
+
+# The behaviour of the three borrowed rules -- WSDOT's printed resolution
+# reading, the critical-strategy test and the retirement test -- as a declared
+# version rather than as their source text. See ``authoring_identity``.
+NATIVE_REFERENCE_RULES_VERSION = "native-reference-rules-v1"
 
 _ANCHOR = "recommended resolution"
 _OWNER_HEADINGS = ("owner", "utility owner")
@@ -42,14 +46,37 @@ def _canonical(value: object) -> str:
 
 
 def authoring_identity() -> dict:
-    """Pin this recipe and its actual rules, excluding legacy modules and logs."""
+    """Pin this recipe and its actual rules, excluding legacy modules and logs.
+
+    **Why the rules digest no longer hashes source text.** It used to hash
+    ``inspect.getsource`` of ``WSDOT_APPENDIX_U.read``, ``is_critical`` and
+    ``is_retired_row``. ``getsource`` returns the text as written, so a
+    reflowed condition, a renamed local or a corrected comment anywhere in
+    ``adjudicate``, ``models`` or ``vocabulary`` changed ``rules_sha256`` while
+    every enumeration those rules produce stayed identical. A published native
+    reference records this identity, and ``replay_machine_reference`` refuses a
+    recipe whose identity differs, so an edit of that kind retired references
+    that nothing had actually invalidated. The same reasoning retired the
+    equivalent hashing in ``token_layers.native_integration_digest``.
+
+    The three rules are not this module's to hash by bytes either: each lives
+    in a large module full of behaviour a native reference does not read, so
+    ``sha256`` of those files would fire even more often than ``getsource``
+    did. What pins them instead is the declarative half they actually read --
+    the printed phrase lists and the critical-strategy set -- plus
+    ``NATIVE_REFERENCE_RULES_VERSION`` for the reading code itself.
+
+    The cost is that the constant is declared rather than derived: a behaviour
+    change to any of those three readers must bump it in the same change,
+    exactly as a prompt version or a migration revision must be advanced
+    deliberately. ``recipe_sha256`` still covers this module byte for byte, and
+    the recorded reading identity still covers the reader's actual result.
+    """
     rules = {
+        "rules_version": NATIVE_REFERENCE_RULES_VERSION,
         "resolution_phrases": WSDOT_APPENDIX_U.phrases,
-        "resolution_read": inspect.getsource(type(WSDOT_APPENDIX_U).read),
         "critical_strategies": sorted(CRITICAL_STRATEGIES),
-        "critical_read": inspect.getsource(is_critical),
         "retirement_phrases": RETIREMENT_PHRASES,
-        "retirement_read": inspect.getsource(is_retired_row),
     }
     return {
         "schema_version": NATIVE_AUTHORING_SCHEMA,

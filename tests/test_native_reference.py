@@ -700,3 +700,40 @@ def test_supported_continuation_repeats_headers_without_repeating_group_anchor(
     ]
     assert replay_machine_reference(session, project.id, csv)["replayed"]
     assert document.pages == 2
+
+
+def test_the_reference_rules_digest_is_declared_not_read_from_source_text(monkeypatch):
+    """A reflowed comment in a rule's module may not retire a published reference.
+
+    `rules_sha256` used to hash `inspect.getsource` of three functions living
+    in `adjudicate`, `models` and `vocabulary`. `getsource` returns the text as
+    written, so a rename, a reflow or a corrected comment in any of those three
+    large modules changed the digest and made every published native reference
+    unreplayable for a change that altered no enumeration. What pins the rules
+    now is their declared data plus one version constant this module owns.
+    """
+
+    import inspect
+
+    import corridor.native_reference as native
+
+    def refuse(*args, **kwargs):
+        raise AssertionError("authoring identity read a function's source text")
+
+    monkeypatch.setattr(inspect, "getsource", refuse)
+    identity = native.authoring_identity()
+    # The archived provenance keys are a released schema; the declared version
+    # feeds the digest rather than adding a field to it.
+    assert set(identity) == {"schema_version", "recipe_sha256", "rules_sha256"}
+
+    # The declared half still moves the digest: a rule behaviour change is
+    # announced by bumping the constant, exactly as a prompt version is.
+    monkeypatch.setattr(native, "NATIVE_REFERENCE_RULES_VERSION", "declared-rules-test")
+    bumped = native.authoring_identity()
+    assert bumped["rules_sha256"] != identity["rules_sha256"]
+    assert bumped["recipe_sha256"] == identity["recipe_sha256"]
+
+    # So does the vocabulary the rules read.
+    monkeypatch.undo()
+    monkeypatch.setattr(native, "RETIREMENT_PHRASES", ("relocated by others",))
+    assert native.authoring_identity()["rules_sha256"] != identity["rules_sha256"]

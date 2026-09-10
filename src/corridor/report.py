@@ -10,6 +10,20 @@ Aggregates cannot cite a page, so "zero uncited assertions" was
 unenforceable for exactly the numbers a reader looks at first. Splitting
 provenance into two kinds generalizes the rule instead of exempting
 anything: rendering refuses to emit a value that carries neither.
+
+**This is the internal view and the legacy project's report, not the
+customer's issued Coordination Report.** One glossary term may not have two
+renderers, two byte formats and two provenance stories, so ADR-0086 and
+ADR-0091 settle which one the customer receives: the Coordination Report a
+package issues is rendered by ``issue_rendering.render_weekly_report`` from the
+frozen reading of one accepted Project Record revision, under the customer's own
+approved template sections, sealed by its own digest inside one package receipt.
+This renderer reads the legacy ledger (``dependencies``, ``dependency_events``)
+and can bind none of that, so it stays what ADR-0040 called it — the internal
+Report that regenerates whenever the Ledger changes, plus the frozen external
+PDF a **legacy** project still releases through ``report_release``. That module
+refuses both of its human acts for an adopted project, so this renderer can
+never become an adopted project's external artifact.
 """
 
 from __future__ import annotations

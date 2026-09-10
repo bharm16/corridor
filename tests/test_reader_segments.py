@@ -892,3 +892,41 @@ def test_changed_clipped_projection_cannot_rebind_a_stored_reading(
         == NOT_RE_READABLE
     )
     assert (hidden.exact_text, hidden.content_sha256, hidden.reading_sha256) == stored
+
+
+@pytest.mark.parametrize(
+    "field,refusal",
+    [
+        ("reader_identity", NativeReaderUnavailable),
+        ("reading_sha256", RecordedReadingNotReproduced),
+    ],
+)
+def test_the_prose_batch_gives_the_same_two_availability_answers(
+    session, project, tmp_path, field, refusal
+):
+    """A batch proof may not blur the two refusals the scalar reader separates.
+
+    `replay_native_segments` verifies one coherent prose reading, and it used
+    to answer "prose reading does not reproduce" as a
+    ``SourceSegmentLocatorMismatch`` whether the recorded reader was absent or
+    present-and-different. Both mean no page was opened, so both belong to the
+    ``FreshReadingUnavailable`` family; the caller still refuses either way.
+    """
+
+    from corridor.reader_segments import replay_native_segments
+
+    path = native_pdf(tmp_path)
+    document = registered(session, project, path)
+    values = [
+        value for value in native_segment_values(reading(path)) if value.kind == "pdf_span"
+    ]
+    assert values
+    changes = {
+        "reader_identity": {**values[0].reader_identity, "pypdf_version": "0.0.0"},
+        "reading_sha256": "f" * 64,
+    }
+    segments = [detached(document, replace(value, **{field: changes[field]})) for value in values]
+    with pytest.raises(refusal) as raised:
+        replay_native_segments(document, segments, path)
+    assert not isinstance(raised.value, SourceSegmentIntegrityError)
+    assert isinstance(raised.value, FreshReadingUnavailable)

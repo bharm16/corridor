@@ -187,7 +187,7 @@ def test_minutes_range_and_normal_pipeline_preserve_both_endpoints(session):
 
     project = adopted_project(session)
     document = minutes_document(session, project, "Utility A: UC-1 field work from 2026-10-01 to 2026-10-03.")
-    assert extract_any(session, document, client=MinutesClient()) == []
+    assert list(extract_any(session, document, client=MinutesClient())) == []
     timing = session.scalar(select(Fact).where(Fact.document_id == document.id, Fact.fact_type == "statement_timing"))
     replayed = replay_fact(session, document, timing, stored_file(document))
     assert replayed.timings[0][1].precision == "range"

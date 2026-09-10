@@ -675,11 +675,11 @@ def _record_exact_extraction(
 ) -> ExtractionRun:
     """Record one targeted completed attempt with independently pinned schema."""
 
-    from corridor.pipeline import CapturedCandidates, extraction_attempt
+    from corridor.pipeline import CapturedReading, extraction_attempt
 
     with extraction_attempt(session):
         candidates = extract(session, document)
-        if isinstance(candidates, CapturedCandidates):
+        if isinstance(candidates, CapturedReading):
             run = candidates.run
             if (run.document_id != document.id or run.prompt_version != prompt_version
                     or run.schema_version != schema_version or run.model != model

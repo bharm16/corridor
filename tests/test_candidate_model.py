@@ -33,7 +33,7 @@ from corridor.extraction_runs import (
 )
 from corridor.extractor_lineage import injected_extractor_config
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
-from corridor.pipeline import ExtractionRoute
+from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.principals import HumanPrincipal
 
 DECLARER = HumanPrincipal("local:candidate-declarer")
@@ -156,6 +156,7 @@ def candidate_route(*uids, model=CANDIDATE_MODEL):
             return made
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version=SCHEMA_VERSION,
             extract=extract,
@@ -183,6 +184,7 @@ def failing_candidate_route():
             raise ExtractionFailed("candidate reader could not read the matrix")
 
         return ExtractionRoute(
+            output=EXTRACTED_PROPOSALS,
             effective_prompt_version=PROMPT_VERSION,
             schema_version=SCHEMA_VERSION,
             extract=extract,

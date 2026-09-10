@@ -178,9 +178,9 @@ def test_rejected_native_result_rolls_back_the_successful_capture(
     runtime, _ = select_native_runtime(session, project, matrix_source, tmp_path / "rejected")
     route = extraction_route(document, native_runtime=runtime)
     def incorrect_result(db, document):
-        candidates = route.extract(db, document)
-        candidates[0].model = "wrong-model"
-        return candidates
+        reading = route.extract(db, document)
+        reading.rows[0].model = "wrong-model"
+        return reading
     broken = replace(route, extract=incorrect_result)
     with pytest.raises(ValueError, match="Candidate model"):
         extract_project(session, project, commit=False, select_route=lambda doc: broken)
@@ -225,3 +225,142 @@ def test_a_spreadsheet_uses_the_native_sheet_prompt_version(monkeypatch):
         "provider": "native",
         "model_requests": 0,
     }
+
+
+def test_an_unreadable_ingest_records_why_on_its_receipt(session, project, tmp_path):
+    """The receipt carries the stage, the exception type and the message.
+
+    `error_detail` used to read `ingest parse_status is 'failed'` for every
+    whole-document failure, so a reader exception, a rendition with no pages and
+    drifted source bytes were one indistinguishable line and diagnosing any of
+    them meant running the reader again.
+    """
+
+    import json
+    from sqlalchemy import select
+    from corridor.models import ExtractionRun
+    from corridor.pipeline import ingest_and_extract
+
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 this is not a real pdf")
+    document, candidates = ingest_and_extract(
+        session, project_id=project.id, path=broken, images_dir=tmp_path / "images",
+    )
+
+    assert candidates == []
+    run = session.scalars(select(ExtractionRun)).one()
+    assert (run.document_id, run.outcome) == (document.id, "unreadable")
+    detail = json.loads(run.error_detail)
+    assert detail["parse_status"] == "failed"
+    assert detail["stage"] == "read_document"
+    assert detail["error_type"] and detail["error_message"]
+
+
+def test_a_native_reading_with_no_rows_still_records_through_the_fact_command(
+    session, project, tmp_path, monkeypatch
+):
+    """Zero rows is a reading, not the absence of one.
+
+    `record_routed_run` used to pick the scoped Fact command by inspecting the
+    rows it was handed. A native spreadsheet that reads as the published empty
+    template produces no rows, so the sniff concluded there were no source Facts
+    here and recorded the run through the legacy command instead: no append
+    receipt, and lineage reconstructed from candidate existence, which is the one
+    thing `extraction_runs` exists to prevent.
+    """
+
+    from openpyxl import Workbook
+    from sqlalchemy import select
+    from corridor.ingest import ingest_document
+    from corridor.models import ExtractionRun, SourceFactAppendReceipt, SourceSegment
+    from corridor.pipeline import SOURCE_FACTS, extract_any
+
+    book = Workbook()
+    book.remove(book.active)
+    sheet = book.create_sheet("Utility Conflicts")
+    sheet.append(["Utility Conflict Management (UCM) - Utility Conflicts"])
+    sheet.append(["Utility Conflict ID", "Utility Owner", "Start Station"])
+    path = tmp_path / "empty-template.xlsx"
+    book.save(path)
+
+    document = ingest_document(
+        session, project_id=project.id, path=path,
+        doc_type="matrix", images_dir=tmp_path / "images",
+    )
+    document._stored_path = str(path)
+    monkeypatch.setattr(
+        "corridor.extract_sheet.stored_file", lambda d: getattr(d, "_stored_path", None)
+    )
+
+    route = extraction_route(document)
+    assert route.output == SOURCE_FACTS
+    assert extract_any(session, document) == []
+
+    run = session.scalars(select(ExtractionRun)).one()
+    assert (run.outcome, run.candidate_count) == ("completed", 0)
+    assert session.scalars(select(SourceFactAppendReceipt)).one().extraction_run_id == run.id
+    assert session.scalars(
+        select(SourceSegment).where(SourceSegment.document_id == document.id)
+    ).all()
+
+
+def test_a_route_declared_legacy_never_reaches_the_fact_command(session, project):
+    """A declaration the rows contradict is refused, not silently reinterpreted.
+
+    The route knows at selection time which command its reading belongs at.
+    `rows_carry_source_facts` is now the consistency check on that declaration
+    rather than the decision itself, so structured-cell rows arriving on a route
+    that declared legacy Extracted Proposals fail here instead of quietly
+    reaching one command or the other.
+    """
+
+    import pytest
+    from sqlalchemy import select
+    from corridor.candidates import propose
+    from corridor.extractor_lineage import injected_extractor_config
+    from corridor.models import Document, ExtractionRun
+    from corridor.pipeline import (
+        EXTRACTED_PROPOSALS,
+        ExtractionRoute,
+        record_routed_run,
+    )
+
+    document = Document(
+        project_id=project.id, doc_type="matrix", filename="legacy.pdf",
+        sha256="1" * 64, pages=1, parse_status="parsed",
+    )
+    session.add(document)
+    session.flush()
+
+    def extract(db, target):
+        candidate = propose(
+            target, kind="dependency", fields={"utility_id": "UC-1"}, page_no=1,
+            quote="UC-1", quote_verified=True, whole_row=True, confidence=None,
+            prompt_version="legacy_fixture_v1", dedupe="uc-1",
+            text_source="native_pdf_segments", tier="native",
+        )
+        db.add(candidate)
+        db.flush([candidate])
+        return [candidate]
+
+    route = ExtractionRoute(
+        effective_prompt_version="legacy_fixture_v1",
+        schema_version="legacy_fixture_v1",
+        extract=extract,
+        output=EXTRACTED_PROPOSALS,
+        extractor_config=injected_extractor_config(
+            extractor="legacy-fixture", prompt_version="legacy_fixture_v1",
+            model=None, schema_version="legacy_fixture_v1",
+            prompt_bytes=b"legacy route fixture", schema={"type": "object"},
+            postprocessor_bytes=b"legacy route fixture rules",
+            request_controls={"strict": True},
+        ),
+    )
+    candidates = route.extract(session, document)
+
+    with pytest.raises(ValueError, match="declared"):
+        record_routed_run(
+            session, document, route, None, candidate_count=len(candidates),
+            page_errors=0, outcome="completed", candidates=candidates, model=None,
+        )
+    assert session.scalars(select(ExtractionRun)).all() == []

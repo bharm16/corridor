@@ -205,14 +205,14 @@ def test_crash_after_capture_before_commit_and_duplicate_delivery_converge(runti
 
 def test_normal_pipeline_uses_the_bound_thread_capture(session):
     from corridor.models import Document
-    from corridor.pipeline import extraction_route, CapturedCandidates
+    from corridor.pipeline import extraction_route, CapturedReading
     from corridor.review_packet_reading import open_deltas
 
     project, envelope = deliver(session, message_bytes(body="We will finish in October.\n"))
     document = session.scalar(select(Document).where(Document.project_id == project.id, Document.sha256 == envelope.content_digest))
     result = extraction_route(document, client=ClosingStatement()).extract(session, document)
-    assert isinstance(result, CapturedCandidates)
-    assert result == []
+    assert isinstance(result, CapturedReading)
+    assert result.rows == ()
     assert result.run.document_id == document.id
     assert result.run.prompt_version == "email_thread_v1"
     assert len(open_deltas(session, project_id=project.id)) == 1
