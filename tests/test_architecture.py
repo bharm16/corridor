@@ -1303,6 +1303,18 @@ def test_released_policy_sources_are_outside_executable_migration_history():
         "the executable graph is one consolidated baseline plus the "
         "transitions src/corridor/migrations/policy.py records"
     )
+    # The families folded into the unreleased transition live one per module in
+    # a package beside `baseline_versions`, not inside it. Alembic lists `*.py`
+    # in the version location and does not descend into directories, so a
+    # family module is not a revision candidate wherever it sits; keeping the
+    # package out of the version location keeps that true of the listing too,
+    # so the count above stays a count of revisions.
+    families = SOURCE_ROOT / "migrations" / "source_append_commands"
+    assert families.is_dir() and len(tuple(families.glob("*.py"))) > 1
+    assert families.parent.name == "migrations", (
+        "the family package belongs beside the executable version location, "
+        "never inside it"
+    )
 
 
 # --- Shared coordinator-screen presentation (#559) ---------------------------

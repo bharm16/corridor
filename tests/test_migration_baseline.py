@@ -9,6 +9,7 @@ setup cost without adding another transition proof.
 
 from __future__ import annotations
 
+import ast
 from datetime import date, datetime, timezone
 from hashlib import sha256
 import os
@@ -149,6 +150,162 @@ def test_the_executable_migration_window_matches_the_recorded_policy():
     assert policy.UNRELEASED_EDGE_TARGET == 1, (
         "ADR-0065's window is one supported transition; the target does not move"
     )
+
+
+# The families b2d5f8a1c4e7 composes, in the order it composes them, and the
+# order it takes them apart in. Both are stated here because order is the whole
+# of a migration's meaning: a block moved earlier grants on a relation that does
+# not exist yet, and a reversal moved later drops the parent of the row it was
+# about to refuse for. The revision used to be one 11,966-line module in which
+# that order was implicit in a single 830-line function.
+COMPOSED_UPGRADE = (
+    "operating_mode",
+    "baseline_record",
+    "push_intake",
+    "resolve_delta",
+    "review_packets",
+    "recorded_verbal",
+    "delta_deduplication",
+    "unified_delivery",
+    "baseline_format_manifest",
+    "report_revision_binding",
+    "extractor_configuration",
+    "report_reading_payload",
+    "project_partition",
+    "issue_profile",
+    "release_candidate",
+    "release_package",
+    "partition_declaration",
+    "partition_seal",
+    "coverage_preparation",
+    "web_capability",
+    "preparation_supervisor",
+    "native_segments",
+    "environment_binding",
+    "outgoing_requests",
+    # The sibling transitions this revision has always carried at the end, and
+    # the PUBLIC sweep that runs last of all because it reads the catalog every
+    # block above has finished writing.
+    "email_spine",
+    "project_contacts",
+    "minutes_spine",
+    "impact_derivations",
+    "retirement_watermark",
+    "shadow_schema",
+    "legacy_history",
+    "coordination_history",
+    "support_history",
+    "public_privileges",
+)
+COMPOSED_DOWNGRADE = (
+    "support_history",
+    "coordination_history",
+    "legacy_history",
+    "shadow_schema",
+    "retirement_watermark",
+    "impact_derivations",
+    "minutes_spine",
+    "project_contacts",
+    "email_spine",
+    "environment_binding",
+    "native_segments",
+    "public_privileges",
+    "outgoing_requests",
+    "preparation_supervisor",
+    "web_capability",
+    "coverage_preparation",
+    "partition_seal",
+    "partition_declaration",
+    "release_package",
+    "release_candidate",
+    "issue_profile",
+    "project_partition",
+    "report_reading_payload",
+    "extractor_configuration",
+    "report_revision_binding",
+    "baseline_format_manifest",
+    "unified_delivery",
+    "delta_deduplication",
+    "recorded_verbal",
+    "review_packets",
+    "push_intake",
+    "resolve_delta",
+    "baseline_record",
+    "operating_mode",
+)
+# What the revision's own module keeps: its append commands (#492) and the two
+# relations they were built for (#518, #530), plus the Fact identity recipe the
+# Recorded Verbal backfill replays, which is frozen at this revision.
+SOURCE_APPEND_FAMILIES = frozenset(COMPOSED_DOWNGRADE) - {
+    "email_spine",
+    "project_contacts",
+    "minutes_spine",
+    "impact_derivations",
+    "retirement_watermark",
+    "shadow_schema",
+    "legacy_history",
+    "coordination_history",
+    "support_history",
+}
+
+
+def _composed_families(function_name: str) -> tuple[str, ...]:
+    """The module each `<family>.upgrade(op)` call in source order names."""
+
+    revision = ast.parse((VERSIONS / f"{CURRENT_HEAD}_source_append_commands.py").read_text())
+    function = next(
+        node
+        for node in revision.body
+        if isinstance(node, ast.FunctionDef) and node.name == function_name
+    )
+    calls = [
+        (node.lineno, node.func.value.id)
+        for node in ast.walk(function)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and isinstance(node.func.value, ast.Name)
+        and node.func.attr in {"upgrade", "downgrade", "install", "uninstall"}
+    ]
+    return tuple(module for _, module in sorted(calls))
+
+
+def test_the_revision_composes_its_families_in_one_declared_order():
+    """The order is asserted, not left to review of a 12,000-line module.
+
+    Splitting the folded transition into one module per family moved 214 names
+    out of the revision and left the composition behind. The composition is
+    the part that can silently change meaning, so both directions are stated
+    here as lists; the schema fingerprint above proves what each family then
+    executes against a real database.
+    """
+
+    assert _composed_families("upgrade") == COMPOSED_UPGRADE
+    assert _composed_families("downgrade") == COMPOSED_DOWNGRADE
+
+    package = ROOT / "src" / "corridor" / "migrations" / "source_append_commands"
+    modules = {path.stem for path in package.glob("*.py")}
+    assert modules == SOURCE_APPEND_FAMILIES | {"__init__", "roles"}, (
+        "a family module that nothing composes is dead migration source, and a "
+        "composed family with no module cannot be imported"
+    )
+
+
+def test_the_family_package_is_not_executable_migration_history():
+    """Alembic must keep seeing exactly two revision files.
+
+    `version_locations` lists `*.py` in one directory and does not descend into
+    subdirectories, which is the only reason the families may live in a package
+    at all. If that ever changed, twenty-five modules with no revision
+    identifier would become candidate revisions.
+    """
+
+    config = Config(str(ROOT / "alembic.ini"))
+    config.set_main_option("script_location", "src/corridor/migrations")
+    script = ScriptDirectory.from_config(config)
+
+    paths = {Path(revision.path) for revision in script.walk_revisions()}
+    assert {path.parent.name for path in paths} == {"baseline_versions"}
+    assert not any("source_append_commands" in path.parts for path in paths)
 
 
 def test_fresh_database_matches_the_released_schema_exactly():
