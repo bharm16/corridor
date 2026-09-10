@@ -49,9 +49,10 @@ idempotent work one claimed occurrence performs.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, ClassVar, Mapping
 
 from sqlalchemy import select
 
@@ -61,6 +62,18 @@ from corridor.connectors.pull_connector import (
     sync_pull_connector,
 )
 from corridor.delivery_registration import DeliveryTransactions, PassLedger
+from corridor.due_work_contract import (
+    COHORT_IDENTITY,
+    DECLARED_HOST,
+    DECLARED_IDENTITY,
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.models import (
     DueWorkSchedule,
     Project,
@@ -238,3 +251,164 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this pass runs under ------------------------
+#
+# What one poll is declared to be — one normalized ingress identity, one
+# installed connector, one https location, no model spend and no destination —
+# belongs with the pass that honours it. The runtime keeps the lease (card 6).
+
+
+@dataclass(frozen=True)
+class ConnectorPollingDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables connector checkpoint polling.
+
+    Scope names the exact normalized ingress identity of #496: the customer and
+    channel that, with the project and the item's own identity and version,
+    make the delivery identity ADR-0083 fixes, plus the server-owned connector
+    the schedule may build and the one location it may reach.  Polling reads no
+    model, sends nothing, and writes only content-addressed bytes, so the model
+    and notification budgets must both be a declared zero and no destination is
+    authorized.
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    customer: str
+    channel: str
+    connector_identity: str
+    source_url: str
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        customer: str,
+        channel: str,
+        connector_identity: str,
+        source_url: str,
+        starts_at: datetime,
+    ) -> "ConnectorPollingDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            customer=customer,
+            channel=channel,
+            connector_identity=connector_identity,
+            source_url=source_url,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=900,
+            deadline_seconds=600,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: ConnectorPollingDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one connector-polling declaration.
+
+    Only an installed connector and one https location inside it are ever
+    enabled; credentials never widen the scope, and a second connector or a
+    second location on the same project is a different identity with its own
+    schedule and its own checkpoint.
+    """
+
+    from urllib.parse import urlparse
+
+    if not COHORT_IDENTITY.fullmatch(declaration.customer):
+        raise DueWorkRefusal("connector-polling customer identity is invalid")
+    if not DECLARED_IDENTITY.fullmatch(declaration.channel):
+        raise DueWorkRefusal("connector-polling channel identity is invalid")
+    if not DECLARED_IDENTITY.fullmatch(declaration.connector_identity):
+        raise DueWorkRefusal("connector-polling connector identity is invalid")
+    if declaration.connector_identity not in CONNECTOR_FACTORIES:
+        raise DueWorkRefusal("connector-polling connector is not installed")
+    parsed = urlparse(declaration.source_url)
+    if (
+        parsed.scheme != "https"
+        or not parsed.hostname
+        or not DECLARED_HOST.fullmatch(parsed.hostname)
+        or len(declaration.source_url) > 2048
+    ):
+        raise DueWorkRefusal(
+            "connector-polling source url must be one https location"
+        )
+    starts_at = validate_scheduling(declaration, subject="connector-polling")
+    scope = {
+        "project_id": declaration.project_id,
+        "customer": declaration.customer,
+        "channel": declaration.channel,
+        "connector_identity": declaration.connector_identity,
+        "source_url": declaration.source_url,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={"kind": "declared_pull_connector-v1", **scope},
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            # ADR-0083: the token advances only after every change up to it is
+            # in the content-addressed store under its digest. The retained
+            # completed receipt is where this schedule's token stands.
+            extra={"checkpoint_policy": "advance_after_durable_storage"},
+        ),
+        input_identity={"handler": HANDLER_KEY, **scope},
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> ConnectorPollingDeclaration:
+    return ConnectorPollingDeclaration(
+        **stored.scheduling_fields(),
+        customer=stored.scope.get("customer", ""),
+        channel=stored.scope.get("channel", ""),
+        connector_identity=stored.scope.get("connector_identity", ""),
+        source_url=stored.scope.get("source_url", ""),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Take delivery of one connected location's changes for a claimed occurrence.
+
+    The pass stores every listed change in the content-addressed store, records
+    each delivery in the shared ledger, and only then records the advance its
+    cursor reached, so the checkpoint can never advance past an unstored change
+    or a transient failure (ADR-0083 as extended by ADR-0089). It reads no model
+    and holds no runtime transaction while fetching. The attempt identity is the
+    run identity the ledger and the advance are attributed to.
+    """
+
+    return execute_connector_polling(
+        context.session_factory,
+        schedule_id=context.schedule.schedule_id,
+        clock=context.clock,
+        run_identity=context.claim.attempt_id,
+    )
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_declared_pull_connector",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=ConnectorPollingDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+    disable_same_input_only=True,
+)

@@ -44,7 +44,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import func, select
 from sqlalchemy.dialects.postgresql import insert
@@ -52,6 +52,15 @@ from sqlalchemy.orm import Session
 
 from corridor import digests, outgoing_dispatch, support_update_routing
 from corridor.documentation_checklist import APPROVAL_INTERPRETATION, read_checklist
+from corridor.due_work_contract import (
+    DueWorkRefusal,
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.models import (
     CommitmentLineage,
     Dependency,
@@ -923,3 +932,166 @@ def operations_document_notifications_view(
             "last_error_code": dispatch.last_error_code,
         },
     )
+
+
+# --- The Due Work declaration this delivery runs under ---------------------
+#
+# One channel, a positive request budget, and the two approved categories over
+# the recorded affected population: what this delivery is declared to be lives
+# with the delivery. The runtime keeps the lease and the retries (card 6).
+
+# The upper ceiling on sends one bounded delivery pass may attempt. A gate-7
+# notification schedule must declare a positive request budget within this.
+_DOCUMENT_NOTIFICATION_BUDGET_CEILING = 10_000
+
+
+@dataclass(frozen=True)
+class DocumentNotificationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables document-notification delivery.
+
+    Delivery reads no model, so its ``model_token_budget`` must be a declared
+    zero; instead it declares a positive ``notification_budget`` — the request
+    budget bounding how many sends one bounded pass may attempt. The declaration
+    records the project and channel scope, dispatch cadence and timezone, retry
+    budget, missed-run handling, and retention. Missing or invalid configuration
+    leaves delivery refused and disabled; a committed transition still registers
+    its durable dispatch, but nothing is delivered until an authorized operator
+    records this gate-7 scope. Project, source, and subject scope are fixed for
+    this slice: the two approved categories over the recorded affected population,
+    reaching the typed current assignee and the original reviewer through their
+    verified-contact records only.
+    """
+
+    handler_key: ClassVar[str] = DOCUMENT_NOTIFICATION_HANDLER
+
+    channel: str
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        channel: str = "email",
+        notification_budget: int = 500,
+    ) -> "DocumentNotificationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            channel=channel,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=60,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=notification_budget,
+        )
+
+
+def _validated_declaration(
+    declaration: DocumentNotificationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one document-notification declaration."""
+
+    if declaration.channel != "email":
+        raise DueWorkRefusal(
+            "document-notification supports only the email channel in this slice"
+        )
+    starts_at = validate_scheduling(
+        declaration,
+        subject="document-notification",
+        backoff_seconds=(1, 3600),
+        notification_budget=(1, _DOCUMENT_NOTIFICATION_BUDGET_CEILING),
+    )
+    scope = {
+        "project_id": declaration.project_id,
+        "channel": declaration.channel,
+    }
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=DOCUMENT_NOTIFICATION_HANDLER,
+            scope=scope,
+            input_identity={
+                "kind": "project_document_notifications-v1",
+                **scope,
+            },
+            idempotency_contract="at_least_once_reconcilable",
+            starts_at=starts_at,
+            extra={
+                # The project/source/subject scope this delivery is authorized
+                # for: the two approved categories over the recorded affected
+                # population, reaching the typed current assignee and the
+                # original reviewer only through their verified-contact records.
+                "subject_scope": "documentation_loss_and_document_change-v1",
+                "recipient_contact_source": "verified_person_identity-v1",
+            },
+        ),
+        input_identity={"handler": DOCUMENT_NOTIFICATION_HANDLER, **scope},
+    )
+
+
+def _stored_declaration(
+    stored: ResolvedSchedule,
+) -> DocumentNotificationDeclaration:
+    return DocumentNotificationDeclaration(
+        **stored.scheduling_fields(),
+        channel=stored.scope.get("channel", ""),
+    )
+
+
+def _run_due_work(context) -> dict[str, Any]:
+    """Discover and deliver a project's due document notifications (#353).
+
+    First, in its own committed transaction, it re-discovers the complete
+    authoritative affected population from committed state and registers any new
+    interruption occurrences idempotently — a rolled-back transition leaves
+    nothing, and a persistent condition converges on the existing rows. Then it
+    delivers the due dispatches, committing each outcome durably and holding no
+    transaction across the provider call. It reads no model, and the channel's
+    adapter is resolved from the shared notifications seam, which defaults to a
+    non-sending adapter so completing the code enables no real delivery.
+    """
+
+    channel = context.schedule.scope.get("channel", "")
+    with context.session_factory() as registering:
+        with registering.begin():
+            register_project_document_notifications(
+                registering,
+                project_id=context.schedule.project_id,
+                registered_by=context.claim.runtime_owner,
+            )
+
+    return deliver_project_document_notifications(
+        context.session_factory,
+        project_id=context.schedule.project_id,
+        configuration_version=context.schedule.configuration_version,
+        channel=channel,
+        adapter=outgoing_dispatch.resolve_delivery_adapter(channel),
+        clock=context.clock,
+        max_attempts=context.schedule.max_attempts,
+        backoff_seconds=context.schedule.backoff_seconds,
+        budget=context.schedule.notification_budget,
+        owner=context.claim.runtime_owner,
+    )
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=DOCUMENT_NOTIFICATION_HANDLER,
+    scope_kind="one_project_document_notifications",
+    idempotency_contract="at_least_once_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=_DOCUMENT_NOTIFICATION_BUDGET_CEILING,
+    declaration_type=DocumentNotificationDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    run_effectful=_run_due_work,
+)

@@ -8,7 +8,7 @@ tests use the harness-owned disposable database and only public runtime seams.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -19,6 +19,14 @@ import pytest
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import ProgrammingError
 
+from corridor.due_work_contract import (
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    validate_scheduling,
+)
 from corridor.due_work import (
     ProcessingHealthDeclaration,
     DueWorkRefusal,
@@ -629,3 +637,287 @@ def test_receipt_finalization_rollback_leaves_claim_recoverable(runtime_database
                 DueWorkReceipt.occurrence_id == claim.occurrence_id
             )
         ).all() == []
+
+
+# A handler registered only for these tests, so the runtime's own lifecycle —
+# enqueue, claim, run, receipt, retry, missed-slot recovery, and the
+# revalidation of a persisted row — is proved through the registration seam
+# rather than through whichever real handler happened to be simplest (card 6).
+FAKE_HANDLER = "fake_reading"
+
+
+@dataclass(frozen=True)
+class FakeReadingDeclaration(DueWorkScheduling):
+    subject: str
+
+    @classmethod
+    def released_hourly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+        subject: str,
+        max_attempts: int = 2,
+    ) -> "FakeReadingDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            starts_at=starts_at,
+            cadence="hourly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=365,
+            max_attempts=max_attempts,
+            backoff_seconds=60,
+            claim_ttl_seconds=300,
+            deadline_seconds=120,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+            subject=subject,
+        )
+
+
+def _fake_scope(declaration: FakeReadingDeclaration) -> dict:
+    return {"project_id": declaration.project_id, "subject": declaration.subject}
+
+
+def _validated_fake(declaration: FakeReadingDeclaration) -> ValidatedDeclaration:
+    starts_at = validate_scheduling(declaration, subject="fake-reading")
+    scope = _fake_scope(declaration)
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=FAKE_HANDLER,
+            scope=scope,
+            input_identity={"kind": "fake_reading-v1", **scope},
+            idempotency_contract="read_only_reconcilable",
+            starts_at=starts_at,
+        ),
+        input_identity={
+            "handler": FAKE_HANDLER,
+            "project_id": declaration.project_id,
+            "subject": declaration.subject,
+        },
+    )
+
+
+def _fake_result(project_id: int, subject: str) -> dict:
+    return {
+        "schema_version": "fake-reading-result-v1",
+        "project_id": project_id,
+        "subject": subject,
+        "health": "healthy",
+    }
+
+
+def _fake_registry(
+    *,
+    run=None,
+    run_effectful=None,
+    rebuilt: list | None = None,
+) -> dict:
+    def stored_declaration(stored: ResolvedSchedule) -> FakeReadingDeclaration:
+        if rebuilt is not None:
+            rebuilt.append(stored)
+        return FakeReadingDeclaration(
+            **stored.scheduling_fields(),
+            subject=stored.scope.get("subject", ""),
+        )
+
+    return {
+        FAKE_HANDLER: HandlerRegistration(
+            key=FAKE_HANDLER,
+            scope_kind="one_declared_fake_subject",
+            idempotency_contract="read_only_reconcilable",
+            max_result_bytes=1024,
+            model_token_budget=0,
+            notification_budget=0,
+            declaration_type=FakeReadingDeclaration,
+            validate=_validated_fake,
+            stored_declaration=stored_declaration,
+            run=run,
+            run_effectful=run_effectful,
+        )
+    }
+
+
+def _fake_scheduled_project(factory, registry, starts_at: datetime, **overrides):
+    with factory() as setup:
+        project = Project(
+            slug=f"due-work-fake-{uuid4().hex}",
+            name="Due Work Fake",
+            is_synthetic=True,
+        )
+        setup.add(project)
+        setup.flush([project])
+        declaration = FakeReadingDeclaration.released_hourly(
+            project_id=project.id,
+            configuration_version="fake-reading-v1",
+            starts_at=starts_at,
+            subject="widgets",
+            **overrides,
+        )
+        schedule = configure_due_work(setup, declaration, now=starts_at, registry=registry)
+        ids = (project.id, schedule.id)
+        setup.commit()
+        return ids
+
+
+def test_a_registered_handler_runs_the_whole_lifecycle_without_a_real_handler(
+    runtime_database,
+):
+    factory = runtime_database.session_factory
+    starts_at = datetime(2026, 9, 4, 7, 0, tzinfo=timezone.utc)
+    attempts: list[int] = []
+
+    def run(session, schedule, observed_at):
+        attempts.append(schedule.id)
+        if len(attempts) == 1:
+            raise RuntimeError("first attempt fails")
+        return _fake_result(schedule.project_id, schedule.scope_json["subject"])
+
+    registry = _fake_registry(run=run)
+    project_id, schedule_id = _fake_scheduled_project(factory, registry, starts_at)
+
+    with factory() as ticking:
+        [occurrence] = enqueue_due_work(ticking, now=starts_at, registry=registry)
+        assert occurrence.due_at == starts_at
+        ticking.commit()
+
+    failed = run_due_work_once(
+        factory,
+        clock=ControlledClock(starts_at),
+        owner="runtime:fake-worker",
+        registry=registry,
+    )
+    assert failed.execution_outcome == "retry_due"
+    assert failed.error_code == "handler_execution_failed"
+
+    retried_at = starts_at + timedelta(minutes=5)
+    completed = run_due_work_once(
+        factory,
+        clock=ControlledClock(retried_at),
+        owner="runtime:fake-worker",
+        registry=registry,
+    )
+    assert completed.execution_outcome == "completed"
+    assert completed.handler_result["subject"] == "widgets"
+    assert completed.attempt_id != failed.attempt_id
+    assert attempts == [schedule_id, schedule_id]
+
+    # A slot that was never worked is failed as missed rather than replayed,
+    # and the failure is retained as its own receipt.
+    with factory() as later:
+        [pending] = enqueue_due_work(
+            later, now=starts_at + timedelta(hours=1), registry=registry
+        )
+        pending_id = pending.id
+        later.commit()
+    with factory() as missed:
+        [latest] = enqueue_due_work(
+            missed, now=starts_at + timedelta(hours=3), registry=registry
+        )
+        assert latest.id != pending_id
+        missed.commit()
+
+    with factory() as verification:
+        status = due_work_status(verification, project_id=project_id)
+        assert [item["execution_outcome"] for item in status["receipts"]] == [
+            "retry_due",
+            "completed",
+            "failed",
+        ]
+        assert status["receipts"][-1]["error_code"] == "missed_run_latest_only"
+        assert {item["state"] for item in status["occurrences"]} == {
+            "completed",
+            "failed",
+            "pending",
+        }
+
+
+def test_a_tampered_stored_schedule_is_refused_by_its_own_registration(
+    runtime_database,
+):
+    factory = runtime_database.session_factory
+    starts_at = datetime(2026, 9, 4, 8, 0, tzinfo=timezone.utc)
+    rebuilt: list = []
+    registry = _fake_registry(
+        run=lambda session, schedule, observed_at: _fake_result(
+            schedule.project_id, schedule.scope_json["subject"]
+        ),
+        rebuilt=rebuilt,
+    )
+    _, schedule_id = _fake_scheduled_project(factory, registry, starts_at)
+
+    with factory() as accepted:
+        assert enqueue_due_work(accepted, now=starts_at, registry=registry) != ()
+        accepted.rollback()
+    # The runtime asked this handler's registration to rebuild the row.
+    assert [stored.schedule_id for stored in rebuilt] == [schedule_id]
+    assert rebuilt[0].scope == {"project_id": rebuilt[0].project_id, "subject": "widgets"}
+    assert rebuilt[0].claim_ttl_seconds == 300
+
+    with factory() as tampering:
+        schedule = tampering.get(DueWorkSchedule, schedule_id)
+        schedule.scope_json = {**schedule.scope_json, "subject": "everything"}
+        tampering.flush([schedule])
+        with pytest.raises(DueWorkRefusal, match="persisted Due Work configuration"):
+            enqueue_due_work(tampering, now=starts_at, registry=registry)
+        tampering.rollback()
+
+
+def test_an_effectful_handler_is_handed_its_resolved_scope_and_reads_no_row(
+    runtime_database,
+):
+    factory = runtime_database.session_factory
+    starts_at = datetime(2026, 9, 4, 9, 0, tzinfo=timezone.utc)
+    opened: list[int] = []
+    observed: list[dict] = []
+
+    def counting_factory():
+        opened.append(1)
+        return factory()
+
+    def run_effectful(context):
+        before = len(opened)
+        resolved = context.schedule
+        result = _fake_result(resolved.project_id, resolved.scope["subject"])
+        observed.append(
+            {
+                "resolved": resolved,
+                "opened_by_the_handler": len(opened) - before,
+                "configuration_version": resolved.configuration_version,
+                "max_attempts": resolved.max_attempts,
+            }
+        )
+        return result
+
+    registry = _fake_registry(run_effectful=run_effectful)
+    project_id, schedule_id = _fake_scheduled_project(
+        factory, registry, starts_at
+    )
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=starts_at, registry=registry)
+        ticking.commit()
+
+    result = run_due_work_once(
+        counting_factory,
+        clock=ControlledClock(starts_at),
+        owner="runtime:fake-effectful",
+        registry=registry,
+    )
+
+    assert result.execution_outcome == "completed"
+    [seen] = observed
+    assert seen["opened_by_the_handler"] == 0
+    assert seen["configuration_version"] == "fake-reading-v1"
+    assert seen["max_attempts"] == 2
+    resolved = seen["resolved"]
+    assert isinstance(resolved, ResolvedSchedule)
+    assert resolved.schedule_id == schedule_id
+    assert resolved.project_id == project_id
+    assert resolved.scope == {"project_id": project_id, "subject": "widgets"}
+    # The resolved schedule is plain data: there is no row here to re-read.
+    assert not hasattr(resolved, "_sa_instance_state")

@@ -46,18 +46,26 @@ counts are a separate reading; the internal weekly receipt stays unchanged.
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, ClassVar
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
+from corridor.due_work_contract import (
+    DueWorkScheduling,
+    HandlerRegistration,
+    ResolvedSchedule,
+    ValidatedDeclaration,
+    gate7_configuration,
+    previous_completed_reading,
+    validate_scheduling,
+)
 from corridor.models import (
     DeltaDeferral,
     DeltaDisposition,
     DeltaSupersession,
-    DueWorkOccurrence,
-    DueWorkReceipt,
     DueWorkSchedule,
     ProjectRecordRevision,
     ProposedDelta,
@@ -76,26 +84,13 @@ _RESULT_SCHEMA_VERSION = "report-preparation-result-v1"
 def previous_reading(session: Session, schedule_id: int) -> dict[str, Any]:
     """This schedule's newest completed reading, or an empty mapping.
 
-    Ordered by receipt identity rather than ``finished_at``: the identifier is
-    monotonic in insertion order no matter what any clock said, and "newest"
-    here must mean the last one retained.
+    Which retained receipt counts as "newest" is the runtime's rule, not this
+    module's, so the read itself lives in the Due Work contract.
     """
 
-    result = session.scalars(
-        select(DueWorkReceipt.handler_result_json)
-        .join(
-            DueWorkOccurrence,
-            DueWorkOccurrence.id == DueWorkReceipt.occurrence_id,
-        )
-        .where(
-            DueWorkOccurrence.scheduled_job_id == schedule_id,
-            DueWorkReceipt.handler_key == HANDLER_KEY,
-            DueWorkReceipt.execution_outcome == "completed",
-        )
-        .order_by(DueWorkReceipt.id.desc())
-        .limit(1)
-    ).first()
-    return dict(result or {})
+    return previous_completed_reading(
+        session, schedule_id=schedule_id, handler_key=HANDLER_KEY
+    )
 
 
 def execute_report_preparation(
@@ -266,3 +261,100 @@ def _aware_utc(value: datetime) -> datetime:
 
 def _iso(value: datetime) -> str:
     return _aware_utc(value).isoformat()
+
+
+# --- The Due Work declaration this reading runs under ----------------------
+#
+# A weekly reading that counts and writes nothing is this module's own claim
+# about its work; the runtime keeps the lease and the receipt (card 6).
+
+
+@dataclass(frozen=True)
+class ReportPreparationDeclaration(DueWorkScheduling):
+    """One validated gate-7 declaration that enables the weekly change reading.
+
+    The reading counts one project's Proposed Delta lifecycle over the week and
+    writes nothing, so it is weekly rather than hourly, reads no model, and
+    authorizes no destination: what the change summary and weekly report are
+    rendered from is a reading, and releasing either stays a separate
+    designated-human act (ADR-0040, ADR-0086).
+    """
+
+    handler_key: ClassVar[str] = HANDLER_KEY
+
+    @classmethod
+    def released_weekly(
+        cls,
+        *,
+        project_id: int,
+        configuration_version: str,
+        starts_at: datetime,
+    ) -> "ReportPreparationDeclaration":
+        return cls(
+            project_id=project_id,
+            configuration_version=configuration_version,
+            starts_at=starts_at,
+            cadence="weekly",
+            timezone_name="UTC",
+            missed_run_policy="latest_only",
+            retention_days=3650,
+            max_attempts=3,
+            backoff_seconds=120,
+            claim_ttl_seconds=600,
+            deadline_seconds=300,
+            concurrency_limit=1,
+            model_token_budget=0,
+            notification_budget=0,
+        )
+
+
+def _validated_declaration(
+    declaration: ReportPreparationDeclaration,
+) -> ValidatedDeclaration:
+    """Validate one report-preparation declaration."""
+
+    starts_at = validate_scheduling(
+        declaration, subject="report-preparation", cadence="weekly"
+    )
+    scope = {"project_id": declaration.project_id}
+    return ValidatedDeclaration(
+        configuration=gate7_configuration(
+            declaration,
+            handler=HANDLER_KEY,
+            scope=scope,
+            input_identity={
+                "kind": "project_change_summary_reading-v1",
+                "project_id": declaration.project_id,
+            },
+            idempotency_contract="read_only_reconcilable",
+            starts_at=starts_at,
+            # The week the reading covers starts where the previous retained
+            # reading observed, so consecutive readings tile without a gap and
+            # without counting one resolution twice.
+            extra={"comparison_window_policy": "since_last_prepared_reading"},
+        ),
+        input_identity={
+            "handler": HANDLER_KEY,
+            "project_id": declaration.project_id,
+            "source": "proposed_delta_lifecycle-v1",
+        },
+    )
+
+
+def _stored_declaration(stored: ResolvedSchedule) -> ReportPreparationDeclaration:
+    return ReportPreparationDeclaration(**stored.scheduling_fields())
+
+
+DUE_WORK_REGISTRATION = HandlerRegistration(
+    key=HANDLER_KEY,
+    scope_kind="one_project_change_summary_reading",
+    idempotency_contract="read_only_reconcilable",
+    max_result_bytes=4096,
+    model_token_budget=0,
+    notification_budget=0,
+    declaration_type=ReportPreparationDeclaration,
+    validate=_validated_declaration,
+    stored_declaration=_stored_declaration,
+    # A reading runs inside the runtime's own transaction and returns its result.
+    run=execute_report_preparation,
+)
