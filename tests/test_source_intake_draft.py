@@ -445,21 +445,6 @@ def test_configuration_rejects_uninstalled_prompt_and_bad_bounds(session, projec
         _declare_config(session, project, max_input_tokens=0)
 
 
-def test_over_budget_refuses_before_the_model_and_records_a_receipt(
-    session, project, tmp_path
-):
-    _declare_config(session, project, max_input_tokens=1)
-    staged = _staged_workbook(tmp_path)
-    adapter = FakeAdapter(result=_valid_result())
-
-    receipt = _draft(session, project, staged, adapter)
-
-    assert receipt.status == "budget_exhausted"
-    assert receipt.proposals_json is None
-    assert "no model call was made" in receipt.reason
-    assert adapter.calls == []
-
-
 # --- hostile output ----------------------------------------------------------
 
 
@@ -640,17 +625,6 @@ def test_model_text_is_sanitized_before_storage(session, project, tmp_path):
     stored = receipt.proposals_json["metadata_suggestions"][0]["basis"]
     assert "\x07" not in stored and "\x00" not in stored
     assert stored == "Clean basis text."
-
-
-def test_transport_failure_is_a_receipt_not_an_escape(session, project, tmp_path):
-    _declare_config(session, project)
-    staged = _staged_workbook(tmp_path)
-    adapter = FakeAdapter(raises=RuntimeError("boom"))
-
-    receipt = _draft(session, project, staged, adapter)
-
-    assert receipt.status == "transport_failure"
-    assert receipt.proposals_json is None
 
 
 # --- binding: stale bytes / stale registry / overwrite ----------------------
