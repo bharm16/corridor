@@ -151,3 +151,42 @@ def mismatches(
 ) -> tuple[str, ...]:
     """Every field on which the request is not covered; empty means covered."""
     return AUTHORIZATION_CHECK.mismatches(record, request, posture)
+
+
+def derivation_mismatches(
+    record: AuthorizationRecord,
+    purpose: str,
+    posture: ProviderPosture = PROVIDER_POSTURE,
+) -> tuple[str, ...]:
+    """Whether a record already matched for one purpose also names a second, for a derivation from the retained response (#810).
+
+    A second logical purpose does not need a second transmission: when the
+    response's acquisition was covered — the record passed `mismatches` for
+    the request that fetched it — and the additional derivation is a purpose
+    the posture permits and the record explicitly names, the derivation runs
+    over the retained response and both purposes are recorded. This is not
+    the transmission check and does not consult the posture's approvals
+    (ADR-0098: replay of a retained response is not a new transmission); it
+    asks only whether the authorization *says* the purpose. Listing the
+    purpose in the posture document alone does not extend a record, and an
+    experiment scope names one purpose, so a scope recorded for another
+    purpose does not cover it.
+    """
+    found: list[str] = []
+    if purpose not in posture.permitted_purposes:
+        found.append(
+            f"purpose: {purpose!r} is not a purpose the posture permits "
+            f"({', '.join(posture.permitted_purposes)})"
+        )
+    if isinstance(record, CustomerAuthorization):
+        if purpose not in record.purposes:
+            found.append(
+                f"purpose: {purpose!r} is not named by record {record.record_id!r} "
+                f"({', '.join(sorted(record.purposes))})"
+            )
+    elif record.purpose != purpose:
+        found.append(
+            f"purpose: {purpose!r} is not the purpose of experiment scope "
+            f"{record.record_id!r} ({record.purpose!r})"
+        )
+    return tuple(found)

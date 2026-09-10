@@ -259,6 +259,7 @@ def open_boundary(
         max_pages=max_pages,
         credential_label=credential_label,
         sleep=sleep,
+        posture=posture,
     )
 
 
@@ -278,9 +279,14 @@ class AuthorizedTextract:
         max_pages: int,
         credential_label: str,
         sleep: Callable[[float], None],
+        posture: ProviderPosture = PROVIDER_POSTURE,
     ) -> None:
         self.record = record
         self.request = request
+        # The posture the record was matched against, kept so a derivation
+        # from a retained response (#810) can ask what it permits without a
+        # second check being invented beside the one that opened this.
+        self.posture = posture
         self.configuration = configuration
         self.normalization = normalization
         self.scope = cache_scope(record, request, configuration)
