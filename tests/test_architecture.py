@@ -962,7 +962,7 @@ LEGACY_TABLE_CONSUMERS: dict[str, tuple[str, ...]] = {
         "sh99_coordinator_rehearsal", "statement_coordination",
         "statement_scope_matching", "statement_spine", "statement_suggestions",
         "supersession", "supersession_review", "support_transfer",
-        "support_transfer_lineage", "thread_reading", "web.app", "web.queue",
+        "support_transfer_lineage", "web.app", "web.queue",
         # Same move: the queue reading names the Extracted Proposal it opens
         # and the sibling revisions offered as merges. Nothing new is built on
         # the table; the read left `web.app` and did not grow.
