@@ -57,7 +57,7 @@ def _write_export(path, output):
     body = json.dumps({"canonicalization": "postgresql-jsonb-text-v1", "payload_text": output.payload_text,
         "output_sha256": output.output_sha256}, sort_keys=True).encode()
     try:
-        write_sealed(path, body)
+        write_sealed(path, body, private_only=True)
     except ArtifactCollision as exc:
         raise ShadowRefused(f"export destination refused: {exc}") from exc
     return sha256(body).hexdigest()
