@@ -15,7 +15,8 @@ from datetime import datetime
 from sqlalchemy import select, text
 
 from corridor import audit
-from corridor.delta_generation import COMPARABLE_FACT_TYPES, fact_value, revision_label
+from corridor.delta_generation import COMPARABLE_FACT_TYPES, revision_label
+from corridor.fact_values import scalar_fact_value
 from corridor.field_mapping_manifest import ABSENT_IS_BLANK, ONE_VALUE_PER_COLUMN, manifest_from_declaration
 from corridor.materializer import materialize_segment_value
 from corridor.models import (
@@ -129,9 +130,9 @@ def _native_capture(session, identity, policy):
         _require(fact.fact_type in COMPARABLE_FACT_TYPES and len(by_fact[fact.id]) == 1,
                  "UCM comparison requires one supported native scalar cell per Fact")
         materialized = materialize_segment_value(session, fact.fact_type, by_fact[fact.id][0])
-        _require(fact_value(materialized) == fact_value(fact), "native Fact value cannot be reproduced from its frozen cell")
+        _require(scalar_fact_value(materialized) == scalar_fact_value(fact), "native Fact value cannot be reproduced from its frozen cell")
         _require(fact.fact_type not in values[fact.subject_key], "duplicate native subject/field facts are not a definitive reference")
-        values[fact.subject_key][fact.fact_type] = fact_value(fact)
+        values[fact.subject_key][fact.fact_type] = scalar_fact_value(fact)
         references[fact.subject_key, fact.fact_type] = f"document:{document.id}/fact:{fact.id}/segment:{by_fact[fact.id][0].id}"
     return sealed, delivery, dict(values), references
 
@@ -152,7 +153,7 @@ def _baseline(session, payload, policy):
             fact = session.get(Fact, row.fact_id)
             _require(fact is not None and fact.project_id == payload["project_id"], "accepted baseline Fact disappeared")
             _require(row.fact_type not in values[row.subject_key], "accepted baseline has duplicate subject/field values")
-            values[row.subject_key][row.fact_type] = fact_value(fact)
+            values[row.subject_key][row.fact_type] = scalar_fact_value(fact)
     _require(bool(values), "accepted baseline has no native subject inventory")
     return FrozenRevision(payload["accepted_baseline_revision"], payload["project_id"], source.content_sha256,
                           revision.recorded_at, dict(values))

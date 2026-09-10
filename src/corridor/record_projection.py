@@ -24,6 +24,7 @@ from datetime import date
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
+from corridor.fact_values import typed_fact_value
 from corridor.models import (
     FactAppliesTo,
     FactClosureResult,
@@ -69,19 +70,23 @@ class CurrentRecordValue:
 
 
 def record_value_payload(value: CurrentRecordValue):
-    """Canonical values used to compare typed source statements with the record."""
-    if value.fact_type == "statement_timing":
-        return {"timings": [{"role": item.timing_role, "text": item.text, "precision": item.precision,
-            "start_date": item.start_date.isoformat() if item.start_date else None,
-            "end_date": item.end_date.isoformat() if item.end_date else None} for item in value.statement_timings]}
-    if value.fact_type == "applies_to":
-        return {"mode": "selected" if value.applies_to_subject_keys else "unknown",
-                "subject_keys": list(value.applies_to_subject_keys)}
-    if value.fact_type == "closure_result":
-        return {"closure_kind": value.closure_kind}
-    if value.date_value:
-        return value.date_value.isoformat()
-    return value.text_value
+    """Canonical values used to compare typed source statements with the record.
+
+    One reading, shared with the captured Source Fact it is compared against:
+    ``fact_values`` owns the shape, and this projection supplies the satellite
+    members it has already batched onto the row (#790 follow-up).
+    """
+
+    return typed_fact_value(
+        value.fact_type,
+        text_value=value.text_value,
+        date_value=value.date_value,
+        external_org_value_id=value.external_org_value_id,
+        document_value_id=value.document_value_id,
+        applies_to_subject_keys=value.applies_to_subject_keys,
+        closure_kind=value.closure_kind,
+        statement_timings=value.statement_timings,
+    )
 
 
 def read_current_project_record(
