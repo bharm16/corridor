@@ -29,10 +29,14 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor import digests
+from corridor.experimental_command import (
+    experiment_parser,
+    print_receipt,
+    run_command,
+    run_experiment,
+)
 from corridor.experimental_database import (
     DatabaseGuard,
-    ProductionDatabaseRefusal,
-    experimental_session,
     require_experimental_database,
 )
 from corridor.extraction_run_queries import (
@@ -41,7 +45,7 @@ from corridor.extraction_run_queries import (
     is_completed_run,
 )
 from corridor.models import Candidate, Document, ExtractionRun, Project
-from corridor.receipts import ArtifactCollision, identity, write_sealed
+from corridor.receipts import identity
 from corridor.measurement_cases import (
     CasePredictionError,
     HumanCaseMeasurement,
@@ -1380,16 +1384,6 @@ def measure(
     )
 
 
-def write_measurement_artifact(path: Path, written: dict) -> bool:
-    """Create an immutable artifact, or accept an identical rerun.
-
-    Identity deliberately excludes ``ran_at`` so repeating the exact command
-    resolves to the same file. The first timestamp remains evidence; every
-    other field must agree or the collision fails closed.
-    """
-    return write_sealed(path, json.dumps(written, indent=2) + "\n", volatile=("ran_at",))
-
-
 def main(
     argv: list[str],
     *,
@@ -1401,159 +1395,124 @@ def main(
     """`eval <project-slug> [reference.csv] --extraction-run=N [...]`.
 
     Argument parsing, printing and the artifact file. The measurement
-    itself is `measure`.
+    itself is `measure`; the guarded database, refusal exit codes and the
+    sealed receipt path are the `experimental_command` frame.
 
     `--prompt-version` and `--document` are optional assertions about the
     named runs; neither can select Candidates. `--reference-manifest`
     explicitly identifies a machine reference and binds it to its author-time
     bytes, method, limitations and stable document hash set.
     """
-    known = (
-        "--extraction-run=",
-        "--prompt-version=",
-        "--document=",
-        "--reference-manifest=",
-        "--case-predictions=",
-        "--database-url=",
-    )
-    flags = [a for a in argv if a.startswith("--")]
-    args = [a for a in argv if not a.startswith("--")]
-    prompt_version = next(
-        (f.split("=", 1)[1] for f in flags if f.startswith("--prompt-version=")), None
-    )
-    named = [f.split("=", 1)[1] for f in flags if f.startswith("--document=")]
-    named_runs = [
-        f.split("=", 1)[1]
-        for f in flags
-        if f.startswith("--extraction-run=")
-    ]
-    reference_manifests = [
-        f.split("=", 1)[1]
-        for f in flags
-        if f.startswith("--reference-manifest=")
-    ]
-    case_prediction_paths = [
-        f.split("=", 1)[1]
-        for f in flags
-        if f.startswith("--case-predictions=")
-    ]
-    database_urls = [
-        f.split("=", 1)[1]
-        for f in flags
-        if f.startswith("--database-url=")
-    ]
-    if (
-        not args
-        or len(args) > 2
-        or len(reference_manifests) > 1
-        or len(case_prediction_paths) > 1
-        or any(not f.startswith(known) for f in flags)
-    ):
-        print(
-            "usage: eval <project-slug> [reference.csv] "
+    parser = experiment_parser(
+        prog="eval",
+        usage=(
+            "eval <project-slug> [reference.csv] "
             "--extraction-run=N [--extraction-run=N ...] "
             "--database-url=POSTGRESQL_URL "
             "[--reference-manifest=scope.json] "
             "[--case-predictions=outputs.json] "
-            "[--prompt-version=X] [--document=N ...]",
-            file=sys.stderr,
-        )
-        return 2
-    try:
-        document_ids = {int(n) for n in named} or None
-        parsed_run_ids = [int(n) for n in named_runs]
-        extraction_run_ids = set(parsed_run_ids)
-    except ValueError:
-        print(
-            "--document and --extraction-run take integer ids",
-            file=sys.stderr,
-        )
-        return 2
-    if len(parsed_run_ids) != len(extraction_run_ids):
-        print(
-            "duplicate --extraction-run ids are not allowed",
-            file=sys.stderr,
-        )
-        return 2
-    if not extraction_run_ids or any(run_id <= 0 for run_id in extraction_run_ids):
-        print(
-            "one or more positive --extraction-run ids are required; prompt and "
-            "document selectors cannot choose a measurement population",
-            file=sys.stderr,
-        )
-        return 2
-    if len(database_urls) != 1 or not database_urls[0]:
-        print(
-            "one explicit --database-url is required for Extraction Measurement",
-            file=sys.stderr,
-        )
-        return 2
-
-    slug = args[0]
-    gold_path = args[1] if len(args) > 1 else None
-    reference_manifest_path = (
-        reference_manifests[0] if reference_manifests else None
+            "[--prompt-version=X] [--document=N ...]"
+        ),
+        add_help=False,
+        allow_abbrev=False,
+        database_url_required=False,
     )
-    try:
-        with experimental_session(
-            database_urls[0],
-            session_factory=session_factory,
-            database_guard=database_guard,
-        ) as session:
+    parser.add_argument("slug")
+    parser.add_argument("gold_path", nargs="?")
+    parser.add_argument(
+        "--extraction-run", action="append", default=[], dest="extraction_runs"
+    )
+    parser.add_argument("--prompt-version")
+    parser.add_argument("--document", action="append", default=[], dest="documents")
+    parser.add_argument("--reference-manifest")
+    parser.add_argument("--case-predictions")
+
+    def measurement(args) -> int:
+        try:
+            document_ids = {int(n) for n in args.documents} or None
+            parsed_run_ids = [int(n) for n in args.extraction_runs]
+            extraction_run_ids = set(parsed_run_ids)
+        except ValueError:
+            print(
+                "--document and --extraction-run take integer ids",
+                file=sys.stderr,
+            )
+            return 2
+        if len(parsed_run_ids) != len(extraction_run_ids):
+            print(
+                "duplicate --extraction-run ids are not allowed",
+                file=sys.stderr,
+            )
+            return 2
+        if not extraction_run_ids or any(run_id <= 0 for run_id in extraction_run_ids):
+            print(
+                "one or more positive --extraction-run ids are required; prompt and "
+                "document selectors cannot choose a measurement population",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.database_url:
+            print(
+                "one explicit --database-url is required for Extraction Measurement",
+                file=sys.stderr,
+            )
+            return 2
+
+        def body(session: Session) -> int:
             measurement = measure(
                 session,
-                slug,
-                gold_path=gold_path,
-                reference_manifest_path=reference_manifest_path,
-                prompt_version=prompt_version,
+                args.slug,
+                gold_path=args.gold_path,
+                reference_manifest_path=args.reference_manifest,
+                prompt_version=args.prompt_version,
                 document_ids=document_ids,
                 extraction_run_ids=extraction_run_ids,
-                case_predictions_path=(
-                    case_prediction_paths[0] if case_prediction_paths else None
-                ),
+                case_predictions_path=args.case_predictions,
             )
-    except (CasePredictionError, NothingToMeasure, ProductionDatabaseRefusal) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+            print(render(measurement.result))
+            if measurement.case_measurement is not None:
+                cases = measurement.case_measurement
+                print(
+                    "  human ruling cases  "
+                    f"{cases.matched} matched, {cases.mismatched} mismatched, "
+                    f"{cases.not_applicable} need another evaluator"
+                )
+            if args.gold_path is None and measurement.skipped:
+                print(
+                    f"  {len(measurement.skipped)} project matrix/matrices are outside the "
+                    "exact run scope and are not counted as misses."
+                )
+            written = artifact(
+                measurement.result,
+                reference_description=measurement.reference_description,
+                ran_at=ran_at or datetime.now(timezone.utc),
+                extraction_runs=measurement.extraction_runs,
+                reference_scope=measurement.reference_scope,
+                case_measurement=measurement.case_measurement,
+            )
+            print_receipt(
+                written,
+                output_dir=output_dir,
+                filename=(
+                    f"extraction-measurement-{args.slug}-"
+                    f"{written['artifact_identity'][:16]}.json"
+                ),
+                preserved="existing immutable artifact preserved",
+            )
+            return exit_code(
+                measurement.result,
+                case_measurement=measurement.case_measurement,
+            )
 
-    print(render(measurement.result))
-    if measurement.case_measurement is not None:
-        cases = measurement.case_measurement
-        print(
-            "  human ruling cases  "
-            f"{cases.matched} matched, {cases.mismatched} mismatched, "
-            f"{cases.not_applicable} need another evaluator"
-        )
-    if gold_path is None and measurement.skipped:
-        print(
-            f"  {len(measurement.skipped)} project matrix/matrices are outside the "
-            "exact run scope and are not counted as misses."
+        return run_experiment(
+            args.database_url,
+            body,
+            session_factory=session_factory,
+            database_guard=database_guard,
+            refusals=(NothingToMeasure,),
         )
 
-    out = Path(output_dir) if output_dir is not None else Path("out")
-    out.mkdir(exist_ok=True)
-    written = artifact(
-        measurement.result,
-        reference_description=measurement.reference_description,
-        ran_at=ran_at or datetime.now(timezone.utc),
-        extraction_runs=measurement.extraction_runs,
-        reference_scope=measurement.reference_scope,
-        case_measurement=measurement.case_measurement,
-    )
-    path = out / (
-        f"extraction-measurement-{slug}-{written['artifact_identity'][:16]}.json"
-    )
-    try:
-        created = write_measurement_artifact(path, written)
-    except ArtifactCollision as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    suffix = "" if created else " (existing immutable artifact preserved)"
-    print(f"\n{path}{suffix}")
-    return exit_code(
-        measurement.result,
-        case_measurement=measurement.case_measurement,
-    )
+    return run_command(parser, argv, measurement)
 
 
 if __name__ == "__main__":

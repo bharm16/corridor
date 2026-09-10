@@ -34,22 +34,23 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.eval import (
-    ArtifactCollision,
     Measurement,
     NothingToMeasure,
     artifact,
     exit_code as measurement_exit_code,
     measure,
-    write_measurement_artifact,
+)
+from corridor.experimental_command import (
+    experiment_parser,
+    print_receipt,
+    run_command,
+    run_experiment,
 )
 from corridor.experimental_database import (
     DatabaseGuard,
-    ProductionDatabaseRefusal,
-    experimental_session,
     require_experimental_database,
 )
 from corridor.extract_project import RouteSelector, extract_project
-from corridor.measurement_cases import CasePredictionError
 from corridor.models import Document, ExtractionRun, Project
 from corridor.receipts import identity
 
@@ -491,132 +492,104 @@ def main(
     documents and is scored against the same reference. ``--reference-manifest``
     binds a machine reference to its author-time scope; ``--prompt-version`` and
     ``--case-predictions`` behave exactly as they do for `make eval`. The named
-    database must be a disposable copy and is refused if it is production.
+    database must be a disposable copy and is refused if it is production; the
+    guard, refusal exit codes and sealed receipt path are the
+    `experimental_command` frame.
     """
-    known = (
-        "--current-extraction-run=",
-        "--candidate-model=",
-        "--prompt-version=",
-        "--reference-manifest=",
-        "--case-predictions=",
-        "--database-url=",
+    parser = experiment_parser(
+        prog="candidate-model",
+        usage=(
+            "candidate-model <project-slug> [reference.csv] "
+            "--candidate-model=NAME "
+            "--current-extraction-run=N [--current-extraction-run=N ...] "
+            "--database-url=DISPOSABLE_POSTGRESQL_URL "
+            "[--reference-manifest=scope.json] "
+            "[--case-predictions=outputs.json] [--prompt-version=X]"
+        ),
+        add_help=False,
+        allow_abbrev=False,
+        database_url_required=False,
     )
-    flags = [a for a in argv if a.startswith("--")]
-    args = [a for a in argv if not a.startswith("--")]
-    prompt_version = _single_flag(flags, "--prompt-version=")
-    candidate_model = _single_flag(flags, "--candidate-model=")
-    reference_manifests = [
-        f.split("=", 1)[1] for f in flags if f.startswith("--reference-manifest=")
-    ]
-    case_prediction_paths = [
-        f.split("=", 1)[1] for f in flags if f.startswith("--case-predictions=")
-    ]
-    database_urls = [
-        f.split("=", 1)[1] for f in flags if f.startswith("--database-url=")
-    ]
-    current_runs = [
-        f.split("=", 1)[1] for f in flags if f.startswith("--current-extraction-run=")
-    ]
-    if (
-        not args
-        or len(args) > 2
-        or len(reference_manifests) > 1
-        or len(case_prediction_paths) > 1
-        or any(not f.startswith(known) for f in flags)
-    ):
-        return _usage()
-    if not candidate_model:
-        print("--candidate-model=NAME is required", file=sys.stderr)
-        return 2
-    try:
-        parsed_run_ids = [int(n) for n in current_runs]
-    except ValueError:
-        print("--current-extraction-run takes integer ids", file=sys.stderr)
-        return 2
-    current_extraction_run_ids = set(parsed_run_ids)
-    if len(parsed_run_ids) != len(current_extraction_run_ids):
-        print("duplicate --current-extraction-run ids are not allowed", file=sys.stderr)
-        return 2
-    if not current_extraction_run_ids or any(
-        run_id <= 0 for run_id in current_extraction_run_ids
-    ):
-        print(
-            "one or more positive --current-extraction-run ids are required; "
-            "prompt and document selectors cannot choose a measurement population",
-            file=sys.stderr,
-        )
-        return 2
-    if len(database_urls) != 1 or not database_urls[0]:
-        print(
-            "one explicit --database-url is required for a candidate comparison",
-            file=sys.stderr,
-        )
-        return 2
+    parser.add_argument("slug")
+    parser.add_argument("gold_path", nargs="?")
+    parser.add_argument(
+        "--current-extraction-run",
+        action="append",
+        default=[],
+        dest="current_extraction_runs",
+    )
+    parser.add_argument("--candidate-model")
+    parser.add_argument("--prompt-version")
+    parser.add_argument("--reference-manifest")
+    parser.add_argument("--case-predictions")
 
-    slug = args[0]
-    gold_path = args[1] if len(args) > 1 else None
-    reference_manifest_path = reference_manifests[0] if reference_manifests else None
-    if candidate_route_factory is None:
-        candidate_route_factory = _openai_candidate_route
+    def comparison(args) -> int:
+        if not args.candidate_model:
+            print("--candidate-model=NAME is required", file=sys.stderr)
+            return 2
+        try:
+            parsed_run_ids = [int(n) for n in args.current_extraction_runs]
+        except ValueError:
+            print("--current-extraction-run takes integer ids", file=sys.stderr)
+            return 2
+        current_extraction_run_ids = set(parsed_run_ids)
+        if len(parsed_run_ids) != len(current_extraction_run_ids):
+            print("duplicate --current-extraction-run ids are not allowed", file=sys.stderr)
+            return 2
+        if not current_extraction_run_ids or any(
+            run_id <= 0 for run_id in current_extraction_run_ids
+        ):
+            print(
+                "one or more positive --current-extraction-run ids are required; "
+                "prompt and document selectors cannot choose a measurement population",
+                file=sys.stderr,
+            )
+            return 2
+        if not args.database_url:
+            print(
+                "one explicit --database-url is required for a candidate comparison",
+                file=sys.stderr,
+            )
+            return 2
+        route_factory = candidate_route_factory or _openai_candidate_route
 
-    try:
-        with experimental_session(
-            database_urls[0],
-            session_factory=session_factory,
-            database_guard=database_guard,
-        ) as session:
-            with candidate_route_factory(candidate_model) as candidate_route_selector:
-                comparison = run_candidate_comparison(
+        def body(session: Session) -> int:
+            with route_factory(args.candidate_model) as candidate_route_selector:
+                compared = run_candidate_comparison(
                     session,
-                    slug,
+                    args.slug,
                     current_extraction_run_ids=current_extraction_run_ids,
                     candidate_route_selector=candidate_route_selector,
-                    candidate_model=candidate_model,
-                    gold_path=gold_path,
-                    reference_manifest_path=reference_manifest_path,
-                    prompt_version=prompt_version,
-                    case_predictions_path=(
-                        case_prediction_paths[0] if case_prediction_paths else None
-                    ),
+                    candidate_model=args.candidate_model,
+                    gold_path=args.gold_path,
+                    reference_manifest_path=args.reference_manifest,
+                    prompt_version=args.prompt_version,
+                    case_predictions_path=args.case_predictions,
                 )
-    except (CasePredictionError, NothingToMeasure, ProductionDatabaseRefusal) as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
+            print(render_comparison(compared))
+            written = comparison_artifact(
+                compared, ran_at=ran_at or datetime.now(timezone.utc)
+            )
+            print_receipt(
+                written,
+                output_dir=output_dir,
+                filename=(
+                    f"candidate-comparison-{args.slug}-"
+                    f"{written['comparison_identity'][:16]}.json"
+                ),
+                preserved="existing immutable comparison preserved",
+            )
+            return exit_code(compared)
 
-    print(render_comparison(comparison))
+        return run_experiment(
+            args.database_url,
+            body,
+            session_factory=session_factory,
+            database_guard=database_guard,
+            refusals=(NothingToMeasure,),
+        )
 
-    out = Path(output_dir) if output_dir is not None else Path("out")
-    out.mkdir(exist_ok=True)
-    written = comparison_artifact(
-        comparison, ran_at=ran_at or datetime.now(timezone.utc)
-    )
-    path = out / (
-        f"candidate-comparison-{slug}-{written['comparison_identity'][:16]}.json"
-    )
-    try:
-        created = write_measurement_artifact(path, written)
-    except ArtifactCollision as exc:
-        print(str(exc), file=sys.stderr)
-        return 1
-    suffix = "" if created else " (existing immutable comparison preserved)"
-    print(f"\n{path}{suffix}")
-    return exit_code(comparison)
-
-def _single_flag(flags: list[str], prefix: str) -> str | None:
-    return next((f.split("=", 1)[1] for f in flags if f.startswith(prefix)), None)
-
-
-def _usage() -> int:
-    print(
-        "usage: candidate-model <project-slug> [reference.csv] "
-        "--candidate-model=NAME "
-        "--current-extraction-run=N [--current-extraction-run=N ...] "
-        "--database-url=DISPOSABLE_POSTGRESQL_URL "
-        "[--reference-manifest=scope.json] "
-        "[--case-predictions=outputs.json] [--prompt-version=X]",
-        file=sys.stderr,
-    )
-    return 2
+    return run_command(parser, argv, comparison)
 
 
 def _openai_candidate_route(candidate_model: str):
