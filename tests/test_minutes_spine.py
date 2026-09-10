@@ -59,7 +59,7 @@ def accept_statement(session, project, capture):
             evidence_role="value_support", assessment="supported", authority=principal).id)
     now = datetime.now(timezone.utc)
     reading = read_review_items(session, project_id=project.id, as_of=now)
-    item = next(item for item in reading.items if outcome["delta_ids"][0] in item.actionable.delta_ids)
+    item = next(item for item in reading.items if outcome["delta_ids"][0] in item.delta_ids)
     child = next(child for child in item.children if child.delta_id == outcome["delta_ids"][0])
     assert child.not_ready_reason is None
     request = (focused_request(reading, item, principal=principal, decided_at=now,
