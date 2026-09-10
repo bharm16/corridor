@@ -15,6 +15,9 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
+
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
 from access_support import seed_membership
 
 
@@ -42,18 +45,11 @@ def project(session):
     return value
 
 
-class StubClient:
-    model = "gpt-5.6-luna"
-
-    def __init__(self, response):
-        self.response = response
-        self.calls = []
-
-    def complete(self, *, system, user, schema, images=(), logprobs=False):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        if isinstance(self.response, Exception):
-            raise self.response
-        return self.response
+def stub_client(response):
+    """The shared recording double; an exception instance is a failed call."""
+    return FakeModelClient(
+        response, configuration=RequestConfiguration(model="gpt-5.6-luna")
+    )
 
 
 def _declare(session, project):
@@ -79,7 +75,7 @@ def _declare(session, project):
 def test_request_refuses_without_a_declared_server_configuration(session, project):
     from corridor.coordination_summary import ConfigurationRequired, request_summary
 
-    client = StubClient({"sentences": []})
+    client = stub_client({"sentences": []})
     with pytest.raises(ConfigurationRequired):
         request_summary(
             session,
@@ -97,7 +93,7 @@ def test_empty_project_keeps_a_truthful_no_draft_receipt_without_model_call(
     from corridor.coordination_summary import request_summary
 
     _declare(session, project)
-    client = StubClient({"sentences": []})
+    client = stub_client({"sentences": []})
     receipt = request_summary(
         session,
         project_id=project.id,
@@ -126,7 +122,7 @@ def test_same_frozen_reading_reuses_the_unsuccessful_receipt_without_retrying_pa
         )
     )
     session.flush()
-    client = StubClient(RuntimeError("network unavailable"))
+    client = stub_client(RuntimeError("network unavailable"))
 
     first = request_summary(
         session,
@@ -168,7 +164,7 @@ def test_configuration_is_append_only_and_request_records_reading_identity(
         session,
         project_id=project.id,
         principal=ACTOR,
-        client_factory=lambda _: StubClient({"sentences": []}),
+        client_factory=lambda _: stub_client({"sentences": []}),
         today=TODAY,
     )
     stored = session.get(CoordinationSummaryRequest, receipt.id)
@@ -332,7 +328,7 @@ def test_input_over_the_declared_budget_is_refused_without_a_model_call(
         retention_policy="class_b_30_days",
         observation_context="internal_working_view",
     )
-    client = StubClient({"sentences": []})
+    client = stub_client({"sentences": []})
     receipt = request_summary(
         session,
         project_id=project.id,
@@ -355,7 +351,7 @@ def test_missing_required_alert_coverage_withholds_the_whole_draft(
     _declare(session, project)
     floor = _project_floor(session, project)
     assert floor, "fixture must fire at least one Constraint Alert facet"
-    client = StubClient(
+    client = stub_client(
         {"sentences": [{"text": "An assertion exists.", "cites": ["A1"]}]}
     )
 
@@ -385,7 +381,7 @@ def test_completed_draft_covers_the_floor_and_withholds_unsupported_citations(
         {"text": f"Bucket {ref} is open.", "cites": [ref]} for ref in floor
     ]
     sentences.append({"text": "A made-up fact.", "cites": ["E99"]})
-    client = StubClient({"sentences": sentences})
+    client = stub_client({"sentences": sentences})
 
     receipt = request_summary(
         session,

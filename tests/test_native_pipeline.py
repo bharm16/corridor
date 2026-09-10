@@ -29,6 +29,8 @@ from corridor.pipeline_qualification import (
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 from corridor_pdf_reader.replacement import semantics
 from corridor_pdf_reader.replacement.pages import slim_page
+
+from model_client_support import FakeModelClient
 from test_native_matrix import _document, matrix_source, project, session
 
 
@@ -344,12 +346,7 @@ def test_exact_replay_checks_new_image_bytes_before_reusing_answer(matrix_source
 @pytest.mark.parametrize("mode,permission", [("retained_replay", "public"), ("synthetic", "synthetic"), ("fresh_provider", "public"), ("retained_replay", "customer")])
 def test_mode_or_digest_strings_cannot_authorize_an_unverified_transport(session, project, matrix_source, tmp_path, mode, permission):
     document = _document(session, project, matrix_source)
-    class Transport:
-        calls = 0
-        def complete(self, **kwargs):
-            self.calls += 1
-            raise AssertionError("no outbound authorization")
-    client = Transport()
+    client = FakeModelClient(AssertionError("no outbound authorization"))
     plan = ObservationPlan(mode=mode, source_permission=permission, origin_sha256="a" * 64,
         provider_posture_sha256="b" * 64, customer_authorization_sha256="c" * 64,
         description="Digest strings and a mode label are not authorization")
@@ -357,7 +354,7 @@ def test_mode_or_digest_strings_cannot_authorize_an_unverified_transport(session
         run_native_matrix_shadow(session, document, source_path=matrix_source.path,
             scope=_scope(matrix_source), client=client, plan=plan,
             output_dir=tmp_path / "refused", document_label=matrix_source.path.name)
-    assert client.calls == 0 and not (tmp_path / "refused").exists()
+    assert client.calls == [] and not (tmp_path / "refused").exists()
 
 
 def test_different_pre_mapping_refusals_are_not_repeatable_empty_successes(session, project, matrix_source, tmp_path):

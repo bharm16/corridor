@@ -11,6 +11,10 @@ from corridor.ingest import ingest_document
 from corridor.models import ExternalOrg, Project
 from corridor.principals import HumanPrincipal
 from corridor.source_intake import validate_and_stage
+
+from corridor.llm import RequestConfiguration
+
+from model_client_support import FakeModelClient
 from pdf_fixture_support import PdfFixture
 
 
@@ -44,17 +48,21 @@ def minutes_document(session, project, text):
         doc_type="minutes", filename="minutes.pdf", images_dir=staged.stored_path.parent / "images")
 
 
-class MinutesClient:
-    """Inject only the provider boundary; references come from the real catalog."""
-    model = "fixture"
+class MinutesClient(FakeModelClient):
+    """Inject only the provider boundary; references come from the real catalog.
+
+    The one call shape comes from the shared double; a test that needs a
+    hostile answer overrides `answer` rather than the seam.
+    """
 
     def __init__(self, kind="commitment", scope=True, *, timing_purpose="stated", person_id=None):
         self.kind, self.scope = kind, scope
         self.timing_purpose, self.person_id = timing_purpose, person_id
+        super().__init__(self.answer, configuration=RequestConfiguration(model="fixture"))
 
-    def complete(self, *, system, user, schema):
+    def answer(self, call):
         import json
-        catalog = json.loads(user)
+        catalog = json.loads(call.user)
         statements = []
         for source in catalog["segments"]:
             if source["role"] not in {"action_item", "body"}:

@@ -12,7 +12,7 @@ from corridor.fact_decisions import record_human_fact_decision
 from corridor.models import Fact, FactDecision, Project, ProjectRecordRevision, SourceSegment
 from corridor.native_reader_coverage import collect_native_reader_coverage
 from corridor.reader_coverage import CONTRACTS, compare_all_surfaces
-from test_native_accepted_readers import _adopt_native_workbook, PRINCIPAL, TODAY, CoveringClient
+from test_native_accepted_readers import _adopt_native_workbook, PRINCIPAL, TODAY, covering_client
 
 
 @pytest.fixture
@@ -159,14 +159,9 @@ def test_source_citation_cannot_borrow_another_existing_fact_decision(session, a
 
 
 def test_briefing_runs_only_the_explicit_fixture_client(session, adopted):
-    class Client(CoveringClient):
-        calls = 0
-        def complete(self, **kwargs):
-            self.calls += 1
-            return super().complete(**kwargs)
-    client = Client()
+    client = covering_client()
     result = collect(session, *adopted, briefing_fixture_client=client)
-    assert client.calls == 1
+    assert len(client.calls) == 1
     assert 'fixture_briefing' in surfaces(result)['coordination_report'].reader_outputs['briefing']
 
 

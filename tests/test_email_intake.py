@@ -30,6 +30,9 @@ from corridor.web.app import (
     get_machine_session,
     get_session,
 )
+
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
 from access_support import seed_membership
 from pdf_fixture_support import PdfFixture
 
@@ -439,13 +442,10 @@ def test_directive_content_and_headers_are_inert_data(session):
     assert "SYSTEM INSTRUCTION" in page.text  # retained as quoted data only
 
 
-class PromiseClient:
-    """A fake prose-extraction model returning one statement over the body."""
-
-    model = "fake-statement-model"
-
-    def complete(self, *, system, user, schema):
-        return {
+def promise_client():
+    """The shared recording double, answering with one statement over the body."""
+    return FakeModelClient(
+        {
             "events": [
                 {
                     "quote": "CenterPoint will have the gas main relocated by 3/15/2026.",
@@ -459,7 +459,9 @@ class PromiseClient:
                     },
                 }
             ]
-        }
+        },
+        configuration=RequestConfiguration(model="fake-statement-model"),
+    )
 
 
 def test_standalone_body_promise_flows_through_ordinary_statement_extraction(session):
@@ -479,7 +481,7 @@ def test_standalone_body_promise_flows_through_ordinary_statement_extraction(ses
     stored = session.get(InboundMessage, received.message_id)
     document = session.get(Document, stored.document_id)
 
-    candidates = extract_document(session, document, client=PromiseClient())
+    candidates = extract_document(session, document, client=promise_client())
 
     assert len(candidates) == 1
     candidate = candidates[0]

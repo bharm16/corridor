@@ -32,6 +32,8 @@ from corridor.web.app import (
     get_session,
 )
 
+from model_client_support import RecordedAdapter
+
 from access_support import seed_membership
 
 CURATOR = HumanPrincipal("local:web-curator")
@@ -81,17 +83,10 @@ def _valid_result():
     }
 
 
-class FakeAdapter:
+class FakeAdapter(RecordedAdapter):
+    """This module's identity on the one shared recording adapter."""
+
     adapter = "fake-intake-draft"
-    adapter_contract_version = "fake-adapter-v1"
-
-    def __init__(self, result=None):
-        self._result = result
-        self.calls: list[dict] = []
-
-    def complete(self, *, system, user, schema):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        return self._result
 
 
 @pytest.fixture

@@ -19,6 +19,8 @@ from corridor.ingest import ingest_document
 from corridor.models import Candidate, Document, ExtractionRun, Project
 from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
+from model_client_support import FakeModelClient
+
 HEADINGS = [
     "Utility Conflict ID",
     "Utility Owner",
@@ -253,9 +255,8 @@ def test_sue_table_pipeline_records_exact_zero_model_usage(
         lambda value: getattr(value, "_stored_path", None),
     )
 
-    class ModelMustNotRun:
-        def complete(self, **_):
-            raise AssertionError("native SUE extraction must not call a model")
+    def model_must_not_run():
+        return FakeModelClient(AssertionError("native SUE extraction must not call a model"))
 
     # One file format, two readings: a probe table has no controlled Fact type
     # for any of its columns, so the route declares the legacy class and the
@@ -265,7 +266,7 @@ def test_sue_table_pipeline_records_exact_zero_model_usage(
     [proposal] = pipeline.extract_any(
         session,
         document,
-        client=ModelMustNotRun(),
+        client=model_must_not_run(),
     )
 
     assert proposal.kind == "evidence"
@@ -792,11 +793,10 @@ def test_the_ucm_conflict_list_form_reads_with_no_model(
         lambda value: getattr(value, "_stored_path", None),
     )
 
-    class ModelMustNotRun:
-        def complete(self, **_):
-            raise AssertionError("native UCM extraction must not call a model")
+    def model_must_not_run():
+        return FakeModelClient(AssertionError("native UCM extraction must not call a model"))
 
-    proposals = pipeline.extract_any(session, document, client=ModelMustNotRun())
+    proposals = pipeline.extract_any(session, document, client=model_must_not_run())
 
     assert [p.kind for p in proposals] == ["dependency"]
     run = session.scalar(

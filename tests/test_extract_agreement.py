@@ -5,6 +5,9 @@ from corridor.db import Session, engine
 from corridor.extract_agreement import PROMPT_VERSION, extract_document
 from corridor.models import Candidate, Dependency, DocPage, Document, Project
 
+from corridor.llm import RequestConfiguration
+from model_client_support import FakeModelClient
+
 PAGE_TEXT = (
     "SECTION 4.2 UTILITY RELOCATION. The City shall relocate all water and "
     "sanitary sewer facilities in conflict with the highway improvements at "
@@ -15,17 +18,12 @@ PAGE_TEXT = (
 )
 
 
-class StubClient:
-    """Recorded responses. CI never calls a model."""
-
-    def __init__(self, responses, model="gpt-5.6-luna"):
-        self.responses = list(responses)
-        self.model = model
-        self.calls = []
-
-    def complete(self, *, system, user, schema):
-        self.calls.append({"system": system, "user": user})
-        return self.responses.pop(0) if self.responses else {"obligations": []}
+def stub_client(responses, model="gpt-5.6-luna"):
+    """The shared recording double, answering these responses in order."""
+    return FakeModelClient(
+        [*responses, *([{"obligations": []}] * 8)],
+        configuration=RequestConfiguration(model=model),
+    )
 
 
 def obligation(**over):
@@ -76,7 +74,7 @@ def document(session):
 
 
 def test_an_obligation_becomes_a_verified_candidate(session, document):
-    client = StubClient([{"obligations": [obligation()]}])
+    client = stub_client([{"obligations": [obligation()]}])
     [candidate] = extract_document(session, document, client=client)
 
     assert candidate.kind == "dependency"
@@ -91,7 +89,7 @@ def test_the_page_number_comes_from_us_not_the_model(session, document):
     The model is never asked for a page number, so the only thing it can get
     wrong in a citation is the quote — which is then mechanically checked.
     """
-    client = StubClient([{"obligations": [obligation()]}])
+    client = stub_client([{"obligations": [obligation()]}])
     [candidate] = extract_document(session, document, client=client)
 
     citation = candidate.payload_json["citations"][0]
@@ -103,7 +101,7 @@ def test_the_page_number_comes_from_us_not_the_model(session, document):
 
 def test_a_fabricated_quote_is_kept_but_marked_unverified(session, document):
     """Never dropped. A hallucinated quote is a signal about the extractor."""
-    client = StubClient(
+    client = stub_client(
         [{"obligations": [obligation(quote="The City shall pay liquidated damages")]}]
     )
     [candidate] = extract_document(session, document, client=client)
@@ -114,21 +112,21 @@ def test_a_fabricated_quote_is_kept_but_marked_unverified(session, document):
 
 def test_a_short_page_is_never_sent_to_the_model(session, document):
     """Page 2 is '- 2 -'. Spending tokens to be told 'no obligations' is waste."""
-    client = StubClient([{"obligations": []}, {"obligations": []}])
+    client = stub_client([{"obligations": []}, {"obligations": []}])
     extract_document(session, document, client=client)
     assert len(client.calls) == 1
-    assert "Page 1" in client.calls[0]["user"]
+    assert "Page 1" in client.calls[0].user
 
 
 def test_the_page_text_sent_is_the_stored_text(session, document):
     """Verification must run against exactly what the model was shown."""
-    client = StubClient([{"obligations": []}])
+    client = stub_client([{"obligations": []}])
     extract_document(session, document, client=client)
-    assert PAGE_TEXT in client.calls[0]["user"]
+    assert PAGE_TEXT in client.calls[0].user
 
 
 def test_nulls_are_omitted_rather_than_stored_as_empty(session, document):
-    client = StubClient(
+    client = stub_client(
         [{"obligations": [obligation(committed_date=None, notice_period=None)]}]
     )
     [candidate] = extract_document(session, document, client=client)
@@ -140,31 +138,31 @@ def test_nulls_are_omitted_rather_than_stored_as_empty(session, document):
 
 def test_an_obligation_without_a_quote_is_dropped(session, document):
     """No quote means no evidence, and an uncited assertion cannot enter."""
-    client = StubClient([{"obligations": [obligation(quote="   ")]}])
+    client = stub_client([{"obligations": [obligation(quote="   ")]}])
     assert extract_document(session, document, client=client) == []
 
 
 def test_an_obligation_without_a_title_is_dropped(session, document):
-    client = StubClient([{"obligations": [obligation(title="")]}])
+    client = stub_client([{"obligations": [obligation(title="")]}])
     assert extract_document(session, document, client=client) == []
 
 
 def test_prompt_version_and_model_are_recorded(session, document):
-    client = StubClient([{"obligations": [obligation()]}], model="gpt-5.6-luna")
+    client = stub_client([{"obligations": [obligation()]}], model="gpt-5.6-luna")
     [candidate] = extract_document(session, document, client=client)
     assert candidate.prompt_version == PROMPT_VERSION
     assert candidate.model == "gpt-5.6-luna"
 
 
 def test_the_ocr_provenance_of_the_page_is_carried(session, document):
-    client = StubClient([{"obligations": [obligation()]}])
+    client = stub_client([{"obligations": [obligation()]}])
     [candidate] = extract_document(session, document, client=client)
     assert candidate.payload_json["text_source"] == "ocr"
 
 
 def test_the_extractor_writes_no_dependencies(session, document):
     """Extractors produce Candidates only. The path in is a human keystroke."""
-    client = StubClient([{"obligations": [obligation()]}])
+    client = stub_client([{"obligations": [obligation()]}])
     extract_document(session, document, client=client)
     assert not session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
@@ -176,5 +174,5 @@ def test_the_extractor_writes_no_dependencies(session, document):
 
 def test_an_empty_model_response_is_not_a_crash(session, document):
     """A refusal or a length stop returns no content mid-run."""
-    client = StubClient([{}])
+    client = stub_client([{}])
     assert extract_document(session, document, client=client) == []

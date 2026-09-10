@@ -32,6 +32,8 @@ from corridor.models import (
     Project,
 )
 from corridor.principals import HumanPrincipal
+
+from model_client_support import RecordedAdapter
 from access_support import seed_membership
 
 
@@ -41,22 +43,10 @@ _ERROR_DETAIL = "page 1 image could not be decoded"
 _PAGE_TWO_TEXT = "Relocation schedule. Coordinate with ST contractor."
 
 
-class FakeAdapter:
-    """A recorded structured-output stub; no network, no paid model call."""
+class FakeAdapter(RecordedAdapter):
+    """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-failure-diagnosis"
-    adapter_contract_version = "fake-adapter-v1"
-
-    def __init__(self, result=None, *, raises=None):
-        self._result = result
-        self._raises = raises
-        self.calls: list[dict] = []
-
-    def complete(self, *, system, user, schema):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        if self._raises is not None:
-            raise self._raises
-        return self._result
 
 
 @pytest.fixture
@@ -333,7 +323,7 @@ def test_diagnosis_reads_permitted_pages_and_separates_facts_from_hypotheses(
 
     # The model saw the frozen failure and pages and the untrusted-data notice, once.
     assert len(adapter_box["adapter"].calls) == 1
-    user_message = adapter_box["adapter"].calls[0]["user"]
+    user_message = adapter_box["adapter"].calls[0].user
     assert "untrusted data" in user_message
     assert "unreadable" in user_message and _PAGE_TWO_TEXT in user_message
     # Redacted lineage only: hashes and timing, never prompt or response text.

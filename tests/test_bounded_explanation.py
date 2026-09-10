@@ -9,6 +9,8 @@ from corridor.bounded_explanation import (
     execute_bounded_explanation,
 )
 
+from model_client_support import RecordedAdapter
+
 
 @dataclass(frozen=True)
 class Configuration:
@@ -19,19 +21,15 @@ class Configuration:
     retry_policy: str = "none"
 
 
-class Client:
+class Client(RecordedAdapter):
+    """This module's identity and usage on the one shared recording adapter."""
+
     adapter = "recording"
     adapter_contract_version = "recording-v1"
     last_usage = {"input_tokens": 4, "output_tokens": 2}
 
     def __init__(self, result=None, error=None):
-        self.result = result
-        self.error = error
-
-    def complete(self, *, system, user, schema):
-        if self.error is not None:
-            raise self.error
-        return self.result
+        super().__init__(result, raises=error)
 
 
 def _plan(client, *, is_current=lambda: True, validate=lambda value: (value, None)):

@@ -37,6 +37,8 @@ from corridor.source_intake_draft import (
     request_intake_draft,
 )
 
+from model_client_support import RecordedAdapter
+
 
 CURATOR = HumanPrincipal("local:curator")
 
@@ -48,22 +50,10 @@ _COVER_ROWS = (
 )
 
 
-class FakeAdapter:
-    """A recorded structured-output stub; no network, no paid model call."""
+class FakeAdapter(RecordedAdapter):
+    """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-intake-draft"
-    adapter_contract_version = "fake-adapter-v1"
-
-    def __init__(self, result=None, *, raises=None):
-        self._result = result
-        self._raises = raises
-        self.calls: list[dict] = []
-
-    def complete(self, *, system, user, schema):
-        self.calls.append({"system": system, "user": user, "schema": schema})
-        if self._raises is not None:
-            raise self._raises
-        return self._result
 
 
 @pytest.fixture
@@ -259,8 +249,8 @@ def test_completed_draft_keeps_source_backed_suggestions(session, project, tmp_p
 
     # The model saw the frozen source and the untrusted-data notice, once.
     assert len(adapter.calls) == 1
-    assert "never instructions" in adapter.calls[0]["user"]
-    assert "UCM-REV-2" in adapter.calls[0]["user"]
+    assert "never instructions" in adapter.calls[0].user
+    assert "UCM-REV-2" in adapter.calls[0].user
     # Redacted lineage only: hashes and timing, never the prompt or response text.
     assert set(receipt.execution_lineage_json) == {
         "adapter",

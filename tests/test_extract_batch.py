@@ -24,6 +24,10 @@ from corridor.llm import Usage
 from corridor.models import Candidate, DocPage, Document, ExtractionRun, Project
 from corridor.principals import HumanPrincipal
 
+from corridor.llm import RequestConfiguration
+
+from model_client_support import FakeModelClient
+
 PROMPT_VERSION = "batch_test_v1"
 SCHEMA = {"type": "object"}
 
@@ -68,31 +72,33 @@ def add_page(session, document, page_no, text):
     session.flush()
 
 
-class StubClient:
-    """Two adapters justify the seam: this one, and OpenAIClient."""
+class StubClient(FakeModelClient):
+    """Two adapters justify the seam: this one, and OpenAIClient.
 
-    max_workers = 2
-    model = "stub-model"
-
-    def __init__(self, *, fail_on=None):
-        self.fail_on = fail_on
-        self.closed = False
-        self.calls = 0
+    The call shape comes from the shared double; only the answer and the
+    fixed counters are this module's.
+    """
 
     class _Usage:
         prompt_tokens = 10
         completion_tokens = 5
 
+    # Deliberately a constant, not a meter: a run that reports the same
+    # snapshot before and after records a zero delta.
     usage = _Usage()
 
-    def complete(self, *, system, user, schema, **kw):
-        self.calls += 1
-        if self.fail_on and self.fail_on in user:
+    def __init__(self, *, fail_on=None):
+        self.fail_on = fail_on
+        super().__init__(
+            self.answer,
+            configuration=RequestConfiguration(model="stub-model"),
+            max_workers=2,
+        )
+
+    def answer(self, call):
+        if self.fail_on and self.fail_on in call.user:
             raise RuntimeError("503 upstream")
         return {"events": [{"description": "AT&T will relocate in August."}]}
-
-    def close(self):
-        self.closed = True
 
 
 def _to_candidate(document, page, item, model):
@@ -218,11 +224,11 @@ def test_pooled_run_records_one_exact_batch_usage_receipt_per_member(
         def __init__(self):
             super().__init__()
             self.usage = Usage()
-            self._usage_lock = threading.Lock()
+            self._meter = threading.Lock()
 
         def complete(self, **kwargs):
             result = super().complete(**kwargs)
-            with self._usage_lock:
+            with self._meter:
                 self.usage.prompt_tokens += 100
                 self.usage.completion_tokens += 20
                 self.usage.reasoning_tokens += 3
@@ -269,7 +275,7 @@ def test_runner_refuses_when_the_seal_does_not_match_the_runtime_prompt(
     with pytest.raises(ValueError, match="prompt bytes"):
         _run(session, project, client, extractor_config=wrong)
 
-    assert client.calls == 0
+    assert client.calls == []
     assert client.closed is True
 
 
@@ -302,7 +308,7 @@ def test_direct_batch_seam_refuses_mismatched_runtime_sources(session, project):
             commit=False,
         )
 
-    assert client.calls == 0
+    assert client.calls == []
 
 
 def test_reading_a_document_once_declares_that_reading(session, project):
@@ -357,7 +363,7 @@ def test_a_resumed_run_skips_documents_already_extracted(
     second = StubClient()
     assert _run(session, project, second) == 0
 
-    assert second.calls == 0
+    assert second.calls == []
     assert len(_candidates(session, project)) == 2
     assert "nothing to do: all 2 already extracted" in capsys.readouterr().out
 
@@ -407,7 +413,7 @@ def test_a_zero_row_document_is_still_marked_done_for_resume(
 
     second = StubClient()
     assert _run(session, project, second) == 0
-    assert second.calls == 0
+    assert second.calls == []
     assert "nothing to do: all 1 already extracted" in capsys.readouterr().out
 
 
@@ -478,7 +484,7 @@ def test_an_all_page_failed_zero_row_attempt_is_not_marked_done_for_resume(
 
     second = StubClient(fail_on="page one")
     assert _run(session, project, second) == 0
-    assert second.calls == 1
+    assert len(second.calls) == 1
     assert len(_runs(session, project)) == 2
     out = capsys.readouterr().out
     assert "1 page errors" in out
@@ -492,7 +498,7 @@ def test_a_document_with_no_eligible_pages_is_recorded_as_an_error_not_done(
 
     assert _run(session, project, client) == 0
 
-    assert client.calls == 0
+    assert client.calls == []
     assert _candidates(session, project) == []
     [run] = _runs(session, project)
     assert (run.prompt_version, run.candidate_count, run.page_errors) == (
@@ -503,7 +509,7 @@ def test_a_document_with_no_eligible_pages_is_recorded_as_an_error_not_done(
 
     second = StubClient()
     assert _run(session, project, second) == 0
-    assert second.calls == 0
+    assert second.calls == []
     assert len(_runs(session, project)) == 2
     out = capsys.readouterr().out
     assert "1 page errors" in out
@@ -681,7 +687,7 @@ def test_invalid_document_selection_is_refused_before_model_calls(
     )
 
     assert result == 1
-    assert client.calls == 0
+    assert client.calls == []
     assert _candidates(session, project) == []
 
 
@@ -713,7 +719,7 @@ def test_a_failed_document_does_not_block_clean_siblings(
 def test_an_unknown_project_is_refused(session, project, capsys):
     client = StubClient()
     assert _run(session, project, client, argv=["no-such-project"]) == 1
-    assert client.calls == 0
+    assert client.calls == []
 
 
 def test_the_client_is_closed_even_when_extraction_raises(session, project):
@@ -721,7 +727,7 @@ def test_the_client_is_closed_even_when_extraction_raises(session, project):
     add_note(session, project, "notes-a.pdf", "a" * 64)
 
     class Exploding(StubClient):
-        def complete(self, **kw):
+        def answer(self, call):
             raise KeyboardInterrupt("operator stopped the run")
 
     client = Exploding()
