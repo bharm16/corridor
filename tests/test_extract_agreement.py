@@ -1,7 +1,17 @@
+"""The agreement extractor, driven through the path production takes.
+
+`make agreements` runs `extract_agreement.main`, which hands this module's
+prompt, schema and `_to_candidate` to the pooled runner. The suite used to
+drive a sequential `extract_document` loop that nothing in `src/` called; every
+property it proved is proved here against `main` itself, with the runner's own
+`client_factory` and `session_factory` seams carrying a recorded client and the
+test's rollback-scoped session.
+"""
+
 import pytest
 from sqlalchemy import select
 
-from corridor.extract_agreement import PROMPT_VERSION, extract_document
+from corridor.extract_agreement import PROMPT_VERSION, SCHEMA, main
 from corridor.models import Candidate, Dependency, DocPage, Document, Project
 
 from corridor.llm import RequestConfiguration
@@ -18,10 +28,15 @@ PAGE_TEXT = (
 
 
 def stub_client(responses, model="gpt-5.6-luna"):
-    """The shared recording double, answering these responses in order."""
+    """The shared recording double, answering these responses in order.
+
+    The runner reads the client's usage meter for its receipt, so the double is
+    asked to meter; the counters stay at zero.
+    """
     return FakeModelClient(
-        [*responses, *([{"obligations": []}] * 8)],
+        responses,
         configuration=RequestConfiguration(model=model),
+        tokens_per_call={},
     )
 
 
@@ -38,6 +53,22 @@ def obligation(**over):
     }
     base.update(over)
     return base
+
+
+class _Scoped:
+    """Hand the runner the test's transaction rather than a real one."""
+
+    def __init__(self, session):
+        self.session = session
+
+    def __call__(self):
+        return self
+
+    def __enter__(self):
+        return self.session
+
+    def __exit__(self, *exc):
+        return False
 
 
 @pytest.fixture
@@ -61,9 +92,24 @@ def document(session):
     return doc
 
 
+def extract(session, document, client):
+    """Run `make agreements` for the document's project and read what it wrote."""
+    project = session.get(Project, document.project_id)
+    assert main(
+        [project.slug],
+        client_factory=lambda: client,
+        session_factory=_Scoped(session),
+    ) == 0
+    return session.scalars(
+        select(Candidate)
+        .where(Candidate.project_id == document.project_id)
+        .order_by(Candidate.id)
+    ).all()
+
+
 def test_an_obligation_becomes_a_verified_candidate(session, document):
     client = stub_client([{"obligations": [obligation()]}])
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
 
     assert candidate.kind == "dependency"
     assert candidate.citations_verified is True
@@ -78,13 +124,13 @@ def test_the_page_number_comes_from_us_not_the_model(session, document):
     wrong in a citation is the quote — which is then mechanically checked.
     """
     client = stub_client([{"obligations": [obligation()]}])
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
 
     citation = candidate.payload_json["citations"][0]
     assert citation["page"] == 1
     assert candidate.source_pages == [1]
     # Nothing in the schema lets the model supply a page.
-    assert "page" not in obligation()
+    assert "page" not in SCHEMA["properties"]["obligations"]["items"]["properties"]
 
 
 def test_a_fabricated_quote_is_kept_but_marked_unverified(session, document):
@@ -92,7 +138,7 @@ def test_a_fabricated_quote_is_kept_but_marked_unverified(session, document):
     client = stub_client(
         [{"obligations": [obligation(quote="The City shall pay liquidated damages")]}]
     )
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
 
     assert candidate.citations_verified is False
     assert candidate.payload_json["citations"][0]["verified"] is False
@@ -101,7 +147,7 @@ def test_a_fabricated_quote_is_kept_but_marked_unverified(session, document):
 def test_a_short_page_is_never_sent_to_the_model(session, document):
     """Page 2 is '- 2 -'. Spending tokens to be told 'no obligations' is waste."""
     client = stub_client([{"obligations": []}, {"obligations": []}])
-    extract_document(session, document, client=client)
+    extract(session, document, client)
     assert len(client.calls) == 1
     assert "Page 1" in client.calls[0].user
 
@@ -109,7 +155,7 @@ def test_a_short_page_is_never_sent_to_the_model(session, document):
 def test_the_page_text_sent_is_the_stored_text(session, document):
     """Verification must run against exactly what the model was shown."""
     client = stub_client([{"obligations": []}])
-    extract_document(session, document, client=client)
+    extract(session, document, client)
     assert PAGE_TEXT in client.calls[0].user
 
 
@@ -117,7 +163,7 @@ def test_nulls_are_omitted_rather_than_stored_as_empty(session, document):
     client = stub_client(
         [{"obligations": [obligation(committed_date=None, notice_period=None)]}]
     )
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
     fields = candidate.payload_json["fields"]
     assert "committed_date" not in fields
     assert "notice_period" not in fields
@@ -127,40 +173,37 @@ def test_nulls_are_omitted_rather_than_stored_as_empty(session, document):
 def test_an_obligation_without_a_quote_is_dropped(session, document):
     """No quote means no evidence, and an uncited assertion cannot enter."""
     client = stub_client([{"obligations": [obligation(quote="   ")]}])
-    assert extract_document(session, document, client=client) == []
+    assert extract(session, document, client) == []
 
 
 def test_an_obligation_without_a_title_is_dropped(session, document):
     client = stub_client([{"obligations": [obligation(title="")]}])
-    assert extract_document(session, document, client=client) == []
+    assert extract(session, document, client) == []
 
 
 def test_prompt_version_and_model_are_recorded(session, document):
     client = stub_client([{"obligations": [obligation()]}], model="gpt-5.6-luna")
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
     assert candidate.prompt_version == PROMPT_VERSION
     assert candidate.model == "gpt-5.6-luna"
 
 
 def test_the_ocr_provenance_of_the_page_is_carried(session, document):
     client = stub_client([{"obligations": [obligation()]}])
-    [candidate] = extract_document(session, document, client=client)
+    [candidate] = extract(session, document, client)
     assert candidate.payload_json["text_source"] == "ocr"
 
 
 def test_the_extractor_writes_no_dependencies(session, document):
     """Extractors produce Candidates only. The path in is a human keystroke."""
     client = stub_client([{"obligations": [obligation()]}])
-    extract_document(session, document, client=client)
+    assert extract(session, document, client)
     assert not session.scalars(
         select(Dependency).where(Dependency.project_id == document.project_id)
-    ).all()
-    assert session.scalars(
-        select(Candidate).where(Candidate.project_id == document.project_id)
     ).all()
 
 
 def test_an_empty_model_response_is_not_a_crash(session, document):
     """A refusal or a length stop returns no content mid-run."""
     client = stub_client([{}])
-    assert extract_document(session, document, client=client) == []
+    assert extract(session, document, client) == []

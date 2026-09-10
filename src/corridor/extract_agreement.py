@@ -7,18 +7,22 @@ the quote, and that quote is then mechanically verified against the page it
 was drawn from. A hallucinated page number is impossible by construction;
 a hallucinated quote is caught.
 
+The one production path is ``main``: `make agreements` drives
+``extract_batch.run_extraction`` with this module's prompt, schema and
+``_to_candidate``. A sequential ``extract_document`` loop used to sit beside
+it; nothing in ``src/`` called it, and its suite proved a loop the product
+never ran, so it is gone and the suite drives ``main`` through the runner's
+injectable client and session seams instead.
+
 Nothing here writes to the Ledger. Extractors produce Candidates only.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from corridor.candidates import dedupe_hint, propose
-from corridor.llm import OpenAIClient, StructuredClient
 from corridor.models import Candidate, DocPage, Document
 from corridor.verify import quote_appears_on
 
@@ -65,45 +69,6 @@ SCHEMA = {
 }
 
 
-def extract_document(
-    session: Session,
-    document: Document,
-    *,
-    client: StructuredClient | None = None,
-    max_pages: int | None = None,
-) -> list[Candidate]:
-    client = client or OpenAIClient()
-    system = PROMPT_PATH.read_text()
-
-    pages = session.scalars(
-        select(DocPage)
-        .where(DocPage.document_id == document.id)
-        .order_by(DocPage.page_no)
-    ).all()
-    if max_pages:
-        pages = pages[:max_pages]
-
-    candidates: list[Candidate] = []
-    for page in pages:
-        text = (page.text or "").strip()
-        if len(text) < MIN_PAGE_CHARS:
-            continue
-
-        result = client.complete(
-            system=system,
-            user=f"Page {page.page_no} of {document.filename}:\n\n{text}",
-            schema=SCHEMA,
-        )
-        for item in result.get("obligations") or []:
-            candidate = _to_candidate(document, page, item, getattr(client, "model", None))
-            if candidate is not None:
-                session.add(candidate)
-                candidates.append(candidate)
-
-    session.flush()
-    return candidates
-
-
 def _to_candidate(
     document: Document, page: DocPage, item: dict, model: str | None
 ) -> Candidate | None:
@@ -148,8 +113,18 @@ def _to_candidate(
     )
 
 
-def main(argv: list[str]) -> int:
-    """`make agreements ARGS="<slug> [limit]"`"""
+def main(
+    argv: list[str],
+    *,
+    client_factory: Callable | None = None,
+    session_factory: Callable | None = None,
+) -> int:
+    """`make agreements ARGS="<slug> [limit]"`
+
+    ``client_factory`` and ``session_factory`` are the runner's own seams,
+    passed through so the suite can drive this exact wiring with a recorded
+    client and a rollback-scoped session; production passes neither.
+    """
     from corridor.extract_batch import Noun, run_extraction
 
     return run_extraction(
@@ -164,6 +139,8 @@ def main(argv: list[str]) -> int:
         items_key="obligations",
         noun=Noun("agreements", "obligations"),
         extractor_registry_key="agreement",
+        client_factory=client_factory,
+        session_factory=session_factory,
     )
 
 

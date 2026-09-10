@@ -64,7 +64,7 @@ arrived after the week they are closing.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Iterable, Mapping, Sequence
+from typing import Iterable, Mapping
 
 from corridor.issue_content import (
     ARTIFACT_WORDS,
@@ -201,23 +201,3 @@ def headline_level(levels: Iterable[ConsequenceLevel | None]) -> str | None:
     if not ordinals:
         return None
     return LEVELS[min(ordinals)]
-
-
-def group_by_level(
-    pairs: Sequence[tuple[object, ConsequenceLevel | None]],
-) -> tuple[tuple[str, tuple[object, ...]], ...]:
-    """The same items under ADR-0085's three headings, in presentation order.
-
-    A level with nothing under it is omitted rather than printed empty, and the
-    order is the declared one, so two readings of the same state group the same
-    way.
-    """
-
-    collected: dict[str, list[object]] = {name: [] for name in LEVELS}
-    for item, level in pairs:
-        if level is None:
-            continue
-        collected[level.name].append(item)
-    return tuple(
-        (name, tuple(collected[name])) for name in LEVELS if collected[name]
-    )

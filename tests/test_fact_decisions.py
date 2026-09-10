@@ -13,7 +13,6 @@ from corridor.fact_decisions import (
     fact_decisions_as_of_revision,
     include_structured_cell_fact_by_policy,
     include_current_structured_cell_facts,
-    include_current_stationing_facts,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -194,17 +193,6 @@ def test_released_structured_cell_policy_includes_a_non_stationing_fact(
     assert result.decision.fact_type == "utility_id"
     assert result.revision.released_policy == STRUCTURED_CELL_INCLUSION_POLICY
     assert current_fact_decisions(session, project.id) == (result.decision,)
-
-
-def test_stationing_compatibility_seam_does_not_silently_include_other_types(
-    session, decision_case
-):
-    project, _document, _run, _facts = decision_case
-
-    results = include_current_stationing_facts(session, project.id)
-
-    assert len(results) == 2
-    assert {result.decision.fact_type for result in results} == {"station_from"}
 
 
 def test_unresolved_external_org_wording_remains_pending_without_a_revision(

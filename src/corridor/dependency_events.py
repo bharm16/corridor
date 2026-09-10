@@ -767,26 +767,6 @@ def verified_cited_statement_provenance(
     return provenance
 
 
-def latest_committed_events(
-    session: Session,
-    dependency_ids: Iterable[int],
-    *,
-    source_kind: str | None = None,
-    event_ids: Collection[int] | None = None,
-) -> dict[int, ExternalPartyStatement]:
-    """Compatibility access to current statement identities only."""
-    return {
-        dependency_id: statement.event
-        for dependency_id, statement in current_dependency_statements(
-            session,
-            dependency_ids,
-            source_kind=source_kind,
-            event_ids=event_ids,
-        ).items()
-        if statement.event is not None and statement.effective_date is not None
-    }
-
-
 def project_committed_date(session: Session, dependency_id: int) -> None:
     """Refresh the scalar compatibility projection from its statement view."""
     dependency = session.get(Dependency, dependency_id)

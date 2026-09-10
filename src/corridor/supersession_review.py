@@ -158,11 +158,6 @@ class SupersessionReview:
         )
 
 
-# Kept as an explicit alias because the web read model used this name while
-# the domain contract was being implemented.  There is still only one type.
-SupersessionReviewItem = SupersessionReview
-
-
 @dataclass(frozen=True)
 class ReviewerWorklist:
     """The two mutually exclusive lanes behind one reviewer interface."""
