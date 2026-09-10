@@ -594,3 +594,23 @@ def test_a_nonbreaking_space_is_not_a_claim_in_sql_either(
         session, disputed.id, "station_from", value="1105+00", principal=REVIEWER
     )
     assert contradicted_fields(session, [disputed.id]) == {}
+
+
+def test_a_missing_constraint_is_a_declared_input_refusal(session, project):
+    """The domain's own sentence, under the malformed-input kind, not a bare ValueError."""
+    from corridor import refusals
+    from corridor.disputes import DisputeInputRefused, DisputeRefusal, record_dispute_clarification
+
+    assert issubclass(DisputeInputRefused, DisputeRefusal)
+    assert DisputeInputRefused.refusal_kind == refusals.MALFORMED_INPUT
+    with pytest.raises(DisputeInputRefused, match="dependency 999999 does not exist"):
+        record_dispute_clarification(
+            session,
+            999999,
+            "size",
+            roster_entry_id=1,
+            next_action="Ask the owner",
+            due_date=None,
+            due_date_unknown_reason="awaiting the owner",
+            principal=HumanPrincipal("local:coordinator"),
+        )

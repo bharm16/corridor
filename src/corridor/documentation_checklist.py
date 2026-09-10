@@ -85,8 +85,14 @@ _EXECUTED_AGREEMENT = re.compile(
 )
 
 
-class DocumentationConfirmationRefusal(ValueError):
-    """The cited source cannot lawfully receive this confirmation."""
+class DocumentationConfirmationRefusal(refusals.Refusal, ValueError):
+    """The cited source cannot lawfully receive this confirmation.
+
+    A conflict with what the record already holds, so the adapter answers 409
+    with this sentence; the route no longer restates the status.
+    """
+
+    refusal_kind = refusals.CONFLICT
 
 
 @dataclass(frozen=True)
