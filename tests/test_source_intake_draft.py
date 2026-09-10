@@ -669,6 +669,39 @@ def test_stale_registry_state_refuses(session, project, tmp_path):
     assert _receipt_count(session, project) == 0
 
 
+def test_registry_change_during_the_request_is_a_stale_receipt(
+    session, project, tmp_path
+):
+    """A document registered while the model call is in flight is a stale read.
+
+    Preparation passes with the registry as previewed; the adapter double then
+    registers another document before it answers, so the read fingerprint no
+    longer matches what the draft was read against. The receipt says so and
+    keeps no proposal. A loop that skipped the after-call re-check would store
+    this same answer as a completed draft.
+    """
+    _registered_document(session, project, registry_id="UCM-REV-2", sha="a" * 64)
+    _declare_config(session, project)
+    staged = _staged_workbook(tmp_path)
+
+    def answer_after_registering_another_document(call):
+        _registered_document(session, project, registry_id="UCM-REV-4", sha="b" * 64)
+        return _valid_result()
+
+    adapter = FakeAdapter(result=answer_after_registering_another_document)
+
+    receipt = _draft(session, project, staged, adapter)
+
+    assert receipt.status == "stale_input"
+    assert receipt.reason == (
+        "the staged bytes or registered documents changed during the request"
+    )
+    assert receipt.proposals_json is None
+    assert len(adapter.calls) == 1
+    assert receipt.execution_lineage_json is not None
+    assert _receipt_count(session, project) == 1
+
+
 def test_a_suggestion_would_not_overwrite_a_known_registered_fact(
     session, project, tmp_path
 ):
