@@ -15,7 +15,7 @@ from hashlib import sha256
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 
 from corridor.db import Session, engine
 from corridor.models import Project, PushIntakeCredential, SourceDelivery
@@ -335,3 +335,77 @@ def test_one_function_reads_a_retained_delivery_back_as_its_envelope(session, pr
         "envelope_for_delivery",
         "require_stored_envelope",
     }
+
+
+def test_a_human_upload_cannot_yet_be_recorded_in_this_family(session, project):
+    """The seam ADR-0078's own migration header still records as outstanding.
+
+    A manual upload *is* a delivery in every sense this family means: somebody
+    hands Corridor bytes it never asked for, which is exactly what
+    ``push_intake`` calls push, and ADR-0078 lists manual upload among the
+    connector kinds that enter under one contract. It cannot be recorded here
+    yet, and what stops it is the database rather than a preference:
+
+    * ``ck_source_delivery_transport`` admits only ``pull`` and ``push``, so
+      there is no third value a human-carried delivery could take;
+    * ``ck_source_delivery_push_credential`` makes ``push`` require a
+      ``push_intake_credentials`` row, and a signed-in person presents no
+      credential — the transport did not authenticate, the web session did;
+    * ``ck_push_intake_credential_channel`` admits only ``project_alias``,
+      ``shared_mailbox`` and ``webhook``, so a credential cannot be minted for
+      an uploader without either misstating the channel or issuing a live push
+      secret that would then be a real door into the project;
+    * and recording the upload as ``pull`` would state that a connector
+      configuration fetched it on a cursor, which is precisely the second
+      definition of one identity ADR-0089 exists to remove.
+
+    So this test is the seam, not a workaround: it holds the three constraints
+    a follow-on has to change, and it fails the moment they do. Until then an
+    upload correctly has no delivery row, and ``later_revision``,
+    ``key_date_table`` and ``document_delivery_backfill`` correctly leave it
+    unlinked rather than inventing one.
+    """
+
+    with pytest.raises(SourceDeliveryRefused):
+        # What a signed-in person's delivery would be: pushed, with no
+        # transport credential behind it.
+        DeliveryBinding(
+            customer="acme-utilities",
+            project_id=project.id,
+            project_slug=project.slug,
+            transport="push",
+            channel="upload",
+            configuration_identity="human-upload-v1",
+        )
+    with pytest.raises(SourceDeliveryRefused):
+        DeliveryBinding(
+            customer="acme-utilities",
+            project_id=project.id,
+            project_slug=project.slug,
+            transport="upload",
+            channel="upload",
+            configuration_identity="human-upload-v1",
+        )
+
+    definitions = {
+        name: definition
+        for name, definition in session.execute(
+            text(
+                """
+                select conname, pg_get_constraintdef(oid)
+                  from pg_constraint
+                 where conrelid in ('public.source_deliveries'::regclass,
+                                    'public.push_intake_credentials'::regclass)
+                """
+            )
+        ).all()
+    }
+    transport = definitions["ck_source_delivery_transport"]
+    assert "'pull'" in transport and "'push'" in transport
+    assert "'upload'" not in transport
+    assert (
+        "credential_id IS NOT NULL"
+        in definitions["ck_source_delivery_push_credential"]
+    )
+    channels = definitions["ck_push_intake_credential_channel"]
+    assert "'project_alias'" in channels and "'upload'" not in channels

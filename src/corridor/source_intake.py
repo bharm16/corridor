@@ -37,6 +37,25 @@ Two acts, each honest on its own:
    size) and writes the exact bytes to the content-addressed store *before any
    model work*. An oversized, unsupported, or foreign file is refused here with an
    actionable reason and leaves nothing registered.
+What upload is *not* yet is a member of the delivery family. ADR-0078 lists
+manual upload among the connector kinds that enter under one contract and its own
+migration header records that this path is outstanding; ADR-0089 then made every
+delivery one persisted row whatever transport carried it. An upload belongs there
+— somebody hands Corridor bytes it never asked for, which is what push means —
+and it cannot be written there without a schema change, for reasons that are
+database constraints rather than preferences: ``ck_source_delivery_transport``
+admits only ``pull`` and ``push``, ``ck_source_delivery_push_credential`` makes a
+pushed delivery name a ``push_intake_credentials`` row that an authenticated
+*person* does not have, and ``ck_push_intake_credential_channel`` admits no
+upload channel one could be minted on. Recording it as a pull instead would state
+that a connector configuration fetched it on a cursor, which is the second
+definition of one identity ADR-0089 exists to remove. So the seam is left
+explicit and held by a test (``tests/test_source_delivery.py``): the gate
+composition and the refusal vocabulary here are already the shared ones, the
+arrival observation names the project, ``confirm_intake`` already takes the
+``source_delivery_id`` it will one day be given, and until the schema admits a
+human-carried delivery an upload honestly has none.
+
 2. ``preview_intake`` reads the current registry state and reports, read-only, what
    confirming would create or change — including that a genuinely unresolved fact
    (registry id, date, any relationship) stays unresolved rather than silently
@@ -404,8 +423,11 @@ def confirm_intake(
 
     ``source_delivery_id`` is the ledger row of the delivery these exact bytes
     arrived on, where the caller holds one (#687). An ordinary upload holds
-    none — paper handed over at a meeting arrived through no transport — and
-    leaves the link unknown rather than guessing one. `later_revision` and
+    none, and today that is two facts wearing one answer: paper handed over at a
+    meeting genuinely arrived through no transport, *and* a file handed over
+    through this form did arrive by one that the delivery family cannot yet
+    represent (see this module's docstring). Either way the link is left unknown
+    rather than guessed. `later_revision` and
     `key_date_table` do hold one: both refuse a capture whose bytes no *stored*
     delivery of this project holds, so the row they pass is proven before this
     is called, not inferred afterwards.
