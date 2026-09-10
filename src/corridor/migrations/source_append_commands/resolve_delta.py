@@ -41,6 +41,39 @@ from corridor.migrations.source_append_commands.roles import (
 
 RESOLVE_DELTA_ROLE = "corridor_fact_decision_writer"
 
+# Every refusal the statements below raise, listed once.  The plpgsql is the
+# authority and its tokens are its own words; this list exists so the agreement
+# with the readable half is *declared* rather than discovered when the two
+# vocabularies drift.  `corridor.delta_refusals` declares each of these codes
+# with the outcome status a screen routes on and which half may raise it, and
+# `tests/test_delta_resolution.py` parses the `resolve_delta:<code>` tokens out
+# of this module with the runtime's own expression and fails if this list, the
+# declared vocabulary, or the statements disagree.  Nothing reads this constant
+# at run time: adding a name to it grants no refusal, and removing a raise from
+# a statement is what actually retires one.
+RESOLVE_DELTA_REFUSAL_CODES = (
+    "already_effective",
+    "already_resolved",
+    "ambiguous_effective_decision",
+    "append_only",
+    "cross_project_delta",
+    "cross_project_fact",
+    "cross_project_revision",
+    "field_mismatch",
+    "invalid_action",
+    "key_bound_to_other_content",
+    "missing_decided_at",
+    "missing_idempotency_key",
+    "missing_principal",
+    "missing_record_effect",
+    "missing_support",
+    "missing_wake_condition",
+    "stale_accepted_revision",
+    "subject_mismatch",
+    "superseded_delta",
+    "unauthorized_writer",
+)
+
 RESOLVE_DELTA_TABLES = (
     "delta_record_decisions",
     "delta_decision_supports",

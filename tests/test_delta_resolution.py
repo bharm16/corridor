@@ -14,6 +14,7 @@ question is answered from append-only identifiers.
 
 from __future__ import annotations
 
+import ast
 from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
@@ -26,6 +27,16 @@ from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events
 from corridor.db import engine
+from corridor.delta_refusals import (
+    BOTH,
+    DATABASE_ONLY,
+    PYTHON_PRECHECK,
+    REFUSAL_CODES,
+    REFUSAL_TOKEN,
+    REFUSAL_VOCABULARY,
+    UNCLASSIFIED_REFUSAL,
+    database_refusal_code,
+)
 from corridor.delta_resolution import (
     ACCEPT,
     CONSTRAINED_EDIT,
@@ -40,6 +51,7 @@ from corridor.delta_resolution import (
     UNSUPPORTED,
     CapturedSupport,
     ChildDecisionRequest,
+    DeltaResolutionRefused,
     FreeText,
     LosslessNormalization,
     NamedComposition,
@@ -55,6 +67,10 @@ from corridor.delta_resolution import (
     open_resolution_revision,
     resolve_delta,
     validate_child_decision,
+)
+from corridor.delta_resolution import _refusal
+from corridor.migrations.source_append_commands.resolve_delta import (
+    RESOLVE_DELTA_REFUSAL_CODES,
 )
 from corridor.models import (
     ActiveExtractionRun,
@@ -538,6 +554,173 @@ def test_a_deferred_delta_is_still_resolvable_when_it_returns(
 
     assert outcome.status == RESOLVED
     assert live_delta_status(session, delta.id) == "resolved"
+
+
+# --- One declared vocabulary, two enforcing halves ------------------------
+#
+# ADR-0083 keeps both halves: PostgreSQL is the authority and the Python
+# pre-check is the readable copy that tells a coordinator what is wrong before
+# anything is read for writing. What these tests hold still is the part that was
+# never written down — which codes exist, what each one's status is, and which
+# half is allowed to raise it. They need no database: every input is source text
+# or a pure function.
+
+# Every declared code, its outcome status, and its sole raiser, in the module's
+# own order. Asserted whole, so a new code cannot arrive without a reader
+# deciding which half owns it and what a screen does with it.
+DECLARED_VOCABULARY: tuple[tuple[str, str, str], ...] = (
+    ("already_effective", REFUSED, DATABASE_ONLY),
+    ("already_resolved", REFUSED, BOTH),
+    ("ambiguous_effective_decision", REFUSED, DATABASE_ONLY),
+    ("append_only", REFUSED, DATABASE_ONLY),
+    ("constrained_edit", CONSTRAINED_EDIT, PYTHON_PRECHECK),
+    ("cross_project_delta", REFUSED, BOTH),
+    ("cross_project_fact", REFUSED, BOTH),
+    ("cross_project_revision", REFUSED, DATABASE_ONLY),
+    ("external_fact_needs_coordination", COORDINATION_NEEDED, PYTHON_PRECHECK),
+    ("field_mismatch", REFUSED, BOTH),
+    ("invalid_action", REFUSED, BOTH),
+    ("key_bound_to_other_content", REFUSED, DATABASE_ONLY),
+    ("missing_decided_at", REFUSED, DATABASE_ONLY),
+    ("missing_idempotency_key", REFUSED, DATABASE_ONLY),
+    ("missing_principal", REFUSED, DATABASE_ONLY),
+    ("missing_record_effect", REFUSED, BOTH),
+    ("missing_support", UNSUPPORTED, BOTH),
+    ("missing_wake_condition", REFUSED, DATABASE_ONLY),
+    ("organization_change_kind_required", REFUSED, PYTHON_PRECHECK),
+    ("stale_accepted_revision", STALE, BOTH),
+    ("subject_mismatch", REFUSED, BOTH),
+    ("superseded_delta", REFUSED, BOTH),
+    ("unauthorized_writer", REFUSED, DATABASE_ONLY),
+    ("unsupported_free_text", CONSTRAINED_EDIT, PYTHON_PRECHECK),
+)
+
+# The concurrency refusals: each is decided by state the pre-check cannot hold
+# still, so a Python guess at one is either a lie or a race.
+DATABASE_OWNED_CONCURRENCY = (
+    "already_effective",
+    "ambiguous_effective_decision",
+    "key_bound_to_other_content",
+    "missing_decided_at",
+    "missing_idempotency_key",
+    "missing_principal",
+)
+
+
+def _precheck_codes() -> set[str]:
+    """Every code the readable half actually raises, read from its own source.
+
+    One constructor builds every pre-check ``Refusal``, so the codes it raises
+    are exactly the first argument of every ``_refusal`` call in the module. A
+    reason spelled as a bare literal at a raise site would not be found here,
+    which is the point: it would also not be declared.
+    """
+
+    module = ast.parse(
+        Path("src/corridor/delta_resolution.py").read_text(encoding="utf-8")
+    )
+    return {
+        code
+        for node in ast.walk(module)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_refusal"
+        and node.args
+        for code in _named_codes(node.args[0])
+    }
+
+
+def _named_codes(argument: ast.expr) -> tuple[str, ...]:
+    """The codes one ``_refusal`` first argument can name.
+
+    One site chooses between two of them — a delta that has left the actionable
+    set is either resolved or superseded — so a conditional names both.
+    """
+
+    if isinstance(argument, ast.Constant):
+        return (argument.value,)
+    if isinstance(argument, ast.IfExp):
+        return _named_codes(argument.body) + _named_codes(argument.orelse)
+    raise AssertionError(
+        f"line {argument.lineno} names its refusal code in a form no reader can "
+        "check; a code is a literal, or a choice between literals"
+    )
+
+
+def test_the_declared_vocabulary_gives_every_code_a_status_and_one_raiser() -> None:
+    declared = tuple(
+        (entry.code, entry.status, entry.raiser) for entry in REFUSAL_VOCABULARY
+    )
+
+    assert declared == DECLARED_VOCABULARY
+    assert set(REFUSAL_CODES) == {code for code, _, _ in DECLARED_VOCABULARY}
+    # The unclassifiable fallback is not a code either half raises, so a raise
+    # site cannot reach it by name.
+    assert UNCLASSIFIED_REFUSAL.code not in REFUSAL_CODES
+
+
+def test_every_refusal_the_command_raises_is_declared() -> None:
+    """The plpgsql is the authority, parsed with the runtime's own expression."""
+
+    source = Path(
+        "src/corridor/migrations/source_append_commands/resolve_delta.py"
+    ).read_text(encoding="utf-8")
+    raised = set(REFUSAL_TOKEN.findall(source))
+
+    assert raised == set(RESOLVE_DELTA_REFUSAL_CODES)
+    assert raised == {
+        entry.code
+        for entry in REFUSAL_VOCABULARY
+        if entry.raiser in (DATABASE_ONLY, BOTH)
+    }
+
+
+def test_the_precheck_raises_exactly_the_codes_it_is_declared_to_own() -> None:
+    raised = _precheck_codes()
+
+    assert raised == {
+        entry.code
+        for entry in REFUSAL_VOCABULARY
+        if entry.raiser in (PYTHON_PRECHECK, BOTH)
+    }
+    assert {code for code in raised if REFUSAL_CODES[code].raiser == DATABASE_ONLY} == set()
+
+
+def test_the_precheck_cannot_anticipate_a_database_only_refusal() -> None:
+    """A concurrency refusal is the command's to raise, never a Python guess."""
+
+    for code in DATABASE_OWNED_CONCURRENCY:
+        assert REFUSAL_CODES[code].raiser == DATABASE_ONLY
+        with pytest.raises(DeltaResolutionRefused):
+            _refusal(code, delta_id=1)
+
+
+def test_a_declared_sentence_is_the_words_the_refusal_carries() -> None:
+    """The customer sentence is declared once, not written again at each site."""
+
+    for entry in REFUSAL_VOCABULARY:
+        if entry.sentence is None or entry.raiser == DATABASE_ONLY:
+            continue
+        built = _refusal(entry.code, delta_id=1)
+        assert built.detail == entry.sentence
+        assert built.status == entry.status
+        assert built.reason == entry.code
+
+    # A code raised for several reasons declares no sentence, and must say which
+    # of them this refusal is rather than repeating its own name back.
+    assert REFUSAL_CODES["invalid_action"].sentence is None
+    with pytest.raises(DeltaResolutionRefused):
+        _refusal("invalid_action", delta_id=1)
+
+
+def test_a_database_message_is_mapped_through_the_declared_vocabulary() -> None:
+    assert database_refusal_code(
+        "resolve_delta:already_effective Source Fact 7 is already the effective "
+        "accepted value"
+    ) == REFUSAL_CODES["already_effective"]
+    assert database_refusal_code("resolve_delta:missing_support ...").status == UNSUPPORTED
+    # A message with no readable token still comes back structured.
+    assert database_refusal_code("deadlock detected") == UNCLASSIFIED_REFUSAL
 
 
 # --- Refusals, before any authoritative write -----------------------------
