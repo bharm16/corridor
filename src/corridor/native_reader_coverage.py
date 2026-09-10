@@ -593,6 +593,18 @@ def _check_citations(surface, report, inventory):
                     if len(matching) == 1:
                         for cell in row:
                             plan_inputs[id(cell)] = (matching[0].plan_id,)
+            elif section.title in (label("critical_items"), "Aging"):
+                # Both sections now run for an adopted project through the same
+                # builders the legacy report uses (#card 2). No legacy support
+                # registry designates a field-exact quote for an accepted value, so
+                # every cell is a Derivation over that record's own identity rather
+                # than a borrowed citation.
+                for row in section.rows:
+                    record = records.get(row[0].value) if row else None
+                    if record is None:
+                        continue
+                    for cell in row:
+                        derived(cell, (record.id,))
             elif section.title == label("constraint_alerts"):
                 facets = evaluation.facets()
                 if len(section.rows) == len(facets):
