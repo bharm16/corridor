@@ -38,6 +38,7 @@ from corridor.proposed_deltas import (
     ProposedDeltaValues,
     create_proposed_delta_group,
 )
+from harness_support import as_record_decision_role
 
 
 TEST_PRINCIPAL = HumanPrincipal("local:changes-reviewer")
@@ -739,16 +740,15 @@ def _accepted_revision(session, project, key: str) -> ProjectRecordRevision:
     # Flush anything still pending as the ordinary role: the decision role is
     # taken for this one insert and nothing else.
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision = ProjectRecordRevision(
-        project_id=project.id,
-        command_type="record_verbal_statement",
-        human_principal="local:changes-reviewer",
-        idempotency_key=key,
-    )
-    session.add(revision)
-    session.flush()
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        revision = ProjectRecordRevision(
+            project_id=project.id,
+            command_type="record_verbal_statement",
+            human_principal="local:changes-reviewer",
+            idempotency_key=key,
+        )
+        session.add(revision)
+        session.flush()
     return revision
 
 

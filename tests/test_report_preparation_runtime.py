@@ -56,6 +56,7 @@ from corridor.proposed_deltas import (
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
 from corridor.report_preparation import execute_report_preparation
+from harness_support import as_record_decision_role
 
 
 class ControlledClock:
@@ -192,17 +193,16 @@ def _accepted_revision(session, project_id: int, key: str) -> int:
     reading only needs the revision its counts are stated against to exist.
     """
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, idempotency_key"
-            ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-            " returning id"
-        ),
-        {"project_id": project_id, "key": key},
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        revision_id = session.scalar(
+            text(
+                "insert into project_record_revisions ("
+                "project_id, command_type, human_principal, idempotency_key"
+                ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
+                " returning id"
+            ),
+            {"project_id": project_id, "key": key},
+        )
     return int(revision_id)
 
 

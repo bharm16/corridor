@@ -35,10 +35,11 @@ from corridor.proposed_deltas import (
     record_delta_deferral,
 )
 from corridor import push_intake
+from corridor.db_roles import RECORD_DECISION_ROLE
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
 
 
-DECISION_ROLE = "corridor_fact_decision_writer"
+DECISION_ROLE = RECORD_DECISION_ROLE
 DEFERRED_AT = datetime(2026, 6, 1, 15, 30, tzinfo=timezone.utc)
 DEFERRED_UNTIL = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)
 WORDS = "Equistar will submit the exhibit."

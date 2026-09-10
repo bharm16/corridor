@@ -34,6 +34,7 @@ from corridor.issue_profile import (
 from corridor.models import IssueProfile, Project
 from corridor.principals import HumanPrincipal
 
+from harness_support import as_record_decision_role
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 
 
@@ -601,11 +602,10 @@ def _writer_refused(session, pattern: str, statement: str, **params):
     leaves a usable transaction to reset it in.
     """
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    with pytest.raises(DBAPIError, match=pattern):
-        with session.begin_nested():
-            session.execute(text(statement), params)
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        with pytest.raises(DBAPIError, match=pattern):
+            with session.begin_nested():
+                session.execute(text(statement), params)
 
 
 def test_the_database_refuses_a_second_entry_of_one_artifact_type(session, project):

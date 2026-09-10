@@ -97,6 +97,7 @@ from corridor.release_candidate import (
     render_candidate_artifacts,
 )
 
+from harness_support import as_record_decision_role
 from coverage_support import declare_coverage
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import (
@@ -1593,20 +1594,19 @@ def _later_revision(session, adopted, key: str) -> int:
 
     project_id = adopted.project.id
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, idempotency_key"
-            ") values (:project, 'resolve_delta', :who, :key) returning id"
-        ),
-        {
-            "project": project_id,
-            "who": COORDINATOR.subject,
-            "key": f"{key}:{uuid4().hex[:8]}",
-        },
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        revision_id = session.scalar(
+            text(
+                "insert into project_record_revisions ("
+                "project_id, command_type, human_principal, idempotency_key"
+                ") values (:project, 'resolve_delta', :who, :key) returning id"
+            ),
+            {
+                "project": project_id,
+                "who": COORDINATOR.subject,
+                "key": f"{key}:{uuid4().hex[:8]}",
+            },
+        )
     session.expire_all()
     return int(revision_id)
 
@@ -1616,38 +1616,37 @@ def _replace_output_template(session, adopted) -> int:
 
     project_id = adopted.project.id
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    # The same order the adoption command uses: claim the successor's id,
-    # retire the predecessor against it, then insert. The unique index on the
-    # effective registration is not deferrable, so the other order fails.
-    replacement = int(
-        session.scalar(text("select nextval('project_baseline_formats_id_seq')"))
-    )
-    session.execute(
-        text(
-            "update project_baseline_formats set superseded_by = :new "
-            " where project_id = :project and format_kind = 'output_template'"
-            "   and superseded_by is null"
-        ),
-        {"new": replacement, "project": project_id},
-    )
-    session.execute(
-        text(
-            "insert into project_baseline_formats ("
-            "id, project_id, format_kind, format_identity, format_version,"
-            " content_sha256, registered_by_principal, idempotency_key"
-            ") values (:id, :project, 'output_template', 'partner-weekly', 'v9',"
-            " :digest, :who, :key)"
-        ),
-        {
-            "id": replacement,
-            "project": project_id,
-            "digest": sha256(b"partner-weekly:v9").hexdigest(),
-            "who": COORDINATOR.subject,
-            "key": f"template:{uuid4().hex[:10]}",
-        },
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        # The same order the adoption command uses: claim the successor's id,
+        # retire the predecessor against it, then insert. The unique index on the
+        # effective registration is not deferrable, so the other order fails.
+        replacement = int(
+            session.scalar(text("select nextval('project_baseline_formats_id_seq')"))
+        )
+        session.execute(
+            text(
+                "update project_baseline_formats set superseded_by = :new "
+                " where project_id = :project and format_kind = 'output_template'"
+                "   and superseded_by is null"
+            ),
+            {"new": replacement, "project": project_id},
+        )
+        session.execute(
+            text(
+                "insert into project_baseline_formats ("
+                "id, project_id, format_kind, format_identity, format_version,"
+                " content_sha256, registered_by_principal, idempotency_key"
+                ") values (:id, :project, 'output_template', 'partner-weekly', 'v9',"
+                " :digest, :who, :key)"
+            ),
+            {
+                "id": replacement,
+                "project": project_id,
+                "digest": sha256(b"partner-weekly:v9").hexdigest(),
+                "who": COORDINATOR.subject,
+                "key": f"template:{uuid4().hex[:10]}",
+            },
+        )
     session.expire_all()
     return replacement
 

@@ -63,6 +63,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
 )
 from corridor.support_assessments import FactProposition, record_support_assessment
+from harness_support import adopt_baseline_fact, as_record_decision_role
 
 
 ADOPTER = HumanPrincipal("local:adopter")
@@ -174,34 +175,7 @@ class Rendition:
 def accept_baseline_fact(session: Session, project: Project, fact: Fact) -> int:
     """One accepted decision for a subject and field, at its own revision."""
 
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, idempotency_key"
-            ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-            " returning id"
-        ),
-        {"project_id": project.id, "key": f"baseline:{uuid4().hex[:12]}"},
-    )
-    session.execute(
-        text(
-            "insert into fact_decisions ("
-            "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-            ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-            " :revision_id, 'include')"
-        ),
-        {
-            "project_id": project.id,
-            "fact_id": fact.id,
-            "subject_key": fact.subject_key,
-            "fact_type": fact.fact_type,
-            "revision_id": revision_id,
-        },
-    )
-    session.execute(text("reset role"))
-    session.expire_all()
-    return int(revision_id)
+    return adopt_baseline_fact(session, project, fact)
 
 
 def register_source_row(
@@ -228,21 +202,20 @@ def register_source_row(
         "source_url": source_url,
     }
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    row_id = session.scalar(
-        text(
-            "insert into project_baseline_source_rows ("
-            "project_id, baseline_source_id, source_row_key, sheet_name,"
-            " row_number, business_identity, record_subject_key,"
-            " external_system_id, source_url"
-            ") values (:project_id, :baseline_source_id, :source_row_key,"
-            " :sheet_name, :row_number, :business_identity,"
-            " :record_subject_key, :external_system_id, :source_url)"
-            " returning id"
-        ),
-        values,
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        row_id = session.scalar(
+            text(
+                "insert into project_baseline_source_rows ("
+                "project_id, baseline_source_id, source_row_key, sheet_name,"
+                " row_number, business_identity, record_subject_key,"
+                " external_system_id, source_url"
+                ") values (:project_id, :baseline_source_id, :source_row_key,"
+                " :sheet_name, :row_number, :business_identity,"
+                " :record_subject_key, :external_system_id, :source_url)"
+                " returning id"
+            ),
+            values,
+        )
     return session.get(BaselineSourceRow, int(row_id))
 
 
@@ -271,25 +244,24 @@ def register_baseline(
         "idempotency_key": f"adopt:{uuid4().hex[:10]}",
     }
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    baseline_id = session.scalar(
-        text(
-            "insert into project_baseline_sources ("
-            "project_id, revision_id, document_id, content_sha256, byte_size,"
-            " filename, source_identity, customer, source_kind, worksheet_scope,"
-            " unknown_columns, coordinator_questions, operations_summary,"
-            " importer_identity, importer_version, preview_fingerprint,"
-            " adopted_by_principal, idempotency_key"
-            ") values (:project_id, :revision_id, :document_id, :content_sha256,"
-            " :byte_size, :filename, :source_identity, :customer, :source_kind,"
-            " '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb,"
-            " :importer_identity, :importer_version, :preview_fingerprint,"
-            " :adopted_by_principal, :idempotency_key)"
-            " returning id"
-        ),
-        values,
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        baseline_id = session.scalar(
+            text(
+                "insert into project_baseline_sources ("
+                "project_id, revision_id, document_id, content_sha256, byte_size,"
+                " filename, source_identity, customer, source_kind, worksheet_scope,"
+                " unknown_columns, coordinator_questions, operations_summary,"
+                " importer_identity, importer_version, preview_fingerprint,"
+                " adopted_by_principal, idempotency_key"
+                ") values (:project_id, :revision_id, :document_id, :content_sha256,"
+                " :byte_size, :filename, :source_identity, :customer, :source_kind,"
+                " '{}'::jsonb, '{}'::jsonb, '[]'::jsonb, '{}'::jsonb,"
+                " :importer_identity, :importer_version, :preview_fingerprint,"
+                " :adopted_by_principal, :idempotency_key)"
+                " returning id"
+            ),
+            values,
+        )
     return session.get(BaselineSource, int(baseline_id))
 
 
@@ -308,19 +280,18 @@ def register_output_template(
         "idempotency_key": f"format:{uuid4().hex[:10]}",
     }
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    format_id = session.scalar(
-        text(
-            "insert into project_baseline_formats ("
-            "project_id, format_kind, format_identity, format_version,"
-            " content_sha256, registered_by_principal, idempotency_key"
-            ") values (:project_id, :format_kind, :format_identity,"
-            " :format_version, :content_sha256, :registered_by_principal,"
-            " :idempotency_key) returning id"
-        ),
-        values,
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        format_id = session.scalar(
+            text(
+                "insert into project_baseline_formats ("
+                "project_id, format_kind, format_identity, format_version,"
+                " content_sha256, registered_by_principal, idempotency_key"
+                ") values (:project_id, :format_kind, :format_identity,"
+                " :format_version, :content_sha256, :registered_by_principal,"
+                " :idempotency_key) returning id"
+            ),
+            values,
+        )
     return session.get(BaselineFormat, int(format_id))
 
 
@@ -372,42 +343,40 @@ def register_field_mapping(
         "idempotency_key": f"mapping:{uuid4().hex[:10]}",
     }
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    format_id = session.scalar(
-        text(
-            "insert into project_baseline_formats ("
-            "project_id, format_kind, format_identity, format_version,"
-            " content_sha256, registered_by_principal, idempotency_key"
-            ") values (:project_id, :format_kind, :format_identity,"
-            " :format_version, :content_sha256, :registered_by_principal,"
-            " :idempotency_key) returning id"
-        ),
-        values,
-    )
-    if not store_declaration:
-        # A registration written before #610 stored declarations: it proves
-        # which revision was approved and not what that revision declared.
-        session.execute(text("reset role"))
-        return session.get(BaselineFormat, int(format_id))
-    session.execute(
-        text(
-            "insert into project_baseline_format_manifests ("
-            "format_id, project_id, format_identity, format_version,"
-            " content_sha256, manifest_schema_version, declaration"
-            ") values (:format_id, :project_id, :format_identity,"
-            " :format_version, :content_sha256, :schema, :declaration)"
-        ),
-        {
-            "format_id": int(format_id),
-            "project_id": project.id,
-            "format_identity": manifest.identity,
-            "format_version": manifest.version,
-            "content_sha256": manifest.content_sha256,
-            "schema": manifest.schema_version,
-            "declaration": manifest.declaration_json,
-        },
-    )
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        format_id = session.scalar(
+            text(
+                "insert into project_baseline_formats ("
+                "project_id, format_kind, format_identity, format_version,"
+                " content_sha256, registered_by_principal, idempotency_key"
+                ") values (:project_id, :format_kind, :format_identity,"
+                " :format_version, :content_sha256, :registered_by_principal,"
+                " :idempotency_key) returning id"
+            ),
+            values,
+        )
+        if not store_declaration:
+            # A registration written before #610 stored declarations: it proves
+            # which revision was approved and not what that revision declared.
+            return session.get(BaselineFormat, int(format_id))
+        session.execute(
+            text(
+                "insert into project_baseline_format_manifests ("
+                "format_id, project_id, format_identity, format_version,"
+                " content_sha256, manifest_schema_version, declaration"
+                ") values (:format_id, :project_id, :format_identity,"
+                " :format_version, :content_sha256, :schema, :declaration)"
+            ),
+            {
+                "format_id": int(format_id),
+                "project_id": project.id,
+                "format_identity": manifest.identity,
+                "format_version": manifest.version,
+                "content_sha256": manifest.content_sha256,
+                "schema": manifest.schema_version,
+                "declaration": manifest.declaration_json,
+            },
+        )
     return session.get(BaselineFormat, int(format_id))
 
 
@@ -570,44 +539,43 @@ def move_accepted_value(
         "fact_type": fact.fact_type,
     }
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    session.execute(text("set constraints all deferred"))
-    revision_id = session.scalar(
-        text(
-            "insert into project_record_revisions ("
-            "project_id, command_type, human_principal, idempotency_key"
-            ") values (:project_id, 'resolve_delta', 'local:corrector', :key)"
-            " returning id"
-        ),
-        {"project_id": project.id, "key": f"move:{uuid4().hex[:12]}"},
-    )
-    predecessor = session.scalar(
-        text(
-            "select max(id) from fact_decisions where project_id = :project_id"
-            " and subject_key = :subject_key and fact_type = :fact_type"
-            " and superseded_by is null"
-        ),
-        values,
-    )
-    # The same order the authorized command uses: claim the successor's id,
-    # retire the predecessor against it, then insert. The partial unique index
-    # on the effective decision is not deferrable, so the other order fails.
-    successor = int(session.scalar(text("select nextval('fact_decisions_id_seq')")))
-    if predecessor is not None:
-        session.execute(
-            text("update fact_decisions set superseded_by = :successor where id = :id"),
-            {"successor": successor, "id": int(predecessor)},
+    with as_record_decision_role(session):
+        session.execute(text("set constraints all deferred"))
+        revision_id = session.scalar(
+            text(
+                "insert into project_record_revisions ("
+                "project_id, command_type, human_principal, idempotency_key"
+                ") values (:project_id, 'resolve_delta', 'local:corrector', :key)"
+                " returning id"
+            ),
+            {"project_id": project.id, "key": f"move:{uuid4().hex[:12]}"},
         )
-    session.execute(
-        text(
-            "insert into fact_decisions ("
-            "id, project_id, fact_id, subject_key, fact_type, revision_id,"
-            " disposition) values (:id, :project_id, :fact_id, :subject_key,"
-            " :fact_type, :revision_id, 'include')"
-        ),
-        {**values, "id": successor, "revision_id": revision_id},
-    )
-    session.execute(text("reset role"))
+        predecessor = session.scalar(
+            text(
+                "select max(id) from fact_decisions where project_id = :project_id"
+                " and subject_key = :subject_key and fact_type = :fact_type"
+                " and superseded_by is null"
+            ),
+            values,
+        )
+        # The same order the authorized command uses: claim the successor's id,
+        # retire the predecessor against it, then insert. The partial unique index
+        # on the effective decision is not deferrable, so the other order fails.
+        successor = int(session.scalar(text("select nextval('fact_decisions_id_seq')")))
+        if predecessor is not None:
+            session.execute(
+                text("update fact_decisions set superseded_by = :successor where id = :id"),
+                {"successor": successor, "id": int(predecessor)},
+            )
+        session.execute(
+            text(
+                "insert into fact_decisions ("
+                "id, project_id, fact_id, subject_key, fact_type, revision_id,"
+                " disposition) values (:id, :project_id, :fact_id, :subject_key,"
+                " :fact_type, :revision_id, 'include')"
+            ),
+            {**values, "id": successor, "revision_id": revision_id},
+        )
     session.expire_all()
     return int(revision_id)
 

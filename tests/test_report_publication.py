@@ -22,6 +22,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
+from harness_support import as_record_decision_role
 from access_support import seed_membership
 from corridor.config import settings
 from corridor.db import Session, engine
@@ -754,16 +755,15 @@ def _seed_accepted_revision(session, project_id: int, key: str) -> int:
     """
 
     session.flush()
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision = ProjectRecordRevision(
-        project_id=project_id,
-        command_type="record_verbal_statement",
-        human_principal="local:publication-reviewer",
-        idempotency_key=key,
-    )
-    session.add(revision)
-    session.flush()
-    session.execute(text("reset role"))
+    with as_record_decision_role(session):
+        revision = ProjectRecordRevision(
+            project_id=project_id,
+            command_type="record_verbal_statement",
+            human_principal="local:publication-reviewer",
+            idempotency_key=key,
+        )
+        session.add(revision)
+        session.flush()
     return revision.id
 
 

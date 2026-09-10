@@ -76,6 +76,7 @@ from corridor.proposed_deltas import (
     create_proposed_delta_group,
     record_delta_deferral,
 )
+from harness_support import as_record_decision_role
 from delta_supersession_support import record_delta_supersession
 from corridor.review_packets import (
     NEEDS_COORDINATION,
@@ -274,29 +275,28 @@ def _adopt(session: Session, project: Project, facts, key: str) -> int:
         }
         for fact in facts
     ]
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision_id = int(
-        session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
-                " returning id"
-            ),
-            {"project_id": project_id, "key": key},
+    with as_record_decision_role(session):
+        revision_id = int(
+            session.scalar(
+                text(
+                    "insert into project_record_revisions ("
+                    "project_id, command_type, human_principal, idempotency_key"
+                    ") values (:project_id, 'adopt_baseline', 'local:adopter', :key)"
+                    " returning id"
+                ),
+                {"project_id": project_id, "key": key},
+            )
         )
-    )
-    for decision in decisions:
-        session.execute(
-            text(
-                "insert into fact_decisions ("
-                "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-                ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-                " :revision_id, 'include')"
-            ),
-            {**decision, "revision_id": revision_id},
-        )
-    session.execute(text("reset role"))
+        for decision in decisions:
+            session.execute(
+                text(
+                    "insert into fact_decisions ("
+                    "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
+                    ") values (:project_id, :fact_id, :subject_key, :fact_type,"
+                    " :revision_id, 'include')"
+                ),
+                {**decision, "revision_id": revision_id},
+            )
     session.expire_all()
     adopt_project_baseline(
         session,
@@ -593,28 +593,27 @@ def test_binding_refuses_a_legacy_project(session, project):
         "subject_key": fact.subject_key,
         "fact_type": fact.fact_type,
     }
-    session.execute(text("set local role corridor_fact_decision_writer"))
-    revision = int(
-        session.scalar(
-            text(
-                "insert into project_record_revisions ("
-                "project_id, command_type, human_principal, idempotency_key"
-                ") values (:project_id, 'adopt_baseline', 'local:adopter', 'legacy')"
-                " returning id"
-            ),
-            {"project_id": project_id},
+    with as_record_decision_role(session):
+        revision = int(
+            session.scalar(
+                text(
+                    "insert into project_record_revisions ("
+                    "project_id, command_type, human_principal, idempotency_key"
+                    ") values (:project_id, 'adopt_baseline', 'local:adopter', 'legacy')"
+                    " returning id"
+                ),
+                {"project_id": project_id},
+            )
         )
-    )
-    session.execute(
-        text(
-            "insert into fact_decisions ("
-            "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
-            ") values (:project_id, :fact_id, :subject_key, :fact_type,"
-            " :revision_id, 'include')"
-        ),
-        {**decision, "revision_id": revision},
-    )
-    session.execute(text("reset role"))
+        session.execute(
+            text(
+                "insert into fact_decisions ("
+                "project_id, fact_id, subject_key, fact_type, revision_id, disposition"
+                ") values (:project_id, :fact_id, :subject_key, :fact_type,"
+                " :revision_id, 'include')"
+            ),
+            {**decision, "revision_id": revision},
+        )
 
     with pytest.raises(MixedIssueInputs) as refused:
         _bind(session, project, revision)
