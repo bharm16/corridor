@@ -68,8 +68,9 @@ class ControlledClock:
 class RecordingConnector:
     """One in-memory PullConnector that counts what the runtime asked of it."""
 
-    def __init__(self, items: dict[str, bytes]):
+    def __init__(self, items: dict[str, bytes], *, suffix: str = ".pdf"):
         self.items = dict(items)
+        self.suffix = suffix
         self.fetches: list[str] = []
         self.checkpoints: list[str] = []
 
@@ -86,7 +87,7 @@ class RecordingConnector:
                 ChangeItem(
                     item_id=item_id,
                     version_id="v1",
-                    name=f"{item_id}.pdf",
+                    name=f"{item_id}{self.suffix}",
                     original_timestamps={"modified": "2026-09-03T00:00:00Z"},
                     metadata={},
                 )
@@ -128,7 +129,7 @@ def installed_connector(monkeypatch):
     return connector
 
 
-def _seed_project(factory, now):
+def _seed_project(factory, now, *, channel="shared-files"):
     with factory() as setup:
         project = Project(
             slug=f"connector-polling-{uuid4().hex[:8]}",
@@ -143,7 +144,7 @@ def _seed_project(factory, now):
                 project_id=project.id,
                 configuration_version="connector-polling-v1",
                 customer="acme-utilities",
-                channel="shared-files",
+                channel=channel,
                 connector_identity=TEST_CONNECTOR,
                 source_url=SOURCE_URL,
                 starts_at=now.replace(minute=0, second=0, microsecond=0),
@@ -673,3 +674,178 @@ def test_a_quarantined_delivery_advances_only_where_its_bytes_are_held(
 
     with factory() as reading:
         assert current_checkpoint_token(reading, schedule_id) == "item-held"
+
+
+# --- The delivery a poll registered, by channel kind (ADR-0089) -------------
+
+
+def _workbook_bytes() -> bytes:
+    from io import BytesIO
+
+    from openpyxl import Workbook
+
+    book = Workbook()
+    book.active.append(["Utility Conflict ID", "Utility Owner"])
+    book.active.append(["UC-1", "Source Utility"])
+    stream = BytesIO()
+    book.save(stream)
+    return stream.getvalue()
+
+
+def _message_bytes() -> bytes:
+    from email.message import EmailMessage
+    from email.policy import SMTP
+
+    message = EmailMessage(policy=SMTP)
+    message["From"] = "utility@example.test"
+    message["To"] = "project@example.test"
+    message["Message-ID"] = "<polled@example.test>"
+    message["Subject"] = "Polled from the shared mailbox"
+    message.set_content("We will finish in October.")
+    return message.as_bytes()
+
+
+@pytest.fixture
+def registering_connector(monkeypatch, tmp_path):
+    """One connector whose delivered bytes a registration can actually read."""
+
+    from corridor.config import settings
+
+    monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
+
+    def install(items, *, suffix):
+        connector = RecordingConnector(items, suffix=suffix)
+        monkeypatch.setattr(
+            connector_polling,
+            "CONNECTOR_FACTORIES",
+            {
+                **connector_polling.CONNECTOR_FACTORIES,
+                TEST_CONNECTOR: lambda scope: connector,
+            },
+        )
+        return connector
+
+    return install
+
+
+def test_a_stored_delivery_ends_as_a_registered_document(
+    runtime_database, registering_connector
+):
+    """The step the pull path never took (#688).
+
+    ``execute_connector_polling`` fetched, ran the byte gate, stored the bytes,
+    recorded the delivery and advanced the checkpoint — and registered no
+    Document, because it never passed ``on_envelope_stored``. The one caller
+    that did register was the offline replay command, so a production Box or
+    TxDOT poll took delivery of sources the product could not show anybody, and
+    the only thing a test could assert about a live poll was its cursor.
+    """
+
+    from corridor.models import Document
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 18, 0, tzinfo=timezone.utc)
+    registering_connector({"item-book": _workbook_bytes()}, suffix=".xlsx")
+    project_id, _schedule_id = _seed_project(factory, now)
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    result = run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    assert result.execution_outcome == "completed"
+    assert result.handler_result["dispositions"] == {"stored": 1}
+    with factory() as reading:
+        delivery = reading.scalars(select(SourceDelivery)).one()
+        document = reading.scalars(
+            select(Document).where(Document.project_id == project_id)
+        ).one()
+        # The Document names the delivery that carried it, in the project the
+        # connector configuration bound — never a project the bytes named.
+        assert document.source_delivery_id == delivery.id
+        assert document.sha256 == delivery.content_sha256
+        assert document.filename == "item-book.xlsx"
+        # Nobody declared what kind of source this is, and the machine does not
+        # invent one (ADR-0007): it registers the source and leaves the kind
+        # unresolved rather than guessing it from the bytes.
+        assert document.doc_type == "other"
+
+
+def test_a_delivered_message_is_registered_as_a_message_not_a_document(
+    runtime_database, registering_connector
+):
+    """The channel kind decides which registration a delivery gets.
+
+    A shared-mailbox delivery is a message with a thread, and registering its
+    raw MIME as an ordinary Document would lose both. The consumer reads the
+    channel the delivery arrived on, which is server-owned configuration, and
+    never anything inside the bytes.
+    """
+
+    from corridor.models import InboundMessage
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 19, 0, tzinfo=timezone.utc)
+    registering_connector({"item-mail": _message_bytes()}, suffix=".eml")
+    project_id, _schedule_id = _seed_project(
+        factory, now, channel="m365-shared-mailbox-v1"
+    )
+    with factory() as ticking:
+        enqueue_due_work(ticking, now=now)
+        ticking.commit()
+
+    result = run_due_work_once(
+        factory, clock=ControlledClock(now), owner="runtime:polling-worker"
+    )
+
+    assert result.execution_outcome == "completed"
+    with factory() as reading:
+        delivery = reading.scalars(select(SourceDelivery)).one()
+        inbound = reading.scalars(select(InboundMessage)).one()
+        assert inbound.project_id == project_id
+        assert inbound.push_delivery_id == delivery.id
+        assert inbound.raw_sha256 == delivery.content_sha256
+        assert inbound.route_evidence_json["boundary"] == "pull_configuration"
+        assert inbound.headers_json["message_id"] == "<polled@example.test>"
+
+
+def test_a_registration_that_fails_keeps_the_delivery_and_the_cursor(
+    runtime_database, registering_connector, monkeypatch
+):
+    """Registration is its own short transaction after the delivery commits.
+
+    The order is the property: the delivery is committed first, so a failing
+    registration can never un-record what arrived, and the cursor is recorded
+    last, so the next pass re-lists the same change and registers it again
+    against the delivery already in the ledger. A pass that swallowed the
+    failure and advanced instead would leave bytes nobody can see and no
+    record that anything was missing.
+    """
+
+    from corridor import delivery_registration
+
+    factory = runtime_database.session_factory
+    now = datetime(2026, 9, 3, 20, 0, tzinfo=timezone.utc)
+    connector = registering_connector({"item-book": _workbook_bytes()}, suffix=".xlsx")
+    _project_id, schedule_id = _seed_project(factory, now)
+    monkeypatch.setattr(
+        delivery_registration,
+        "register_delivered_source",
+        lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("registrar down")),
+    )
+
+    with pytest.raises(RuntimeError, match="registrar down"):
+        connector_polling.execute_connector_polling(
+            factory,
+            schedule_id=schedule_id,
+            clock=ControlledClock(now),
+            run_identity="due-attempt:registration",
+            connector=connector,
+        )
+
+    with factory() as reading:
+        assert current_checkpoint_token(reading, schedule_id) is None
+        assert reading.scalars(select(SourceDelivery.disposition)).all() == ["stored"]
+        assert connector.checkpoints == []
