@@ -88,14 +88,6 @@ def store(tmp_path, monkeypatch):
     return tmp_path / "files"
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug=f"intake-{uuid4().hex[:8]}", name="Intake Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def _stored_files(store_dir) -> list:
     return list(store_dir.rglob("*")) if store_dir.exists() else []
 

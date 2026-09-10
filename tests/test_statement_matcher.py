@@ -1,8 +1,6 @@
 """Exact statement-to-Constraint matching (ADR-0054, #370)."""
 
-import pytest
-
-from corridor.models import Dependency, ExternalOrg, Project
+from corridor.models import Dependency, ExternalOrg
 from corridor.statement_matcher import (
     MATCHER_EVIDENCE_VERSIONS,
     StatementMatchContext,
@@ -10,16 +8,6 @@ from corridor.statement_matcher import (
     matcher_fingerprint,
     shortlist_dependencies,
 )
-
-
-@pytest.fixture
-def project(session):
-    value = Project(
-        slug="statement-matcher-test", name="Statement matcher", is_synthetic=True
-    )
-    session.add(value)
-    session.flush()
-    return value
 
 
 def _party(session, name):

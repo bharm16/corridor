@@ -92,18 +92,6 @@ DECIDED_AT = datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
 
 
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"packet-reading-{uuid4().hex[:8]}",
-        name="Packet Reading",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 # --- fixture helpers ------------------------------------------------------
 
 

@@ -31,14 +31,6 @@ PROMPT_VERSION = "batch_test_v1"
 SCHEMA = {"type": "object"}
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug="batch-test", name="Batch Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def add_note(session, project, name, sha, *, text="AT&T will relocate in August."):
     doc = Document(
         project_id=project.id,

@@ -89,18 +89,6 @@ def store(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"key-date-table-{uuid4().hex[:8]}",
-        name="Key Date Table Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
-@pytest.fixture
 def adopted(session, project, tmp_path, store):
     """A project whose accepted record is the three-conflict UCM baseline."""
 

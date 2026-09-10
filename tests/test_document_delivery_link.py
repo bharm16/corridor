@@ -70,18 +70,6 @@ def isolated_store(tmp_path, monkeypatch):
     return tmp_path / "store"
 
 
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"delivery-link-{uuid4().hex[:8]}",
-        name="Delivery Link Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 def _delivery(session, envelope) -> SourceDelivery:
     return session.scalars(
         select(SourceDelivery).where(

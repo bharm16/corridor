@@ -33,16 +33,6 @@ def _registry_sha(project_id: int, registry_id: str, filename: str) -> str:
     return hashlib.sha256(f"{project_id}:{registry_id}:{filename}".encode()).hexdigest()
 
 
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug="supersession-test", name="Supersession Test", is_synthetic=True
-    )
-    session.add(project)
-    session.flush()
-    return project
-
-
 def _document(session, project, *, registry_id, filename, doc_date=None):
     _require_registry_id_column()
     document = Document(

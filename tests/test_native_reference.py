@@ -41,16 +41,6 @@ def stored_source_fixture(monkeypatch):
     )
 
 
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug="native-reference-test", name="Native reference test", is_synthetic=True
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 ROWS = [
     ["", "", "RECOMMENDED RESOLUTION", "", ""],
     ["Owner", "Utility ID", "Relocation", "Protection in Place", "Notes"],

@@ -70,16 +70,6 @@ MINUTES_STATEMENT = "Equistar will submit the signed exhibit by March 2025."
 
 
 @pytest.fixture
-def project(session):
-    project = Project(
-        slug="source-segment-test", name="Source Segment Test", is_synthetic=True
-    )
-    session.add(project)
-    session.flush()
-    return project
-
-
-@pytest.fixture
 def workbook(tmp_path):
     path = tmp_path / "utility-conflicts.xlsx"
     book = Workbook()

@@ -50,16 +50,6 @@ RECORDER = HumanPrincipal("local:coordination-recorder")
 
 
 @pytest.fixture
-def project(session):
-    p = Project(
-        slug="work-decisions-test", name="Work Decisions Test", is_synthetic=True
-    )
-    session.add(p)
-    session.flush()
-    return p
-
-
-@pytest.fixture
 def dependency(session, project):
     d = Dependency(
         project_id=project.id,

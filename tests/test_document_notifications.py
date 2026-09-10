@@ -57,14 +57,6 @@ ASSIGNEE = HumanPrincipal("local:doc-notify-assignee")
 COORDINATOR = HumanPrincipal("local:doc-notify-coordinator")
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug=f"docnotif-{uuid4().hex}", name="Doc Notify", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 # --- shared fixtures ------------------------------------------------------
 
 

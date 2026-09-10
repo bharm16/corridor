@@ -49,14 +49,6 @@ ASSIGNEE = HumanPrincipal("local:notify-assignee")
 
 
 @pytest.fixture
-def project(session):
-    project = Project(slug="notify-test", name="Notify Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
-@pytest.fixture
 def dependency(session, project):
     dependency = Dependency(
         project_id=project.id,

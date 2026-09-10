@@ -26,7 +26,7 @@ from corridor.native_follow_up_reading import (
     undone_follow_up_plan_ids,
 )
 from corridor.project_workflow import outstanding_follow_up
-from test_issue_rendering import (  # noqa: F401  (fixtures are used by name)
+from test_issue_rendering import (
     ALICE,
     CUTOFF,
     PLANNED_AT,
@@ -35,7 +35,6 @@ from test_issue_rendering import (  # noqa: F401  (fixtures are used by name)
     _baseline,
     _delta,
     _plan,
-    project,
 )
 
 

@@ -6,14 +6,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.milestones import import_csv, link_dependency
-from corridor.models import (
-    Dependency,
-    Milestone,
-    Project,
-    ScheduleGoverningDerivation,
-    ScheduleLinkActivation,
-    ScheduleLinkReceipt,
-)
+from corridor.models import Dependency, Milestone, ScheduleGoverningDerivation, ScheduleLinkActivation, ScheduleLinkReceipt
 from corridor.principals import HumanPrincipal
 from corridor.schedule_linking import (
     DERIVATION_ACTOR,
@@ -55,14 +48,6 @@ UTIL-RELO-WIDE,Utility relocations 100+00 to 200+00,2026-12-01
 UNCODED_CSV = """code,name,need_date
 A1000,Grading 100+00 to 150+00,2026-11-01
 """
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="sl-test", name="Schedule Link Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def seed(session, project, tmp_path, csv_text=GOVERNING_CSV, name="schedule.csv"):

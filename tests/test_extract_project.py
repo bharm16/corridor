@@ -27,13 +27,7 @@ from corridor.extract_project import (
 )
 from corridor.extraction_errors import SequencingSemanticsDetected
 from corridor.extractor_lineage import injected_extractor_config
-from corridor.models import (
-    Candidate,
-    Document,
-    DocumentQuarantine,
-    ExtractionRun,
-    Project,
-)
+from corridor.models import Candidate, Document, DocumentQuarantine, ExtractionRun
 from corridor.pipeline import EXTRACTED_PROPOSALS, ExtractionRoute
 from corridor.row_accounting import (
     AccountedCandidates,
@@ -43,14 +37,6 @@ from corridor.row_accounting import (
 
 PROMPT_VERSION = "test_v1"
 ACCOUNTED_PROMPT_VERSION = "matrix_tiered_v4"
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="xp-test", name="Extract Project Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def add_matrix(session, project, name, sha):

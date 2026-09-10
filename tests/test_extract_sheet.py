@@ -15,7 +15,7 @@ from sqlalchemy import select
 from corridor.extract_sheet import PROMPT_VERSION, TIER_NATIVE, extract_document
 from corridor.extraction_errors import NoMatrixFound
 from corridor.ingest import ingest_document
-from corridor.models import Candidate, Document, ExtractionRun, Project
+from corridor.models import Candidate, Document, ExtractionRun
 from corridor.row_accounting import RowAccounting, RowAccountingFailure
 
 from model_client_support import FakeModelClient
@@ -29,14 +29,6 @@ HEADINGS = [
     "Utility Conflict Description",
     "Parcel U-Number",
 ]
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="sheet-test", name="Sheet Extraction Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def make_workbook(tmp_path, rows, *, name="Utility Conflicts", extra_sheets=None):

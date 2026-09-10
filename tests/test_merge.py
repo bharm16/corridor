@@ -10,7 +10,7 @@ from corridor.merge import (
     score_match,
     station_score,
 )
-from corridor.models import is_placeholder_party, Dependency, Document, EvidenceLink, ExternalOrg, Project
+from corridor.models import is_placeholder_party, Dependency, Document, EvidenceLink, ExternalOrg
 
 
 # --------------------------------------------------------------------- units
@@ -77,14 +77,6 @@ def test_a_missing_station_scores_neutral_not_zero():
 
 
 # ------------------------------------------------------------------ fixtures
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="merge-test", name="Merge Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def make_org(session, name, aliases=()):

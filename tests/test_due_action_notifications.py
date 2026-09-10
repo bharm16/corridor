@@ -52,14 +52,6 @@ TODAY = date(2026, 8, 30)
 NOW = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug="due-action-test", name="Due Action", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 def _assignee(index: int) -> HumanPrincipal:
     return HumanPrincipal(f"local:due-action-assignee-{index}")
 

@@ -12,17 +12,10 @@ from __future__ import annotations
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-import pytest
 from sqlalchemy import select
 
 from corridor.ingest import ingest_document
-from corridor.models import (
-    Document,
-    ProcessingArtifact,
-    Project,
-    SourceSegment,
-    TokenLayerManifest,
-)
+from corridor.models import Document, ProcessingArtifact, SourceSegment, TokenLayerManifest
 from corridor.object_storage import store_bytes
 from corridor.principals import HumanPrincipal
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
@@ -33,14 +26,6 @@ from pdf_fixture_support import PdfFixture
 
 
 ACTOR = HumanPrincipal("local:retention-operator")
-
-
-@pytest.fixture
-def project(session):
-    row = Project(slug="token-ingest", name="Token Ingest", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _minutes_pdf(tmp_path: Path) -> Path:

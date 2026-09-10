@@ -35,14 +35,6 @@ from corridor.project_reading import freeze_project_reading
 TEST_PRINCIPAL = HumanPrincipal("local:ops-reviewer")
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug="checks-cfg", name="Checks Config", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def _make_dep(session, project, ref, **kw):
     d = Dependency(
         project_id=project.id,

@@ -106,18 +106,6 @@ ASSESSED_AT = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
 
 
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"resolve-delta-{uuid4().hex[:8]}",
-        name="Resolve Delta",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 class _Rendition:
     """One document a source arrived as, and the Facts captured from it."""
 

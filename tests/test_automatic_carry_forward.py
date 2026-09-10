@@ -80,18 +80,6 @@ POLICY_VERSION = "automatic-carry-forward-v2"
 MACHINE_ACTOR = "corridor:automatic-carry-forward"
 
 
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug=f"carry-forward-policy-{uuid4().hex}",
-        name="Carry-Forward Policy",
-        is_synthetic=True,
-    )
-    session.add(project)
-    session.flush()
-    return project
-
-
 @dataclass(frozen=True)
 class TransitionScenario:
     project: Project

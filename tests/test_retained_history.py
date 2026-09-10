@@ -28,7 +28,7 @@ import pytest
 from sqlalchemy import text
 
 from corridor.evidence_citations import cite_source_segments, evidence_quotation
-from corridor.models import Document, EvidenceLink, Project, SourceSegment
+from corridor.models import Document, EvidenceLink, SourceSegment
 from corridor.retained_history import (
     BASIS_MEANING,
     FRESH_ORIGINAL_LOCATION,
@@ -58,16 +58,6 @@ CONTRACT = ROOT / "src" / "corridor" / "retained_history.py"
 # reader recovers, so the historical offsets are authored from the placement
 # rather than read back out of the reader under retirement.
 RETAINED_WORDS = "The utility relocation is complete."
-
-
-@pytest.fixture
-def project(session):
-    project = Project(
-        slug="retained-history", name="Retained History", is_synthetic=True
-    )
-    session.add(project)
-    session.flush()
-    return project
 
 
 @pytest.fixture

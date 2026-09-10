@@ -113,14 +113,6 @@ XER_ROWS = [
 ]
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug="ms-test", name="Milestone Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def write(tmp_path, text=CSV, name="milestones.csv"):
     p = tmp_path / name
     p.write_text(text)

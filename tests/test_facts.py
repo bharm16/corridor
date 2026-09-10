@@ -92,14 +92,6 @@ needs_corpus = pytest.mark.skipif(
 )
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug="fact-test", name="Fact Test", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 def _workbook(tmp_path, name, rows):
     path = tmp_path / name
     book = Workbook()

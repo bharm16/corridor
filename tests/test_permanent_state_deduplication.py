@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from hashlib import sha256
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
@@ -28,17 +27,7 @@ from sqlalchemy.exc import IntegrityError
 
 from corridor.config import settings
 from corridor.materializer import materialize_quoted_statement_wording
-from corridor.models import (
-    DeltaDeferral,
-    DeltaGroup,
-    Document,
-    Fact,
-    Project,
-    ProjectRecordRevision,
-    ProposedDelta,
-    SourceDelivery,
-    SourceSegment,
-)
+from corridor.models import DeltaDeferral, DeltaGroup, Document, Fact, ProjectRecordRevision, ProposedDelta, SourceDelivery, SourceSegment
 from corridor.proposed_deltas import (
     ExistingSubjectTarget,
     ProposedDeltaValues,
@@ -53,18 +42,6 @@ DECISION_ROLE = "corridor_fact_decision_writer"
 DEFERRED_AT = datetime(2026, 6, 1, 15, 30, tzinfo=timezone.utc)
 DEFERRED_UNTIL = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)
 WORDS = "Equistar will submit the exhibit."
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"dedup-{uuid4().hex[:12]}",
-        name="Permanent-state de-duplication",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 @pytest.fixture(autouse=True)

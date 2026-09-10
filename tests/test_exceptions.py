@@ -59,14 +59,6 @@ TEST_PRINCIPAL = HumanPrincipal("local:exceptions-reviewer")
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="exc-test", name="Exceptions Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
-@pytest.fixture
 def document(session, project):
     d = Document(
         project_id=project.id,

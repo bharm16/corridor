@@ -105,18 +105,6 @@ TEMPLATE_IDENTITY = "district-ucm-template"
 TEMPLATE_VERSION = "v3"
 
 
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"packet-review-{uuid4().hex[:8]}",
-        name="Packet Review",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 class Baseline:
     """The adopted record, and the later revision proposing changes to it."""
 

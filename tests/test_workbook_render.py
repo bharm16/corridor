@@ -144,18 +144,6 @@ def store(tmp_path, monkeypatch):
     return tmp_path / "files"
 
 
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"render-{uuid4().hex[:8]}",
-        name="Workbook Render Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 def _workbook_bytes(
     tmp_path,
     name="ucm.xlsx",

@@ -16,18 +16,10 @@ from datetime import datetime, timedelta, timezone
 import hashlib
 from pathlib import Path
 
-import pytest
 from sqlalchemy import select
 
 from corridor.ingest import ingest_document
-from corridor.models import (
-    PageProcessingFailure,
-    PageRenderDerivative,
-    ProcessingArtifact,
-    Project,
-    RetentionReference,
-    SourceSegment,
-)
+from corridor.models import PageProcessingFailure, PageRenderDerivative, ProcessingArtifact, RetentionReference, SourceSegment
 from corridor.principals import HumanPrincipal
 from corridor.render_profiles import regenerate_render_derivative
 from corridor.retention import CLASS_B_DAYS, execute_retention, plan_retention
@@ -37,14 +29,6 @@ from pdf_fixture_support import PdfFixture, scan_image
 
 
 ACTOR = HumanPrincipal("local:retention-operator")
-
-
-@pytest.fixture
-def project(session):
-    row = Project(slug="render-retention", name="Render Retention", is_synthetic=True)
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _minutes_pdf(tmp_path: Path) -> Path:

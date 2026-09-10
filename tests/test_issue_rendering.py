@@ -19,7 +19,6 @@ from datetime import date, datetime, timedelta, timezone
 from hashlib import sha256
 from pathlib import Path
 import re
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import text
@@ -97,18 +96,6 @@ PREPARED_AT = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
 ASSESSED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 PLANNED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 RETURNS_AT = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def project(session: Session) -> Project:
-    row = Project(
-        slug=f"issue-rendering-{uuid4().hex[:8]}",
-        name="Issue Rendering",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 class _Source:

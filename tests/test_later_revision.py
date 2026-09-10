@@ -14,7 +14,6 @@ stored value or an identifier.
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from uuid import uuid4
 
 import pytest
 from sqlalchemy import func, select, text
@@ -37,16 +36,7 @@ from corridor.later_revision import (
     LaterRevisionRefused,
     capture_later_revision,
 )
-from corridor.models import (
-    AuditLog,
-    Document,
-    Fact,
-    FactDecision,
-    ProjectRecordRevision,
-    Project,
-    ProposedDelta,
-    SourceDelivery,
-)
+from corridor.models import AuditLog, Document, Fact, FactDecision, ProjectRecordRevision, ProposedDelta, SourceDelivery
 from corridor.review_packet_reading import (
     HELD_OUT_APPARENT_REMOVAL,
     HELD_OUT_OWNER_MISMATCH,
@@ -82,18 +72,6 @@ def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "files"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
     return tmp_path / "files"
-
-
-@pytest.fixture
-def project(session):
-    row = Project(
-        slug=f"later-revision-{uuid4().hex[:8]}",
-        name="Later Revision Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
 
 
 def _capture(session, project, manifest, body, tmp_path, **overrides):

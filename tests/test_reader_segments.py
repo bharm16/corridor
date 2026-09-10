@@ -52,14 +52,6 @@ from corridor.token_layers import page_text_projection
 from pdf_fixture_support import PdfFixture
 
 
-@pytest.fixture
-def project(session):
-    project = Project(slug="native-segments", name="Native segments", is_synthetic=True)
-    session.add(project)
-    session.flush()
-    return project
-
-
 def native_pdf(tmp_path, *, rotation=0, name="native.pdf", clipped=False):
     fixture = PdfFixture()
     page = fixture.add_page(

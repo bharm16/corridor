@@ -16,7 +16,7 @@ import json
 import pytest
 
 from corridor.gold import WORKSHEET_COLUMNS, prepare, render, row_quote, worksheet
-from corridor.models import Candidate, DocPage, Document, Project
+from corridor.models import Candidate, DocPage, Document
 
 from pdf_fixture_support import PdfFixture, TextOverflow
 
@@ -61,14 +61,6 @@ def write_pdf(path, pages_rows):
         draw_table(fixture.add_page(width=792, height=612), rows)
     fixture.save(path)
     return fixture
-
-
-@pytest.fixture
-def project(session):
-    p = Project(slug="gold-test", name="Gold Prep Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
 
 
 def make_document(session, project, tmp_path, rows=None):

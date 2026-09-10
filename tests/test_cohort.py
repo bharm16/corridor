@@ -27,14 +27,6 @@ DECLARER = HumanPrincipal("local:cohort-declarer")
 CITY = "City of Houston"
 
 
-@pytest.fixture
-def project(session):
-    p = Project(slug="cohort-test", name="Cohort Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
 def _supersede(session, project, predecessor, successor, index_registry_id):
     index = _document(
         session, project, registry_id=index_registry_id, filename="rid.pdf"

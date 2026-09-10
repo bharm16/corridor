@@ -39,14 +39,6 @@ TODAY = date(2026, 8, 4)
 
 
 @pytest.fixture
-def project(session):
-    p = Project(slug="brief-test", name="Briefing Test", is_synthetic=True)
-    session.add(p)
-    session.flush()
-    return p
-
-
-@pytest.fixture
 def dependency(session, project):
     """One record with an assertion, verified evidence, and fired rules.
 

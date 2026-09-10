@@ -29,28 +29,12 @@ from corridor.extraction_runs import (
     declare_single_run_documents,
     record_extraction_run,
 )
-from corridor.models import (
-    ActiveExtractionRun,
-    Candidate,
-    Document,
-    EventCohortReceipt,
-    Project,
-)
+from corridor.models import ActiveExtractionRun, Candidate, Document, EventCohortReceipt
 from corridor.principals import HumanPrincipal
 
 DECLARER = HumanPrincipal("local:event-cohort-declarer")
 PIPELINE = "Acme Pipeline"
 ELECTRIC = "Volt Transmission"
-
-
-@pytest.fixture
-def project(session):
-    p = Project(
-        slug="event-cohort-test", name="Event Cohort Test", is_synthetic=True
-    )
-    session.add(p)
-    session.flush()
-    return p
 
 
 def _document(session, project, *, registry_id, filename, doc_type="matrix"):

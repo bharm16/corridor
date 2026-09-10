@@ -57,18 +57,6 @@ BASELINE_DIGEST = hashlib.sha256(b"ucm-baseline.xlsx").hexdigest()
 OTHER_DIGEST = hashlib.sha256(b"another-workbook.xlsx").hexdigest()
 
 
-@pytest.fixture
-def project(session) -> Project:
-    row = Project(
-        slug=f"operating-mode-{uuid4().hex[:8]}",
-        name="Operating Mode Test",
-        is_synthetic=True,
-    )
-    session.add(row)
-    session.flush()
-    return row
-
-
 def adopt(session, project, **overrides) -> BaselineAdoption:
     """The fixture #509 will replace: an adopted-mode project, no importer.
 
