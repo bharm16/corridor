@@ -9,7 +9,9 @@ Extracted Proposal.
 
 Document families, not individual copies, are assigned to development,
 regression, or holdout. Any run that includes the holdout is refused unless the
-CLI appends an actor and reason to `holdout-access.jsonl`. Do not inspect the
+CLI appends an entry to `holdout-access.jsonl` through the one holdout ledger
+(`corridor.holdout_ledger`: run, actor, reason, purpose, configuration, result;
+earlier actor-and-reason lines are read as the declared legacy schema). Do not inspect the
 holdout for tuning; a holdout buys one predeclared measurement.
 
 The cells here are a representative evaluation sample, not a request to
