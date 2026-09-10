@@ -1,6 +1,6 @@
 """Parallel test-process isolation over the real PostgreSQL stack.
 
-Ordinary tests keep defining their own rollback-scoped ``session`` fixtures.
+Ordinary tests share the rollback-scoped ``session`` fixture defined here.
 This harness only changes which migrated database each xdist worker reaches, so
 schema rehearsals and fixed fixture identities cannot deadlock across workers.
 Provisioning starts at the first real connection to a worker database; pure
@@ -30,6 +30,7 @@ from dotenv import dotenv_values
 import pytest
 from sqlalchemy import create_engine, event, text
 from sqlalchemy.engine import Engine, URL, make_url
+from sqlalchemy.orm import Session as SessionType
 from sqlalchemy.pool import NullPool
 
 
@@ -422,6 +423,55 @@ def _shared_source_url(config) -> str:
 def shared_source_database_url(request) -> str:
     """Configured corpus, or a schema-only CI clone when no corpus exists."""
     return _shared_source_url(request.config)
+
+
+@pytest.fixture
+def session():
+    """One rollback-scoped Session over this worker's migrated database.
+
+    Every database test used to declare this same fixture, and the copies had
+    drifted: some rolled back unconditionally, some guarded on
+    ``transaction.is_active``, three had a ``finally`` and the rest did not.
+    The engine is resolved through the capability accessor at request time
+    rather than imported at module import, because ``pytest_configure``
+    rewrites ``DATABASE_URL`` and the worker database is provisioned on the
+    first real connection: a module that resolved the engine while it was being
+    imported would fix the wrong URL. This module imports nothing
+    from ``corridor`` at import time for the same reason -- ``corridor.config``
+    reads the environment when it is imported, and this file is imported before
+    ``pytest_configure`` rewrites ``DATABASE_URL``.
+    """
+
+    from corridor.db import capability_engine
+
+    connection = capability_engine("owner").connect()
+    transaction = connection.begin()
+    scoped = SessionType(bind=connection)
+    try:
+        yield scoped
+    finally:
+        scoped.close()
+        if transaction.is_active:
+            transaction.rollback()
+        connection.close()
+
+
+@pytest.fixture
+def project(session):
+    """One synthetic Project, flushed inside the test's own transaction.
+
+    The slug carries a fresh suffix so a module that commits a scenario cannot
+    collide with one that rolls back. A test that asserts on a project's own
+    slug or display name still declares its own fixture: this one says only
+    that a project exists.
+    """
+
+    from corridor.models import Project
+
+    row = Project(slug=f"project-{uuid4().hex[:8]}", name="Project", is_synthetic=True)
+    session.add(row)
+    session.flush()
+    return row
 
 
 @pytest.fixture
