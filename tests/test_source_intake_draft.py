@@ -20,7 +20,6 @@ from openpyxl import Workbook
 from pdf_fixture_support import PdfFixture
 from sqlalchemy import func, select
 
-from corridor.db import Session, engine
 from corridor.models import (
     Document,
     Project,
@@ -54,17 +53,6 @@ class FakeAdapter(RecordedAdapter):
     """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-intake-draft"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

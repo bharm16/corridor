@@ -36,7 +36,6 @@ from test_issue_rendering import (  # noqa: F401  (fixtures are used by name)
     _delta,
     _plan,
     project,
-    session,
 )
 
 

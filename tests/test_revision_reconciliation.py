@@ -19,11 +19,9 @@ from __future__ import annotations
 from datetime import date, datetime, timezone
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import func, select
 
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.models import (
@@ -66,17 +64,6 @@ class ControlledClock:
 
 
 CLOCK = ControlledClock(datetime(2026, 8, 29, 9, 0, tzinfo=timezone.utc))
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _document(session, project, *, registry_id, sha_character, filename, page_text):

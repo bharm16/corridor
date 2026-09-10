@@ -27,7 +27,6 @@ from sqlalchemy import func, select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.materializer import materialize_quoted_statement_wording
 from corridor.models import (
     DeltaDeferral,
@@ -54,18 +53,6 @@ DECISION_ROLE = "corridor_fact_decision_writer"
 DEFERRED_AT = datetime(2026, 6, 1, 15, 30, tzinfo=timezone.utc)
 DEFERRED_UNTIL = datetime(2026, 7, 1, 15, 30, tzinfo=timezone.utc)
 WORDS = "Equistar will submit the exhibit."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

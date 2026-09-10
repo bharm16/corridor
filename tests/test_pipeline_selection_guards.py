@@ -10,7 +10,7 @@ from corridor.models import PipelineAcceptance, PipelineQualification, PipelineS
 from corridor.pipeline_contracts import canonical_text, content_digest
 from corridor.pipeline_qualification import pipeline_receipt, record_acceptance
 from corridor.pipeline_qualification import PipelineQualificationRefused, select_qualified_pipeline
-from test_native_matrix import matrix_source, project, session
+from test_native_matrix import matrix_source, project
 from test_native_pipeline import ACTOR, _acceptance_fixture, _gate_fixture, _qualify
 
 

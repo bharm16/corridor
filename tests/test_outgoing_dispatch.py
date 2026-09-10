@@ -22,7 +22,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 from corridor import digests, outgoing_dispatch
-from corridor.db import Session, engine
 from corridor.due_work import (
     AssignmentNotificationDeclaration,
     configure_assignment_notification,
@@ -55,17 +54,6 @@ _SCHEMA_VERSION = "fake-category-result-v1"
 _HANDLER = "assignment_notification"
 _BENIGN_LIMITATION = "condition_cleared"
 _VISIBLE_LIMITATION = outgoing_dispatch.LIMITATION_UNRESOLVED_CONTACT
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 class _NestedSession:

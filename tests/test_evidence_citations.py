@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor.evidence_citations import (
     citable_segment_for_quote,
     cite_source_segments,
@@ -23,17 +22,6 @@ from corridor.models import (
 
 PASSAGE = "Kinder Morgan confirmed the relocation window opens in March."
 OTHER_PASSAGE = "Equistar has not confirmed a relocation window."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _new_document(session, project, *, filename, sha):

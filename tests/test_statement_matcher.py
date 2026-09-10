@@ -2,7 +2,6 @@
 
 import pytest
 
-from corridor.db import Session, engine
 from corridor.models import Dependency, ExternalOrg, Project
 from corridor.statement_matcher import (
     MATCHER_EVIDENCE_VERSIONS,
@@ -11,17 +10,6 @@ from corridor.statement_matcher import (
     matcher_fingerprint,
     shortlist_dependencies,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

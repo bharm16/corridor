@@ -8,7 +8,6 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.disputes import (
     apply_staleness_resolutions,
     disputes_for,
@@ -31,17 +30,6 @@ from corridor.models import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.work_list import build_work_list
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -23,7 +23,6 @@ from sqlalchemy import func, select
 
 from corridor import access
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import (
     Candidate,
@@ -54,17 +53,6 @@ class FakeAdapter(RecordedAdapter):
     """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-revision-change-explanation"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -27,7 +27,6 @@ import sys
 import pytest
 from sqlalchemy import text
 
-from corridor.db import Session, engine
 from corridor.evidence_citations import cite_source_segments, evidence_quotation
 from corridor.models import Document, EvidenceLink, Project, SourceSegment
 from corridor.retained_history import (
@@ -59,18 +58,6 @@ CONTRACT = ROOT / "src" / "corridor" / "retained_history.py"
 # reader recovers, so the historical offsets are authored from the placement
 # rather than read back out of the reader under retirement.
 RETAINED_WORDS = "The utility relocation is complete."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

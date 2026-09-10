@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.delta_generation import COMPARABLE_FACT_TYPES, accepted_values
 from corridor.fact_decisions import include_stationing_fact_by_policy
 from corridor.fact_types import (
@@ -48,18 +47,6 @@ from corridor.record_projection import (
     read_current_project_record,
     record_value_payload,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 # --- The shape, one Fact type at a time ------------------------------------

@@ -8,7 +8,6 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extract_batch import extract_documents
 from corridor.extract_minutes_v5 import (
     MIN_PAGE_CHARS,
@@ -104,17 +103,6 @@ MINUTES_CONFIGURATION = RequestConfiguration(
 def stub_client(events):
     """The shared recording double, answering with these events every call."""
     return FakeModelClient({"events": events}, configuration=MINUTES_CONFIGURATION)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

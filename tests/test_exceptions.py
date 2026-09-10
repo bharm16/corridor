@@ -4,7 +4,6 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import event, select
 
-from corridor.db import Session, engine
 from corridor.accepted_field_reading import read_accepted_field_population
 from corridor.exceptions import (
     ACCEPTED_RECORD_RULES,
@@ -57,17 +56,6 @@ from adopted_reader_support import adopt_ucm_workbook, withdraw_support
 
 TODAY = date(2026, 8, 3)
 TEST_PRINCIPAL = HumanPrincipal("local:exceptions-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

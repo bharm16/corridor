@@ -11,7 +11,6 @@ from hashlib import sha256
 
 import pytest
 
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import Document, Project, RecordInclusionRequest
 from corridor.principals import HumanPrincipal
@@ -24,17 +23,6 @@ from corridor.record_inclusion import record_inclusion_pending
 from corridor.web.operations_view import operations_view
 
 OPERATOR = HumanPrincipal("local:operations")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

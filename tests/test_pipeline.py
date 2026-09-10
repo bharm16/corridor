@@ -5,7 +5,7 @@ from corridor.extract_sheet import (
 )
 from corridor.pipeline import extraction_route
 
-from test_native_matrix import _document, matrix_source, project, session
+from test_native_matrix import _document, matrix_source, project
 from test_native_pipeline import _client
 
 

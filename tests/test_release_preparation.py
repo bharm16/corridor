@@ -22,7 +22,6 @@ from fastapi.testclient import TestClient
 
 from corridor.access import COORDINATION, enroll_member
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_coverage import confirm_coverage, derive_coverage_reading
 from corridor.issue_profile import effective_issue_inventory
 from corridor.issue_rendering import NO_PRIOR_COMPARISON_STATEMENT
@@ -87,18 +86,6 @@ JANUARY = datetime(2026, 1, 5, tzinfo=timezone.utc)
 REQUESTED_AT = datetime(2026, 3, 2, 8, 0, tzinfo=timezone.utc)
 STARTED_AT = datetime(2026, 3, 2, 8, 1, tzinfo=timezone.utc)
 FINISHED_AT = datetime(2026, 3, 2, 8, 2, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

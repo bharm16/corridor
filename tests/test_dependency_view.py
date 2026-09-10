@@ -12,7 +12,6 @@ from hashlib import sha256
 
 import pytest
 
-from corridor.db import Session, engine
 from corridor.disputes import (
     CONTRACTUAL_AMENDMENT,
     assessed_amendment_field_names,
@@ -32,17 +31,6 @@ from corridor.web.dependency_view import (
     active_project_roster,
     dependency_view,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

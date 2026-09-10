@@ -14,7 +14,6 @@ from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError
 
 from corridor.audit import ASSIGN_INTERNAL_OWNER, DEPENDENCY, trail_for_commitment_lineage
-from corridor.db import Session, engine
 from corridor.models import (
     AuditLog,
     CommitmentLineage,
@@ -48,17 +47,6 @@ from corridor.work_decisions import (
 )
 
 RECORDER = HumanPrincipal("local:coordination-recorder")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -5,7 +5,6 @@ from datetime import date
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.milestones import import_csv, link_dependency
 from corridor.models import (
     Dependency,
@@ -56,17 +55,6 @@ UTIL-RELO-WIDE,Utility relocations 100+00 to 200+00,2026-12-01
 UNCODED_CSV = """code,name,need_date
 A1000,Grading 100+00 to 150+00,2026-11-01
 """
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

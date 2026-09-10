@@ -7,16 +7,6 @@ import pytest
 from corridor.connectors.pull_connector import sync_pull_connector
 
 
-@pytest.fixture
-def session():
-    from corridor.db import engine, Session
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        transaction.rollback()
-
-
 def test_recorded_mail_retains_exact_mime_thread_and_workbook_attachment(session, isolated_content_store, tmp_path, monkeypatch):
     from email.message import EmailMessage
     from email.policy import SMTP

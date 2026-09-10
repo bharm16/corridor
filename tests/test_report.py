@@ -8,7 +8,6 @@ from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
 from corridor.changes import record_run, snapshot
-from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -48,17 +47,6 @@ from corridor.project_reading import freeze_project_reading
 from corridor.supersession import SupersessionDeclaration, register_supersessions
 
 TEST_PRINCIPAL = HumanPrincipal("local:bryce")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

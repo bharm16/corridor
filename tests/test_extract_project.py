@@ -9,7 +9,6 @@ extraction quality — quality is measured by a real run, not a unit test.
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extraction_errors import ExtractionFailed
 from corridor.extract_sheet import PROMPT_VERSION as SHEET_PROMPT_VERSION
 from corridor.extraction_runs import (
@@ -44,17 +43,6 @@ from corridor.row_accounting import (
 
 PROMPT_VERSION = "test_v1"
 ACCOUNTED_PROMPT_VERSION = "matrix_tiered_v4"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

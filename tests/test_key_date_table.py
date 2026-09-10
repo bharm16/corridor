@@ -22,7 +22,6 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.delta_resolution import (
     ACCEPT,
     RESOLVED,
@@ -80,18 +79,6 @@ UC3 = "Utility Conflicts!5"
 DESIGN = key_date_subject("DESIGN")
 ROW_UTIL = key_date_subject("ROW-UTIL-EXEC")
 RELO = key_date_subject("RELO-CONSTR")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

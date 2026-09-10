@@ -44,7 +44,6 @@ from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events
-from corridor.db import engine
 from corridor.follow_up_bundles import (
     APPROACHING_COMMITMENT_BAND,
     ASK_CONFIRM_ACCEPTED_DATE,
@@ -125,18 +124,6 @@ FIRST = 42
 SECOND = 43
 
 _BUNDLE_KEY = re.compile(r'data-bundle-key="([^"]*)"')
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

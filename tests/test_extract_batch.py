@@ -12,7 +12,6 @@ import threading
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extraction_runs import (
     active_run_for_document,
     declare_active_run,
@@ -30,17 +29,6 @@ from model_client_support import FakeModelClient
 
 PROMPT_VERSION = "batch_test_v1"
 SCHEMA = {"type": "object"}
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

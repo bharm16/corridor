@@ -14,7 +14,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
-from corridor.db import Session, engine
 from corridor.disputes import (
     DisputeMovedOn,
     NoSuchDispute,
@@ -40,17 +39,6 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 REVIEWER = HumanPrincipal("local:dispute-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

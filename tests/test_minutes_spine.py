@@ -4,9 +4,7 @@ from corridor.statement_timing_parser import statement_timing_options
 from datetime import datetime, timezone
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 from corridor.config import settings
-from corridor.db import engine
 from corridor.models import Fact, FactSource, ProjectRecordRevision
 from minutes_fixture_support import MinutesClient, adopted_project, minutes_document
 
@@ -32,15 +30,6 @@ def test_a_revised_date_is_not_misread_as_a_range_and_qualifiers_stay_approximat
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        transaction.rollback()
 
 
 def accept_statement(session, project, capture):

@@ -7,7 +7,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import AnalyticsBinding, default_binding
-from corridor.db import engine
 from corridor.models import (
     DeltaDeferral,
     DeltaDisposition,
@@ -33,17 +32,6 @@ from corridor.delta_resolution import (
 from corridor.principals import HumanPrincipal
 from corridor.review_packet_reading import open_deltas
 from delta_supersession_support import record_delta_supersession
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

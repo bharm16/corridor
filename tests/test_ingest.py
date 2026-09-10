@@ -5,7 +5,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.ingest import (
     DocumentParseFailure,
     _extract_pages,
@@ -28,17 +27,6 @@ from corridor.token_layers import (
 )
 
 from pdf_fixture_support import PdfFixture, scan_image
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

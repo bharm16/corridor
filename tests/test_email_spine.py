@@ -5,10 +5,8 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from corridor.config import settings
-from corridor.db import engine
 from corridor.email_intake import receive_pushed_message
 from corridor.models import Fact, InboundMessage, Project, ProjectRecordRevision, SourceDelivery
 from corridor.push_intake import PushCredential, register_push_credential
@@ -52,15 +50,6 @@ def test_mime_reader_keeps_authored_words_quotes_and_signature_separate():
 def isolated_store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        transaction.rollback()
 
 
 def deliver(session, raw, project=None, *, attachment_doc_types=None):

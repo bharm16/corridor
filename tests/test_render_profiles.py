@@ -11,7 +11,7 @@ import pytest
 from sqlalchemy import select
 
 from corridor.config import settings
-from corridor.db import Session, engine
+from corridor.db import engine
 from corridor.models import (
     DocPage,
     Document,
@@ -35,17 +35,6 @@ from corridor.render_profiles import (
 from corridor.unreadable_cells import prepare_cell_detail_render
 
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    value = Session(bind=connection)
-    yield value
-    value.close()
-    transaction.rollback()
-    connection.close()
 
 
 def synthetic_pdf(path: Path) -> Path:

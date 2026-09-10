@@ -657,17 +657,6 @@ def test_a_scheduled_prepared_pdf_is_released_only_by_a_human_and_keeps_its_byte
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def project(session):
     project_id = _seed_project(session, slug=f"pub-http-{uuid4().hex[:12]}")
     return session.get(Project, project_id)

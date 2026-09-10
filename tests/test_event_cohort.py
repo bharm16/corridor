@@ -24,7 +24,6 @@ from corridor.cohort import (
     event_cohort_candidate_ids,
     require_event_cohort_member,
 )
-from corridor.db import Session, engine
 from corridor.extraction_runs import (
     MultipleRunsNeedExplicitChoice,
     declare_single_run_documents,
@@ -42,17 +41,6 @@ from corridor.principals import HumanPrincipal
 DECLARER = HumanPrincipal("local:event-cohort-declarer")
 PIPELINE = "Acme Pipeline"
 ELECTRIC = "Volt Transmission"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

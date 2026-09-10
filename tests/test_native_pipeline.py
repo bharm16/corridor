@@ -31,7 +31,7 @@ from corridor_pdf_reader.replacement import semantics
 from corridor_pdf_reader.replacement.pages import slim_page
 
 from model_client_support import FakeModelClient
-from test_native_matrix import _document, matrix_source, project, session
+from test_native_matrix import _document, matrix_source, project
 
 
 ACTOR = HumanPrincipal("local:pipeline-test-maintainer")

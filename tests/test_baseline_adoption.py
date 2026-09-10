@@ -44,7 +44,6 @@ from corridor.baseline_workbook import (
     read_baseline_workbook,
 )
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.field_mapping_manifest import (
     DEMO_EXTERNAL_REFERENCES,
     MappingDeclaration,
@@ -125,18 +124,6 @@ ROWS = [
     ["UC-7", "Google Fiber", "Telecom", "2 in", "HDPE", "SR-BL",
      "1220+00", "1221+00", "Adjust", "2026-07-01", "TBD", "", "", "", ""],
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

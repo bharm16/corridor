@@ -5,7 +5,6 @@ from datetime import date, timedelta
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.models import (
     Assertion,
     Dependency,
@@ -23,17 +22,6 @@ from access_support import seed_membership
 
 TODAY = date(2026, 8, 30)
 ACTOR = HumanPrincipal("local:summary-coordinator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -19,7 +19,6 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
 from corridor.dependency_admission import run_dependency_admission
 from corridor.extraction_runs import (
     declare_single_run_documents_by_policy,
@@ -56,17 +55,6 @@ from corridor.source_append import SegmentValues, append_source_segments
 
 BASELINE_DIGEST = hashlib.sha256(b"ucm-baseline.xlsx").hexdigest()
 OTHER_DIGEST = hashlib.sha256(b"another-workbook.xlsx").hexdigest()
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

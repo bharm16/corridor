@@ -4,7 +4,7 @@ from dataclasses import replace
 
 import pytest
 
-from test_native_reader_coverage import session as session, adopted as adopted, collect, surfaces
+from test_native_reader_coverage import adopted as adopted, collect, surfaces
 
 
 @pytest.mark.parametrize("fault", ["omitted", "duplicated", "text", "subject", "fact_subject", "project",

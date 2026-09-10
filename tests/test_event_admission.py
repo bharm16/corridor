@@ -31,7 +31,6 @@ from sqlalchemy.orm import object_session
 
 from corridor.adjudicate import accept_candidate
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.event_admission import (
     ABSTENTION_REASON_VERSION,
     EVENT_ADMISSION_POLICY_VERSION,
@@ -96,17 +95,6 @@ from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 OPERATOR = HumanPrincipal("local:event-admission-operator")
 PIPELINE = "Event Admission Pipeline Co"
 PROJECT_SIDE = "LJA"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture(scope="module")

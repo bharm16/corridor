@@ -15,7 +15,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db import Session, engine
 from corridor.config import settings
 from corridor.ingest import ingest_document
 from corridor.models import Document, Project, SourceSegment
@@ -68,18 +67,6 @@ needs_minutes_corpus = pytest.mark.skipif(
 )
 
 MINUTES_STATEMENT = "Equistar will submit the signed exhibit by March 2025."
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

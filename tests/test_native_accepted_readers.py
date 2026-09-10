@@ -14,7 +14,6 @@ from corridor.accepted_field_reading import NativeReadingRefused, read_accepted_
 from corridor.baseline_adoption import adopt_baseline, preview_baseline_adoption
 from corridor.briefing import brief_project
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.constraint_reading import NotAvailable
 from corridor.exceptions import ACCEPTED_RECORD_RULES, evaluate_project
 from corridor.export import to_xlsx
@@ -36,18 +35,6 @@ from model_client_support import FakeModelClient
 
 PRINCIPAL = HumanPrincipal("local:coordinator")
 TODAY = date(2026, 9, 9)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 def _adopt_native_workbook(session, tmp_path, monkeypatch):

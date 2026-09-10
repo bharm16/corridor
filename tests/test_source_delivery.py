@@ -17,7 +17,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select, text
 
-from corridor.db import Session, engine
 from corridor.models import Project, PushIntakeCredential, SourceDelivery
 from corridor.source_delivery import (
     DeliveryBinding,
@@ -28,17 +27,6 @@ from corridor.source_delivery import (
     stored_delivery,
     take_delivery,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

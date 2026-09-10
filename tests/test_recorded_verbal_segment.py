@@ -16,7 +16,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db import Session, engine
 from corridor.models import (
     ExternalPartyStatement,
     Project,
@@ -37,18 +36,6 @@ WORDS = "Equistar will submit the signed exhibit by March 2025."
 # recorded time can be asserted exactly rather than approximately.
 RECORDED_AT = datetime(2025, 3, 3, 14, 30, tzinfo=timezone.utc)
 CONVERSATION_DATE = date(2025, 3, 3)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -25,7 +25,6 @@ from corridor.condition_tracking import (
     resolve_condition_target,
     FieldCandidate,
 )
-from corridor.db import Session, engine
 from corridor.documentation_checklist import (
     confirm_interpretation,
     read_checklist,
@@ -50,17 +49,6 @@ from access_support import seed_membership
 
 
 REVIEWER = HumanPrincipal("local:condition-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

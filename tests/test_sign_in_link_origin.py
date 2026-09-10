@@ -17,10 +17,8 @@ from __future__ import annotations
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy.orm import Session as SessionType
 
 from corridor import access
-from corridor.db import engine
 from corridor.models import Project
 from corridor.principals import HumanPrincipal
 from corridor.web import auth
@@ -29,20 +27,6 @@ from corridor.web.auth import PublicOriginInvalid, build_public_origin
 
 OPERATOR = HumanPrincipal("person:operator")
 ENROLLED = "person@example.com"
-
-
-@pytest.fixture
-def session():
-    """Rollback-scoped, per the project's database-test pattern."""
-    connection = engine.connect()
-    transaction = connection.begin()
-    bound = SessionType(bind=connection)
-    try:
-        yield bound
-    finally:
-        bound.close()
-        transaction.rollback()
-        connection.close()
 
 
 class _Settings:

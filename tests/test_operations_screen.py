@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from corridor import access
-from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.due_work import ProjectProcessingDeclaration, configure_project_processing
 from corridor.models import ActiveRunDeclaration, Document, Project
@@ -18,17 +17,6 @@ from access_support import seed_membership
 
 OPERATOR = HumanPrincipal("local:operations")
 COORDINATOR = HumanPrincipal("local:coordinator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

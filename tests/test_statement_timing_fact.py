@@ -16,7 +16,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.exc import DBAPIError, IntegrityError
 
-from corridor.db import Session, engine
 from corridor.facts import (
     FactReplayMismatch,
     FactValidationError,
@@ -43,18 +42,6 @@ from corridor.statement_values import StatementTiming
 RECORDER = HumanPrincipal("local:dana-fields")
 # A supplied logical attestation time: nothing here reads a wall clock.
 RECORDED_AT = datetime(2025, 3, 3, 14, 30, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -10,24 +10,12 @@ from sqlalchemy import func, select
 
 from corridor import email_intake, thread_reading
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import (
     Candidate,
     InboundMessage,
     InboundThreadReading,
     Project,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(autouse=True)

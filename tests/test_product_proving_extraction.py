@@ -6,10 +6,8 @@ from hashlib import sha256
 
 import pytest
 from sqlalchemy import select
-from sqlalchemy.orm import Session
 
 from corridor import product_proving_extraction
-from corridor.db import engine
 from corridor.extraction_runs import (
     extractor_configuration,
     record_extraction_run,
@@ -32,19 +30,6 @@ def stub_client(*, events=()):
         configuration=DEPLOYED_NATIVE_MATRIX_REQUEST,
         tokens_per_call={},
     )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    try:
-        yield db
-    finally:
-        db.close()
-        transaction.rollback()
-        connection.close()
 
 
 @pytest.fixture

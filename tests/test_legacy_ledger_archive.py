@@ -12,7 +12,6 @@ from sqlalchemy.exc import DBAPIError
 
 from corridor.adjudicate import accept_candidate
 from corridor.changes import diff_since_last
-from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.legacy_ledger_archive import (
@@ -47,17 +46,6 @@ from corridor.principals import HumanPrincipal
 import corridor.legacy_ledger_archive as archive_module
 
 DECLARER = HumanPrincipal("local:legacy-ledger-archive-declarer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

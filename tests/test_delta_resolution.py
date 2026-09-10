@@ -26,7 +26,6 @@ from sqlalchemy.exc import DBAPIError
 from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events
-from corridor.db import engine
 from corridor.delta_refusals import (
     BOTH,
     DATABASE_ONLY,
@@ -105,18 +104,6 @@ BOB = HumanPrincipal("local:bob")
 DECIDED_AT = datetime(2026, 9, 3, 15, 0, tzinfo=timezone.utc)
 ASSESSED_AT = datetime(2026, 9, 3, 14, 0, tzinfo=timezone.utc)
 SUBJECT = "Utility Conflicts!7"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

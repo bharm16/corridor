@@ -1,7 +1,6 @@
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.merge import (
     MIN_MATCH_SCORE,
     STATION_TOLERANCE_FT,
@@ -78,17 +77,6 @@ def test_a_missing_station_scores_neutral_not_zero():
 
 
 # ------------------------------------------------------------------ fixtures
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

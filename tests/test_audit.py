@@ -15,7 +15,6 @@ from corridor.adjudicate import (
     merge_candidate,
     set_resolution_strategy,
 )
-from corridor.db import Session, engine
 from corridor.extraction_runs import (
     declare_active_run,
     record_extraction_run,
@@ -47,17 +46,6 @@ FIELDS = {
     "utility_type": "Telecom",
     "station_from": "1149+00",
 }
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

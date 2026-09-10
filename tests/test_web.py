@@ -17,7 +17,6 @@ from corridor.adjudicate import (
     reject_candidate,
 )
 from corridor.admission import load_project
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.external_statements import (
@@ -121,17 +120,6 @@ def _save_plan(
         },
         follow_redirects=False,
     )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

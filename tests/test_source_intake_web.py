@@ -16,7 +16,6 @@ from sqlalchemy import func, select
 
 from corridor.analytics import EventFamily, capture_events
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import Document, Project
 import corridor.source_intake as source_intake
 from corridor.web.app import app, get_human_principal, get_session
@@ -36,17 +35,6 @@ def _matrix_pdf(marker: str = "AT&T Texas (SWBT)") -> bytes:
         f"FOC1-1  {marker}  Telecom  underground fiber  STA 1149+00 to 1153+17",
     )
     return fixture.tobytes()
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

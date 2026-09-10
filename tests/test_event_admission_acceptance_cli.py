@@ -7,7 +7,6 @@ import json
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.event_admission import (
     EVENT_ADMISSION_POLICY_VERSION,
     UNKNOWN_SCOPE_ABSTENTION_REASON_VERSION,
@@ -28,17 +27,6 @@ from corridor.event_admission_acceptance_cli import main
 from corridor.migrations.policy import SUPPORTED_FROM_REVISION
 from corridor.models import Project
 from corridor import policy
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 class _OpenSession:

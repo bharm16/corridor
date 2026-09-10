@@ -7,22 +7,11 @@ import pytest
 from sqlalchemy import func, select
 
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.models import Fact, FactDecision, Project, ProjectRecordRevision, SourceSegment
 from corridor.native_reader_coverage import collect_native_reader_coverage
 from corridor.reader_coverage import CONTRACTS, compare_all_surfaces
 from test_native_accepted_readers import _adopt_native_workbook, PRINCIPAL, TODAY, covering_client
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        if transaction.is_active:
-            transaction.rollback()
 
 
 @pytest.fixture

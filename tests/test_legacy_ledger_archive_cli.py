@@ -9,7 +9,6 @@ import json
 import pytest
 from sqlalchemy import func, select
 
-from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.legacy_ledger_archive import plan_retirement
 from corridor.legacy_ledger_archive_cli import main
@@ -24,17 +23,6 @@ from corridor.models import (
     LegacyLedgerArchive,
     Project,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 class _OpenSession:

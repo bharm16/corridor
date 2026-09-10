@@ -19,7 +19,6 @@ from openpyxl import Workbook
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.exceptions import RULES, format_exception_name
 from corridor.export import COLUMNS
 from corridor.ingest import ingest_document
@@ -53,18 +52,6 @@ from pdf_fixture_support import PdfFixture
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE = ROOT / "src" / "corridor"
 TEMPLATES = SOURCE / "web" / "templates"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

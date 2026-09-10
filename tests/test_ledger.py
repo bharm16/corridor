@@ -6,7 +6,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate, merge_candidate
-from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -58,17 +57,6 @@ FIELDS = {
     "station_from": "1149+00",
     "station_to": "1153+17",
 }
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -12,7 +12,6 @@ import pytest
 from sqlalchemy import func, select, text
 from sqlalchemy.exc import DBAPIError
 
-from corridor.db import Session, engine
 from corridor.fact_types import FACT_TYPE_CONTRACTS, STRUCTURED_CELL_FACT_TYPES
 from corridor.materializer import (
     PDF_MARKED_RESOLUTION_TRANSFORMATION,
@@ -36,18 +35,6 @@ from corridor.models import (
     ProjectRecordRevision,
 )
 from corridor.source_append import SegmentValues, append_fact, append_source_segments
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -5,7 +5,6 @@ from openpyxl import load_workbook
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.dependency_events import published_dependency_statements
 from corridor.exceptions import Thresholds, evaluate_project, format_exception_label
 from corridor.extraction_runs import declare_active_run, record_extraction_run
@@ -29,17 +28,6 @@ from corridor.report import build_report, render
 from corridor.verbal import record_verbal
 
 TEST_PRINCIPAL = HumanPrincipal("local:tester")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

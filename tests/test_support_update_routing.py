@@ -13,11 +13,9 @@ from copy import deepcopy
 from datetime import date
 from uuid import uuid4
 
-import pytest
 from sqlalchemy import select
 
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
 from corridor.models import (
@@ -42,17 +40,6 @@ from corridor import support_update_routing as routing
 
 
 REVIEWER = HumanPrincipal("local:support-update-routing-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _document(session, project, *, registry_id, sha, filename, page_text):

@@ -19,7 +19,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor import access
-from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.models import (
     ActiveRunDeclaration,
@@ -47,17 +46,6 @@ class FakeAdapter(RecordedAdapter):
     """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-failure-diagnosis"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

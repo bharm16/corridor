@@ -19,7 +19,6 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.exceptions import evaluate_project
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.external_statements import (
@@ -51,17 +50,6 @@ from access_support import seed_membership
 from adopted_reader_support import adopt_ucm_workbook
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

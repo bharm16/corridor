@@ -22,7 +22,6 @@ from corridor.check_configuration import (
     validate_proposed_thresholds,
 )
 from corridor.changes import record_run
-from corridor.db import Session, engine
 from corridor.exceptions import (
     RULESET_VERSION,
     Thresholds,
@@ -34,17 +33,6 @@ from corridor.principals import HumanPrincipal
 from corridor.project_reading import freeze_project_reading
 
 TEST_PRINCIPAL = HumanPrincipal("local:ops-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -14,7 +14,7 @@ from corridor.native_pipeline import run_native_matrix_shadow
 from corridor.pipeline_qualification import (
     PipelineQualificationRefused, pipeline_receipt, select_qualified_pipeline,
 )
-from test_native_matrix import _document, matrix_source, project, session
+from test_native_matrix import _document, matrix_source, project
 from test_native_pipeline import ACTOR, _client, _gate_fixture, _plan, _qualify, _scope
 
 

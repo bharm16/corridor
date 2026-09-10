@@ -7,7 +7,6 @@ import json
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.llm import Usage
 from corridor.models import (
     Candidate,
@@ -59,17 +58,6 @@ class Prepared:
     all_segments: tuple[SourceSegment, ...]
     equistar: ExternalOrg
     other: ExternalOrg
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    value = Session(bind=connection)
-    yield value
-    value.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

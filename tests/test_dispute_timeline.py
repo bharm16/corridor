@@ -9,20 +9,8 @@ import hashlib
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.dispute_timeline import build_dispute_timeline
 from corridor.models import Assertion, Dependency, DocPage, Document, EvidenceLink, Project
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -17,7 +17,7 @@ import hashlib
 import pytest
 
 from corridor.admission import load_project
-from corridor.db import Session, engine
+from corridor.db import engine
 from corridor.models import (
     DocPage,
     Document,
@@ -54,17 +54,6 @@ from corridor.unreadable_cell_admission import (
 )
 
 RECORDER = HumanPrincipal("local:unreadable-cell-test")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -17,7 +17,6 @@ import pytest
 
 from corridor.admission import load_project
 from corridor.config import settings
-from corridor.db import Session as DbSession, engine
 from corridor.models import DocPage, Document, Project
 from corridor.page_inventory import (
     OCR_ENGINES,
@@ -570,17 +569,6 @@ def test_a_transcription_is_only_checked_against_the_provider_that_read_the_page
 
 
 # --- an unconfirmed reading: flagged, never Ready, upgraded on corroboration ----
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = DbSession(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

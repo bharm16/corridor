@@ -27,7 +27,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.analytics import EventFamily, capture_events, default_binding
-from corridor.db import engine
 from corridor.delta_resolution import live_delta_status
 from corridor.follow_up_bundles import (
     ASK_ANSWER_OPEN_QUESTION,
@@ -104,18 +103,6 @@ DECIDED_AT = datetime(2026, 9, 3, 11, 0, tzinfo=timezone.utc)
 RETURNS_AT = datetime(2026, 9, 17, 12, 0, tzinfo=timezone.utc)
 TEMPLATE_IDENTITY = "district-ucm-template"
 TEMPLATE_VERSION = "v3"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

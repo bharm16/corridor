@@ -14,7 +14,7 @@ import pytest
 from sqlalchemy import create_engine, select
 
 from corridor.briefing import PROMPT_VERSION, brief, render
-from corridor.db import Session, engine
+from corridor.db import Session
 from corridor.exceptions import RULESET_VERSION
 from corridor.models import (
     Assertion,
@@ -36,17 +36,6 @@ from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
 
 TODAY = date(2026, 8, 4)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

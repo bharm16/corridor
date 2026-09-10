@@ -23,7 +23,6 @@ from sqlalchemy import select
 
 from corridor import audit, email_intake, push_intake
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.document_delivery_backfill import (
     CAPTURE_RECEIPT_RULE,
     INBOUND_MESSAGE_RULE,
@@ -62,18 +61,6 @@ from later_revision_support import (
     workbook_bytes,
 )
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture(autouse=True)

@@ -8,7 +8,6 @@ from sqlalchemy import select, text
 from sqlalchemy.exc import IntegrityError
 
 from corridor.changes import record_run
-from corridor.db import Session, engine
 from corridor.dependency_events import project_committed_date
 from corridor.external_statements import (
     CitedStatementEvidence,
@@ -57,17 +56,6 @@ from corridor.web.app import app, get_human_principal, get_session
 
 RECORDER = HumanPrincipal("local:phone-coordinator")
 _CITED_QUOTE = "AT&T committed to June 15"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -3,7 +3,6 @@ from sqlalchemy import func, select
 
 from corridor import audit
 from corridor.adjudicate import accept_candidate, edit_candidate, merge_candidate
-from corridor.db import Session, engine
 from corridor.extraction_runs import (
     declare_active_run,
     record_extraction_run,
@@ -22,17 +21,6 @@ from corridor.models import (
 from corridor.principals import HumanPrincipal, InvalidHumanPrincipal
 
 DECLARER = HumanPrincipal("local:human-principals-declarer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

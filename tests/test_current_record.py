@@ -18,7 +18,6 @@ from corridor.reader_equivalence import (
     freeze_project_reading_from_current_view,
     prove_reader_equivalence,
 )
-from corridor.db import Session, engine
 from corridor.fact_decisions import include_stationing_fact_by_policy
 from corridor.models import (
     ActiveExtractionRun,
@@ -36,18 +35,6 @@ from corridor.models import (
 
 from corridor.llm import RequestConfiguration
 from model_client_support import FakeModelClient
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

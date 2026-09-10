@@ -8,7 +8,7 @@ from sqlalchemy import select
 from corridor.models import Fact, FactSource, MinutesCapture, StatedByPerson
 from corridor.minutes_spine import capture_minutes, MinutesCaptureRefused
 from minutes_fixture_support import MinutesClient, adopted_project, minutes_document
-from test_minutes_spine import session, store, accept_statement  # noqa: F401
+from test_minutes_spine import store, accept_statement  # noqa: F401
 
 
 def test_completion_negation_and_qualification_never_become_a_report(session):

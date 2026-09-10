@@ -36,7 +36,6 @@ from corridor.baseline_adoption import (
     register_baseline_format,
 )
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.extraction_runs import record_extraction_run
 from corridor.extractor_lineage import deployed_extractor_config, zero_token_usage
 from corridor.fact_decisions import record_human_fact_decision
@@ -136,18 +135,6 @@ ROWS = [
      "1180+00", "1181+00", "Relocate", "2026-05-01", "", "", "", "UCM-1003",
      "", ""],
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

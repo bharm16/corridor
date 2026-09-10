@@ -8,7 +8,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import event, select
 
 from corridor import exceptions, packet_review, policy, presentation
-from corridor.db import Session, engine
 from corridor.dependency_events import (
     closed_party_commitment_lineages,
     current_scope_decision_filter,
@@ -72,17 +71,6 @@ from corridor.web.app import app, get_human_principal, get_session
 
 
 RECORDER = HumanPrincipal("local:work-list-coordinator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

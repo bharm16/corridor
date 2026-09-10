@@ -12,7 +12,6 @@ import pytest
 from openpyxl import Workbook
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.extract_sheet import PROMPT_VERSION, TIER_NATIVE, extract_document
 from corridor.extraction_errors import NoMatrixFound
 from corridor.ingest import ingest_document
@@ -30,17 +29,6 @@ HEADINGS = [
     "Utility Conflict Description",
     "Parcel U-Number",
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

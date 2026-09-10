@@ -18,7 +18,6 @@ from sqlalchemy.exc import DBAPIError
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.baseline_adoption import FormatIdentity, effective_baseline_formats
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_profile import (
     ArtifactEntry,
     CoverageRequirement,
@@ -63,18 +62,6 @@ OTHER_ROWS = [
      "2249+00", "2250+00", "Adjust", "2027-03-01", "2027-02-01",
      "vault at station", "UCM-9001", "https://ucm.example/records/9001"],
 ]
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

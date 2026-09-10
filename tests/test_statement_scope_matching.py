@@ -2,10 +2,8 @@
 
 from datetime import date
 
-import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.event_admission import _run_unknown_scope_admission, run_event_admission
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.external_statements import (
@@ -31,17 +29,6 @@ from corridor.statement_scope_matching import (
     POLICY_VERSION,
     replay_matches_human_scope_decisions,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _setup(session):

@@ -11,7 +11,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
 from corridor import access, notifications
-from corridor.db import Session, engine
 from corridor.models import (
     AssignmentNotification,
     AssignmentNotificationFeedback,
@@ -29,17 +28,6 @@ COORDINATOR = HumanPrincipal("local:web-coordinator")
 ASSIGNEE = HumanPrincipal("local:web-assignee")
 OTHER_MEMBER = HumanPrincipal("local:web-other")
 OPERATOR = HumanPrincipal("local:web-operator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

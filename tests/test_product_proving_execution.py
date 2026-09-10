@@ -11,7 +11,6 @@ import pytest
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.extraction_runs import (
     declare_active_run,
     declare_active_run_by_policy,
@@ -55,19 +54,6 @@ from corridor.product_proving_database import (
 )
 from corridor.principals import HumanPrincipal
 from corridor.product_proving_run import ExpectedPreflight
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    try:
-        yield db
-    finally:
-        db.close()
-        transaction.rollback()
-        connection.close()
 
 
 def _project(session: Session, suffix: str) -> Project:

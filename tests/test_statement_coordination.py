@@ -12,7 +12,6 @@ from sqlalchemy import func, select
 from sqlalchemy import text as text_sql
 
 from corridor import audit
-from corridor.db import Session, engine
 from corridor.dependency_events import (
     current_dependency_statements,
     current_statement_evidence_memberships,
@@ -115,17 +114,6 @@ RECORDER = HumanPrincipal("local:statement-coordinator")
 _PAGE_IMAGE_BYTES = base64.b64decode(
     "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII="
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

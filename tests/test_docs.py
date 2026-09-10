@@ -6,7 +6,6 @@ import pytest
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
-from corridor.db import Session, engine
 from corridor.docs import get_page, list_documents
 from corridor.models import (
     Document,
@@ -17,17 +16,6 @@ from corridor.models import (
 from corridor.pipeline import ingest_manifest
 
 from pdf_fixture_support import PdfFixture
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

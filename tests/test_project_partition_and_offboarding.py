@@ -48,7 +48,6 @@ from sqlalchemy.pool import NullPool, QueuePool
 
 from corridor import access, audit, identity_audit, web_boundary
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import (
     AuditLog,
     Document,
@@ -2052,17 +2051,6 @@ def test_the_unprivileged_login_reads_what_it_is_actually_granted(
 
 
 # --- Offboarding over the real sign-in path --------------------------------
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    opened = Session(bind=connection)
-    yield opened
-    opened.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

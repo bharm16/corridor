@@ -12,7 +12,6 @@ from corridor.changes import (
     snapshot,
 )
 from corridor.check_configuration import effective_thresholds, save_configuration
-from corridor.db import Session, engine
 from corridor.external_statements import (
     CitedStatementEvidence,
     StatementScope,
@@ -42,17 +41,6 @@ from corridor.proposed_deltas import (
 
 
 TEST_PRINCIPAL = HumanPrincipal("local:changes-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

@@ -24,7 +24,6 @@ from sqlalchemy import func, select
 
 from corridor import document_notifications as dn
 from corridor.adjudicate import accept_candidate
-from corridor.db import Session, engine
 from corridor.documentation_checklist import confirm_interpretation, read_checklist
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.ledger import mark_satisfies
@@ -56,17 +55,6 @@ REGISTRAR = "runtime:document-notification-test"
 REVIEWER = HumanPrincipal("local:doc-notify-reviewer")
 ASSIGNEE = HumanPrincipal("local:doc-notify-assignee")
 COORDINATOR = HumanPrincipal("local:doc-notify-coordinator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

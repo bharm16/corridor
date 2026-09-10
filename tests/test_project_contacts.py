@@ -9,7 +9,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from corridor.config import settings
-from corridor.db import engine
 from corridor.models import Dependency, ExternalOrg, Project
 from corridor.push_intake import PushCredential, PushPayload, accept_delivery, bind_credential, register_push_credential
 from corridor.principals import HumanPrincipal
@@ -36,15 +35,6 @@ def test_csv_accounts_for_every_row_and_does_not_guess_missing_addresses():
 def store(tmp_path, monkeypatch):
     monkeypatch.setattr(settings, "corpus_store", str(tmp_path / "store"))
     monkeypatch.setattr(settings, "corpus_images", str(tmp_path / "images"))
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        transaction.rollback()
 
 
 def project_and_source(session, raw, *, name="Utility A"):

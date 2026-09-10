@@ -18,7 +18,6 @@ from corridor.cohort import (
     NEWLY_ADDED,
     VERIFICATION_BLOCKED,
 )
-from corridor.db import Session, engine
 from corridor.models import Project
 from corridor.principals import HumanPrincipal
 from corridor.web.queue import RailEntry
@@ -32,17 +31,6 @@ from corridor.web.queue_view import (
 from access_support import seed_membership
 
 COORDINATOR = HumanPrincipal("local:queue-view")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

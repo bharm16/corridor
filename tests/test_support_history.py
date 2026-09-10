@@ -5,7 +5,6 @@ from hashlib import sha256
 import pytest
 from sqlalchemy import text
 
-from corridor.db import Session, engine
 from corridor.legacy_history import capture_history, inventory_history, reverse_history
 from corridor.models import Dependency, Document, EvidenceLink, SourceSegment
 from corridor.operative_support import designate_publication_support, resolve_operative_support
@@ -14,18 +13,6 @@ from corridor.support_history import (
     migrate_support_history, native_publication_support,
     native_publication_support_as_of_revision, support_scope_identities,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

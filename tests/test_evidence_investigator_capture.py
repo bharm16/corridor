@@ -23,7 +23,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select
 
-from corridor.db import Session, engine
 from corridor.due_work import (
     EvidenceOutcomeCaptureDeclaration,
     HANDLER_EVIDENCE_OUTCOME_CAPTURE,
@@ -89,17 +88,6 @@ _H = timedelta(hours=1)
 # --------------------------------------------------------------------------- #
 # Fixtures and builders
 # --------------------------------------------------------------------------- #
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

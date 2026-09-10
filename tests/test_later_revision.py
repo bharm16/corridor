@@ -22,7 +22,6 @@ from sqlalchemy import func, select, text
 from corridor import audit
 from corridor.analytics import EventFamily, capture_events
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.field_mapping_manifest import MappingDeclaration, declared_field_mapping
 from corridor.baseline_workbook import read_baseline_workbook
 from corridor.later_revision import (
@@ -76,18 +75,6 @@ AS_OF = datetime(2026, 9, 3, tzinfo=timezone.utc)
 UC1 = "Utility Conflicts!3"
 UC2 = "Utility Conflicts!4"
 UC3 = "Utility Conflicts!5"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

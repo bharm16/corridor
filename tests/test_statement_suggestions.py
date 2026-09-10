@@ -6,7 +6,6 @@ import hashlib
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.models import (
     Candidate,
     Dependency,
@@ -22,17 +21,6 @@ from corridor.statement_suggestions import (
     end_statement_suggestion_protection,
     read_statement_suggestions,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 def _statement_with_constraint(session):

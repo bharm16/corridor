@@ -21,7 +21,6 @@ from sqlalchemy import func, select
 
 from corridor import access
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import Document, Project, SourceIntakeDraftRequest
 import corridor.source_intake as source_intake
 from corridor.principals import HumanPrincipal
@@ -87,17 +86,6 @@ class FakeAdapter(RecordedAdapter):
     """This module's identity on the one shared recording adapter."""
 
     adapter = "fake-intake-draft"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    db = Session(bind=connection)
-    yield db
-    db.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

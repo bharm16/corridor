@@ -32,7 +32,6 @@ from corridor import access
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.analytics import AnalyticsBinding, EventFamily, capture_events
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_profile import UPDATED_UCM
 from corridor.issue_rendering import NO_PRIOR_COMPARISON_STATEMENT
 from corridor.models import (
@@ -314,19 +313,6 @@ def open_delta(session, adopted):
             )
         ],
     )
-
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

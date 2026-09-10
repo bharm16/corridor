@@ -19,7 +19,6 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.ingest import ingest_document
 from corridor.models import (
     PageProcessingFailure,
@@ -38,17 +37,6 @@ from pdf_fixture_support import PdfFixture, scan_image
 
 
 ACTOR = HumanPrincipal("local:retention-operator")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    value = Session(bind=connection)
-    yield value
-    value.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

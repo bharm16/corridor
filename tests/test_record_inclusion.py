@@ -13,7 +13,6 @@ from uuid import uuid4
 import pytest
 from sqlalchemy import func, select
 
-from corridor.db import Session, engine
 from corridor.models import PolicyRun, Project, RecordInclusionRequest
 from corridor.admission import reconcile_record_inclusion
 from corridor.record_inclusion import (
@@ -21,17 +20,6 @@ from corridor.record_inclusion import (
     record_inclusion_pending,
     request_record_inclusion,
 )
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

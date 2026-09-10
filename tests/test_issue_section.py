@@ -31,7 +31,6 @@ from sqlalchemy import func, select
 
 from corridor.access import COORDINATION, EXTERNAL_RELEASE, enroll_member
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.issue_profile import ArtifactEntry, DecisionBlockingPolicy, RendererRevision
 from corridor.issue_content import (
     CHASE_LIST_IDENTITY,
@@ -179,18 +178,6 @@ class Adopted:
         self.project = project
         self.revision_id = revision_id
         self.template_bytes = template_bytes
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

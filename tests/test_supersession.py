@@ -10,7 +10,7 @@ import pytest
 from sqlalchemy import delete, select, text, update
 from sqlalchemy.exc import IntegrityError, OperationalError
 
-from corridor.db import Session, engine
+from corridor.db import Session
 from corridor.models import (
     DocPage,
     Document,
@@ -31,17 +31,6 @@ def _require_registry_id_column():
 
 def _registry_sha(project_id: int, registry_id: str, filename: str) -> str:
     return hashlib.sha256(f"{project_id}:{registry_id}:{filename}".encode()).hexdigest()
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

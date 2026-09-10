@@ -17,7 +17,6 @@ from corridor.cohort import (
     CohortDerivationError,
     derive_cohort_receipt,
 )
-from corridor.db import Session, engine
 from corridor.extraction_runs import declare_active_run, record_extraction_run
 from corridor.models import Candidate, CohortReceipt, DocPage, Document, Project
 from corridor.principals import HumanPrincipal
@@ -26,17 +25,6 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 
 DECLARER = HumanPrincipal("local:cohort-declarer")
 CITY = "City of Houston"
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

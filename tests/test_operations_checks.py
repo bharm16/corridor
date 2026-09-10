@@ -20,7 +20,6 @@ from corridor.check_configuration import (
     effective_configuration,
 )
 from corridor.config import settings
-from corridor.db import Session, engine
 from corridor.models import Dependency, Project, ProjectCheckConfiguration, ReportRun
 from corridor.principals import HumanPrincipal
 from corridor.report_release import (
@@ -31,17 +30,6 @@ from corridor.report_release import (
 from access_support import seed_membership
 
 TEST_PRINCIPAL = HumanPrincipal("local:test-reviewer")
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    trans = connection.begin()
-    s = Session(bind=connection)
-    yield s
-    s.close()
-    trans.rollback()
-    connection.close()
 
 
 @pytest.fixture

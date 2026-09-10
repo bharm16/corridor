@@ -5,7 +5,6 @@ from datetime import datetime, timedelta, timezone
 import pytest
 from sqlalchemy import select
 
-from corridor.db import Session, engine
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.models import Fact, FactDecision
 from corridor.native_reader_coverage import _Surface, _inventory, _releases
@@ -29,16 +28,6 @@ class _ReadbackOverride:
         if name in self._changes:
             return self._changes[name]
         return getattr(self._original, name)
-
-
-@pytest.fixture
-def session():
-    with engine.connect() as connection:
-        transaction = connection.begin()
-        with Session(bind=connection) as session:
-            yield session
-        if transaction.is_active:
-            transaction.rollback()
 
 
 @pytest.fixture

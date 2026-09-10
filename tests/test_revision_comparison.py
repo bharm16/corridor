@@ -48,17 +48,6 @@ from corridor.supersession import SupersessionDeclaration, register_supersession
 
 
 @pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    transaction.rollback()
-    connection.close()
-
-
-@pytest.fixture
 def consecutive_nhhip_documents(session):
     project = Project(
         slug="revision-comparison-nhhip",

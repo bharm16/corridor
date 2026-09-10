@@ -17,7 +17,6 @@ import pytest
 from sqlalchemy import func, select
 
 from corridor import notifications
-from corridor.db import Session, engine
 from corridor.due_work import (
     DueActionNotificationDeclaration,
     DueWorkRefusal,
@@ -51,17 +50,6 @@ from corridor.work_decisions import (
 RECORDER = HumanPrincipal("local:due-action-coordinator")
 TODAY = date(2026, 8, 30)
 NOW = datetime(2026, 8, 30, 7, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    session = Session(bind=connection)
-    yield session
-    session.close()
-    transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture

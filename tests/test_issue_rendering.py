@@ -25,7 +25,6 @@ import pytest
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
-from corridor.db import engine
 from corridor.delta_resolution import (
     ChildDecisionRequest,
     RecordEffect,
@@ -98,18 +97,6 @@ PREPARED_AT = datetime(2026, 9, 3, 7, 0, tzinfo=timezone.utc)
 ASSESSED_AT = datetime(2026, 8, 1, 12, 0, tzinfo=timezone.utc)
 PLANNED_AT = datetime(2026, 9, 1, 9, 0, tzinfo=timezone.utc)
 RETURNS_AT = datetime(2026, 10, 1, 12, 0, tzinfo=timezone.utc)
-
-
-@pytest.fixture
-def session():
-    connection = engine.connect()
-    transaction = connection.begin()
-    scoped = Session(bind=connection)
-    yield scoped
-    scoped.close()
-    if transaction.is_active:
-        transaction.rollback()
-    connection.close()
 
 
 @pytest.fixture
