@@ -474,7 +474,7 @@ class _AwsResume:
         self.registration = replace(
             _registration("env-resume-aws"),
             enabled=False,
-            object_namespace_ref="s3:customer-bucket/data/",
+            object_namespace_ref="s3:customer-bucket",
         )
         registration = self.registration
         self.provider_resources = AwsDispositionResources(
@@ -504,7 +504,7 @@ class _AwsResume:
         self._identity()
         self.stubs["rds"].add_response("describe_db_instances", {"DBInstances": []}, by_instance)
         self._identity()
-        namespace = {"Bucket": "customer-bucket", "Prefix": "data/", "ExpectedBucketOwner": "123456789012"}
+        namespace = {"Bucket": "customer-bucket", "ExpectedBucketOwner": "123456789012"}
         for operation in ("list_object_versions", "list_multipart_uploads", "list_object_versions",
                           "list_objects_v2", "list_multipart_uploads"):
             self.stubs["s3"].add_response(operation, {}, namespace)

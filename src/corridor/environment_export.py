@@ -18,7 +18,7 @@ import subprocess
 import tarfile
 import tempfile
 
-from corridor.disposition_contracts import DispositionRefused, json_digest as digest
+from corridor.disposition_contracts import DispositionRefused, json_digest as digest, retained_object_versions
 from corridor.principals import require_human_principal
 
 
@@ -51,21 +51,13 @@ def export_environment_archive(*, resources, inventory, clients, output_path,
     actor = require_human_principal(principal).subject
     if "custody" in inventory:
         raise DispositionRefused("export inventory must precede its custody receipt")
+    bucket = resources.object_namespace_bucket
     before_export()
-    bucket = resources.object_namespace_ref.removeprefix("s3:").rstrip("/")
-    if not resources.object_namespace_ref.startswith("s3:") or "/" in bucket:
-        raise DispositionRefused("whole-environment export requires a dedicated bucket")
     s3 = clients["s3"]
     parameters = {"Bucket": bucket, "ExpectedBucketOwner": resources.account_id}
 
     def versions():
-        rows = []
-        for page in s3.get_paginator("list_object_versions").paginate(**parameters):
-            rows.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": False}
-                        for r in page.get("Versions", []))
-            rows.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": True}
-                        for r in page.get("DeleteMarkers", []))
-        return sorted(rows, key=lambda row: (row["key"], row["version_id"], row["delete_marker"]))
+        return retained_object_versions(s3, bucket, resources.account_id)
 
     if s3.get_bucket_versioning(**parameters).get("Status") != "Enabled":
         raise DispositionRefused("export requires enabled S3 versioning")

@@ -14,7 +14,7 @@ import json
 from typing import Any
 
 from corridor import digests
-from corridor.control_plane import EnvironmentRegistration
+from corridor.control_plane import EnvironmentRegistration, s3_object_namespace_bucket
 
 
 class DispositionRefused(ValueError):
@@ -60,10 +60,32 @@ class AwsDispositionResources:
     def sha256(self) -> str:
         return sha256(json.dumps(asdict(self), sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
+    @property
+    def object_namespace_bucket(self) -> str:
+        """The one parsed bucket every disposition seam reads (#813)."""
+        if not self.object_namespace_ref.startswith("s3:"):
+            raise DispositionRefused("AWS object namespace must explicitly identify S3")
+        try:
+            return s3_object_namespace_bucket(self.object_namespace_ref)
+        except ValueError as exc:
+            raise DispositionRefused(str(exc)) from exc
+
 
 # Retained encoding: disposition inventory receipts were sealed with
 # non-ASCII escaped.
 json_digest = digests.ascii_escaped_sha256
+
+
+def retained_object_versions(client, bucket, owner):
+    """Every retained object version and delete marker of one bucket, as the
+    sorted ``(key, version_id, delete_marker)`` rows export and census compare."""
+    rows = []
+    for page in client.get_paginator("list_object_versions").paginate(Bucket=bucket, ExpectedBucketOwner=owner):
+        rows.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": False}
+                    for r in page.get("Versions", []))
+        rows.extend({"key": r["Key"], "version_id": r["VersionId"], "delete_marker": True}
+                    for r in page.get("DeleteMarkers", []))
+    return sorted(rows, key=lambda row: (row["key"], row["version_id"], row["delete_marker"]))
 
 
 def provider_rows(client, operation, field, **parameters):

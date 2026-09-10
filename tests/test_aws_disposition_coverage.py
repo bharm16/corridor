@@ -791,3 +791,84 @@ def test_restore_never_recreates_or_rebinds_an_already_observed_target(observed_
         runner.restore()
     assert len(store.rows) == 1
     assert not rds.script
+
+
+PREFIXED_NAMESPACE = "s3:artifact-bucket/data/"
+ONE_BUCKET_SENTENCE = "an S3 object namespace is one dedicated bucket; a key prefix is refused"
+
+
+def test_a_prefixed_s3_namespace_is_refused_once_with_one_sentence_at_every_seam(tmp_path, monkeypatch, capsys):
+    """#813: registration, bootstrap, export, base destroyer, stack census and the
+    CLI all read one parsed bucket, so a prefixed namespace is refused everywhere
+    with the same sentence and no S3 call, rather than accepted by the destroyer
+    that the export must precede."""
+    import corridor
+    from corridor.deployment_bootstrap import DeploymentConfiguration
+    from corridor.environment_disposition import AwsEnvironmentDestroyer
+    import corridor.environment_disposition_cli as cli
+    import sqlalchemy
+
+    with pytest.raises(ValueError, match=ONE_BUCKET_SENTENCE):
+        replace(DISABLED, object_namespace_ref=PREFIXED_NAMESPACE)
+
+    control = "postgresql+psycopg://{user}:secret@control.example:5432/control"
+    values = {"DATABASE_URL": "postgresql+psycopg://owner:secret@customer.example:5432/corridor",
+              "CORRIDOR_S3_BUCKET": "artifact-bucket", "CORRIDOR_S3_PREFIX": "data",
+              "CORRIDOR_CUSTOMER_ID": "customer", "CORRIDOR_CUSTOMER_ENVIRONMENT_ID": "environment",
+              "CORRIDOR_DEPLOYMENT_ID": "deployment",
+              "CONTROL_PLANE_DATABASE_URL": control.format(user="control_owner"),
+              "CONTROL_PLANE_OPERATIONS_DATABASE_URL": control.format(user="control_operations"),
+              "CONTROL_PLANE_RESOLVER_DATABASE_URL": control.format(user="control_resolver"),
+              "CORRIDOR_WEB_DB_PASSWORD": "web", "CORRIDOR_WORKER_DB_PASSWORD": "worker",
+              "CORRIDOR_DEPLOYMENT_DATA_CLASS": "synthetic", "CORRIDOR_ENVIRONMENT": "test"}
+    with pytest.raises(ValueError, match=ONE_BUCKET_SENTENCE):
+        DeploymentConfiguration.from_environment(values)
+    bare = DeploymentConfiguration.from_environment({**values, "CORRIDOR_S3_PREFIX": ""})
+    assert bare.registration().object_namespace_ref == "s3:artifact-bucket"
+
+    prefixed = resource(object_namespace_ref=PREFIXED_NAMESPACE)
+    with pytest.raises(DispositionRefused, match=ONE_BUCKET_SENTENCE):
+        prefixed.object_namespace_bucket
+
+    s3 = ScriptedClient()
+    with pytest.raises(DispositionRefused, match=ONE_BUCKET_SENTENCE):
+        export_environment_archive(resources=prefixed, inventory=inventory(), clients={"s3": s3},
+            output_path=tmp_path / "export.tar", pgpass_file=tmp_path / "pgpass", database_username="reader",
+            principal=HumanPrincipal("local:operator"), before_export=lambda: None)
+    assert not s3.calls
+
+    clients = {name: ScriptedClient() for name in ("sts", "rds", "s3", "kms")}
+    clients["sts"].script.append(("get_caller_identity", {}, {"Account": ACCOUNT}))
+    destroyer = AwsEnvironmentDestroyer(live_activation="live-aws-535", clients=clients, resources=prefixed,
+        approved_resource_sha256=prefixed.sha256, before_delete=lambda: None)
+    # No registration can carry the prefix, so the destroyer is handed a bare
+    # binding shaped like one; it still refuses before touching S3.
+    binding = SimpleNamespace(**{**asdict(DISABLED), "object_namespace_ref": PREFIXED_NAMESPACE})
+    with pytest.raises(DispositionRefused, match=ONE_BUCKET_SENTENCE):
+        destroyer.delete_object_namespace(binding)
+    assert not clients["s3"].calls
+
+    cf = ScriptedClient()
+    with pytest.raises(DispositionRefused, match=ONE_BUCKET_SENTENCE):
+        observe_stack_inventory({"cloudformation": cf}, prefixed, application_stack_id=APP, data_stack_id=DATA)
+    assert not cf.calls
+
+    configuration = tmp_path / "configuration.json"
+    configuration.write_text(json.dumps({"resources": asdict(prefixed), "rehearsal": {}}))
+    monkeypatch.setenv("DISPOSITION_TEST_CONTROL_URL", "postgresql+psycopg://fixture@127.0.0.1:9/unopened")
+    monkeypatch.setattr(sqlalchemy, "create_engine", lambda *args, **kwargs: SimpleNamespace(dispose=lambda: None))
+    monkeypatch.setattr(cli, "ControlPlane", lambda engine: SimpleNamespace(
+        inspect=lambda environment_id: pytest.fail("refused before the control plane is read")))
+    monkeypatch.setattr(cli, "_provider_clients", lambda *args, **kwargs: {})
+    output = tmp_path / "verify.json"
+    assert cli.main(["rehearsal-verify", "--configuration", str(configuration), "--output", str(output),
+        "--control-plane-url-env", "DISPOSITION_TEST_CONTROL_URL", "--aws-profile", "fixture",
+        "--authorize-aws-535", "--principal", "local:operator"]) == 2
+    assert capsys.readouterr().err.strip() == ONE_BUCKET_SENTENCE
+    assert not output.exists()
+
+    family = ("environment_disposition.py", "aws_environment_disposition.py", "environment_export.py",
+              "environment_disposition_cli.py", "deployment_bootstrap.py", "disposition_contracts.py")
+    package = Path(corridor.__file__).parent
+    assert all('removeprefix("s3:")' not in (package / name).read_text() for name in family)
+    assert (package / "control_plane.py").read_text().count('removeprefix("s3:")') == 1

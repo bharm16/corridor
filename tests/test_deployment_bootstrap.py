@@ -36,7 +36,7 @@ def deployment(customer_environment_databases, control_plane_capabilities):
                 .render_as_string(hide_password=False),
             worker_url=owner_url.set(username="corridor_worker", password="corridor_worker")
                 .render_as_string(hide_password=False),
-            object_namespace_ref=f"s3:synthetic-bucket/{suffix}",
+            object_namespace_ref=f"s3:synthetic-bucket-{suffix}",
             data_class="synthetic", environment="test",
         ), ControlPlane(operations)
 

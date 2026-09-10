@@ -17,7 +17,7 @@ from corridor.environment_disposition import (
 def aws():
     registration = EnvironmentRegistration("customer", "environment", "deployment",
         "customer.abc.us-east-1.rds.amazonaws.com", 5432, "corridor",
-        "env:WEB", "env:WORKER", "s3:customer-bucket/data/", "configuration:none", enabled=False)
+        "env:WEB", "env:WORKER", "s3:customer-bucket", "configuration:none", enabled=False)
     resource = AwsDispositionResources("customer", "environment", "deployment", "123456789012", "us-east-1",
         registration.database_host, 5432, "corridor", "customer-instance",
         "arn:aws:rds:us-east-1:123456789012:db:customer-instance", "db-CUSTOMERRESOURCE",
@@ -72,7 +72,7 @@ def test_rds_request_is_pending_and_only_verified_absence_completes(aws):
 def test_s3_per_object_error_never_becomes_a_completion_receipt(aws):
     registration, _, destroyer, stubs, calls = aws
     identity(stubs)
-    parameters = {"Bucket": "customer-bucket", "Prefix": "data/", "ExpectedBucketOwner": "123456789012"}
+    parameters = {"Bucket": "customer-bucket", "ExpectedBucketOwner": "123456789012"}
     stubs["s3"].add_response("list_object_versions", {"Versions": [{"Key": "data/source", "VersionId": "one"}]}, parameters)
     stubs["s3"].add_response("delete_objects", {"Errors": [{"Key": "data/source", "Code": "AccessDenied"}]},
         {"Bucket": "customer-bucket", "ExpectedBucketOwner": "123456789012",
@@ -85,7 +85,7 @@ def test_s3_per_object_error_never_becomes_a_completion_receipt(aws):
 def test_s3_empty_namespace_requires_versions_current_objects_and_multipart_checks(aws):
     registration, _, destroyer, stubs, _ = aws
     identity(stubs)
-    parameters = {"Bucket": "customer-bucket", "Prefix": "data/", "ExpectedBucketOwner": "123456789012"}
+    parameters = {"Bucket": "customer-bucket", "ExpectedBucketOwner": "123456789012"}
     for operation in ("list_object_versions", "list_multipart_uploads", "list_object_versions", "list_objects_v2", "list_multipart_uploads"):
         stubs["s3"].add_response(operation, {}, parameters)
     assert "/s3-namespace-empty/" in destroyer.delete_object_namespace(registration)
@@ -150,7 +150,7 @@ def test_persisted_inventory_cannot_change_and_components_do_not_prove_whole_env
     for _ in range(4):
         identity(stubs)
     stubs["rds"].add_response("describe_db_instances", {"DBInstances": []}, {"Filters": [{"Name": "dbi-resource-id", "Values": [resource.db_resource_id]}]})
-    parameters = {"Bucket": "customer-bucket", "Prefix": "data/", "ExpectedBucketOwner": "123456789012"}
+    parameters = {"Bucket": "customer-bucket", "ExpectedBucketOwner": "123456789012"}
     for operation in ("list_object_versions", "list_multipart_uploads", "list_object_versions", "list_objects_v2", "list_multipart_uploads"):
         stubs["s3"].add_response(operation, {}, parameters)
     stubs["kms"].add_client_error("describe_key", "NotFoundException", expected_params={"KeyId": resource.kms_key_arns[0]})

@@ -48,6 +48,28 @@ def reference(value: str) -> str:
     return value
 
 
+S3_NAMESPACE_RULE = "an S3 object namespace is one dedicated bucket; a key prefix is refused"
+
+
+def s3_object_namespace_bucket(value: str) -> str:
+    """The dedicated bucket an ``s3:`` object namespace reference names (#813).
+
+    Each customer has one object-storage namespace (the one-database-per-
+    customer decision), and the deployment supplies exactly one bucket per
+    environment: ``infra/`` sets ``CORRIDOR_S3_BUCKET`` and never
+    ``CORRIDOR_S3_PREFIX``, and no runbook, workflow, script or control-plane
+    fixture registers a key prefix. The
+    disposition family once answered "may the namespace carry a prefix" four
+    different ways, so a prefixed registration was accepted by the destroyer,
+    refused by the export that must precede it, and unaddressable by the census.
+    One rule, read by every seam: the reference names a bucket and nothing else.
+    """
+    bucket = value.removeprefix("s3:")
+    if not value.startswith("s3:") or not bucket or "/" in bucket:
+        raise ValueError(S3_NAMESPACE_RULE)
+    return bucket
+
+
 @dataclass(frozen=True)
 class EnvironmentRegistration:
     customer_id: str
@@ -80,6 +102,8 @@ class EnvironmentRegistration:
                 raise ValueError("credential must be an environment variable reference")
         for value in (self.object_namespace_ref, self.connector_configuration_ref):
             reference(value)
+        if self.object_namespace_ref.startswith("s3:"):
+            s3_object_namespace_bucket(self.object_namespace_ref)
         if type(self.enabled) is not bool or type(self.hold) is not bool:
             raise ValueError("enabled and hold must be booleans")
 
