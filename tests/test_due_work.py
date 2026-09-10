@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
+from typing import ClassVar
 from datetime import datetime, timedelta, timezone
 import hashlib
 import json
@@ -648,6 +649,8 @@ FAKE_HANDLER = "fake_reading"
 
 @dataclass(frozen=True)
 class FakeReadingDeclaration(DueWorkScheduling):
+    handler_key: ClassVar[str] = FAKE_HANDLER
+
     subject: str
 
     @classmethod
@@ -859,10 +862,36 @@ def test_a_tampered_stored_schedule_is_refused_by_its_own_registration(
     assert rebuilt[0].scope == {"project_id": rebuilt[0].project_id, "subject": "widgets"}
     assert rebuilt[0].claim_ttl_seconds == 300
 
+    # A row whose retained configuration and digest agree with each other but
+    # whose scope was widened: the registration rebuilds the declaration the
+    # scope describes, and the comparison refuses it.
     with factory() as tampering:
-        schedule = tampering.get(DueWorkSchedule, schedule_id)
-        schedule.scope_json = {**schedule.scope_json, "subject": "everything"}
-        tampering.flush([schedule])
+        source = tampering.get(DueWorkSchedule, schedule_id)
+        forged = DueWorkSchedule(
+            public_id=f"due-job:forged-{uuid4().hex[:12]}",
+            project_id=source.project_id,
+            handler_key=FAKE_HANDLER,
+            configuration_version="fake-reading-widened-v1",
+            scope_json={**source.scope_json, "subject": "everything"},
+            configuration_json=source.configuration_json,
+            configuration_sha256=source.configuration_sha256,
+            input_identity_sha256="c" * 64,
+            starts_at=source.starts_at,
+            cadence=source.cadence,
+            timezone_name=source.timezone_name,
+            missed_run_policy=source.missed_run_policy,
+            retention_days=source.retention_days,
+            max_attempts=source.max_attempts,
+            backoff_seconds=source.backoff_seconds,
+            claim_ttl_seconds=source.claim_ttl_seconds,
+            deadline_seconds=source.deadline_seconds,
+            concurrency_limit=source.concurrency_limit,
+            model_token_budget=source.model_token_budget,
+            notification_budget=source.notification_budget,
+            enabled_at=starts_at,
+        )
+        tampering.add(forged)
+        tampering.flush([forged])
         with pytest.raises(DueWorkRefusal, match="persisted Due Work configuration"):
             enqueue_due_work(tampering, now=starts_at, registry=registry)
         tampering.rollback()

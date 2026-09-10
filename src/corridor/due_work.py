@@ -19,7 +19,7 @@ from __future__ import annotations
 
 from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from importlib import import_module
 import logging
 import re
@@ -45,7 +45,6 @@ from corridor.due_work_contract import (
     aware_utc,
     gate7_configuration,
     iso_timestamp,
-    previous_completed_reading,
     validate_scheduling,
 )
 from corridor.models import (
@@ -473,6 +472,38 @@ class _ServerOwnedRegistry(Mapping[str, HandlerRegistration]):
 
 
 HANDLER_REGISTRY: Mapping[str, HandlerRegistration] = _ServerOwnedRegistry()
+
+# The declarations that moved to their handlers, and the names callers still
+# import from the runtime. Resolved through the registry above rather than
+# re-imported here, so the compatibility name cannot drift from the handler's
+# own declaration and importing the runtime still imports no handler module.
+_MOVED_DECLARATIONS: Mapping[str, str] = MappingProxyType(
+    {
+        "LocationDiscoveryDeclaration": HANDLER_LOCATION_DISCOVERY,
+        "AssignmentNotificationDeclaration": HANDLER_ASSIGNMENT_NOTIFICATION,
+        "DueActionNotificationDeclaration": HANDLER_DUE_ACTION_NOTIFICATION,
+        "DocumentNotificationDeclaration": HANDLER_DOCUMENT_NOTIFICATION,
+        "EventAdmissionReproofDeclaration": HANDLER_EVENT_ADMISSION_REPROOF,
+        "ReportPublicationDeclaration": HANDLER_REPORT_PUBLICATION,
+        "ConnectorPollingDeclaration": HANDLER_CONNECTOR_POLLING,
+        "DeltaGenerationDeclaration": HANDLER_DELTA_GENERATION,
+        "ReportPreparationDeclaration": HANDLER_REPORT_PREPARATION,
+        "ReleasePreparationDeclaration": HANDLER_RELEASE_PREPARATION,
+        "RetentionSweepDeclaration": HANDLER_RETENTION_SWEEP,
+    }
+)
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve a moved declaration's old runtime name to the handler that owns it."""
+
+    handler_key = _MOVED_DECLARATIONS.get(name)
+    if handler_key is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    declaration_type = HANDLER_REGISTRY[handler_key].declaration_type
+    if declaration_type is None:
+        raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+    return declaration_type
 
 def _processing_health(
     session: Session,
@@ -1724,6 +1755,11 @@ def _validate_stored_schedule(
     if schedule.configuration_json.get("handler") != schedule.handler_key:
         raise DueWorkRefusal("persisted Due Work configuration handler does not match")
     registration = registry[schedule.handler_key]
+    if schedule.handler_key in HANDLER_REGISTRY:
+        # An in-process caller may substitute a handler's *execution* — a test
+        # double, a controlled run — but never what a persisted row is allowed
+        # to say: for a server-owned key that answer is the server's.
+        registration = HANDLER_REGISTRY[schedule.handler_key]
     validated = registration.revalidate(resolved_schedule(schedule))
     if schedule.configuration_json != validated.configuration:
         raise DueWorkRefusal("persisted Due Work configuration is unsupported")
