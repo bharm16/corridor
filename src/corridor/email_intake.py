@@ -27,6 +27,18 @@ onto bound aliases, and it gains no new capability.  Its rows are the same rows
 the bound path writes, so migrating a project costs no raw MIME and no thread
 history — a reply to a legacy thread continues that thread once the alias binds
 the project the thread already resolved to.
+
+That last sentence used to be true by duplication.  Both doors did the whole
+registration — the byte-identity dedupe, the Message-ID-with-different-bytes
+refusal, the retained headers, body and attachment parse, the thread, the
+eleven-column insert, the cited-row back-fill, the content registration — and
+differed in one decision, which project this delivery belongs to.  So there is
+now one registration body, ``_register_message``, and one pluggable step in
+front of it: an ``_IntakeDoor`` whose ``resolve`` answers that question and
+whose ``project_scope`` is the boundary every other lookup is then scoped to.
+The bound doors answer from the credential or the connector configuration; the
+frozen door answers from the payload, which is the whole of what ADR-0078
+superseded and is now the only place that ordering lives.
 """
 
 from __future__ import annotations
@@ -39,6 +51,7 @@ from email.utils import getaddresses, parsedate_to_datetime
 from hashlib import sha256
 from pathlib import Path
 import re
+from typing import Callable
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
@@ -91,6 +104,58 @@ class ReceivedMessage:
     created: bool
 
 
+# What decided the boundary, recorded on every bound message's route evidence.
+# The label is the door's own, not its binding class's: the registration body
+# asked which class it had been handed and labelled the evidence from that,
+# which is transport identity in the one place ADR-0083 puts after ingress.
+PUSH_CREDENTIAL_BOUNDARY = "push_credential"
+PULL_CONFIGURATION_BOUNDARY = "pull_configuration"
+
+
+@dataclass(frozen=True, slots=True)
+class _Parsed:
+    """The facts a route reads out of one message, parsed exactly once."""
+
+    body: str
+    attachment_hashes: tuple[str, ...]
+    attachment_names: tuple[str, ...]
+    sender: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class _Route:
+    """Which project a message belongs to, and the evidence that decided it."""
+
+    project_id: int | None
+    evidence: dict
+    dependency_id: int | None
+
+
+@dataclass(frozen=True, slots=True)
+class _IntakeDoor:
+    """What one door answers that the shared registration body cannot ask.
+
+    There is one registration body and there are two doors in front of it, and
+    the difference between them is one decision: which project.  ``resolve``
+    makes it — from the credential on a bound door, from ADR-0059's content
+    tiers on the frozen one — and ``project_scope`` is the boundary every other
+    lookup is then scoped to.  ``None`` there is the frozen door's honest
+    answer rather than a mode: it has no boundary until its content is routed,
+    which is exactly the ordering ADR-0078 superseded.
+
+    ``stage`` is called where the row that references the bytes is written, so
+    the frozen door still stores nothing for a message it refuses; a bound door
+    was handed bytes already persisted before anything parsed them, and simply
+    hands their path back.
+    """
+
+    project_scope: int | None
+    stage: Callable[[], Path]
+    resolve: Callable[[Session, InboundThread, _Parsed], _Route]
+    delivery_id: int | None = None
+    attachment_doc_types: dict[str, str] | None = None
+
+
 def normalize_identifier(value: str) -> str:
     """Normalize case and spacing only; routing remains an exact identifier match."""
 
@@ -131,11 +196,15 @@ def receive_message(
 ) -> ReceivedMessage:
     """Store one delivered raw message and its deterministic project route.
 
-    Duplicate raw bytes are idempotent.  Headers alone establish a reply's
-    thread: an unknown In-Reply-To/References chain starts a new thread rather
-    than borrowing a similarly-worded conversation.  A known routed thread
-    wins only after its headers resolve to it, preventing spoofed headers from
-    binding a new thread to an unrelated subject.
+    The frozen global-address door (ADR-0059).  It parses first, because the
+    only thing it can check before deciding anything is that the transport
+    delivered to the configured service address, and then hands the message to
+    the one registration body with ADR-0059's content tiers as its routing
+    step.  Duplicate raw bytes are idempotent.  Headers alone establish a
+    reply's thread: an unknown In-Reply-To/References chain starts a new thread
+    rather than borrowing a similarly-worded conversation.  A known routed
+    thread wins only after its headers resolve to it, preventing spoofed
+    headers from binding a new thread to an unrelated subject.
     """
 
     if not raw_bytes:
@@ -143,105 +212,16 @@ def receive_message(
     message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
     if not _addresses_service(message, service_address):
         raise InboundMailRefused("mail was not delivered to the configured intake address")
-
     digest = sha256(raw_bytes).hexdigest()
-    existing = session.scalars(
-        select(InboundMessage).where(InboundMessage.raw_sha256 == digest)
-    ).first()
-    if existing is not None:
-        return ReceivedMessage(
-            message_id=existing.id,
-            thread_id=existing.thread_id,
-            project_id=existing.project_id,
-            route_status=existing.route_status,
-            route_evidence=existing.route_evidence_json,
-            created=False,
-        )
-
-    message_id = _header_id(message.get("Message-ID"))
-    if message_id:
-        same_id = session.scalars(
-            select(InboundMessage).where(InboundMessage.message_id == message_id)
-        ).first()
-        if same_id is not None:
-            # Same Message-ID with different bytes is not a resend.  Preserve no
-            # ambiguous provenance and make the transport retry with canonical data.
-            raise InboundMailRefused("Message-ID was already received with different bytes")
-
-    headers = _retained_headers(message)
-    body = _body_text(message)
-    attachments = _attachment_parts(raw_bytes)
-    attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
-    thread = _thread_for_headers(session, headers, project_id=None)
-    if thread is None:
-        thread = InboundThread()
-        session.add(thread)
-        session.flush()
-
-    sender = _first_address(message.get("From"))
-    project_id, evidence, dependency_id = _route_project(
+    return _register_message(
         session,
-        thread=thread,
-        body=body,
-        attachment_hashes=attachment_hashes,
-        attachment_names=tuple(name for name, _payload in attachments),
-        sender=sender,
-    )
-    # The sender matching a registered row contact is retained as attribution
-    # evidence under the existing identity tiers (ADR-0051) whether or not it
-    # was the deciding routing tier. It strengthens a later match; it never
-    # becomes an authority or mints an Organization.
-    evidence = {
-        **evidence,
-        "sender_registered_contact_project_ids": sorted(
-            _sender_contact_project_ids(session, sender)
+        door=_IntakeDoor(
+            project_scope=None,
+            stage=lambda: _store_raw(digest, raw_bytes),
+            resolve=_frozen_route,
         ),
-    }
-    if project_id is not None:
-        thread.project_id = project_id
-        if thread.dependency_id is None and dependency_id is not None:
-            thread.dependency_id = dependency_id
-        status = "routed"
-    else:
-        status = "triage"
-        # A contradictory reply keeps its raw provenance and conflict evidence,
-        # but must not create a card capable of rewriting the routed thread it
-        # referenced.  Only an unbound thread has an honest routing question.
-        if thread.project_id is None:
-            _ensure_triage(session, thread, evidence["candidate_project_ids"])
-
-    path = _store_raw(digest, raw_bytes)
-    inbound = InboundMessage(
-        raw_sha256=digest,
-        storage_path=str(path),
-        message_id=message_id,
-        sender=sender,
-        subject=str(message.get("Subject") or ""),
-        sent_at=_parsed_date(message.get("Date")),
-        headers_json=headers,
-        body_text=body,
-        thread_id=thread.id,
-        project_id=project_id,
-        route_status=status,
-        route_evidence_json=evidence,
-    )
-    session.add(inbound)
-    session.flush()
-    # The cited row binding is recorded only after the immutable message has an
-    # id.  Replies inherit the existing binding; no content on a reply can move
-    # a thread to another row.
-    if thread.bound_by_message_id is None and dependency_id is not None:
-        thread.bound_by_message_id = inbound.id
-        session.flush()
-    if project_id is not None:
-        _register_routed_content(session, inbound, message)
-    return ReceivedMessage(
-        message_id=inbound.id,
-        thread_id=thread.id,
-        project_id=project_id,
-        route_status=status,
-        route_evidence=evidence,
-        created=True,
+        message=message,
+        raw_bytes=raw_bytes,
     )
 
 
@@ -290,17 +270,11 @@ def receive_pushed_message(
     ).first()
     if already is not None:
         _check_attachment_type_replay(already, attachment_doc_types)
-        return ReceivedMessage(
-            message_id=already.id,
-            thread_id=already.thread_id,
-            project_id=already.project_id,
-            route_status=already.route_status,
-            route_evidence=already.route_evidence_json,
-            created=False,
-        )
+        return _received(already, created=False)
     return _register_bound_message(
         session, binding=binding, envelope=receipt.envelope, delivery_id=receipt.delivery_id,
         staged_path=receipt.staged_path, raw_bytes=raw_bytes,
+        boundary=PUSH_CREDENTIAL_BOUNDARY,
         attachment_doc_types=attachment_doc_types,
     )
 
@@ -318,6 +292,7 @@ def receive_pulled_message(session: Session, *, envelope: SourceEnvelope,
     binding = binding_of_delivery(session, delivery)
     return _register_bound_message(session, binding=binding, envelope=envelope,
         delivery_id=delivery.id, staged_path=path, raw_bytes=raw,
+        boundary=PULL_CONFIGURATION_BOUNDARY,
         attachment_doc_types=attachment_doc_types)
 
 
@@ -329,116 +304,264 @@ def _register_bound_message(
     delivery_id: int,
     staged_path: Path,
     raw_bytes: bytes,
+    boundary: str,
     attachment_doc_types: dict[str, str] | None = None,
 ) -> ReceivedMessage:
-    """Parse and register one delivery, entirely inside an established binding."""
+    """Parse and register one delivery, entirely inside an established binding.
 
-    # The first parse in the whole path, and it happens with the customer and
-    # project already decided by the credential.
+    The first parse in the whole path, and it happens with the customer and
+    project already decided — by a credential the transport presented, or by
+    the connector configuration the delivery arrived under.  Which of the two
+    it was is the ``boundary`` label this door supplies; nothing below reads it
+    back off the binding's class.
+    """
+
     message = BytesParser(policy=policy.default).parsebytes(raw_bytes)
-    digest = envelope.content_digest
+    return _register_message(
+        session,
+        door=_IntakeDoor(
+            project_scope=binding.project_id,
+            stage=lambda: staged_path,
+            resolve=_bound_route(binding, envelope, boundary),
+            delivery_id=delivery_id,
+            attachment_doc_types=attachment_doc_types,
+        ),
+        message=message,
+        raw_bytes=raw_bytes,
+    )
 
-    same_bytes = session.scalars(
-        select(InboundMessage).where(
-            InboundMessage.raw_sha256 == digest,
-            InboundMessage.project_id == binding.project_id,
-        )
-    ).first()
-    if same_bytes is not None:
-        _check_attachment_type_replay(same_bytes, attachment_doc_types)
-        return ReceivedMessage(
-            message_id=same_bytes.id,
-            thread_id=same_bytes.thread_id,
-            project_id=same_bytes.project_id,
-            route_status=same_bytes.route_status,
-            route_evidence=same_bytes.route_evidence_json,
-            created=False,
-        )
+
+def _register_message(
+    session: Session,
+    *,
+    door: _IntakeDoor,
+    message,
+    raw_bytes: bytes,
+) -> ReceivedMessage:
+    """Register one delivered message, its thread, and its route, once.
+
+    The one registration body every door writes through.  It was two — the
+    frozen global-address path and the bound path each did the byte-identity
+    dedupe, the Message-ID-with-different-bytes refusal, the retained headers,
+    body and attachment parse, the thread resolution, the eleven-column insert,
+    the cited-row back-fill and the content registration — and the only real
+    difference between them was one decision, which ``door.resolve`` now makes
+    and this body does not know how to make.  Every lookup here is scoped to
+    ``door.project_scope``, so the bound doors' security property (a message
+    can only duplicate, reply to, or cite rows inside the project its
+    credential named) and the frozen door's unscoped inference are the same
+    code reading one field.
+
+    The digest is derived once, from the bytes being registered.  A bound door
+    holds an envelope digest as well, and it is the same value by construction
+    — the push half hashes the payload it was handed and the pull half reads
+    its bytes back through a store that verifies them — so deriving it here
+    keeps one definition of a message's byte identity instead of two.
+    """
+
+    digest = sha256(raw_bytes).hexdigest()
+    already = _registered_bytes(session, digest, door.project_scope)
+    if already is not None:
+        _check_attachment_type_replay(already, door.attachment_doc_types)
+        return _received(already, created=False)
 
     message_id = _header_id(message.get("Message-ID"))
-    if message_id:
-        same_id = session.scalars(
-            select(InboundMessage).where(
-                InboundMessage.message_id == message_id,
-                InboundMessage.project_id == binding.project_id,
-            )
-        ).first()
-        if same_id is not None:
-            # Same Message-ID with different bytes is not a resend.  The check
-            # is inside the boundary, so a guessed identifier cannot refuse a
-            # delivery in a project the sender cannot see.
-            raise InboundMailRefused(
-                "Message-ID was already received with different bytes"
-            )
+    if message_id and _registered_message_id(
+        session, message_id, door.project_scope
+    ) is not None:
+        # Same Message-ID with different bytes is not a resend.  Preserve no
+        # ambiguous provenance and make the transport retry with canonical
+        # data.  It is scoped like every other lookup, so on a bound door a
+        # guessed identifier cannot refuse a delivery in a project the sender
+        # cannot see.
+        raise InboundMailRefused("Message-ID was already received with different bytes")
 
     headers = _retained_headers(message)
-    body = _body_text(message)
     attachments = _attachment_parts(raw_bytes)
-    attachment_hashes = tuple(sha256(payload).hexdigest() for _n, payload in attachments)
-    from corridor.models import DOC_TYPES
+    parsed = _Parsed(
+        body=_body_text(message),
+        attachment_hashes=tuple(
+            sha256(payload).hexdigest() for _name, payload in attachments
+        ),
+        attachment_names=tuple(name for name, _payload in attachments),
+        sender=_first_address(message.get("From")),
+    )
+    _require_declared_types(door.attachment_doc_types, parsed.attachment_hashes)
 
-    if attachment_doc_types and (
-            not set(attachment_doc_types) <= set(attachment_hashes)
-            or any(kind not in DOC_TYPES or kind == "email" for kind in attachment_doc_types.values())):
-        raise InboundMailRefused("attachment types must name delivered digests and supported source kinds")
-    thread = _thread_for_headers(session, headers, project_id=binding.project_id)
+    thread = _thread_for_headers(session, headers, project_id=door.project_scope)
     if thread is None:
-        thread = InboundThread(project_id=binding.project_id)
+        thread = InboundThread(project_id=door.project_scope)
         session.add(thread)
         session.flush()
 
-    sender = _first_address(message.get("From"))
-    evidence, dependency_id = _resolve_within_boundary(
-        session,
-        project_id=binding.project_id,
-        body=body,
-        attachment_hashes=attachment_hashes,
-        attachment_names=tuple(name for name, _payload in attachments),
-        sender=sender,
-    )
-    evidence = {
-        "boundary": "pull_configuration" if isinstance(binding, DeliveryBinding) else "push_credential",
-        "customer": binding.customer,
-        "channel": binding.channel,
-        "credential_id": binding.credential_id,
-        "delivery_identity": envelope.delivery_identity,
-        # The bound project is the only candidate there has ever been; the key
-        # keeps its shape for the readback the global-address path also feeds.
-        "candidate_project_ids": [binding.project_id],
-        **evidence,
-    }
-    if thread.dependency_id is None and dependency_id is not None:
-        thread.dependency_id = dependency_id
+    route = door.resolve(session, thread, parsed)
+    if route.project_id is not None:
+        thread.project_id = route.project_id
+        if thread.dependency_id is None and route.dependency_id is not None:
+            thread.dependency_id = route.dependency_id
+        status = "routed"
+    else:
+        status = "triage"
+        # A contradictory reply keeps its raw provenance and conflict evidence,
+        # but must not create a card capable of rewriting the routed thread it
+        # referenced.  Only an unbound thread has an honest routing question.
+        if thread.project_id is None:
+            _ensure_triage(session, thread, route.evidence["candidate_project_ids"])
 
     inbound = InboundMessage(
         raw_sha256=digest,
-        storage_path=str(staged_path),
+        storage_path=str(door.stage()),
         message_id=message_id,
-        sender=sender,
+        sender=parsed.sender,
         subject=str(message.get("Subject") or ""),
         sent_at=_parsed_date(message.get("Date")),
         headers_json=headers,
-        body_text=body,
+        body_text=parsed.body,
         thread_id=thread.id,
-        project_id=binding.project_id,
-        route_status="routed",
-        route_evidence_json=evidence,
-        push_delivery_id=delivery_id,
+        project_id=route.project_id,
+        route_status=status,
+        route_evidence_json=route.evidence,
+        push_delivery_id=door.delivery_id,
     )
     session.add(inbound)
     session.flush()
-    if thread.bound_by_message_id is None and dependency_id is not None:
+    # The cited row binding is recorded only after the immutable message has an
+    # id.  Replies inherit the existing binding; no content on a reply can move
+    # a thread to another row.
+    if thread.bound_by_message_id is None and route.dependency_id is not None:
         thread.bound_by_message_id = inbound.id
         session.flush()
-    _register_routed_content(session, inbound, message, attachment_doc_types=attachment_doc_types)
+    if route.project_id is not None:
+        _register_routed_content(
+            session, inbound, message, attachment_doc_types=door.attachment_doc_types
+        )
+    return _received(inbound, created=True)
+
+
+def _frozen_route(session: Session, thread: InboundThread, parsed: _Parsed) -> _Route:
+    """ADR-0059's ordered exact tiers: the payload decides which project.
+
+    The whole of what the frozen door does differently, and the defect ADR-0078
+    superseded.  There is no boundary until this returns, so every tier reads
+    across every customer's rows.
+    """
+
+    project_id, evidence, dependency_id = _route_project(
+        session,
+        thread=thread,
+        body=parsed.body,
+        attachment_hashes=parsed.attachment_hashes,
+        attachment_names=parsed.attachment_names,
+        sender=parsed.sender,
+    )
+    # The sender matching a registered row contact is retained as attribution
+    # evidence under the existing identity tiers (ADR-0051) whether or not it
+    # was the deciding routing tier. It strengthens a later match; it never
+    # becomes an authority or mints an Organization.
+    return _Route(
+        project_id=project_id,
+        evidence={
+            **evidence,
+            "sender_registered_contact_project_ids": sorted(
+                _sender_contact_project_ids(session, parsed.sender)
+            ),
+        },
+        dependency_id=dependency_id,
+    )
+
+
+def _bound_route(
+    binding: PushBinding | DeliveryBinding, envelope: SourceEnvelope, boundary: str
+) -> Callable[[Session, InboundThread, _Parsed], _Route]:
+    """The bound doors' answer: the project was decided before the bytes arrived.
+
+    ``boundary`` is the label the door supplies, and ``credential_id`` is read
+    off the binding the same way for both — a pushed delivery names the
+    credential that admitted it and a pulled one has none.  The registration
+    body used to ask which class of binding it held and label the evidence from
+    that, which put transport identity inside the one step ADR-0083 defines as
+    after ingress.
+    """
+
+    def resolve(session: Session, thread: InboundThread, parsed: _Parsed) -> _Route:
+        evidence, dependency_id = _resolve_within_boundary(
+            session,
+            project_id=binding.project_id,
+            body=parsed.body,
+            attachment_hashes=parsed.attachment_hashes,
+            attachment_names=parsed.attachment_names,
+            sender=parsed.sender,
+        )
+        return _Route(
+            project_id=binding.project_id,
+            evidence={
+                "boundary": boundary,
+                "customer": binding.customer,
+                "channel": binding.channel,
+                "credential_id": binding.credential_id,
+                "delivery_identity": envelope.delivery_identity,
+                # The bound project is the only candidate there has ever been;
+                # the key keeps its shape for the readback the global-address
+                # path also feeds.
+                "candidate_project_ids": [binding.project_id],
+                **evidence,
+            },
+            dependency_id=dependency_id,
+        )
+
+    return resolve
+
+
+def _received(inbound: InboundMessage, *, created: bool) -> ReceivedMessage:
+    """The one readback of a registered message, new or already held."""
+
     return ReceivedMessage(
         message_id=inbound.id,
-        thread_id=thread.id,
-        project_id=binding.project_id,
-        route_status="routed",
-        route_evidence=evidence,
-        created=True,
+        thread_id=inbound.thread_id,
+        project_id=inbound.project_id,
+        route_status=inbound.route_status,
+        route_evidence=inbound.route_evidence_json,
+        created=created,
     )
+
+
+def _registered_bytes(
+    session: Session, digest: str, project_id: int | None
+) -> InboundMessage | None:
+    """The message these exact bytes already are, inside the door's boundary."""
+
+    query = select(InboundMessage).where(InboundMessage.raw_sha256 == digest)
+    if project_id is not None:
+        query = query.where(InboundMessage.project_id == project_id)
+    return session.scalars(query).first()
+
+
+def _registered_message_id(
+    session: Session, message_id: str, project_id: int | None
+) -> InboundMessage | None:
+    """The message already holding this Message-ID, inside the door's boundary."""
+
+    query = select(InboundMessage).where(InboundMessage.message_id == message_id)
+    if project_id is not None:
+        query = query.where(InboundMessage.project_id == project_id)
+    return session.scalars(query).first()
+
+
+def _require_declared_types(
+    declared: dict[str, str] | None, attachment_hashes: tuple[str, ...]
+) -> None:
+    """A declared attachment kind names a delivered digest and a real source kind."""
+
+    if not declared:
+        return
+    from corridor.models import DOC_TYPES
+
+    if not set(declared) <= set(attachment_hashes) or any(
+        kind not in DOC_TYPES or kind == "email" for kind in declared.values()
+    ):
+        raise InboundMailRefused(
+            "attachment types must name delivered digests and supported source kinds"
+        )
 
 
 def _resolve_within_boundary(

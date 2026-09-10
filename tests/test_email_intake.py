@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import func, select
 
-from corridor import email_intake
+from corridor import email_intake, push_intake
 from corridor.config import settings
 from corridor.db import Session, engine
 from corridor.models import (
@@ -543,3 +543,95 @@ def test_project_inbound_readback_uses_the_standard_membership_and_designation_g
             assert response.json()["messages"][0]["subject"] == ""
     finally:
         app.dependency_overrides.clear()
+
+
+def _registered_facts(session, received: email_intake.ReceivedMessage) -> dict:
+    """Everything one registration wrote, except how the project was decided.
+
+    The route evidence and the delivery link are the two things the two doors
+    are *allowed* to differ on: one records that content inference chose the
+    project, the other that a credential had already chosen it, and only a
+    delivery-backed door has a ledger row to point at.  Everything else is the
+    retained message, its thread, and the source it registered, and none of
+    that is a transport fact.
+    """
+
+    message = session.get(InboundMessage, received.message_id)
+    thread = session.get(InboundThread, received.thread_id)
+    document = session.get(Document, message.document_id)
+    return {
+        "raw_sha256": message.raw_sha256,
+        "storage_path": message.storage_path,
+        "message_id": message.message_id,
+        "sender": message.sender,
+        "subject": message.subject,
+        "sent_at": message.sent_at,
+        "headers_json": message.headers_json,
+        "body_text": message.body_text,
+        "project_id": message.project_id,
+        "route_status": message.route_status,
+        "attachments_json": message.attachments_json,
+        "thread_project_id": thread.project_id,
+        "thread_dependency_id": thread.dependency_id,
+        "document_filename": document.filename,
+        "document_doc_type": document.doc_type,
+        "document_sha256": document.sha256,
+    }
+
+
+def test_both_email_doors_register_one_message_through_one_body(session):
+    """One registration body, two routing doors.
+
+    The frozen global address (ADR-0059) and a bound project alias (#511)
+    differ in one decision — which project this delivery belongs to — and the
+    rows they write are otherwise the same rows, which is what makes migrating
+    a project off the global address cost no raw MIME and no thread history.
+    The same bytes therefore register the same message, the same thread, and
+    the same source Document either way; what differs is the evidence that
+    records *how* the project was decided, and the delivery link only a bound
+    delivery has.
+    """
+
+    alpha = project(session, "One Body Segment")
+    email_intake.register_project_identifier(
+        session, project=alpha, kind="csj", value="0912-31-999"
+    )
+    payload = raw(
+        message_id="<one-body@example.test>",
+        body="CSJ 0912-31-999 revised pole placement",
+        subject="Pole placement",
+    )
+
+    # The frozen door is exercised and rolled back so both doors register the
+    # identical bytes; registering them twice in one transaction would reach
+    # the byte-identity dedupe instead of a second registration.
+    savepoint = session.begin_nested()
+    frozen = receive(session, payload)
+    frozen_facts = _registered_facts(session, frozen)
+    frozen_evidence = dict(frozen.route_evidence)
+    savepoint.rollback()
+
+    push_intake.register_push_credential(
+        session,
+        customer="acme-utilities",
+        project=alpha,
+        channel="project_alias",
+        material="one-body@alias.corridor.test",
+    )
+    bound = email_intake.receive_pushed_message(
+        session,
+        credential=push_intake.PushCredential(
+            channel="project_alias", material="one-body@alias.corridor.test"
+        ),
+        raw_bytes=payload,
+    )
+
+    assert _registered_facts(session, bound) == frozen_facts
+    assert frozen.project_id == bound.project_id == alpha.id
+    assert frozen.route_status == bound.route_status == "routed"
+    assert frozen_evidence["tier"] == "project_identifier"
+    assert "boundary" not in frozen_evidence
+    assert bound.route_evidence["boundary"] == "push_credential"
+    assert bound.route_evidence["candidate_project_ids"] == [alpha.id]
+    assert session.get(InboundMessage, frozen.message_id) is None
+    assert session.get(InboundMessage, bound.message_id).push_delivery_id is not None
