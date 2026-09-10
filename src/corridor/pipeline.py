@@ -30,7 +30,7 @@ from corridor.extractor_lineage import (
 )
 from corridor.extraction_errors import ExtractionFailed, NativeObservationFailed
 from corridor.extraction_errors import NoMatrixFound
-from corridor.ingest import SPREADSHEET_SUFFIXES, ingest_document
+from corridor.ingest import SPREADSHEET_SUFFIXES, document_parse_failure, ingest_document
 from corridor.config import settings
 from corridor.native_matrix_runtime import NativeMatrixRuntime, configured_native_matrix_runtime
 from corridor.models import (
@@ -740,6 +740,13 @@ def ingest_and_extract(
     document._stored_path = Path(path)
     if document.parse_status != "parsed":
         route = extraction_route(document, client=client)
+        # The receipt records why, not just that. `ingest parse_status is
+        # 'failed'` was the whole account of a reader exception, a rendition
+        # with no pages and source bytes that had drifted -- three different
+        # conditions with three different repairs. The reason the read attempt
+        # produced is durable here even though no relation yet owns a
+        # document-level Processing Failure row.
+        failure = document_parse_failure(document)
         record_routed_run(
             session,
             document,
@@ -749,7 +756,13 @@ def ingest_and_extract(
             page_errors=1,
             outcome="unreadable",
             model=route.model,
-            error_detail=f"ingest parse_status is {document.parse_status!r}",
+            error_detail=json.dumps(
+                {
+                    "parse_status": document.parse_status,
+                    **(failure.as_error_detail() if failure else {}),
+                },
+                sort_keys=True,
+            ),
         )
         return document, []
 

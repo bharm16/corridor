@@ -6,7 +6,12 @@ import pytest
 from sqlalchemy import select
 
 from corridor.db import Session, engine
-from corridor.ingest import _extract_pages, ingest_document
+from corridor.ingest import (
+    DocumentParseFailure,
+    _extract_pages,
+    document_parse_failure,
+    ingest_document,
+)
 from corridor.page_inventory import READER_COORDINATE_FRAME, READER_ROUTER_VERSION
 from corridor.models import (
     DocPage,
@@ -636,6 +641,55 @@ def test_an_unreadable_file_is_recorded_as_failed(session, project, tmp_path):
     # Registered so it is visible, not silently skipped, and clearly not parsed.
     assert doc.parse_status == "failed"
     assert doc.pages == 0
+    # And the reason survives. `parse_status` alone said only "something went
+    # wrong somewhere", which is exactly what a per-page failure is not allowed
+    # to say: it records engine, region, error type and message.
+    failure = document_parse_failure(doc)
+    assert failure.stage == "read_document"
+    assert failure.error_type and failure.error_message
+
+
+def test_a_whole_document_read_failure_keeps_its_stage_type_and_message(
+    session, project, pdf, tmp_path, monkeypatch
+):
+    """The same shape a `PageProcessingFailure` row has, for the document.
+
+    A per-page failure records `error_type` and `error_message`; the
+    whole-document `except` discarded both, so `pipeline.ingest_and_extract`
+    could only record "ingest parse_status is 'failed'" and a reviewer had to
+    re-run the reader to learn what happened.
+    """
+
+    def unreadable(*args, **kwargs):
+        raise RuntimeError("the reader could not open the rendition")
+
+    monkeypatch.setattr("corridor.ingest._extract", unreadable)
+    doc = ingest(session, project, pdf, tmp_path / "images")
+
+    assert (doc.parse_status, doc.pages) == ("failed", 0)
+    assert document_parse_failure(doc) == DocumentParseFailure(
+        stage="read_document",
+        error_type="RuntimeError",
+        error_message="the reader could not open the rendition",
+    )
+
+
+def test_a_source_the_store_lost_records_that_stage_rather_than_a_read(
+    session, project, tmp_path
+):
+    doc = ingest_document(
+        session,
+        project_id=project.id,
+        path=tmp_path / "never-stored.pdf",
+        doc_type="matrix",
+        images_dir=tmp_path / "images",
+        expected_sha256="a" * 64,
+    )
+
+    assert doc.parse_status == "failed"
+    failure = document_parse_failure(doc)
+    assert failure.stage == "locate_source"
+    assert failure.error_type == "FileNotFoundError"
 
 
 # ------------------------- a source that is not a printout (ADR-0005, #60)

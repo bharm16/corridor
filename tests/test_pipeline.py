@@ -225,3 +225,32 @@ def test_a_spreadsheet_uses_the_native_sheet_prompt_version(monkeypatch):
         "provider": "native",
         "model_requests": 0,
     }
+
+
+def test_an_unreadable_ingest_records_why_on_its_receipt(session, project, tmp_path):
+    """The receipt carries the stage, the exception type and the message.
+
+    `error_detail` used to read `ingest parse_status is 'failed'` for every
+    whole-document failure, so a reader exception, a rendition with no pages and
+    drifted source bytes were one indistinguishable line and diagnosing any of
+    them meant running the reader again.
+    """
+
+    import json
+    from sqlalchemy import select
+    from corridor.models import ExtractionRun
+    from corridor.pipeline import ingest_and_extract
+
+    broken = tmp_path / "broken.pdf"
+    broken.write_bytes(b"%PDF-1.4 this is not a real pdf")
+    document, candidates = ingest_and_extract(
+        session, project_id=project.id, path=broken, images_dir=tmp_path / "images",
+    )
+
+    assert candidates == []
+    run = session.scalars(select(ExtractionRun)).one()
+    assert (run.document_id, run.outcome) == (document.id, "unreadable")
+    detail = json.loads(run.error_detail)
+    assert detail["parse_status"] == "failed"
+    assert detail["stage"] == "read_document"
+    assert detail["error_type"] and detail["error_message"]

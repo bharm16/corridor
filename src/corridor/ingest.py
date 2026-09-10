@@ -114,6 +114,52 @@ class PageFailure:
 
 
 @dataclass(frozen=True)
+class DocumentParseFailure:
+    """Why a whole-document read failed: the same shape a page failure records.
+
+    A routed region that fails gets a ``PageProcessingFailure`` row naming the
+    engine, the region, the error type and the error message. A read that fails
+    for the whole document used to get ``parse_status = "failed"`` and nothing
+    else, so the only account of it was "something went wrong": every real
+    condition -- a rendition with no pages, a reader that returned no page N,
+    source bytes that no longer match the registered Document -- arrived as the
+    same silence, and the extraction receipt could say no more than ``ingest
+    parse_status is 'failed'``.
+
+    **Why this is a value and not a row.** The relation that should own it is
+    ``page_processing_failures``, and it cannot: ``page_number`` is ``not null``
+    with a ``page_number > 0`` check, and a whole-document failure has no page.
+    Making it nullable is a migration, and this lane holds no migration slot, so
+    the reason travels on the returned Document -- ``pipeline.ingest_and_extract``
+    reads it here and records it as the Extraction Run receipt's structured
+    ``error_detail``, which is the durable copy. A document-level Processing
+    Failure relation is still the right home for it.
+    """
+
+    stage: str
+    error_type: str
+    error_message: str
+
+    def as_error_detail(self) -> dict:
+        """The structured reason an Extraction Run receipt records."""
+        return {
+            "stage": self.stage,
+            "error_type": self.error_type,
+            "error_message": self.error_message,
+        }
+
+
+def document_parse_failure(document: Document) -> DocumentParseFailure | None:
+    """Why this document's read failed, when this process is the one that read it.
+
+    Known only to the ingest that attempted the read; a Document loaded in a
+    later session answers ``None`` because nothing durable holds the reason yet.
+    """
+
+    return getattr(document, "_parse_failure", None)
+
+
+@dataclass(frozen=True)
 class OcrAttempt:
     """One region's raw OCR output, kept as a Class B intermediary (ADR-0072).
 
@@ -173,32 +219,12 @@ def ingest_document(
     # next to a citation.
     path = Path(path)
     filename = filename or path.name
-    source_file_missing = not path.exists()
-    if source_file_missing:
-        # The lockfile recorded a successful fetch, but the content-addressed
-        # store lost the bytes. The recorded hash still identifies the
-        # document, so register it visibly failed rather than aborting the
-        # whole project's ingest on one hole in the store.
-        if expected_sha256 is None:
-            raise FileNotFoundError(
-                f"document file {path} is missing and no lockfile sha256 "
-                "identifies its content"
-            )
-        sha256 = expected_sha256
-    else:
-        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
-        if expected_sha256 is not None and sha256 != expected_sha256:
-            raise ValueError(
-                f"document bytes do not match lockfile sha256: expected "
-                f"{expected_sha256}, got {sha256}"
-            )
-    if registry_id is not None and not registry_id.strip():
-        raise ValueError("registry_id must be non-empty")
-    if numbering_scheme is not None and numbering_scheme not in NUMBERING_SCHEMES:
-        raise ValueError(
-            f"unknown numbering_scheme {numbering_scheme!r}; expected one "
-            f"of {', '.join(NUMBERING_SCHEMES)}"
-        )
+    sha256, source_file_missing = _registered_identity(
+        path,
+        expected_sha256=expected_sha256,
+        registry_id=registry_id,
+        numbering_scheme=numbering_scheme,
+    )
 
     registered = None
     if registry_id is not None:
@@ -226,40 +252,19 @@ def ingest_document(
             raise ValueError(
                 "one registered document cannot carry multiple registry ids"
             )
-        # Re-ingest never re-parses — the bytes are identical by definition.
-        # But provenance describes where the file came from, not the file,
-        # and a document first ingested without a date would otherwise carry
-        # that gap forever. Backfill nulls only; never overwrite. The delivery
-        # link follows the same rule for a stronger reason: identical bytes can
-        # be delivered twice, and the second delivery must not relabel which one
-        # this document came in on (#687).
-        for attribute, value in (
-            ("registry_id", registry_id),
-            ("source_url", source_url),
-            ("retrieved_at", _as_datetime(retrieved_at)),
-            ("doc_date", doc_date),
-            ("filename", filename),
-            ("source_delivery_id", source_delivery_id),
-        ):
-            if value and getattr(existing, attribute) in (None, ""):
-                setattr(existing, attribute, value)
-        # The numbering scheme is a declaration, not provenance: unlike
-        # the backfill-nulls-only facts above it always holds a value
-        # (the default), so a manifest that states one re-declares it —
-        # re-registration is exactly where a registry fact may change
-        # (ADR-0030).
-        if numbering_scheme is not None:
-            existing.numbering_scheme = numbering_scheme
-        if path.suffix.lower() == ".pdf":
-            ingest_native_reader(
-                session, document=existing, path=path, images_dir=images_dir
-            )
-        else:
-            append_ingested_source_segments(session, existing, path)
-        _quarantine_unmodeled_semantics(session, existing)
-        session.flush()
-        _emit_registered_capture(session, existing, path, outcome="replayed")
-        return existing
+        return _backfill_registered_provenance(
+            session,
+            existing,
+            path=path,
+            images_dir=images_dir,
+            registry_id=registry_id,
+            source_url=source_url,
+            retrieved_at=retrieved_at,
+            doc_date=doc_date,
+            filename=filename,
+            source_delivery_id=source_delivery_id,
+            numbering_scheme=numbering_scheme,
+        )
 
     if registered is not None:
         raise ValueError(
@@ -289,18 +294,19 @@ def ingest_document(
         # Registered and visibly failed rather than silently absent — the
         # same contract as a parse failure. The recovery path for failed
         # documents picks it up once the store file is restored.
+        document._parse_failure = DocumentParseFailure(
+            stage="locate_source",
+            error_type="FileNotFoundError",
+            error_message=f"document file {path} is missing from the store",
+        )
         document.parse_status = "failed"
         document.pages = 0
         session.flush()
         return document
 
-    try:
-        token_dir = Path(images_dir) / sha256
-        pages = _extract(path, token_dir, sha256, project=str(document.project_id))
-    except Exception:
-        # Registered and visibly failed rather than silently absent. A
-        # document missing from the ledger looks the same as one that was
-        # never collected.
+    token_dir = Path(images_dir) / sha256
+    pages = _read_document(document, path, token_dir)
+    if pages is None:
         document.parse_status = "failed"
         document.pages = 0
         session.flush()
@@ -318,6 +324,124 @@ def ingest_document(
     )
     session.flush()
     return document
+
+
+def _registered_identity(
+    path: Path,
+    *,
+    expected_sha256: str | None,
+    registry_id: str | None,
+    numbering_scheme: str | None,
+) -> tuple[str, bool]:
+    """The content digest this document is registered under, and its declarations."""
+
+    source_file_missing = not path.exists()
+    if source_file_missing:
+        # The lockfile recorded a successful fetch, but the content-addressed
+        # store lost the bytes. The recorded hash still identifies the
+        # document, so register it visibly failed rather than aborting the
+        # whole project's ingest on one hole in the store.
+        if expected_sha256 is None:
+            raise FileNotFoundError(
+                f"document file {path} is missing and no lockfile sha256 "
+                "identifies its content"
+            )
+        sha256 = expected_sha256
+    else:
+        sha256 = hashlib.sha256(path.read_bytes()).hexdigest()
+        if expected_sha256 is not None and sha256 != expected_sha256:
+            raise ValueError(
+                f"document bytes do not match lockfile sha256: expected "
+                f"{expected_sha256}, got {sha256}"
+            )
+    if registry_id is not None and not registry_id.strip():
+        raise ValueError("registry_id must be non-empty")
+    if numbering_scheme is not None and numbering_scheme not in NUMBERING_SCHEMES:
+        raise ValueError(
+            f"unknown numbering_scheme {numbering_scheme!r}; expected one "
+            f"of {', '.join(NUMBERING_SCHEMES)}"
+        )
+    return sha256, source_file_missing
+
+
+def _read_document(
+    document: Document, path: Path, token_dir: Path
+) -> list[ExtractedPage] | None:
+    """Read every page, or keep why the whole-document read failed.
+
+    The narrowest scope a bare ``except`` can have here, and the reason it is
+    still bare: `_extract_pages` raises ``ValueError`` for a rendition with no
+    pages and for a reader that returned no page N, ``read_native_pdf`` raises
+    ``SourceDocumentDigestMismatch`` on byte drift, and the reader assembly and
+    render workers raise their own types. One unreadable document must not abort
+    a project's ingest, so every one of them registers the document visibly
+    failed — but the reason used to be discarded here, which is what made a
+    failed document indistinguishable from one nobody collected.
+    """
+
+    try:
+        return _extract(
+            path, token_dir, document.sha256, project=str(document.project_id)
+        )
+    except Exception as exc:
+        document._parse_failure = DocumentParseFailure(
+            stage="read_document",
+            error_type=type(exc).__name__,
+            error_message=str(exc) or repr(exc),
+        )
+        return None
+
+
+def _backfill_registered_provenance(
+    session: Session,
+    existing: Document,
+    *,
+    path: Path,
+    images_dir: Path | str,
+    registry_id: str | None,
+    source_url: str | None,
+    retrieved_at: str | datetime | None,
+    doc_date: date | None,
+    filename: str,
+    source_delivery_id: int | None,
+    numbering_scheme: str | None,
+) -> Document:
+    """Re-ingest of identical bytes: provenance may be completed, never rewritten."""
+
+    # Re-ingest never re-parses — the bytes are identical by definition.
+    # But provenance describes where the file came from, not the file,
+    # and a document first ingested without a date would otherwise carry
+    # that gap forever. Backfill nulls only; never overwrite. The delivery
+    # link follows the same rule for a stronger reason: identical bytes can
+    # be delivered twice, and the second delivery must not relabel which one
+    # this document came in on (#687).
+    for attribute, value in (
+        ("registry_id", registry_id),
+        ("source_url", source_url),
+        ("retrieved_at", _as_datetime(retrieved_at)),
+        ("doc_date", doc_date),
+        ("filename", filename),
+        ("source_delivery_id", source_delivery_id),
+    ):
+        if value and getattr(existing, attribute) in (None, ""):
+            setattr(existing, attribute, value)
+    # The numbering scheme is a declaration, not provenance: unlike
+    # the backfill-nulls-only facts above it always holds a value
+    # (the default), so a manifest that states one re-declares it —
+    # re-registration is exactly where a registry fact may change
+    # (ADR-0030).
+    if numbering_scheme is not None:
+        existing.numbering_scheme = numbering_scheme
+    if path.suffix.lower() == ".pdf":
+        ingest_native_reader(
+            session, document=existing, path=path, images_dir=images_dir
+        )
+    else:
+        append_ingested_source_segments(session, existing, path)
+    _quarantine_unmodeled_semantics(session, existing)
+    session.flush()
+    _emit_registered_capture(session, existing, path, outcome="replayed")
+    return existing
 
 
 def _emit_registered_capture(session, document: Document, path: Path, *, outcome: str) -> None:
@@ -360,10 +484,9 @@ def reparse_document(
     if document.parse_status == "parsed":
         raise ValueError("a successfully parsed document is never re-parsed as a retry")
     path = Path(path)
-    try:
-        token_dir = Path(images_dir) / document.sha256
-        pages = _extract(path, token_dir, document.sha256, project=str(document.project_id))
-    except Exception:
+    token_dir = Path(images_dir) / document.sha256
+    pages = _read_document(document, path, token_dir)
+    if pages is None:
         document.parse_status = "failed"
         document.pages = 0
         session.flush()
@@ -394,12 +517,16 @@ def ingest_native_reader(
     session: Session, *, document: Document, path: Path | str,
     images_dir: Path | str, engine: str = "tagged", dpi: int = 36,
 ):
-    """Append an explicit disabled challenger to any registered PDF rendition.
+    """Append the paired-rendition reader's own segments to a registered PDF.
 
-    This returns its own page text and tokens along with the new segments.
-    Existing DocPage projections and accepted citations remain historical;
-    ordinary document deduplication cannot suppress this execution. Selection
-    and downstream semantic mapping remain #447/#737 respectively.
+    This is the production reader (ADR-0094, ADR-0095): the challenger it was
+    added as won, and #741 removed the incumbent it was measured against, so
+    nothing here is disabled or optional any more. It returns its own page text
+    and tokens along with the new segments, and it runs on every re-ingest of
+    identical bytes -- ordinary document deduplication cannot suppress it,
+    because the segments are what a citation is later replayed against. Existing
+    DocPage projections and accepted citations remain historical. Pipeline
+    selection is #447's and downstream semantic mapping is #737's.
     """
     from corridor.reader_segments import append_native_segments, read_native_pdf
 
