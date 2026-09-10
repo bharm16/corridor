@@ -30,6 +30,7 @@ from sqlalchemy.orm import Session
 
 from corridor import digests
 from corridor.experimental_command import (
+    SingleValue,
     experiment_parser,
     print_receipt,
     run_command,
@@ -1422,10 +1423,10 @@ def main(
     parser.add_argument(
         "--extraction-run", action="append", default=[], dest="extraction_runs"
     )
-    parser.add_argument("--prompt-version")
+    parser.add_argument("--prompt-version", action=SingleValue)
     parser.add_argument("--document", action="append", default=[], dest="documents")
-    parser.add_argument("--reference-manifest")
-    parser.add_argument("--case-predictions")
+    parser.add_argument("--reference-manifest", action=SingleValue)
+    parser.add_argument("--case-predictions", action=SingleValue)
 
     def measurement(args) -> int:
         try:

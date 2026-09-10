@@ -105,6 +105,20 @@ def test_the_frame_requires_an_explicit_database(capsys):
     assert "--database-url" in capsys.readouterr().err
 
 
+def test_a_repeated_single_valued_flag_is_a_usage_error_not_a_silent_overwrite(capsys):
+    # The hand-rolled parsers refused a doubled flag with exit 2; argparse's
+    # default would keep the last value.
+    parser = experiment_parser(description="frame")
+    parser.add_argument("subject")
+
+    assert run_json_command(
+        parser,
+        ["subject", "--database-url", "postgresql://a", "--database-url", "postgresql://b"],
+        lambda _session, _args: pytest.fail("parsed a doubled flag"),
+    ) == 2
+    assert "--database-url may be given once" in capsys.readouterr().err
+
+
 def test_help_is_a_parse_exit_that_prints_no_result(capsys):
     parser = experiment_parser(description="frame")
 
