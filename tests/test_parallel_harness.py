@@ -506,3 +506,50 @@ def test_empty_shared_source_has_schema_but_never_inherits_worker_rows(request):
             worker.rollback()
     finally:
         shared.dispose()
+
+
+def test_the_harness_migration_is_bound_before_a_test_can_monkeypatch_it(monkeypatch):
+    """A test's fake ``apply_schema_migrations`` must never run the worker's provisioning.
+
+    ``test_m8_acceptance_integrity`` monkeypatches that application attribute to
+    a function whose assertion opens a connection; when the harness read the
+    attribute at call time, the fake ran inside the worker database's own
+    provisioning and its connection re-entered the provisioning lock forever.
+    """
+
+    import corridor.m8_acceptance_database as acceptance_database
+
+    real = acceptance_database.apply_schema_migrations
+    monkeypatch.setattr(harness, "_HARNESS_MIGRATION", None)
+    assert harness._harness_migration() is real
+
+    def fake(*_args, **_kwargs):
+        pytest.fail("the harness resolved the application attribute at call time")
+
+    monkeypatch.setattr(acceptance_database, "apply_schema_migrations", fake)
+    assert harness._harness_migration() is real
+
+    recorded = []
+    monkeypatch.setattr(harness, "_HARNESS_MIGRATION", lambda url, **kw: recorded.append((url.database, kw["revision"])))
+    harness._migrate_database(make_url(SOURCE_URL).set(database="corridor_pytest_x_gw0"))
+    assert recorded == [("corridor_pytest_x_gw0", "head")]
+
+
+def test_provisioning_re_entered_by_its_own_migration_refuses_instead_of_hanging(tmp_path, monkeypatch):
+    calls = _record_provisioning(monkeypatch)
+    state = harness.LazyWorkerDatabase(make_url(SOURCE_URL), f"corridor_pytest_{RUN_ID}_gw0", "", None)
+
+    def migration_that_connects_back(url):
+        calls.append(("migrate", url.database))
+        state.ensure_provisioned()
+
+    monkeypatch.setattr(harness, "_migrate_database", migration_that_connects_back)
+
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        outcome = executor.submit(state.ensure_provisioned)
+        with pytest.raises(RuntimeError, match="re-entered itself"):
+            outcome.result(timeout=10)
+
+    assert state.failed is True
+    assert state._provisioning_thread is None
+    assert ("migrate", f"corridor_pytest_{RUN_ID}_gw0") in calls

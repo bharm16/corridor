@@ -22,7 +22,7 @@ import re
 import runpy
 import sys
 from tempfile import TemporaryDirectory
-from threading import Lock
+from threading import Lock, get_ident
 import time
 from uuid import uuid4
 
@@ -138,6 +138,7 @@ class LazyWorkerDatabase:
     cleanup_needed: bool = False
     failed: bool = False
     _provision_lock: Lock = field(default_factory=Lock, repr=False)
+    _provisioning_thread: int | None = field(default=None, repr=False)
 
     def on_connect(self, dialect, connection_record, args, parameters) -> None:
         # Admin queries and runtime_database's independent scratch databases
@@ -146,11 +147,20 @@ class LazyWorkerDatabase:
             self.ensure_provisioned()
 
     def ensure_provisioned(self) -> None:
+        if self._provisioning_thread == get_ident():
+            # The migration this provisioning is running opened a connection
+            # to the very database it is provisioning. Blocking on our own
+            # lock here is the silent hang this refusal replaces.
+            raise RuntimeError(
+                "parallel test worker database provisioning re-entered itself: "
+                "the harness migration must not connect to the worker database"
+            )
         with self._provision_lock:
             if self.provisioned:
                 return
             if self.failed:
                 raise RuntimeError("parallel test worker database provisioning previously failed")
+            self._provisioning_thread = get_ident()
             try:
                 if self.coordination is None:
                     self._provision()
@@ -162,6 +172,8 @@ class LazyWorkerDatabase:
             except BaseException:
                 self.failed = True
                 raise
+            finally:
+                self._provisioning_thread = None
 
     @contextmanager
     def _database_lock(self):
@@ -322,6 +334,11 @@ def pytest_configure(config) -> None:
     os.environ["DATABASE_URL"] = parsed.set(database=database_name).render_as_string(
         hide_password=False
     )
+    # Bind the real migration now, before any test runs: a test that
+    # monkeypatches the application module's ``apply_schema_migrations`` must
+    # not be able to redirect the harness's own worker-database provisioning
+    # through its fake, which is how one such test deadlocked on this lock.
+    _harness_migration()
     state = LazyWorkerDatabase(parsed, database_name, template, coordination)
     config._corridor_pytest_database = state
     # SQLAlchemy's dialect event runs immediately before DBAPI.connect and
@@ -635,17 +652,36 @@ def _clone_database(admin_url: URL, template: str, database_name: str) -> None:
         engine.dispose()
 
 
+_HARNESS_MIGRATION = None
+
+
+def _harness_migration():
+    """The migration the harness runs, bound once and immune to monkeypatching.
+
+    `pytest_configure` binds it in every worker before a test can run. Reading
+    ``corridor.m8_acceptance_database.apply_schema_migrations`` at call time
+    instead let a test's monkeypatch of that attribute run inside the worker's
+    own provisioning, where its first connection re-entered the provisioning
+    lock and hung the worker.
+    """
+
+    global _HARNESS_MIGRATION
+    if _HARNESS_MIGRATION is None:
+        from corridor.m8_acceptance_database import apply_schema_migrations
+
+        _HARNESS_MIGRATION = apply_schema_migrations
+    return _HARNESS_MIGRATION
+
+
 def _migrate_database(database_url: URL) -> None:
     """Upgrade one worker database through the module that owns the subprocess.
 
     This body was a byte-for-byte copy of
     `m8_acceptance_database.apply_schema_migrations` in a file that already
-    imports that module.
+    imports that module; it now calls the callable bound at configure time.
     """
 
-    from corridor.m8_acceptance_database import apply_schema_migrations
-
-    apply_schema_migrations(
+    _harness_migration()(
         database_url,
         repo_root=ROOT,
         error_cls=RuntimeError,
