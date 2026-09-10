@@ -17,12 +17,11 @@ adapter's memory, owns durable checkpoint storage (ADR-0089).
 
 from __future__ import annotations
 
-from hashlib import sha256
-import json
 from typing import Any, Callable, Sequence
 
 import httpx
 
+from corridor import digests
 from corridor.connectors.pull_connector import ChangeItem
 from corridor.location_discovery import BoxSharedFile, parse_box_shared_file
 
@@ -64,15 +63,14 @@ class BoxPullConnector:
         self._listed = {}
         self._fetched = set()
         self._files_by_id = {}
-        scope = sha256(json.dumps(
+        scope = digests.canonical_sha256(
             [sorted(set(self.shared_urls)),
              sorted({file.shared_name for file in self._registered_files.values()})],
-            separators=(",", ":"),
-        ).encode()).hexdigest()
+        )
         prefix = _CURSOR_PREFIX + scope + ":"
         if cursor is not None and not cursor.isdecimal():
             digest = cursor.removeprefix(prefix)
-            if not cursor.startswith(prefix) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            if not cursor.startswith(prefix) or not digests.is_digest(digest):
                 raise ValueError("Box cursor is not a snapshot of this configured scope")
 
         files = dict(self._registered_files)
@@ -89,7 +87,7 @@ class BoxPullConnector:
             body = self._fetcher(shared.archive_url)
             if not isinstance(body, bytes) or not body:
                 raise ValueError("Box observed version must contain bytes")
-            version = "sha256:" + sha256(body).hexdigest()
+            version = "sha256:" + digests.sha256_bytes(body)
             listed[item_id, version] = body
             items.append(ChangeItem(
                 item_id=item_id, version_id=version, name=shared.filename,
@@ -99,9 +97,7 @@ class BoxPullConnector:
                     "version_kind": "observed_content_sha256",
                 },
             ))
-        token = prefix + sha256(json.dumps(
-            sorted(listed), separators=(",", ":"),
-        ).encode()).hexdigest()
+        token = prefix + digests.canonical_sha256(sorted(listed))
         self._files_by_id = files
         if token == cursor:
             items = []
