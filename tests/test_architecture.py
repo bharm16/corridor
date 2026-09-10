@@ -2131,6 +2131,36 @@ def test_every_enabled_pilot_route_is_a_route_the_application_serves():
     )
 
 
+def test_every_frontend_receipt_route_is_a_route_the_application_serves():
+    """A receipt contract naming a route the router lacks describes nothing.
+
+    The receipt writer reads the template and method from the request's
+    matched route, so the contract table holds only the route name and the
+    statuses that route may return. This is the check that every such name is
+    one the application serves, with exactly one method the receipt vocabulary
+    admits; a handler renamed in its decorator with the table left alone fails
+    here rather than at the first request that route receives.
+    """
+
+    from corridor.frontend_request_receipts import (
+        ROUTE_CONTRACTS,
+        served_route_identity,
+    )
+    from corridor.web.app import app
+
+    unserved = sorted(
+        name
+        for name in ROUTE_CONTRACTS
+        if served_route_identity(app.routes, name) is None
+    )
+
+    assert unserved == [], (
+        "these frontend receipt contracts name no route the application serves "
+        "with one GET or POST method; remove them from "
+        "corridor.frontend_request_receipts.ROUTE_CONTRACTS or restore the route"
+    )
+
+
 def test_no_enabled_pilot_route_reads_a_relation_the_boundary_revokes():
     """The two halves of the boundary, compared to each other.
 

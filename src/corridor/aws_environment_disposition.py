@@ -123,6 +123,10 @@ def verify_custody(clients, resources, inventory):
 class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
     """Provider-native stack disposal with separately observed retained resources."""
 
+    # The persisted execution boundary this adapter mutates under; ``None``
+    # until ``prepare_execution`` has verified custody, census and quiescence.
+    _execution_boundary = None
+
     def _binding(self, registration):
         resources = super()._binding(registration)
         for name in ("cloudformation", "ecs", "logs", "secretsmanager", "ecr", "ec2"):
@@ -180,8 +184,18 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             raise DispositionRefused("source versions changed after export custody was established")
         return {"source_versions_sha256": digest(versions), "version_count": len(versions)}
 
-    def prepare_execution(self, control_plane, plan, referential, operation_id, *, observed_at):
+    def require_frozen(self, registration):
+        """The operator's freeze guard before export, custody and rehearsal
+        mutations: bound, application drained, stack membership unchanged."""
+        self._binding(registration)
+        self._require_quiescent()
+        self._verify_stack_membership()
+
+    def _prepare_execution_boundary(self, control_plane, plan, referential, operation_id, *, observed_at):
         from uuid import uuid4
+        if self.resources.whole_environment is None:
+            return super()._prepare_execution_boundary(
+                control_plane, plan, referential, operation_id, observed_at=observed_at)
         # A persisted boundary distinguishes the first pass (exact export
         # equality) from a resumed partial disposal (only disappearance allowed).
         previous = control_plane.disposition_rehearsal_receipts(plan.environment_id, operation_id)
@@ -202,12 +216,12 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
                 environment_id=plan.environment_id, operation_id=operation_id, phase="execution_boundary",
                 outcome="completed", evidence={**expected, **census, "rds_replica_relationships": replicas,
                     "database_validation": manifest["database_validation"]}, observed_at=observed_at)
-        self._plan = plan
+        self._execution_boundary = expected
         self._control_plane = control_plane
         self._referential = referential
 
     def _mutate(self, method, **parameters):
-        if not hasattr(self, "_plan"):
+        if self._execution_boundary is None:
             raise DispositionRefused("whole-environment deletion needs a persisted disposition plan")
         return super()._mutate(method, **parameters)
 
@@ -364,9 +378,11 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         finally:
             self.resources = original
             self.approved_resource_sha256 = original.sha256
-        return self._evidence("s3-namespace-empty")
+        return self._evidence("object_namespace")
 
     def delete_environment(self, registration):
+        if self.resources is None or self.resources.whole_environment is None:
+            return super().delete_environment(registration)
         self._binding(registration)
         self._verify_stack_membership()
         self._verify_copies()
@@ -418,7 +434,7 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
             raise EnvironmentDestructionError("a disposed bucket exists again")
         super().expire_backups(registration)
         super().destroy_encryption_key(registration)
-        return self._evidence("whole-environment-absent")
+        return self._evidence("environment")
 
     def cancel_pending_deletions_for_hold(self, control_plane, plan, *, observed_at):
         """Cancel provider recovery-window deletions while a fresh hold is active.
@@ -428,6 +444,8 @@ class AwsStackEnvironmentDestroyer(AwsEnvironmentDestroyer):
         subsequently confirmed, never a claim that earlier data was restored.
         """
         from uuid import uuid4
+        if self.resources is None or self.resources.whole_environment is None:
+            return super().cancel_pending_deletions_for_hold(control_plane, plan, observed_at=observed_at)
         self._require_activation("hold cancellation")
         if self.resources.sha256 != plan.provider_resources_sha256 or plan.provider_resources != json.loads(json.dumps(asdict(self.resources))):
             raise DispositionRefused("hold cancellation requires the persisted provider inventory")

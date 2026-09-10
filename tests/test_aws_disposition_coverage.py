@@ -1,5 +1,5 @@
 """Whole-stack disposal refuses omissions and observes asynchronous provider work."""
-from dataclasses import replace
+from dataclasses import asdict, replace
 from datetime import datetime, timezone
 from io import BytesIO
 import json
@@ -11,7 +11,10 @@ import pytest
 from corridor.aws_environment_disposition import (
     AwsStackEnvironmentDestroyer, digest, observe_stack_inventory,
 )
-from corridor.environment_disposition import AwsDispositionResources, DispositionRefused, EnvironmentDestructionError
+from corridor.control_plane import EnvironmentRegistration
+from corridor.environment_disposition import (
+    AwsDispositionResources, DispositionRefused, EnvironmentDestructionError, ReferentialRetention,
+)
 from corridor.environment_export import export_environment_archive, verify_export_archive
 from corridor.environment_rehearsal import AwsRestoreRehearsal, RestoreRehearsal, result_digest
 from corridor.principals import HumanPrincipal
@@ -138,42 +141,6 @@ def test_export_refuses_versions_arriving_during_database_dump(tmp_path):
     assert not output.exists()
 
 
-def test_stack_request_never_reports_completion_and_guard_precedes_both_mutations():
-    inv = inventory()
-    cf = ScriptedClient([
-        ("describe_stacks", {"StackName": DATA}, {"Stacks": [{"StackId": DATA, "StackStatus": "CREATE_COMPLETE", "EnableTerminationProtection": True}]}),
-        ("update_termination_protection", {"EnableTerminationProtection": False, "StackName": DATA}, {}),
-        ("delete_stack", {"StackName": DATA}, {}),
-        ("describe_stacks", {"StackName": DATA}, {"Stacks": [{"StackId": DATA, "StackStatus": "DELETE_COMPLETE"}]}),
-    ])
-    calls = []
-    destroyer = AwsStackEnvironmentDestroyer(resources=resource(whole_environment=inv), clients={"cloudformation": cf}, before_delete=lambda: calls.append("guard"))
-    destroyer._plan = SimpleNamespace()
-    with pytest.raises(EnvironmentDestructionError, match="requested"):
-        destroyer._delete_stack(DATA)
-    assert calls == ["guard", "guard"]
-    destroyer._delete_stack(DATA)
-    assert not cf.script
-
-
-def test_scheduled_secret_recovery_window_is_still_partial():
-    inv = inventory()
-    secret = f"arn:aws:secretsmanager:us-east-1:{ACCOUNT}:secret:customer-secret"
-    inv["resources"] = [{"type": "AWS::SecretsManager::Secret", "physical_id": secret, "logical_id": "secret", "stack_id": DATA}]
-    sm = ScriptedClient([
-        ("describe_secret", {"SecretId": secret}, {"ARN": secret}),
-        ("delete_secret", {"SecretId": secret, "RecoveryWindowInDays": 30}, {"ARN": secret, "DeletionDate": NOW}),
-    ])
-    destroyer = AwsStackEnvironmentDestroyer(resources=resource(whole_environment=inv), clients={"secretsmanager": sm, "logs": ScriptedClient()}, before_delete=lambda: None)
-    destroyer._plan = SimpleNamespace()
-    destroyer._binding = lambda registration: destroyer.resources
-    destroyer._verify_stack_membership = lambda: None
-    destroyer._verify_copies = lambda: None
-    with pytest.raises(EnvironmentDestructionError, match="still exist"):
-        destroyer.delete_environment(None)
-    assert not sm.script
-
-
 class ReceiptStore:
     def __init__(self):
         self.rows = []
@@ -184,6 +151,138 @@ class ReceiptStore:
         return row
     def disposition_rehearsal_receipts(self, environment_id, operation_id):
         return tuple(r for r in self.rows if r["operation_id"] == operation_id)
+    def destruction_receipts(self, environment_id):
+        return ()
+
+
+DISABLED = EnvironmentRegistration("customer", "environment", "deployment", "db.example", 5432, "corridor",
+    "env:WEB", "env:WORKER", "s3:artifact-bucket", "configuration:none", enabled=False)
+
+
+def stack_clients():
+    """Every client the stack adapter binds, each a strict script with nothing queued."""
+    clients = {name: ScriptedClient() for name in (
+        "sts", "rds", "s3", "kms", "cloudformation", "ecs", "logs", "secretsmanager", "ecr", "ec2")}
+    clients["regional"] = {"us-east-1": {name: ScriptedClient() for name in ("sts", "rds", "backup")}}
+    return clients
+
+
+def assert_drained(clients):
+    for name, client in clients.items():
+        if name == "regional":
+            assert all(not c.script for region in client.values() for c in region.values())
+        else:
+            assert not client.script, name
+
+
+def queue_identity(clients):
+    clients["sts"].script.append(("get_caller_identity", {}, {"Account": ACCOUNT}))
+
+
+def queue_membership(clients):
+    clients["cloudformation"].script.extend([("list_stack_resources", {"StackName": APP}, {}),
+                                             ("list_stack_resources", {"StackName": DATA}, {})])
+
+
+def queue_copies(clients, r, *, secrets=()):
+    """The copy inventory as the adapter reads it: source absent, one enabled region, no copies."""
+    by_instance = {"Filters": [{"Name": "dbi-resource-id", "Values": [r.db_resource_id]}]}
+    clients["rds"].script.append(("describe_db_instances", by_instance, {}))
+    clients["ec2"].script.append(("describe_regions", {"AllRegions": False}, {"Regions": [{"RegionName": "us-east-1"}]}))
+    regional = clients["regional"]["us-east-1"]
+    regional["sts"].script.append(("get_caller_identity", {}, {"Account": ACCOUNT}))
+    regional["rds"].script.extend([("describe_db_snapshots", {"SnapshotType": "manual", **by_instance}, {}),
+        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, ScriptedClient.NotFound())])
+    regional["backup"].script.append(("list_recovery_points_by_resource", {"ResourceArn": r.db_instance_arn}, {}))
+    for secret in secrets:
+        clients["secretsmanager"].script.append(("describe_secret", {"SecretId": secret}, {"ARN": secret}))
+
+
+def queue_census(clients, versions):
+    clients["s3"].script.extend([("list_buckets", {}, {"Buckets": [{"Name": "artifact-bucket", "CreationDate": NOW}]}),
+        ("list_object_versions", {"Bucket": "artifact-bucket", "ExpectedBucketOwner": ACCOUNT}, versions)])
+
+
+def persisted_plan(r, manifest_sha256="a" * 64):
+    return SimpleNamespace(environment_id="environment", manifest_sha256=manifest_sha256,
+        provider_resources_sha256=r.sha256, provider_resources=json.loads(json.dumps(asdict(r))))
+
+
+def prepare(destroyer, clients, store, plan, *, versions, guard=lambda: None, secrets=()):
+    """Cross the execution boundary exactly as the executor does, queueing the reads it makes."""
+    queue_membership(clients)
+    queue_copies(clients, destroyer.resources, secrets=secrets)
+    queue_census(clients, versions)
+    destroyer.prepare_execution(store, plan, ReferentialRetention(), "dispose-one", observed_at=NOW, before_delete=guard)
+
+
+def queue_final_verification(clients, r, *, secrets=()):
+    """What ``delete_environment`` reads before it touches anything: binding, membership, copies."""
+    queue_identity(clients)
+    queue_membership(clients)
+    queue_copies(clients, r, secrets=secrets)
+
+
+def prepared_stack_destroyer(monkeypatch, inv, *, guard=lambda: None, secrets=()):
+    import corridor.aws_environment_disposition as provider
+    inv["custody"] = {"sha256": "f" * 64}
+    manifest = {"object_versions": [], "database_validation": {"method": "pg-restore-full-stream-v1", "database_sha256": "e" * 64}}
+    monkeypatch.setattr(provider, "verify_custody", lambda *args: manifest)
+    r = resource(whole_environment=inv)
+    clients = stack_clients()
+    destroyer = AwsStackEnvironmentDestroyer(live_activation="live-aws-535", resources=r,
+        approved_resource_sha256=r.sha256, clients=clients)
+    plan = persisted_plan(r)
+    prepare(destroyer, clients, ReceiptStore(), plan, versions={}, guard=guard, secrets=secrets)
+    return destroyer, clients, plan
+
+
+def test_stack_request_never_reports_completion_and_the_executors_guard_precedes_both_mutations(monkeypatch):
+    calls = []
+    destroyer, clients, plan = prepared_stack_destroyer(monkeypatch, inventory(), guard=lambda: calls.append("guard"))
+    r = destroyer.resources
+    # First pass: the data stack still stands behind termination protection.
+    queue_final_verification(clients, r)
+    clients["cloudformation"].script.extend([
+        ("describe_stacks", {"StackName": DATA}, {"Stacks": [{"StackId": DATA, "StackStatus": "CREATE_COMPLETE", "EnableTerminationProtection": True}]}),
+        ("update_termination_protection", {"EnableTerminationProtection": False, "StackName": DATA}, {}),
+        ("delete_stack", {"StackName": DATA}, {}),
+    ])
+    with pytest.raises(EnvironmentDestructionError, match="requested"):
+        destroyer.delete_environment(DISABLED)
+    assert calls == ["guard", "guard"]
+    # Second pass: the stack is gone, and the terminal receipt re-observes every
+    # population before it binds the plan. Nothing is mutated, so no guard runs.
+    queue_final_verification(clients, r)
+    clients["cloudformation"].script.append(("describe_stacks", {"StackName": DATA}, {"Stacks": [{"StackId": DATA, "StackStatus": "DELETE_COMPLETE"}]}))
+    by_instance = {"Filters": [{"Name": "dbi-resource-id", "Values": [r.db_resource_id]}]}
+    queue_identity(clients)
+    clients["rds"].script.append(("describe_db_instances", by_instance, {}))
+    clients["s3"].script.append(("list_buckets", {}, {"Buckets": [{"Name": "artifact-bucket", "CreationDate": NOW}]}))
+    queue_identity(clients)
+    clients["rds"].script.extend([("describe_db_snapshots", {"SnapshotType": "manual", **by_instance}, {}),
+        ("describe_db_instance_automated_backups", {"DbiResourceId": r.db_resource_id}, ScriptedClient.NotFound())])
+    queue_identity(clients)
+    assert destroyer.delete_environment(DISABLED) == f"aws:environment/whole-environment-absent/{r.sha256}/{plan.manifest_sha256}"
+    assert calls == ["guard", "guard"]
+    assert_drained(clients)
+
+
+def test_scheduled_secret_recovery_window_is_still_partial(monkeypatch):
+    inv = inventory()
+    secret = f"arn:aws:secretsmanager:us-east-1:{ACCOUNT}:secret:customer-secret"
+    inv["resources"] = [{"type": "AWS::SecretsManager::Secret", "physical_id": secret, "logical_id": "secret", "stack_id": DATA}]
+    calls = []
+    destroyer, clients, _ = prepared_stack_destroyer(monkeypatch, inv, guard=lambda: calls.append("guard"), secrets=(secret,))
+    queue_final_verification(clients, destroyer.resources, secrets=(secret,))
+    clients["secretsmanager"].script.extend([
+        ("describe_secret", {"SecretId": secret}, {"ARN": secret}),
+        ("delete_secret", {"SecretId": secret, "RecoveryWindowInDays": 30}, {"ARN": secret, "DeletionDate": NOW}),
+    ])
+    with pytest.raises(EnvironmentDestructionError, match="still exist"):
+        destroyer.delete_environment(DISABLED)
+    assert calls == ["guard"]
+    assert_drained(clients)
 
 
 def rehearsal_spec():
@@ -227,7 +326,6 @@ def test_rehearsal_cannot_replace_probes_with_boolean_claims():
 
 
 def test_whole_environment_receipt_requires_final_observation_of_every_population():
-    from corridor.control_plane import EnvironmentRegistration
     inv = inventory()
     secret = f"arn:aws:secretsmanager:us-east-1:{ACCOUNT}:secret:customer-secret"
     ids = [("AWS::RDS::DBInstance", "customer-db"), ("AWS::RDS::DBSubnetGroup", "subnets"),
@@ -389,48 +487,47 @@ def test_export_failure_preserves_existing_destination_and_removes_partial(tmp_p
 
 
 def test_execution_boundary_rechecks_exports_and_only_allows_disappearance_on_resume(monkeypatch):
-    from corridor.environment_disposition import ReferentialRetention
     import corridor.aws_environment_disposition as provider
     inv = inventory()
     inv["custody"] = {"sha256": "f" * 64}
     manifest = {"object_versions": [{"key": "source", "version_id": "one", "delete_marker": False}],
                 "database_validation": {"method": "pg-restore-full-stream-v1", "database_sha256": "e" * 64}}
     monkeypatch.setattr(provider, "verify_custody", lambda *args: manifest)
-    params = {"Bucket": "artifact-bucket", "ExpectedBucketOwner": ACCOUNT}
     expected = {"Versions": [{"Key": "source", "VersionId": "one"}]}
     changed = {"Versions": [{"Key": "source", "VersionId": "one"}, {"Key": "late", "VersionId": "two"}]}
-    s3 = ScriptedClient([("list_object_versions", params, changed),
-        ("list_object_versions", params, expected), ("list_object_versions", params, changed),
-        ("list_object_versions", params, {})])
-    destroyer = AwsStackEnvironmentDestroyer(resources=resource(whole_environment=inv), clients={"s3": s3})
-    destroyer._verify_stack_membership = lambda: None
-    replica_observation = {"db_resource_id": "db-CUSTOMER", "read_replica_instances": [], "read_replica_clusters": [], "read_replica_source": None}
-    destroyer._verify_copies = lambda: replica_observation
-    destroyer._require_quiescent = lambda: None
-    destroyer._owned_buckets = lambda: {"artifact-bucket"}
-    plan = SimpleNamespace(environment_id="environment", manifest_sha256="a" * 64)
+    r = resource(whole_environment=inv)
+    clients = stack_clients()
+    destroyer = AwsStackEnvironmentDestroyer(live_activation="live-aws-535", resources=r,
+        approved_resource_sha256=r.sha256, clients=clients)
+    plan = persisted_plan(r)
     store = ReceiptStore()
-    def prepare():
-        destroyer.prepare_execution(store, plan, ReferentialRetention(), "dispose-one", observed_at=NOW)
     with pytest.raises(DispositionRefused, match="source versions changed"):
-        prepare()
-    assert not store.rows and not hasattr(destroyer, "_plan")
-    prepare()
+        prepare(destroyer, clients, store, plan, versions=changed)
+    assert not store.rows
+    # A refused boundary leaves the adapter unable to mutate: the stack deletion
+    # it would request is refused before the request is sent.
+    queue_identity(clients)
+    clients["cloudformation"].script.extend([
+        ("describe_stacks", {"StackName": APP}, {"Stacks": [{"StackId": APP, "StackStatus": "CREATE_COMPLETE"}]}),
+        ("describe_stacks", {"StackName": APP}, {"Stacks": [{"StackId": APP, "StackStatus": "CREATE_COMPLETE"}]}),
+    ])
+    with pytest.raises(DispositionRefused, match="persisted disposition plan"):
+        destroyer.delete_database(DISABLED)
+    prepare(destroyer, clients, store, plan, versions=expected)
     assert len(store.rows) == 1 and store.rows[0]["phase"] == "execution_boundary"
-    assert store.rows[0]["evidence"]["rds_replica_relationships"] == replica_observation
+    assert store.rows[0]["evidence"]["rds_replica_relationships"] == {"db_resource_id": r.db_resource_id, "source_absent": True}
     with pytest.raises(DispositionRefused, match="source versions changed"):
-        prepare()
-    prepare()  # already exported versions may have been removed by a partial pass
+        prepare(destroyer, clients, store, plan, versions=changed)
+    prepare(destroyer, clients, store, plan, versions={})  # already exported versions may have been removed by a partial pass
     assert len(store.rows) == 1
-    assert not s3.script
+    assert_drained(clients)
     plan.manifest_sha256 = "b" * 64
     with pytest.raises(DispositionRefused, match="another plan"):
-        prepare()
+        destroyer.prepare_execution(store, plan, ReferentialRetention(), "dispose-one", observed_at=NOW, before_delete=lambda: None)
 
 
 @pytest.mark.parametrize("field", ["ReadReplicaDBInstanceIdentifiers", "ReadReplicaDBClusterIdentifiers"])
 def test_live_rds_replicas_refuse_source_deletion_even_without_backup_copies(field):
-    from corridor.control_plane import EnvironmentRegistration
     from corridor.environment_disposition import AwsEnvironmentDestroyer
     r = resource()
     query = {"Filters": [{"Name": "dbi-resource-id", "Values": [r.db_resource_id]}]}

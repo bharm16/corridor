@@ -1031,17 +1031,14 @@ def _source_occurrences(surface, session, project_id, inventory):
 
 def _support_source_matches(source, native, filenames):
     """Corroborate displayed support wording/location with the exact occurrence."""
-    from corridor.prose_spans import PROSE_PAGE_STREAM
+    from types import SimpleNamespace
+    from corridor.source_segments import source_segment_locator_words
     if native is None or type(source.source_segment_id) is not int:
         return False
-    if native["kind"] == "spreadsheet_cell":
-        locator = f"sheet {native['sheet_name']}, cell {native['cell_range']}"
-    elif native["kind"] == "prose_span" or (native["kind"] == "pdf_span" and native.get("span_stream") == PROSE_PAGE_STREAM):
-        locator = f"page {native['page_no']}, characters {native['start_offset']}–{native['end_offset']}"
-    elif native["kind"] == "recorded_verbal_statement":
-        locator = "recorded verbal statement"
-    else:
-        return False
+    # The one caption every surface prints, read from the raw row rather than
+    # rebuilt here: a corroboration that spelled the words itself held only
+    # while two hand copies happened to agree.
+    locator = source_segment_locator_words(SimpleNamespace(**native))
     filename = filenames.get(native["document_id"]) if native["document_id"] is not None else "recorded verbal statement"
     return (source.document_id, source.filename, source.locator, source.exact_text, source.role) == (
         native["document_id"], filename, locator, native["exact_text"], "assessed")

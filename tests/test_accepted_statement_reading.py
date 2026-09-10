@@ -11,7 +11,7 @@ from sqlalchemy import event, select
 from corridor.accepted_statement_reading import AcceptedStatementReadingRefused, read_native_statements
 from corridor.fact_decisions import record_human_fact_decision
 from corridor.facts import append_recorded_applies_to_fact, append_recorded_statement_timing_fact, append_recorded_statement_wording_fact
-from corridor.models import Document, Fact, Project, ProjectRecordRevision, RecordedVerbalOrigin, SourceSegment
+from corridor.models import Document, Fact, FactSource, Project, ProjectRecordRevision, RecordedVerbalOrigin, SourceSegment
 from corridor.principals import HumanPrincipal
 from corridor.source_segments import recorded_verbal_statement_segment
 from corridor.statement_values import StatementTiming
@@ -113,15 +113,73 @@ def test_retired_documentary_locator_keeps_accepted_words_and_explicit_replay_bl
     assert reading.wording == words
     assert reading.applies_to_mode == "not_recorded"
     assert all(s.document_id == document.id and s.page_no == 1 and s.locator_validation_status == "not_re_readable" for s in reading.sources)
-    assert any("retired prose reader" in blocker for blocker in reading.coverage_blockers)
+    assert any("prose_span locator can only be re-read" in blocker for blocker in reading.coverage_blockers)
     assert reading.fields["statement_wording"].actor == "local:accepting-person"
+
+
+def _check(session, source):
+    """The Source Passage Check as ``locator_validation`` answers it for one shown source."""
+    from corridor.locator_validation import recorded_verbal_statement_locator_validation, source_segment_locator_validation
+    from corridor.storage import stored_file
+    segment = session.get(SourceSegment, source.source_segment_id)
+    if segment.kind == "recorded_verbal_statement":
+        return recorded_verbal_statement_locator_validation(segment)
+    document = session.get(Document, segment.document_id)
+    return source_segment_locator_validation(document, segment, stored_file(document))
+
+
+def test_the_shown_check_is_locator_validation_answer_on_every_branch(session, verbal_facts):
+    """valid, not_re_readable, not_checked and invalid all come from the one home.
+
+    The reader used to keep a second ladder beside its own byte staging; the
+    only status it may still change is a valid verbal whose recorder
+    attestation disagrees, and the only reason it may still write is why the
+    registered bytes were not available to it.
+    """
+    from corridor.source_segments import source_segment_locator_words
+    project, _, wording, _, _ = verbal_facts
+    document = Document(project_id=project.id, sha256="e" * 64, filename="minutes-not-in-store.pdf", doc_type="minutes", pages=1, parse_status="parsed")
+    session.add(document)
+    session.flush()
+    retired = "The utility will submit its plan in October."
+    prose = SourceSegment(project_id=project.id, document_id=document.id, kind="prose_span", exact_text=retired,
+        content_sha256=sha256(retired.encode()).hexdigest(), ordinal=1, page_no=1, start_offset=0, end_offset=len(retired))
+    unopened = "The utility will finish in November."
+    native = SourceSegment(project_id=project.id, document_id=document.id, kind="pdf_span", exact_text=unopened,
+        content_sha256=sha256(unopened.encode()).hexdigest(), ordinal=2, page_no=1, start_offset=0, end_offset=len(unopened),
+        span_stream="page", rendition_sha256="e" * 64, reading_sha256="f" * 64, reader_identity={"reader": "test"}, location_json={"page": 1})
+    session.add_all([prose, native])
+    session.flush()
+    facts = {"verbal": wording,
+        "prose": append_recorded_statement_wording_fact(session, segment=prose, subject_key="statement:prose", description=retired, recorded_by="local:person"),
+        "pdf": append_recorded_statement_wording_fact(session, segment=native, subject_key="statement:pdf", description=unopened, recorded_by="local:person")}
+    boundary = None
+    for name, fact in facts.items():
+        boundary = decide(session, fact, "local:accepting-person", f"accept-{name}").revision.id
+    # Tamper the retained verbal digest in memory only (the row is append-only
+    # and may never be flushed): the reader must call it invalid for exactly
+    # the reason the check gives.
+    verbal_segment = session.get(SourceSegment, session.scalar(select(FactSource.source_segment_id).where(FactSource.fact_id == wording.id)))
+    verbal_segment.content_sha256 = sha256(b"other words").hexdigest()
+
+    with session.no_autoflush:
+        readings = {reading.subject_key: reading for reading in read_native_statements(session, project.id, boundary)}
+    shown = {subject: reading.sources[0] for subject, reading in readings.items()}
+
+    assert {subject: source.locator_validation_status for subject, source in shown.items()} == {
+        wording.subject_key: "invalid", "statement:prose": "not_re_readable", "statement:pdf": "not_checked"}
+    for source in shown.values():
+        check = _check(session, source)
+        assert source.locator_validation_status == check.status
+        assert source.limitation == (check.reason or "registered source bytes are unavailable for the Source Passage Check")
+        assert source.locator == source_segment_locator_words(session.get(SourceSegment, source.source_segment_id))
+    assert shown["statement:prose"].locator == f"page 1, characters 0–{len(retired)}"
 
 
 def test_email_statement_reader_uses_native_sources_without_legacy_population_queries(session):
     from test_email_spine import deliver, fixture_client, message_bytes
     from corridor.email_spine import capture_email_thread
     from corridor.support_assessments import FactProposition, record_support_assessment
-    from corridor.models import FactSource
     project, envelope = deliver(session, message_bytes(body="We will finish in October.\n"))
     captured = capture_email_thread(session, envelope, client=fixture_client())
     fact = session.get(Fact, captured.source_fact_id)
@@ -140,6 +198,7 @@ def test_email_statement_reader_uses_native_sources_without_legacy_population_qu
         event.remove(session.get_bind(), "before_cursor_execute", inspect_sql)
     assert reading.wording == "We will finish in October.\n"
     assert all(source.kind == "email_span" and source.locator_validation_status == "valid" for source in reading.sources)
+    assert [source.locator_validation_status for source in reading.sources] == [_check(session, source).status for source in reading.sources]
     assert [a.assessment_id for a in reading.fields["statement_wording"].assessments] == [assessment.id]
     assert not session.new and not session.dirty and not session.deleted
 
@@ -174,7 +233,7 @@ def test_wrong_project_revision_is_refused_before_reading_any_statement(session,
 
 
 def test_selected_legacy_scope_ids_remain_separate_from_native_subject_keys(session, verbal_facts):
-    from corridor.models import Dependency, FactSource
+    from corridor.models import Dependency
     project, _, wording, _, _ = verbal_facts
     constraint = Dependency(project_id=project.id, ref_code="legacy-scope", dep_type="utility_relocation", title="Legacy scope identity")
     session.add(constraint)

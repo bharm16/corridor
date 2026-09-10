@@ -54,6 +54,7 @@ from corridor.models import (
     SupportAssessmentSource,
 )
 from corridor.principals import HumanPrincipal, require_human_principal
+from corridor.refusals import STALE, database_refusal_kind
 from corridor.source_append import append_support_assessment
 
 
@@ -164,7 +165,7 @@ def record_support_assessment(
             supersedes_id=supersedes_id,
         )
     except DBAPIError as exc:
-        if "predecessor is stale" in str(getattr(exc, "orig", exc)):
+        if database_refusal_kind(exc) == STALE:
             raise StaleSupportAssessment(
                 "Support Assessment predecessor was superseded first"
             ) from exc

@@ -34,6 +34,7 @@ from corridor.models import (
     SourceSegment,
 )
 from corridor.project_lock import lock_project
+from corridor.refusals import STALE, database_refusal_kind
 
 
 STRUCTURED_CELL_INCLUSION_POLICY = "structured-cell-record-inclusion-v1"
@@ -147,7 +148,7 @@ def record_human_fact_decision(
             )
         )
     except DBAPIError as exc:
-        if "predecessor is stale" in str(getattr(exc, "orig", exc)):
+        if database_refusal_kind(exc) == STALE:
             raise StaleHumanDecision(
                 "Human Record Decision predecessor was superseded first"
             ) from exc

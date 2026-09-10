@@ -7,6 +7,15 @@ join visible use to the durable act without trusting a browser-driver claim.
 
 Only route identity, response status, bounded subject ids, and a digest of the
 request fields are retained.  Raw query/form values are never stored here.
+
+The route template and method are read from the request's matched route (the
+``route`` FastAPI leaves in the ASGI scope, as ``telemetry`` already reads it),
+not retyped by the caller.  Each call site used to spell the template and
+method beside a decorator that already declared them, and nothing compared the
+two: a handler renamed in its decorator with the call site left alone wrote a
+well-formed receipt naming a path that no longer existed.  The contract table
+therefore holds only what the router cannot know: which route names may carry
+a receipt at all, and which statuses each may return.
 """
 
 from __future__ import annotations
@@ -18,7 +27,9 @@ import json
 from typing import Any
 
 from sqlalchemy.orm import Session
+from starlette.requests import Request
 from starlette.responses import Response
+from starlette.routing import Route
 
 from corridor import audit
 from corridor.models import AuditLog
@@ -27,134 +38,66 @@ from corridor.principals import HumanPrincipal
 
 SCHEMA_VERSION = "corridor.product-proving-frontend-request.v2"
 _FIELD_DIGEST_DOMAIN = b"corridor.frontend-request-fields.v2\0"
+_METHODS = frozenset({"GET", "POST"})
 
 # One closed route vocabulary prevents a caller from spelling an arbitrary
-# handler identity into an otherwise well-formed receipt. Status remains
-# response-derived, then must be one the registered route can actually return.
-ROUTE_CONTRACTS: Mapping[str, tuple[str, str, frozenset[int]]] = {
-    "coordinate_statement_screen": (
-        "/statements/{slug}/{candidate_id}/coordinate", "GET", frozenset({200})
-    ),
-    "save_coordinated_statement": (
-        "/statements/{slug}/{candidate_id}/coordinate", "POST", frozenset({303})
-    ),
-    "save_admitted_statement_scope": (
-        "/statements/{slug}/{candidate_id}/admitted/scope", "POST", frozenset({400})
-    ),
-    "keep_unresolved_statement": (
-        "/statements/{slug}/{candidate_id}/keep-unresolved", "POST", frozenset({303})
-    ),
-    "save_admitted_statement_owner": (
-        "/statements/{slug}/{candidate_id}/admitted/owner", "POST", frozenset({303})
-    ),
-    "save_admitted_statement_next_action": (
-        "/statements/{slug}/{candidate_id}/admitted/next-action",
-        "POST",
-        frozenset({303}),
-    ),
-    "mark_waiting_statement_not_relevant": (
-        "/statements/{slug}/{candidate_id}/not-relevant", "POST", frozenset({303})
-    ),
-    "correct_statement_screen": (
-        "/statements/{slug}/{candidate_id}/correct", "GET", frozenset({200})
-    ),
-    "correct_statement_scope_from_screen": (
-        "/statements/{slug}/{candidate_id}/correct/scope",
-        "POST",
-        frozenset({303, 400, 409}),
-    ),
-    "correct_statement_facts_from_screen": (
-        "/statements/{slug}/{candidate_id}/correct/facts", "POST", frozenset({303})
-    ),
-    "clarify_dispute": (
-        "/ledger/{slug}/{dependency_id}/clarify", "POST", frozenset({303})
-    ),
-    "reports": ("/reports/{slug}", "GET", frozenset({200})),
-    "review_report": (
-        "/reports/{slug}/prepared/{artifact_id}", "GET", frozenset({200})
-    ),
-    "download_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/download", "GET", frozenset({200})
-    ),
-    "preview_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/preview", "GET", frozenset({200})
-    ),
-    "release_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/release", "POST", frozenset({201})
-    ),
-    "render_report": ("/reports/{slug}/render", "POST", frozenset({201})),
-    "release_report": ("/reports/{slug}/release", "POST", frozenset({201})),
-    "coordinator_home": ("/work/{slug}", "GET", frozenset({200})),
+# handler identity into an otherwise well-formed receipt: a route name must
+# be registered here and must name the route the router matched. Status
+# remains response-derived, then must be one the registered route can
+# actually return. The template and method come from the matched route.
+ROUTE_CONTRACTS: Mapping[str, frozenset[int]] = {
+    "coordinate_statement_screen": frozenset({200}),
+    "save_coordinated_statement": frozenset({303}),
+    "save_admitted_statement_scope": frozenset({400}),
+    "keep_unresolved_statement": frozenset({303}),
+    "save_admitted_statement_owner": frozenset({303}),
+    "save_admitted_statement_next_action": frozenset({303}),
+    "mark_waiting_statement_not_relevant": frozenset({303}),
+    "correct_statement_screen": frozenset({200}),
+    "correct_statement_scope_from_screen": frozenset({303, 400, 409}),
+    "correct_statement_facts_from_screen": frozenset({303}),
+    "clarify_dispute": frozenset({303}),
+    "reports": frozenset({200}),
+    "review_report": frozenset({200}),
+    "download_prepared_report": frozenset({200}),
+    "preview_prepared_report": frozenset({200}),
+    "release_prepared_report": frozenset({201}),
+    "render_report": frozenset({201}),
+    "release_report": frozenset({201}),
+    "coordinator_home": frozenset({200}),
     # The one act #536's ordered week carries (#533). A refusal is a 403
     # where PostgreSQL proved no external-release designation and a 409
     # where the candidate is blocked, stale, or no longer whole; each
     # renders the week around the refusal rather than redirecting.
-    "authorize_project_issue": (
-        "/work/{slug}/issue/authorize", "POST", frozenset({201, 403, 409})
-    ),
+    "authorize_project_issue": frozenset({201, 403, 409}),
     # The act that makes the candidate the one above approves (#675). A 202
     # says the coverage was confirmed and the preparation was queued -- the
     # work itself happens in a worker, so the response cannot claim it is
     # done. A 409 says the profile, revision, cutoff or coverage digest moved
     # after the coordinator was shown them, and nothing was appended.
-    "prepare_project_issue": (
-        "/work/{slug}/issue/prepare", "POST", frozenset({202, 409})
-    ),
-    "queue": ("/queue/{slug}", "GET", frozenset({200})),
-    "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
-    "internal_report_full": (
-        "/internal-report/{slug}/full", "GET", frozenset({200})
-    ),
-    "internal_report_alerts": (
-        "/internal-report/{slug}/alerts/{rule}", "GET", frozenset({200})
-    ),
-    "internal_report_workbook": (
-        "/internal-report/{slug}/workbook.xlsx", "GET", frozenset({200})
-    ),
-    "operations_checks": (
-        "/operations/{slug}/checks", "GET", frozenset({200})
-    ),
-    "operations_checks_preview": (
-        "/operations/{slug}/checks/preview", "POST", frozenset({200, 400})
-    ),
-    "save_operations_checks": (
-        "/operations/{slug}/checks", "POST", frozenset({303, 400})
-    ),
-    "save_dependency_follow_up_plan": (
-        "/dependencies/{dependency_id}/plan", "POST", frozenset({303})
-    ),
-    "processing_operations": ("/operations/{slug}", "GET", frozenset({200})),
-    "declare_operations_active_run": (
-        "/operations/{slug}/runs/{document_id}/declare", "POST", frozenset({303})
-    ),
-    "suspend_operations_unknown_scope": (
-        "/operations/{slug}/unknown-scope/suspend", "POST", frozenset({303})
-    ),
-    "lift_operations_unknown_scope": (
-        "/operations/{slug}/unknown-scope/lift", "POST", frozenset({303})
-    ),
-    "confirm_documentation_approval": (
-        "/dependencies/{dependency_id}/documentation/confirm-approval",
-        "POST",
-        frozenset({303}),
-    ),
-    "clarify_documentation_review": (
-        "/dependencies/{dependency_id}/documentation/clarify",
-        "POST",
-        frozenset({303}),
-    ),
-    "keep_unresolved_candidate": (
-        "/candidates/{candidate_id}/keep-unresolved", "POST", frozenset({303})
-    ),
-    "accept": ("/candidates/{candidate_id}/accept", "POST", frozenset({303})),
-    "confirm_organization": (
-        "/candidates/{candidate_id}/confirm-organization", "POST", frozenset({303})
-    ),
-    "edit_accept": (
-        "/candidates/{candidate_id}/edit-accept", "POST", frozenset({303})
-    ),
-    "merge": ("/candidates/{candidate_id}/merge", "POST", frozenset({303})),
-    "reject": ("/candidates/{candidate_id}/reject", "POST", frozenset({303})),
+    "prepare_project_issue": frozenset({202, 409}),
+    "queue": frozenset({200}),
+    "internal_report": frozenset({200}),
+    "internal_report_full": frozenset({200}),
+    "internal_report_alerts": frozenset({200}),
+    "internal_report_workbook": frozenset({200}),
+    "read_internal_coordination_summary": frozenset({200}),
+    "operations_checks": frozenset({200}),
+    "operations_checks_preview": frozenset({200, 400}),
+    "save_operations_checks": frozenset({303, 400}),
+    "save_dependency_follow_up_plan": frozenset({303}),
+    "processing_operations": frozenset({200}),
+    "declare_operations_active_run": frozenset({303}),
+    "suspend_operations_unknown_scope": frozenset({303}),
+    "lift_operations_unknown_scope": frozenset({303}),
+    "confirm_documentation_approval": frozenset({303}),
+    "clarify_documentation_review": frozenset({303}),
+    "keep_unresolved_candidate": frozenset({303}),
+    "accept": frozenset({303}),
+    "confirm_organization": frozenset({303}),
+    "edit_accept": frozenset({303}),
+    "merge": frozenset({303}),
+    "reject": frozenset({303}),
 }
 
 
@@ -238,35 +181,65 @@ def request_fields_sha256(
     return sha256(_FIELD_DIGEST_DOMAIN + canonical).hexdigest()
 
 
+def served_route_identity(
+    routes: Iterable[Any], route_name: str
+) -> tuple[str, str] | None:
+    """The template and method of the one served route with that name.
+
+    ``None`` when the router serves no route of that name, more than one, or one
+    whose methods are not exactly one of the receipt vocabulary's GET or POST.
+    """
+
+    matches = [
+        route
+        for route in routes
+        if isinstance(route, Route) and route.name == route_name
+    ]
+    if len(matches) != 1:
+        return None
+    (route,) = matches
+    methods = set(route.methods or ())
+    if len(methods) != 1 or not methods <= _METHODS:
+        return None
+    (method,) = methods
+    return route.path, method
+
+
 def record_frontend_request(
     session: Session,
     *,
     principal: HumanPrincipal,
     route_name: str,
-    route_template: str,
-    method: str,
+    request: Request,
     response: Response,
     subject: FrontendRequestSubject,
     request_fields: Mapping[str, Any] | Iterable[tuple[str, Any]] | None = None,
 ) -> AuditLog:
-    """Append one server-observed request in the caller's transaction."""
+    """Append one server-observed request in the caller's transaction.
 
-    normalized_method = method.strip().upper()
-    if normalized_method not in {"GET", "POST"}:
+    The template and method are those of the route the router matched for
+    ``request``; ``route_name`` must be that route's name, so the receipt can
+    only describe the handler that actually served the request.
+    """
+
+    normalized_method = request.method.strip().upper()
+    if normalized_method not in _METHODS:
         raise ValueError("frontend request method is unsupported")
-    contract = ROUTE_CONTRACTS.get(route_name)
-    if contract is None or not route_template.startswith("/"):
+    expected_statuses = ROUTE_CONTRACTS.get(route_name)
+    if expected_statuses is None:
         raise ValueError("frontend request route identity is invalid")
     status = response.status_code
     if isinstance(status, bool) or not isinstance(status, int) or not 100 <= status <= 599:
         raise ValueError("frontend request status is invalid")
-    expected_template, expected_method, expected_statuses = contract
+    route = request.scope.get("route")
     if (
-        route_template != expected_template
-        or normalized_method != expected_method
+        not isinstance(route, Route)
+        or route.name != route_name
+        or normalized_method not in (route.methods or ())
         or status not in expected_statuses
     ):
         raise ValueError("frontend request does not match its registered route")
+    route_template = route.path
     subject_json = subject.as_json()
     return audit.record(
         session,

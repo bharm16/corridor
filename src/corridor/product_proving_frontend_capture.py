@@ -34,6 +34,7 @@ from corridor.extraction_runs import extractor_configuration
 from corridor.frontend_request_receipts import (
     ROUTE_CONTRACTS as REGISTERED_FRONTEND_ROUTE_CONTRACTS,
     SCHEMA_VERSION as FRONTEND_REQUEST_SCHEMA,
+    served_route_identity,
 )
 from corridor.models import (
     AuditLog,
@@ -139,200 +140,55 @@ _FRONTEND_SUBJECT_KEYS = frozenset(
     }
 )
 _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION = {
-    "coordinate_statement_screen": (
-        "/statements/{slug}/{candidate_id}/coordinate",
-        "GET",
-        frozenset({200}),
-    ),
-    "save_coordinated_statement": (
-        "/statements/{slug}/{candidate_id}/coordinate",
-        "POST",
-        frozenset({303}),
-    ),
-    "save_admitted_statement_scope": (
-        "/statements/{slug}/{candidate_id}/admitted/scope",
-        "POST",
-        frozenset({400}),
-    ),
-    "keep_unresolved_statement": (
-        "/statements/{slug}/{candidate_id}/keep-unresolved",
-        "POST",
-        frozenset({303}),
-    ),
-    "save_admitted_statement_owner": (
-        "/statements/{slug}/{candidate_id}/admitted/owner",
-        "POST",
-        frozenset({303}),
-    ),
-    "save_admitted_statement_next_action": (
-        "/statements/{slug}/{candidate_id}/admitted/next-action",
-        "POST",
-        frozenset({303}),
-    ),
-    "mark_waiting_statement_not_relevant": (
-        "/statements/{slug}/{candidate_id}/not-relevant",
-        "POST",
-        frozenset({303}),
-    ),
-    "correct_statement_screen": (
-        "/statements/{slug}/{candidate_id}/correct",
-        "GET",
-        frozenset({200}),
-    ),
-    "correct_statement_scope_from_screen": (
-        "/statements/{slug}/{candidate_id}/correct/scope",
-        "POST",
-        frozenset({303, 400, 409}),
-    ),
-    "correct_statement_facts_from_screen": (
-        "/statements/{slug}/{candidate_id}/correct/facts",
-        "POST",
-        frozenset({303}),
-    ),
-    "clarify_dispute": (
-        "/ledger/{slug}/{dependency_id}/clarify",
-        "POST",
-        frozenset({303}),
-    ),
-    "reports": ("/reports/{slug}", "GET", frozenset({200})),
-    "review_report": (
-        "/reports/{slug}/prepared/{artifact_id}",
-        "GET",
-        frozenset({200}),
-    ),
-    "download_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/download",
-        "GET",
-        frozenset({200}),
-    ),
-    "preview_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/preview",
-        "GET",
-        frozenset({200}),
-    ),
-    "release_prepared_report": (
-        "/reports/{slug}/prepared/{artifact_id}/release",
-        "POST",
-        frozenset({201}),
-    ),
-    "render_report": (
-        "/reports/{slug}/render",
-        "POST",
-        frozenset({201}),
-    ),
-    "release_report": (
-        "/reports/{slug}/release",
-        "POST",
-        frozenset({201}),
-    ),
-    "coordinator_home": ("/work/{slug}", "GET", frozenset({200})),
-    "authorize_project_issue": (
-        "/work/{slug}/issue/authorize",
-        "POST",
-        frozenset({201, 403, 409}),
-    ),
-    "prepare_project_issue": (
-        "/work/{slug}/issue/prepare",
-        "POST",
-        frozenset({202, 409}),
-    ),
-    "queue": ("/queue/{slug}", "GET", frozenset({200})),
-    "internal_report": ("/internal-report/{slug}", "GET", frozenset({200})),
-    "internal_report_full": (
-        "/internal-report/{slug}/full",
-        "GET",
-        frozenset({200}),
-    ),
-    "internal_report_alerts": (
-        "/internal-report/{slug}/alerts/{rule}",
-        "GET",
-        frozenset({200}),
-    ),
-    "internal_report_workbook": (
-        "/internal-report/{slug}/workbook.xlsx",
-        "GET",
-        frozenset({200}),
-    ),
-    "operations_checks": (
-        "/operations/{slug}/checks",
-        "GET",
-        frozenset({200}),
-    ),
-    "operations_checks_preview": (
-        "/operations/{slug}/checks/preview",
-        "POST",
-        frozenset({200, 400}),
-    ),
-    "save_operations_checks": (
-        "/operations/{slug}/checks",
-        "POST",
-        frozenset({303, 400}),
-    ),
-    "save_dependency_follow_up_plan": (
-        "/dependencies/{dependency_id}/plan",
-        "POST",
-        frozenset({303}),
-    ),
-    "processing_operations": ("/operations/{slug}", "GET", frozenset({200})),
-    "declare_operations_active_run": (
-        "/operations/{slug}/runs/{document_id}/declare",
-        "POST",
-        frozenset({303}),
-    ),
-    "suspend_operations_unknown_scope": (
-        "/operations/{slug}/unknown-scope/suspend",
-        "POST",
-        frozenset({303}),
-    ),
-    "lift_operations_unknown_scope": (
-        "/operations/{slug}/unknown-scope/lift",
-        "POST",
-        frozenset({303}),
-    ),
-    "confirm_documentation_approval": (
-        "/dependencies/{dependency_id}/documentation/confirm-approval",
-        "POST",
-        frozenset({303}),
-    ),
-    "clarify_documentation_review": (
-        "/dependencies/{dependency_id}/documentation/clarify",
-        "POST",
-        frozenset({303}),
-    ),
-    "keep_unresolved_candidate": (
-        "/candidates/{candidate_id}/keep-unresolved",
-        "POST",
-        frozenset({303}),
-    ),
-    "accept": (
-        "/candidates/{candidate_id}/accept",
-        "POST",
-        frozenset({303}),
-    ),
-    "confirm_organization": (
-        "/candidates/{candidate_id}/confirm-organization",
-        "POST",
-        frozenset({303}),
-    ),
-    "edit_accept": (
-        "/candidates/{candidate_id}/edit-accept",
-        "POST",
-        frozenset({303}),
-    ),
-    "merge": (
-        "/candidates/{candidate_id}/merge",
-        "POST",
-        frozenset({303}),
-    ),
-    "reject": (
-        "/candidates/{candidate_id}/reject",
-        "POST",
-        frozenset({303}),
-    ),
+    "coordinate_statement_screen": frozenset({200}),
+    "save_coordinated_statement": frozenset({303}),
+    "save_admitted_statement_scope": frozenset({400}),
+    "keep_unresolved_statement": frozenset({303}),
+    "save_admitted_statement_owner": frozenset({303}),
+    "save_admitted_statement_next_action": frozenset({303}),
+    "mark_waiting_statement_not_relevant": frozenset({303}),
+    "correct_statement_screen": frozenset({200}),
+    "correct_statement_scope_from_screen": frozenset({303, 400, 409}),
+    "correct_statement_facts_from_screen": frozenset({303}),
+    "clarify_dispute": frozenset({303}),
+    "reports": frozenset({200}),
+    "review_report": frozenset({200}),
+    "download_prepared_report": frozenset({200}),
+    "preview_prepared_report": frozenset({200}),
+    "release_prepared_report": frozenset({201}),
+    "render_report": frozenset({201}),
+    "release_report": frozenset({201}),
+    "coordinator_home": frozenset({200}),
+    "authorize_project_issue": frozenset({201, 403, 409}),
+    "prepare_project_issue": frozenset({202, 409}),
+    "queue": frozenset({200}),
+    "internal_report": frozenset({200}),
+    "internal_report_full": frozenset({200}),
+    "internal_report_alerts": frozenset({200}),
+    "internal_report_workbook": frozenset({200}),
+    "read_internal_coordination_summary": frozenset({200}),
+    "operations_checks": frozenset({200}),
+    "operations_checks_preview": frozenset({200, 400}),
+    "save_operations_checks": frozenset({303, 400}),
+    "save_dependency_follow_up_plan": frozenset({303}),
+    "processing_operations": frozenset({200}),
+    "declare_operations_active_run": frozenset({303}),
+    "suspend_operations_unknown_scope": frozenset({303}),
+    "lift_operations_unknown_scope": frozenset({303}),
+    "confirm_documentation_approval": frozenset({303}),
+    "clarify_documentation_review": frozenset({303}),
+    "keep_unresolved_candidate": frozenset({303}),
+    "accept": frozenset({303}),
+    "confirm_organization": frozenset({303}),
+    "edit_accept": frozenset({303}),
+    "merge": frozenset({303}),
+    "reject": frozenset({303}),
 }
 # The write seam owns the canonical registry; the local literal above remains
 # readable documentation of the Product Proving subset, while validation uses
-# exactly the contracts the routes use to write their receipts.
+# exactly the contracts the routes use to write their receipts. The registry
+# holds each route's permitted statuses; its template and method are the
+# router's, read through the same lookup the architecture test uses.
 if _PRODUCT_PROVING_ROUTE_CONTRACT_DOCUMENTATION != dict(
     REGISTERED_FRONTEND_ROUTE_CONTRACTS
 ):
@@ -2820,10 +2676,17 @@ def _frontend_route_receipt_is_valid(
 ) -> bool:
     if not isinstance(route_name, str):
         return False
-    contract = _FRONTEND_ROUTE_CONTRACTS.get(route_name)
-    if contract is None:
+    allowed_statuses = _FRONTEND_ROUTE_CONTRACTS.get(route_name)
+    if allowed_statuses is None:
         return False
-    expected_template, expected_method, allowed_statuses = contract
+    # Imported here rather than at the top: the application module is large
+    # and this is the one place Product Proving needs the router.
+    from corridor.web.app import app
+
+    served = served_route_identity(app.routes, route_name)
+    if served is None:
+        return False
+    expected_template, expected_method = served
     return (
         route_template == expected_template
         and method == expected_method

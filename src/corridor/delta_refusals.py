@@ -31,6 +31,16 @@ those is either a lie or a race, and the honest answer is the command's own
 refusal.  ``delta_resolution._refusal`` therefore refuses to build one, and
 ``tests/test_delta_resolution.py`` parses the plpgsql source to prove the two
 vocabularies still agree.
+
+**The Review Packet family is declared here too.**  #526's packet, Follow-up
+Plan and reversal commands raise their refusals as ``review_packet:<code>``
+tokens in exactly the same shape, and ``review_packets`` used to scrape them
+with a private expression and a two-entry status table beside it, so two dozen
+tokens had no declaration and the table could silently name a token the
+plpgsql never raised.  The family keeps its own token prefix, because each
+family declares exactly what its own commands raise, and a code both happen to
+spell the same way is still two declarations; ``database_refusal_code`` reads
+whichever family a message carries.
 """
 
 from __future__ import annotations
@@ -58,11 +68,12 @@ PYTHON_PRECHECK = "python-precheck"
 DATABASE_ONLY = "database-only"
 BOTH = "both"
 
-# The command raises every refusal with this leading token so the two halves of
-# the rule agree on what was refused.  The runtime scrapes it out of a DBAPI
+# Each command raises every refusal with its own leading token so the two halves
+# of the rule agree on what was refused.  The runtime scrapes it out of a DBAPI
 # message with this exact expression, and the agreement test parses the plpgsql
 # source with it too, so neither can read a token the other cannot.
 REFUSAL_TOKEN = re.compile(r"resolve_delta:([a-z_]+)")
+REVIEW_PACKET_TOKEN = re.compile(r"review_packet:([a-z_]+)")
 
 
 @dataclass(frozen=True, slots=True)
@@ -155,6 +166,53 @@ REFUSAL_CODES: dict[str, RefusalCode] = {
     declared.code: declared for declared in REFUSAL_VOCABULARY
 }
 
+# The Review Packet family.  The packet's readable half has no single
+# constructor, so a code declared BOTH is one ``review_packets`` also writes
+# into a ``Refusal`` itself; the rest are the commands' own.  Only
+# ``missing_support`` carries a status other than REFUSED: no other packet
+# refusal promises the structured refresh a STALE, UNSUPPORTED,
+# CONSTRAINED_EDIT or COORDINATION_NEEDED outcome does.  No sentence is
+# declared, because every packet message names the delta, receipt or
+# assessment the coordinator needs, and the runtime keeps that line as the
+# detail.
+REVIEW_PACKET_VOCABULARY: tuple[RefusalCode, ...] = (
+    RefusalCode("already_resolved", REFUSED, BOTH),
+    RefusalCode("already_reversed", REFUSED, DATABASE_ONLY),
+    RefusalCode("child_identity_mismatch", REFUSED, DATABASE_ONLY),
+    RefusalCode("cross_project_delta", REFUSED, BOTH),
+    RefusalCode("cross_project_receipt", REFUSED, DATABASE_ONLY),
+    RefusalCode("cross_project_revision", REFUSED, DATABASE_ONLY),
+    RefusalCode("duplicate_child", REFUSED, DATABASE_ONLY),
+    RefusalCode("empty_packet", REFUSED, DATABASE_ONLY),
+    RefusalCode("invalid_grouping_key", REFUSED, DATABASE_ONLY),
+    RefusalCode("invalid_outcome", REFUSED, BOTH),
+    RefusalCode("key_bound_to_other_content", REFUSED, DATABASE_ONLY),
+    RefusalCode("later_act_depends", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_decided_at", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_grouping_rule", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_idempotency_key", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_principal", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_question", REFUSED, BOTH),
+    RefusalCode("missing_responsible_party", REFUSED, BOTH),
+    RefusalCode("missing_revision", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_source_revision", REFUSED, DATABASE_ONLY),
+    RefusalCode("missing_support", UNSUPPORTED, BOTH),
+    RefusalCode("superseded_delta", REFUSED, BOTH),
+    RefusalCode("unexpected_revision", REFUSED, DATABASE_ONLY),
+    RefusalCode("unordered_children", REFUSED, DATABASE_ONLY),
+)
+
+REVIEW_PACKET_CODES: dict[str, RefusalCode] = {
+    declared.code: declared for declared in REVIEW_PACKET_VOCABULARY
+}
+
+# Each family's token expression beside the codes it declares, in the order a
+# message is read for them.
+_FAMILIES: tuple[tuple[re.Pattern[str], dict[str, RefusalCode]], ...] = (
+    (REFUSAL_TOKEN, REFUSAL_CODES),
+    (REVIEW_PACKET_TOKEN, REVIEW_PACKET_CODES),
+)
+
 # Deliberately not a member of the vocabulary: no half of the boundary raises
 # it.  It is what a refusal whose message carried no readable token becomes, so
 # a caller still gets a structured result instead of a lost transaction.  If it
@@ -164,9 +222,14 @@ UNCLASSIFIED_REFUSAL = RefusalCode("refused", REFUSED, DATABASE_ONLY)
 
 
 def database_refusal_code(message: str) -> RefusalCode:
-    """The declared code one DBAPI refusal message named, or the fallback."""
+    """The declared code one DBAPI refusal message named, or the fallback.
 
-    match = REFUSAL_TOKEN.search(message)
-    if match is None:
-        return UNCLASSIFIED_REFUSAL
-    return REFUSAL_CODES.get(match.group(1), UNCLASSIFIED_REFUSAL)
+    The message's own token says which family declared it, so one reader
+    serves both commands and neither half needs a table of its own.
+    """
+
+    for token, codes in _FAMILIES:
+        match = token.search(message)
+        if match is not None:
+            return codes.get(match.group(1), UNCLASSIFIED_REFUSAL)
+    return UNCLASSIFIED_REFUSAL

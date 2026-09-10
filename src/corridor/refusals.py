@@ -46,6 +46,17 @@ The kind is deliberately *not* an HTTP status.  The kind-to-status table is
 one dict in the adapter (``corridor.web.app.REFUSAL_STATUS``), because a
 status is what one protocol says about a refusal rather than what the refusal
 is.  A second adapter would write its own table against the same five kinds.
+
+**Refusals PostgreSQL raises.**  Two ``SECURITY DEFINER`` commands that
+supersede a predecessor row, ``record_human_fact_decision`` and
+``append_support_assessment``, refuse with a fixed sentence when the
+predecessor the caller read was superseded first.  ``fact_decisions`` and
+``support_assessments`` each matched the substring ``"predecessor is stale"``
+at their own catch site, so a reworded RAISE would have turned a STALE refusal
+into a generic ``DBAPIError`` with nothing failing first.
+``database_refusal_kind`` is the one translator, its sentences are declared
+beside it, and ``tests/test_refusals.py`` reads each one back out of the
+migration source that defines the command.
 """
 
 STALE = "stale"
@@ -57,6 +68,28 @@ NOT_AUTHORIZED = "not_authorized"
 REFUSAL_KINDS = frozenset(
     {STALE, NOT_OFFERED, CONFLICT, MALFORMED_INPUT, NOT_AUTHORIZED}
 )
+
+
+# The exact sentence each command raises when the predecessor a caller named
+# was superseded first, by the command that raises it.  The Python half owns
+# nothing about the wording: the test reads it from the plpgsql source.
+STALE_PREDECESSOR_SENTENCES = {
+    "record_human_fact_decision": "Human Record Decision predecessor is stale",
+    "append_support_assessment": "Support Assessment predecessor is stale",
+}
+
+
+def database_refusal_kind(exc: BaseException) -> str | None:
+    """The refusal kind one command's DBAPI refusal names, or None for any other error.
+
+    A driver wraps the server's message on ``orig``; an exception without one
+    is read as itself.
+    """
+
+    message = str(getattr(exc, "orig", exc))
+    if any(sentence in message for sentence in STALE_PREDECESSOR_SENTENCES.values()):
+        return STALE
+    return None
 
 
 class Refusal(Exception):

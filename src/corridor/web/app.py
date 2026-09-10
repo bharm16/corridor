@@ -1151,8 +1151,7 @@ def coordinate_statement_screen(
         session,
         principal=principal,
         route_name="coordinate_statement_screen",
-        route_template="/statements/{slug}/{candidate_id}/coordinate",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1210,8 +1209,7 @@ async def save_coordinated_statement(
         session,
         principal=principal,
         route_name="save_coordinated_statement",
-        route_template="/statements/{slug}/{candidate_id}/coordinate",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -1254,8 +1252,7 @@ async def save_admitted_statement_scope(
         session,
         principal=principal,
         route_name="save_admitted_statement_scope",
-        route_template="/statements/{slug}/{candidate_id}/admitted/scope",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1301,8 +1298,7 @@ def keep_unresolved_statement(
         session,
         principal=principal,
         route_name="keep_unresolved_statement",
-        route_template="/statements/{slug}/{candidate_id}/keep-unresolved",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1350,8 +1346,7 @@ async def save_admitted_statement_owner(
         session,
         principal=principal,
         route_name="save_admitted_statement_owner",
-        route_template="/statements/{slug}/{candidate_id}/admitted/owner",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -1412,8 +1407,7 @@ async def save_admitted_statement_next_action(
         session,
         principal=principal,
         route_name="save_admitted_statement_next_action",
-        route_template="/statements/{slug}/{candidate_id}/admitted/next-action",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -1632,8 +1626,7 @@ async def mark_waiting_statement_not_relevant(
         session,
         principal=principal,
         route_name="mark_waiting_statement_not_relevant",
-        route_template="/statements/{slug}/{candidate_id}/not-relevant",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1771,8 +1764,7 @@ def correct_statement_screen(
         session,
         principal=principal,
         route_name="correct_statement_screen",
-        route_template="/statements/{slug}/{candidate_id}/correct",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1816,8 +1808,7 @@ async def correct_statement_scope_from_screen(
             session,
             principal=principal,
             route_name="correct_statement_scope_from_screen",
-            route_template="/statements/{slug}/{candidate_id}/correct/scope",
-            method="POST",
+            request=request,
             response=response,
             subject=FrontendRequestSubject(
                 project_id=project.id, candidate_id=candidate.id
@@ -1837,8 +1828,7 @@ async def correct_statement_scope_from_screen(
             session,
             principal=principal,
             route_name="correct_statement_scope_from_screen",
-            route_template="/statements/{slug}/{candidate_id}/correct/scope",
-            method="POST",
+            request=request,
             response=response,
             subject=FrontendRequestSubject(
                 project_id=project.id, candidate_id=candidate.id
@@ -1854,8 +1844,7 @@ async def correct_statement_scope_from_screen(
         session,
         principal=principal,
         route_name="correct_statement_scope_from_screen",
-        route_template="/statements/{slug}/{candidate_id}/correct/scope",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -1895,8 +1884,7 @@ async def correct_statement_facts_from_screen(
         session,
         principal=principal,
         route_name="correct_statement_facts_from_screen",
-        route_template="/statements/{slug}/{candidate_id}/correct/facts",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -2511,8 +2499,7 @@ def reports(
         session,
         principal=principal,
         route_name="reports",
-        route_template="/reports/{slug}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -2541,8 +2528,7 @@ def review_report(
         session,
         principal=principal,
         route_name="review_report",
-        route_template="/reports/{slug}/prepared/{artifact_id}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, artifact_id=artifact_id
@@ -2571,8 +2557,7 @@ def download_prepared_report(
         session,
         principal=principal,
         route_name="download_prepared_report",
-        route_template="/reports/{slug}/prepared/{artifact_id}/download",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, artifact_id=artifact.id
@@ -2603,8 +2588,7 @@ def preview_prepared_report(
         session,
         principal=principal,
         route_name="preview_prepared_report",
-        route_template="/reports/{slug}/prepared/{artifact_id}/preview",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, artifact_id=artifact.id
@@ -2646,8 +2630,7 @@ def release_prepared_report(
             session,
             principal=principal,
             route_name="release_prepared_report",
-            route_template="/reports/{slug}/prepared/{artifact_id}/release",
-            method="POST",
+            request=request,
             response=response,
             subject=FrontendRequestSubject(
                 project_id=project.id,
@@ -2734,8 +2717,7 @@ def render_report(
             session,
             principal=principal,
             route_name="render_report",
-            route_template="/reports/{slug}/render",
-            method="POST",
+            request=request,
             response=response,
             subject=FrontendRequestSubject(
                 project_id=project.id,
@@ -2750,6 +2732,7 @@ def render_report(
 
 @app.post("/reports/{slug}/release")
 def release_report(
+    request: Request,
     slug: str,
     artifact_id: int = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
@@ -2775,8 +2758,7 @@ def release_report(
         session,
         principal=principal,
         route_name="release_report",
-        route_template="/reports/{slug}/release",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -3166,8 +3148,7 @@ def internal_report(
         session,
         principal=principal,
         route_name="internal_report",
-        route_template="/internal-report/{slug}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3249,9 +3230,8 @@ def read_internal_coordination_summary(
         request, "coordination_summary.html", {"project": project, "receipt": receipt},
     )
     record_frontend_request(
-        session, principal=principal, route_name="coordination_summary_receipt",
-        route_template="/internal-report/{slug}/coordination-summary/{public_id}",
-        method="GET", response=response,
+        session, principal=principal, route_name="read_internal_coordination_summary",
+        request=request, response=response,
         subject=FrontendRequestSubject(project_id=project.id), request_fields=request.path_params,
     )
     session.commit()
@@ -3274,8 +3254,7 @@ def internal_report_full(
         session,
         principal=principal,
         route_name="internal_report_full",
-        route_template="/internal-report/{slug}/full",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3362,8 +3341,7 @@ def internal_report_alerts(
         session,
         principal=principal,
         route_name="internal_report_alerts",
-        route_template="/internal-report/{slug}/alerts/{rule}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3397,8 +3375,7 @@ def internal_report_workbook(
         session,
         principal=principal,
         route_name="internal_report_workbook",
-        route_template="/internal-report/{slug}/workbook.xlsx",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3538,8 +3515,7 @@ def operations_checks(
         session,
         principal=principal,
         route_name="operations_checks",
-        route_template="/operations/{slug}/checks",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3580,8 +3556,7 @@ async def operations_checks_preview(
         session,
         principal=principal,
         route_name="operations_checks_preview",
-        route_template="/operations/{slug}/checks/preview",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
@@ -3620,8 +3595,7 @@ async def save_operations_checks(
             session,
             principal=principal,
             route_name="save_operations_checks",
-            route_template="/operations/{slug}/checks",
-            method="POST",
+            request=request,
             response=response,
             subject=FrontendRequestSubject(project_id=project.id),
             request_fields=form,
@@ -3635,8 +3609,7 @@ async def save_operations_checks(
         session,
         principal=principal,
         route_name="save_operations_checks",
-        route_template="/operations/{slug}/checks",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, check_configuration_id=row.id
@@ -3682,8 +3655,7 @@ def processing_operations(
         session,
         principal=principal,
         route_name="processing_operations",
-        route_template="/operations/{slug}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -3734,8 +3706,7 @@ async def declare_operations_active_run(
         session,
         principal=principal,
         route_name="declare_operations_active_run",
-        route_template="/operations/{slug}/runs/{document_id}/declare",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
@@ -4135,8 +4106,7 @@ async def suspend_operations_unknown_scope(
         session,
         principal=principal,
         route_name="suspend_operations_unknown_scope",
-        route_template="/operations/{slug}/unknown-scope/suspend",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
@@ -4170,8 +4140,7 @@ async def lift_operations_unknown_scope(
         session,
         principal=principal,
         route_name="lift_operations_unknown_scope",
-        route_template="/operations/{slug}/unknown-scope/lift",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=form,
@@ -4308,8 +4277,6 @@ def _project_workflow_response(
     prepare_refusal: str | None = None,
     requested: ReleasePreparationRequest | None = None,
     route_name: str = "coordinator_home",
-    route_template: str = "/work/{slug}",
-    method: str = "GET",
     request_fields: Any = None,
     status_code: int = 200,
 ) -> Response:
@@ -4375,8 +4342,7 @@ def _project_workflow_response(
         session,
         principal=principal,
         route_name=route_name,
-        route_template=route_template,
-        method=method,
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=(
@@ -4398,7 +4364,7 @@ def _project_workflow_response(
     # /review was opened would lose every unopened interruption from #532.
     for item in workflow.undecided:
         emit_packet_surfacing(workflow.review, item, principal_subject=principal.subject, binding=analytics_binding)
-    if method == "GET":
+    if request.method == "GET":
         emit_presentation(EventFamily.PROJECT_OPENING, project_id=project.id,
                           principal_subject=principal.subject, at=now, binding=analytics_binding)
     if issue.coverage is not None:
@@ -4478,8 +4444,6 @@ def authorize_project_issue(
             now=now,
             refusal=refusal,
             route_name="authorize_project_issue",
-            route_template="/work/{slug}/issue/authorize",
-            method="POST",
             request_fields={"candidate_id": candidate_id},
             status_code=403 if refusal.code == NOT_DESIGNATED else 409,
         )
@@ -4491,8 +4455,6 @@ def authorize_project_issue(
         now=now,
         approved=approved,
         route_name="authorize_project_issue",
-        route_template="/work/{slug}/issue/authorize",
-        method="POST",
         request_fields={"candidate_id": candidate_id},
         status_code=201,
     )
@@ -4617,8 +4579,6 @@ def prepare_project_issue(
             now=now,
             prepare_refusal=str(refusal),
             route_name="prepare_project_issue",
-            route_template="/work/{slug}/issue/prepare",
-            method="POST",
             request_fields=fields,
             status_code=409,
         )
@@ -4630,8 +4590,6 @@ def prepare_project_issue(
         now=now,
         requested=requested,
         route_name="prepare_project_issue",
-        route_template="/work/{slug}/issue/prepare",
-        method="POST",
         request_fields=fields,
         status_code=202,
     )
@@ -4826,8 +4784,7 @@ def coordinator_home(
         session,
         principal=principal,
         route_name="coordinator_home",
-        route_template="/work/{slug}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id),
         request_fields=request.query_params,
@@ -5602,8 +5559,7 @@ def queue(
         session,
         principal=principal,
         route_name="queue",
-        route_template="/queue/{slug}",
-        method="GET",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -5960,6 +5916,7 @@ def settle(
 
 @app.post("/ledger/{slug}/{dependency_id}/clarify")
 def clarify_dispute(
+    request: Request,
     slug: str,
     dependency_id: int,
     field_name: str = Form(...),
@@ -5988,8 +5945,7 @@ def clarify_dispute(
         session,
         principal=principal,
         route_name="clarify_dispute",
-        route_template="/ledger/{slug}/{dependency_id}/clarify",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6077,8 +6033,7 @@ def save_dependency_follow_up_plan(
         session,
         principal=principal,
         route_name="save_dependency_follow_up_plan",
-        route_template="/dependencies/{dependency_id}/plan",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6293,6 +6248,7 @@ def mark_evidence_satisfies(
 
 @app.post("/dependencies/{dependency_id}/documentation/confirm-approval")
 def confirm_documentation_approval(
+    request: Request,
     dependency_id: int,
     slug: str = Form(...),
     evidence_link_id: int = Form(...),
@@ -6324,8 +6280,7 @@ def confirm_documentation_approval(
         session,
         principal=principal,
         route_name="confirm_documentation_approval",
-        route_template="/dependencies/{dependency_id}/documentation/confirm-approval",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6344,6 +6299,7 @@ def confirm_documentation_approval(
 
 @app.post("/dependencies/{dependency_id}/documentation/clarify")
 def clarify_documentation_review(
+    request: Request,
     dependency_id: int,
     slug: str = Form(...),
     internal_owner_roster_entry_id: int = Form(...),
@@ -6375,8 +6331,7 @@ def clarify_documentation_review(
         session,
         principal=principal,
         route_name="clarify_documentation_review",
-        route_template="/dependencies/{dependency_id}/documentation/clarify",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6493,6 +6448,7 @@ def page_image(
 
 @app.post("/candidates/{candidate_id}/keep-unresolved")
 def keep_unresolved_candidate(
+    request: Request,
     candidate_id: int,
     slug: str = Form(...),
     principal: HumanPrincipal = Depends(get_human_principal),
@@ -6519,8 +6475,7 @@ def keep_unresolved_candidate(
         session,
         principal=principal,
         route_name="keep_unresolved_candidate",
-        route_template="/candidates/{candidate_id}/keep-unresolved",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
@@ -6533,6 +6488,7 @@ def keep_unresolved_candidate(
 
 @app.post("/candidates/{candidate_id}/accept")
 def accept(
+    request: Request,
     candidate_id: int,
     slug: str = Form(...),
     historical_document_id: int | None = Form(None),
@@ -6611,8 +6567,7 @@ def accept(
         session,
         principal=principal,
         route_name="accept",
-        route_template="/candidates/{candidate_id}/accept",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6660,6 +6615,7 @@ def _accept(
 
 @app.post("/candidates/{candidate_id}/confirm-organization")
 def confirm_organization(
+    request: Request,
     candidate_id: int,
     slug: str = Form(...),
     external_org_id: str = Form(""),
@@ -6739,8 +6695,7 @@ def confirm_organization(
         session,
         principal=principal,
         route_name="confirm_organization",
-        route_template="/candidates/{candidate_id}/confirm-organization",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(project_id=project.id, candidate_id=candidate.id),
         request_fields={
@@ -6841,8 +6796,7 @@ async def edit_accept(
         session,
         principal=principal,
         route_name="edit_accept",
-        route_template="/candidates/{candidate_id}/edit-accept",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6857,6 +6811,7 @@ async def edit_accept(
 
 @app.post("/candidates/{candidate_id}/merge")
 def merge(
+    request: Request,
     candidate_id: int,
     slug: str = Form(...),
     dependency_id: int = Form(...),
@@ -6909,8 +6864,7 @@ def merge(
         session,
         principal=principal,
         route_name="merge",
-        route_template="/candidates/{candidate_id}/merge",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id,
@@ -6931,6 +6885,7 @@ def merge(
 
 @app.post("/candidates/{candidate_id}/reject")
 def reject(
+    request: Request,
     candidate_id: int,
     slug: str = Form(...),
     reason: str = Form(...),
@@ -6984,8 +6939,7 @@ def reject(
         session,
         principal=principal,
         route_name="reject",
-        route_template="/candidates/{candidate_id}/reject",
-        method="POST",
+        request=request,
         response=response,
         subject=FrontendRequestSubject(
             project_id=project.id, candidate_id=candidate.id
