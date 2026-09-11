@@ -2567,3 +2567,167 @@ def test_matcher_configuration_rejects_non_finite_numbers(
             successor_run.id,
             matcher_config=matcher_config,
         )
+
+
+# --- the lookup and the constraint agree on which configurations are one ------
+#
+# #859 made an execution identity unique in the database, over `matcher_config`
+# as JSONB. This lookup decides whether an execution already exists, and it used
+# to decide by hashing the serialized object -- a stricter rule. Anything the
+# database called one configuration and Python called two took the insert path,
+# was refused by the constraint, and then failed to find its own winner, because
+# the conflict handler repeats this lookup. The caller got an IntegrityError for
+# a comparison that already existed.
+
+
+def _pair_for_config(session, documents):
+    _, predecessor, successor = documents
+    predecessor_run, _ = _run(
+        session, predecessor, [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v2", model="gpt-test",
+        schema_version="matrix-schema-v2",
+    )
+    successor_run, _ = _run(
+        session, successor, [{"utility_id": "FOC1-1", "external_org": "AT&T"}],
+        prompt_version="matrix_tiered_v3", model="gpt-test",
+        schema_version="matrix-schema-v3",
+    )
+    return predecessor_run.id, successor_run.id
+
+
+def _receipt_count(session) -> int:
+    return session.scalar(select(func.count()).select_from(RevisionComparisonRun))
+
+
+def test_an_equivalent_numeric_configuration_reuses_the_retained_receipt(
+    session, consecutive_nhhip_documents
+):
+    """`500` and `500.0` are one `jsonb` value, so they are one execution.
+
+    This is the case that failed: the request was refused by the uniqueness
+    constraint and the conflict handler could not find the receipt that refused
+    it, because it asked the same stricter question again.
+    """
+    predecessor_run_id, successor_run_id = _pair_for_config(
+        session, consecutive_nhhip_documents
+    )
+    first = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"station_tolerance_ft": 500},
+    )
+    second = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"station_tolerance_ft": 500.0},
+    )
+
+    assert second.id == first.id
+    assert _receipt_count(session) == 1
+
+
+def test_a_reordered_configuration_reuses_the_retained_receipt(
+    session, consecutive_nhhip_documents
+):
+    """Key order is not part of a `jsonb` value, so it is not part of an identity."""
+    predecessor_run_id, successor_run_id = _pair_for_config(
+        session, consecutive_nhhip_documents
+    )
+    first = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"station_tolerance_ft": 500, "minimum_score": 0.7},
+    )
+    second = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"minimum_score": 0.7, "station_tolerance_ft": 500},
+    )
+
+    assert second.id == first.id
+    assert _receipt_count(session) == 1
+
+
+def test_a_genuinely_different_configuration_is_a_different_execution(
+    session, consecutive_nhhip_documents
+):
+    """Agreeing with the database must not collapse executions that differ."""
+    predecessor_run_id, successor_run_id = _pair_for_config(
+        session, consecutive_nhhip_documents
+    )
+    first = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"station_tolerance_ft": 500},
+    )
+    second = create_revision_comparison(
+        session, predecessor_run_id, successor_run_id,
+        matcher_config={"station_tolerance_ft": 501},
+    )
+
+    assert second.id != first.id
+    assert _receipt_count(session) == 2
+
+
+def test_a_boolean_in_a_numeric_field_is_refused_before_any_receipt(
+    session, consecutive_nhhip_documents
+):
+    """`True` is an `int` in Python and is not a tolerance in either language."""
+    predecessor_run_id, successor_run_id = _pair_for_config(
+        session, consecutive_nhhip_documents
+    )
+
+    with pytest.raises(RevisionComparisonError, match="must be numeric"):
+        create_revision_comparison(
+            session, predecessor_run_id, successor_run_id,
+            matcher_config={"station_tolerance_ft": True},
+        )
+    assert _receipt_count(session) == 0
+
+
+def test_concurrent_equivalent_configurations_leave_one_intact_comparison(
+    runtime_database, monkeypatch
+):
+    """The same race, with the two callers spelling one configuration differently.
+
+    `500` and `500.0` are one `jsonb` value, so both writers are asking for one
+    execution and the constraint refuses the second. The loser then has to find
+    the winner through the very lookup that used to disagree with the database
+    here -- so this is the concurrent half of the sequential reuse case, and it
+    fails with an IntegrityError if the lookup goes back to hashing bytes.
+
+    The project lock is removed for the same reason the sibling test removes it:
+    with the lock the second writer never reaches the insert, and the identity
+    agreement is what is under test.
+    """
+
+    monkeypatch.setattr(
+        revision_comparison, "lock_project", lambda session, project_id: None
+    )
+    factory = runtime_database.session_factory
+    _, predecessor_run_id, successor_run_id = _committed_comparison_pair(factory)
+    ready = Barrier(2, timeout=30)
+    spellings = [{"station_tolerance_ft": 500}, {"station_tolerance_ft": 500.0}]
+
+    def compare_in_own_transaction(index):
+        with factory() as competing:
+            ready.wait()
+            comparison = create_revision_comparison(
+                competing,
+                predecessor_run_id,
+                successor_run_id,
+                matcher_config=spellings[index],
+            )
+            comparison_id = comparison.id
+            competing.commit()
+            return comparison_id
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        attempts = [pool.submit(compare_in_own_transaction, index) for index in range(2)]
+        comparison_ids = [attempt.result(timeout=60) for attempt in attempts]
+
+    assert comparison_ids[0] == comparison_ids[1]
+    with factory() as verification:
+        [retained] = list_revision_comparisons(
+            verification, predecessor_run_id, successor_run_id
+        )
+        readback = read_revision_comparison(verification, retained.id)
+        assert len(readback.findings) == retained.finding_count
+        assert verification.scalar(
+            select(func.count()).select_from(RevisionComparisonRun)
+        ) == 1

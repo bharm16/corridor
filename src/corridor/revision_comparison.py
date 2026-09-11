@@ -40,7 +40,8 @@ import json
 from math import inf, isfinite
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import cast, select
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
@@ -470,14 +471,29 @@ def _read_identical_execution(
         )
         .execution_options(populate_existing=True)
     ).all()
-    config_identity = _content_sha256({"matcher_config": matcher_config})
-    matching = [
-        comparison
-        for comparison in history
-        if comparison.matcher_version == matcher_version
-        and _content_sha256({"matcher_config": comparison.matcher_config})
-        == config_identity
-    ]
+    # The database decides which configurations are the same one, because the
+    # database is what refuses a second receipt for them. Hashing the serialized
+    # object here answered a different question: `500` and `500.0` are distinct
+    # bytes and one `jsonb` value, so an equivalent request missed this lookup,
+    # reached the insert, and was refused by the uniqueness constraint -- then
+    # the conflict handler repeated this same lookup, found nothing, and
+    # re-raised the IntegrityError at a caller who had asked for a comparison
+    # that already existed.
+    equivalent = (
+        set(
+            session.scalars(
+                select(RevisionComparisonRun.id).where(
+                    RevisionComparisonRun.id.in_([run.id for run in history]),
+                    RevisionComparisonRun.matcher_version == matcher_version,
+                    RevisionComparisonRun.matcher_config
+                    == cast(matcher_config, JSONB),
+                )
+            )
+        )
+        if history
+        else set()
+    )
+    matching = [comparison for comparison in history if comparison.id in equivalent]
     if require_unambiguous_pair_history and len(history) > 1:
         raise AmbiguousRevisionComparison(
             "routine revision processing found multiple retained comparisons"
