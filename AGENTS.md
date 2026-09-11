@@ -11,9 +11,13 @@ make down   # stop the stack
 make queue  # run the coordination UI at http://localhost:8412
 ```
 
-Every entry point is a `make` target, and the Makefile comments say what each
-one takes. `make extract`, `make agreements`, and `make minutes` call a model
-and need `OPENAI_API_KEY` in `.env`.
+Every entry point is a `make` target. Bare `make` lists them all with a
+one-line summary, and `make <target> ARGS=--help` prints that command's own
+arguments and worked invocations, which is where the contract lives: a
+Makefile comment cannot travel with the flag it describes, and one of them
+had already detached onto the target that drops databases. `make extract`,
+`make agreements`, and `make minutes` call a model and need `OPENAI_API_KEY`
+in `.env`.
 
 ## Testing
 

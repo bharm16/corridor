@@ -16,7 +16,7 @@ from corridor.principals import HumanPrincipal
 
 
 def main(argv=None):
-    parser = argparse.ArgumentParser(prog="activation")
+    parser = argparse.ArgumentParser(prog="activation", description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     for command in ("validate", "freeze"):
         sub = commands.add_parser(command)

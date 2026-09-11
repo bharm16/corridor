@@ -38,8 +38,24 @@ class RetainedMinutesResponse:
         return self.output
 
 
+_CONTRACT = """\
+LLM extraction over coordination meeting notes. Needs OPENAI_API_KEY.
+Bound a run to exact registered notes by repeating --document-id; --redo
+appends a fresh attempt without changing the declared Current Production Run:
+  make minutes ARGS="sh99-grand-parkway --document-id 1435 --document-id 1438 --redo"
+
+Inspect exact minutes references or replay a fixture/provider response.
+  make minutes-source ARGS="inspect <document-id>"
+  make minutes-source ARGS="capture <document-id> --response response.json --source-family <meeting>"
+"""
+
+
 def main(argv=None):
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     inspect = commands.add_parser("inspect")
     inspect.add_argument("document_id", type=int)

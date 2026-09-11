@@ -47,10 +47,26 @@ def _active_run(value: str) -> tuple[int, int]:
     return parsed
 
 
+_CONTRACT = """\
+Capture the real, pinned SH 99 state read-only, clone it into a newly created,
+disposable PostgreSQL database, then run the exact Record Inclusion command twice.
+Verify checks the emitted receipt without opening a database. This never authorizes
+or performs shared SH 99 mutation:
+  make sh99-admission-acceptance ARGS="replay --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url>"
+  make sh99-admission-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+Seal the current post-activation shared-operation plan on a disposable clone;
+repeat --expected-active-run once per approved Document/Extraction Run pair:
+  make sh99-admission-acceptance ARGS="seal --project-slug=sh99-grand-parkway --source-database-url=<url> --expected-clean-git-revision=<sha> --output-dir=<new-dir> --postgres-admin-url=<url> --expected-acceptance-receipt-id=<id> --expected-acceptance-receipt-sha256=<sha> --expected-activation-id=<id> --expected-active-run=1435:193811 --expected-active-run=1438:193812 --expected-candidate-id=405519"
+  make sh99-admission-acceptance ARGS="verify-seal <bundle-dir> --expected-manifest-sha256=<sha>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="sh99-admission-acceptance",
         description="Replay and verify exact SH 99 Record Inclusion on disposable clones.",
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
     replay = commands.add_parser(

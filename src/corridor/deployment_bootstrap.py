@@ -293,8 +293,19 @@ def configure_deployment(
         owner.dispose()
 
 
+_CONTRACT = """\
+Configure synthetic deployment databases with the migration credential.
+Runtime roles never receive owner/operations credentials; new routes stay disabled.
+Example: make deployment-bootstrap ARGS=configure
+"""
+
+
 def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     commands = parser.add_subparsers(dest="command", required=True)
     configure = commands.add_parser("configure")
     configure.add_argument("--require-enabled", action="store_true")

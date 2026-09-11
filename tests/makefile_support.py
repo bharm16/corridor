@@ -19,6 +19,7 @@ and a summary written as the comment lines directly above the target, past any
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
 from pathlib import Path
 import re
@@ -29,6 +30,10 @@ MAKEFILE = ROOT / "Makefile"
 
 _TARGET = re.compile(r"^(?P<name>[A-Za-z0-9][A-Za-z0-9._-]*)\s*:(?!=)")
 _SKIPPED_ABOVE = re.compile(r"^\.PHONY\s*:|^[A-Za-z_][A-Za-z0-9_]*\s*[?:+]?=")
+_MODULE = re.compile(r"python(?:3)? -m ([A-Za-z_][\w.]*)")
+_SCRIPT = re.compile(r"python(?:3)? (scripts/[\w./-]+\.py)")
+# Running pytest or compileall is running the toolchain, not a Corridor command.
+_TOOLCHAIN_MODULES = frozenset({"pytest", "compileall"})
 
 
 @dataclass(frozen=True)
@@ -51,7 +56,7 @@ def _summary_above(lines: list[str], index: int) -> tuple[str, ...]:
     while cursor >= 0:
         line = lines[cursor]
         if line.startswith("#"):
-            collected.append(line.lstrip("#").strip())
+            collected.append(line.removeprefix("#").removeprefix(" ").rstrip())
         elif not _SKIPPED_ABOVE.match(line):
             break
         cursor -= 1
@@ -96,3 +101,49 @@ def targets(makefile: Path = MAKEFILE) -> dict[str, Target]:
 def recipe(name: str, makefile: Path = MAKEFILE) -> str:
     """The recipe of one target, one command per line, continuations joined."""
     return targets(makefile)[name].recipe_text
+
+
+def entry_point(target: Target, root: Path = ROOT) -> Path | None:
+    """The Python file this target's recipe runs, or `None` when it runs none.
+
+    A missing file is returned rather than hidden: a target that names a
+    retired module must fail the check that calls this, not disappear from it.
+    """
+    match = _MODULE.search(target.recipe_text)
+    if match and match.group(1) not in _TOOLCHAIN_MODULES:
+        module = match.group(1).replace(".", "/")
+        package = root / "src" / module / "__init__.py"
+        return package if package.exists() else root / "src" / f"{module}.py"
+    match = _SCRIPT.search(target.recipe_text)
+    return root / match.group(1) if match else None
+
+
+def parser_description(path: Path) -> tuple[bool, str]:
+    """Whether the module builds an argparse parser, and the description it gives.
+
+    `description=__doc__` and `description=__doc__.split(...)[0]` both resolve
+    to the module docstring, which is the text `--help` actually prints.
+    """
+    source = path.read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    call = next(
+        (
+            node for node in ast.walk(tree)
+            if isinstance(node, ast.Call)
+            and (getattr(node.func, "attr", None) or getattr(node.func, "id", None))
+            == "ArgumentParser"
+        ),
+        None,
+    )
+    if call is None:
+        return False, ""
+    for keyword in call.keywords:
+        if keyword.arg != "description":
+            continue
+        if isinstance(keyword.value, ast.Constant) and isinstance(keyword.value.value, str):
+            return True, keyword.value.value
+        segment = ast.get_source_segment(source, keyword.value) or ""
+        if segment.startswith("__doc__"):
+            return True, ast.get_docstring(tree) or ""
+        return True, segment
+    return True, ""

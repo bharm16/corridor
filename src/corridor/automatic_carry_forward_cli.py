@@ -23,6 +23,15 @@ from corridor.automatic_carry_forward import (
 from corridor.models import Project
 
 
+_CONTRACT = """\
+Inspect or run project-level Automatic Support Update under the released rules:
+  make carry-forward ARGS="status nhhip-3c2"
+  make carry-forward ARGS="run nhhip-3c2"
+
+JSON fields and reason codes retain their existing names.
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="automatic-carry-forward",
@@ -30,7 +39,8 @@ def _parser() -> argparse.ArgumentParser:
             "Inspect or run Automatic Support Update under the released rules: "
             "supporting documentation updated; recorded conclusion unchanged."
         ),
-        epilog="JSON fields and reason codes retain their existing names.",
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

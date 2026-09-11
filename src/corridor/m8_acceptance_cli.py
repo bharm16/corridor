@@ -40,6 +40,15 @@ def _sha256(value: str) -> str:
     return value
 
 
+_CONTRACT = """\
+Capture, replay, or verify the isolated mechanical M8 acceptance-test bundle.
+This tests software behavior; it is not Contract Acceptance of construction.
+Ordinary replay is model-free and requires exact fixture/transformation pins:
+  make m8-acceptance ARGS="replay --fixture=<path> --transformations=<path> --output-dir=<path> --postgres-admin-url=<url> --expected-fixture-sha256=<sha> --expected-transformations-sha256=<sha>"
+  make m8-acceptance ARGS="verify <bundle-dir> --expected-manifest-sha256=<sha>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="m8-acceptance",
@@ -47,6 +56,8 @@ def _parser() -> argparse.ArgumentParser:
             "Capture, replay, or verify the M8 software acceptance test. This is not Contract "
             "Acceptance of construction work."
         ),
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
     commands = parser.add_subparsers(dest="command", required=True)
 

@@ -10,6 +10,7 @@ from collections import defaultdict
 from pathlib import Path
 
 from corridor.migrations import policy
+from makefile_support import entry_point, parser_description, targets as make_targets
 from ratchet_support import assert_ratchet
 from source_scan_support import (  # noqa: F401
     callers_of,
@@ -2581,3 +2582,132 @@ def test_the_unconfirmed_reading_append_has_exactly_its_production_caller():
         for path in sites["record_unconfirmed_readings"]
         if path.name != "scanned_reading.py"
     } == {"ingest.py"}
+
+
+# `make` targets that run the stack, the toolchain, or another project's test
+# runner. Everything else runs a Corridor command that states its own contract,
+# which is what `make <target> ARGS=--help` prints.
+TOOLCHAIN_TARGETS = frozenset({
+    "help", "boot", "up", "down", "psql", "check", "test-infra", "queue", "pdf-reader-node",
+})
+
+# Operator commands that still read `sys.argv` by hand and print their own
+# usage line, so no parser can carry their contract and it stays in the
+# Makefile comment. This list may fall and may never rise: a new command states
+# its contract on its parser, where `--help` finds it.
+HAND_PARSED_COMMANDS = frozenset({
+    "active-run", "admission", "adr-index", "agreements", "candidate-model", "demo",
+    "docs", "eval", "evidence-investigator", "evidence-shadow", "evidence-shadow-eval",
+    "exceptions", "extract", "ingest", "link-deliveries", "milestones",
+    "pipeline-qualification", "report",
+})
+
+
+def test_a_summary_belongs_to_the_target_written_directly_under_it():
+    """What the guard below reads, read on a file whose answer is known.
+
+    The rule it enforces is only as good as the attribution: a reader that
+    walked up past an intervening target would hand every target the block
+    above it and pass while the comments stayed detached. A `.PHONY`
+    declaration and a variable default do sit between a comment and its
+    target in this Makefile, and those do not end the block.
+    """
+
+    makefile = REPO_ROOT / "tests" / "fixtures" / "summary-attribution.mk"
+    found = make_targets(makefile)
+
+    assert found["described"].summary == ("Its own summary.",)
+    assert found["undescribed"].summary == ()
+    assert found["separated"].summary == ("Past a .PHONY and a variable.",)
+    assert found["described"].recipe == ("first command", "second command with a continuation",)
+
+
+def test_every_make_target_carries_its_own_summary():
+    """A comment that is not directly above its target documents the wrong one.
+
+    One comment block described `make storage`, worked invocations included,
+    and the target written under it was `clean-test-databases`, whose recipe
+    drops PostgreSQL databases; `storage:` three lines further down carried no
+    comment at all. `CLAUDE.md` promises "the Makefile comments say what each
+    one takes", and nothing read those comments, so a reader applying that
+    convention read `make clean-test-databases ARGS="migrate"` as documented.
+    """
+
+    silent = sorted(
+        name for name, target in make_targets().items()
+        if not any(line.strip() for line in target.summary)
+    )
+
+    assert silent == [], (
+        "these targets carry no summary of their own, so the nearest comment "
+        f"above them describes something else: {', '.join(silent)}"
+    )
+
+
+def test_every_make_target_names_the_command_it_runs():
+    """`make help` is an index of commands, and an index needs the command.
+
+    A recipe that names no module is a stack or toolchain step, and those are
+    listed rather than discovered: adding one is a deliberate edit here, not a
+    silent exemption a new operator command can borrow.
+    """
+
+    targets = make_targets()
+    assert TOOLCHAIN_TARGETS <= set(targets), (
+        "TOOLCHAIN_TARGETS names a target the Makefile does not define: "
+        f"{sorted(TOOLCHAIN_TARGETS - set(targets))}"
+    )
+    nameless, missing, claimed = [], [], []
+    for name, target in targets.items():
+        path = entry_point(target)
+        if path is None:
+            if name not in TOOLCHAIN_TARGETS:
+                nameless.append(name)
+        elif name in TOOLCHAIN_TARGETS:
+            claimed.append(f"{name} runs {path.relative_to(REPO_ROOT)}")
+        elif not path.exists():
+            missing.append(f"{name} runs {path.relative_to(REPO_ROOT)}")
+
+    assert nameless == [], (
+        "these targets run no Python entry point; give them one, or record "
+        f"them in TOOLCHAIN_TARGETS: {', '.join(sorted(nameless))}"
+    )
+    assert missing == [], (
+        "these targets run a module that does not exist: " + ", ".join(sorted(missing))
+    )
+    assert claimed == [], (
+        "these targets do run a Corridor command, so they are not toolchain "
+        "steps: " + ", ".join(sorted(claimed))
+    )
+
+
+def test_every_operator_command_states_its_contract_on_its_parser():
+    """`--help` is the contract, because a comment cannot travel with the code.
+
+    The flag and the example that shows it have to change together, and they
+    only can when they live in the same file. A parser with no description
+    prints its options and says nothing about what the command is for.
+    """
+
+    silent, hand_parsed = [], set()
+    for name, target in make_targets().items():
+        if name in TOOLCHAIN_TARGETS:
+            continue
+        path = entry_point(target)
+        assert path is not None and path.exists(), name
+        builds_parser, description = parser_description(path)
+        if not builds_parser:
+            hand_parsed.add(name)
+        elif not description.strip():
+            silent.append(f"{name} ({path.relative_to(REPO_ROOT)})")
+
+    assert silent == [], (
+        "these commands build a parser that describes nothing, so "
+        "`make <target> ARGS=--help` prints only flags: " + ", ".join(sorted(silent))
+    )
+    assert_ratchet(
+        "tests/test_architecture.py:HAND_PARSED_COMMANDS",
+        measured=hand_parsed,
+        recorded=HAND_PARSED_COMMANDS,
+    )
+

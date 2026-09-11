@@ -200,8 +200,20 @@ def evaluate_stage1(gold: RoutingGoldSet, run: RoutingRun) -> Stage1Evaluation:
     )
 
 
+_CONTRACT = """\
+Record Stage 1 page-routing confusion and OCR error rates against the frozen
+gold membership, alongside the retired character-count comparator:
+  make page-inventory-eval ARGS="--gold=<stage1-gold.json> --run=<routing-run.json> --output=<receipt.json>"
+"""
+
+
 def _parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="corridor-page-inventory-eval")
+    parser = argparse.ArgumentParser(
+        prog="corridor-page-inventory-eval",
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument("--gold", type=Path, required=True)
     parser.add_argument("--run", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)

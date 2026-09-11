@@ -929,8 +929,18 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+_CONTRACT = """\
+Resolve corpus/manifest.yaml to files on disk. Re-running is a no-op for
+unchanged sources; a source whose bytes changed keeps both revisions.
+"""
+
+
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
-    parser = argparse.ArgumentParser()
+    parser = argparse.ArgumentParser(
+        description=__doc__,
+        epilog=_CONTRACT,
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "manifest",
         nargs="?",
