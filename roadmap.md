@@ -309,6 +309,53 @@ now a per-partner scoping question for #555 and
 row still carries the old conditional wording. ADR-0084 keeps #512 mandatory
 before full cutover (ADR-0081 stages 4 through 6) either way.
 
+### Backend completion and user-workflow completion are two facts (#820)
+
+This roadmap has been recording one fact per capability — built, or not built
+— and the customer-journey audit of 2026-09-10
+([docs/research/customer-journey-audit-2026-09-10.md](docs/research/customer-journey-audit-2026-09-10.md))
+showed why that is not enough. Almost everything the supported journey needs
+is built and several parts of it cannot be reached by the person who needs
+them. A capability with no way in is finished as engineering and unfinished as
+product, and writing one word for both states is how a roadmap comes to
+overstate what a customer can do. So this journey carries two separate
+records, and a capability is not done until both of them say so.
+
+**Backend completion — what the machinery can do.** The spine lifecycle is
+built end to end: Adopt Baseline (#509), Proposed Delta identity (#518),
+Resolve Delta (#519), the atomic Review Packet transaction (#526), the
+adopted-baseline operating mode the database enforces (#520). So is the
+output half: the configured issue set (#640, #641), one immutable candidate
+prepared by the deployed worker (#529, #690), and one authorized Release
+Package (#533). Later-revision capture (#606), source intake, the exact
+retained wording of a source passage (#512, ADR-0068) and the measurement
+software (#532) are built as well. This is the fact the entries above already
+record, and it is unchanged by anything below.
+
+**User-workflow completion — what a signed-in person can actually do.** Not
+yet. Under the enforced live-pilot boundary a person signs in and finds the
+projects they are enrolled on, and on an *already adopted* project they can
+review the week, confirm coverage, and — once #821 puts the request-forgery
+token on those two forms — prepare and approve an issue. They cannot start a
+project: there is no way to supply a baseline inside the boundary (#823,
+#824), no way to preview and adopt it (#827), and no way to review and approve
+what the project issues (#828). They cannot see a delivery's receipt or its
+processing state (#841), read the exact wording behind a proposed change
+(#831), report a wrong capture (#832, #836), undo a decision (#834), or
+retrieve the bytes of an issue the product has told them was approved (#830).
+
+**Where the second fact is measured**, rather than estimated: the acceptance
+harness in `tests/test_core_journey_acceptance.py` walks the whole of #849
+under the real sign-in, the enforced boundary, the real database capabilities
+and the production worker, with a controlled clock and a non-sending mail
+delivery as its only seams. Each step it cannot yet perform names the ticket
+that owes it, and the report is the frontier: it moves one step further as
+each child of #820 lands. `tests/journey_matrix.py` is the declared inventory
+of who may do what, in which state, on which route, with what result, that
+those scenarios are run against. #849 is the ticket that closes when the
+harness reports no waiting step, and that is the point at which
+user-workflow completion for this journey can be recorded as done.
+
 ## Phase 3 — run the measured pilot and reach the checkpoint
 
 1. #424 net economics measurement; #499 shadow comparison against the
