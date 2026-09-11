@@ -132,6 +132,7 @@ from corridor.delta_resolution import (
     STALE,
     TIMING_FIELDS,
     ChildDecisionRequest,
+    ContradictoryDeltaResolution,
     reversed_disposition_ids,
 )
 from corridor.models import (
@@ -628,13 +629,35 @@ def resolved_delta_ids_by_project(
     found: dict[int, set[int]] = {project_id: set() for project_id in ids}
     if not any_ids:
         return found
-    for project_id, delta_id in session.execute(
-        select(DeltaDisposition.project_id, DeltaDisposition.delta_id).where(
+    # A delta carries at most one decision in force, so two unreversed
+    # dispositions on one delta are an integrity fault -- and folding delta ids
+    # into a set answered it by silently keeping one, in the place Review counts
+    # its offer from.  This reads the contradiction the way its per-delta
+    # companion ``effective_dispositions`` does (#948, #961): ordered by
+    # generation, raising rather than choosing, so the same two numbers name it.
+    seen: dict[int, int] = {}
+    contradicted: dict[int, list[int]] = {}
+    for project_id, delta_id, generation in session.execute(
+        select(
+            DeltaDisposition.project_id,
+            DeltaDisposition.delta_id,
+            DeltaDisposition.generation,
+        )
+        .where(
             DeltaDisposition.project_id.in_(ids),
             ~DeltaDisposition.id.in_(reversed_disposition_ids()),
         )
+        .order_by(DeltaDisposition.generation)
     ).all():
-        found[int(project_id)].add(int(delta_id))
+        delta_id = int(delta_id)
+        if delta_id in seen:
+            contradicted.setdefault(delta_id, [seen[delta_id]]).append(int(generation))
+            continue
+        seen[delta_id] = int(generation)
+        found[int(project_id)].add(delta_id)
+    if contradicted:
+        delta_id, generations = sorted(contradicted.items())[0]
+        raise ContradictoryDeltaResolution(delta_id, tuple(generations))
     return found
 
 
