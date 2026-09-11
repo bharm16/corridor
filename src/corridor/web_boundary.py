@@ -976,6 +976,22 @@ for _key in (("GET", "/work/{slug}"), ("POST", "/work/{slug}/issue/prepare"),
     PILOT_ROUTES[_key] = PilotRoute(_route.why, frozenset(_relations))
 
 
+# #835's scheduling act renders the week it just changed, so every relation it
+# reaches is one `/work/{slug}` already reaches: the same reading, the same
+# chase list, the same Issue section, plus the one `delta_deferrals` receipt
+# the command appends -- which that page already reads to decide what is
+# deferred. It is derived from that entry rather than copied out of it, because
+# a copy is what drifts when the week learns to read one more thing.
+PILOT_ROUTES[("POST", "/work/{slug}/schedule")] = PilotRoute(
+    why=(
+        "#835 move a deferred Proposed Delta's return date, or bring it back "
+        "now. ADR-0084 Work List scheduling: the delta stays open and no "
+        "Project Record revision is written"
+    ),
+    relations=PILOT_ROUTES[("GET", "/work/{slug}")].relations,
+)
+
+
 def route_is_enabled(method: str, template: str) -> bool:
     """Whether the live pilot serves this route at all."""
 

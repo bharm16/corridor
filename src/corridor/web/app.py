@@ -245,6 +245,11 @@ from corridor.web.queue_view import (
     queue_view,
     safe_cohort_return,
 )
+from corridor.delta_resolution import (
+    DEFERRED as DEFERRED_STATUS,
+    ChildDecisionRequest,
+    resolve_delta,
+)
 from corridor.disputes import (
     disputes_for,
     history_assessments_for,
@@ -496,7 +501,10 @@ from corridor.record_history import (
     read_record_history,
     readable_terms,
 )
-from corridor.review_packet_reading import SHARED_COMMITMENT
+from corridor.review_packet_reading import (
+    SHARED_COMMITMENT,
+    live_deferrals_by_project,
+)
 from corridor.review_packets import (
     APPLY,
     DEFER,
@@ -4072,6 +4080,8 @@ def _project_workflow_response(
     approved: Authorization | None = None,
     prepare_refusal: str | None = None,
     requested: ReleasePreparationRequest | None = None,
+    scheduled: str | None = None,
+    schedule_refusal: str | None = None,
     route_name: str = "coordinator_home",
     request_fields: Any = None,
     status_code: int = 200,
@@ -4123,18 +4133,34 @@ def _project_workflow_response(
             # coordinator something untrue about what just happened.
             "prepare_refusal": prepare_refusal,
             "requested": requested,
+            # #835's scheduling act, kept apart from both of the above: it
+            # decided nothing about the project record and released nothing,
+            # so announcing it under either heading would say something untrue
+            # about what just happened.
+            "scheduled": scheduled,
+            "schedule_refusal": schedule_refusal,
             # Exactly one element carries `autofocus`: a refusal first, then a
             # completed approval, and otherwise the section the coordinator's
             # work actually starts in.
             "focus": (
                 ui_primitives.focus_target(
-                    refused=refusal is not None or prepare_refusal is not None,
-                    saved=approved is not None or requested is not None,
+                    refused=(
+                        refusal is not None
+                        or prepare_refusal is not None
+                        or schedule_refusal is not None
+                    ),
+                    saved=(
+                        approved is not None
+                        or requested is not None
+                        or scheduled is not None
+                    ),
                 )
                 if refusal is not None
                 or approved is not None
                 or prepare_refusal is not None
                 or requested is not None
+                or scheduled is not None
+                or schedule_refusal is not None
                 else workflow.landing
             ),
             "cutoff": workflow.cutoff.date().isoformat(),
@@ -4260,6 +4286,167 @@ def authorize_project_issue(
         approved=approved,
         route_name="authorize_project_issue",
         request_fields={"candidate_id": candidate_id},
+        status_code=201,
+    )
+
+
+# --- Work List scheduling on the week itself (#835, ADR-0084) --------------
+#
+# The two acts below change *when* a Proposed Delta is in front of the
+# coordinator and nothing else. ADR-0084 separates that from the semantic
+# dispositions: the delta stays open, no Project Record revision is written,
+# and the receipt names who rescheduled it and when. That is also why this is
+# not a second Defer control -- a change that is not already deferred is
+# refused here, so the only surface that can *start* a deferral is still the
+# review screen, where each change is offered exactly once (ADR-0085).
+
+RESCHEDULE = "reschedule"
+OPEN_NOW = "open_now"
+
+
+@app.post("/work/{slug}/schedule", response_class=HTMLResponse)
+def reschedule_deferred_change(
+    request: Request,
+    slug: str,
+    delta_id: int = Form(...),
+    scheduling: str = Form(...),
+    returns_on: str = Form(""),
+    scheduling_reason: str = Form(""),
+    principal: HumanPrincipal = Depends(get_human_principal),
+    session: Session = Depends(get_session),
+    clock=Depends(get_review_clock),
+):
+    """Move a deferred change's return date, or bring it back now (#835).
+
+    **It reschedules; it never defers.** The delta has to be deferred under
+    the reading this request is bound to, or the act is refused. A change the
+    coordinator has not already deferred is decided on the review screen, and
+    growing a way to defer one from here would give it a second control over
+    the same change.
+
+    **It is not #834's Undo.** Undo compensates for a recorded semantic
+    decision and appends a reversal to the packet act that made it. Nothing
+    here reverses anything: the scheduling receipt that was in force stays
+    exactly where it is, a newer one is appended beside it, and the delta was
+    open before and after.
+    """
+
+    project = _project(session, slug, principal, designation=access.COORDINATION)
+    if not is_adopted_baseline(session, project.id):
+        # Scheduling a Proposed Delta belongs to the adopted project's week.
+        # A legacy project has neither, and is answered the way a route that
+        # does not exist for it is answered.
+        raise HTTPException(404, f"no project {slug!r}")
+    if scheduling not in (RESCHEDULE, OPEN_NOW):
+        raise HTTPException(400, "a scheduling act is a reschedule or an open now")
+    now = clock()
+    fields = {
+        "delta_id": delta_id,
+        "scheduling": scheduling,
+        "returns_on": returns_on,
+    }
+
+    def answer(*, scheduled=None, refused=None, status_code=200):
+        return _project_workflow_response(
+            request,
+            project,
+            principal,
+            session,
+            now=now,
+            scheduled=scheduled,
+            schedule_refusal=refused,
+            route_name="reschedule_deferred_change",
+            request_fields=fields,
+            status_code=status_code,
+        )
+
+    reading = read_review_items(session, project_id=project.id, as_of=now)
+    schedule = next(
+        (
+            standing
+            for standing in reading.reading.deferred
+            if standing.delta_id == delta_id
+        ),
+        None,
+    )
+    if schedule is None:
+        return answer(
+            refused=(
+                "That change is not deferred under this reading, so nothing "
+                "was rescheduled. It is decided on the review screen."
+            ),
+            status_code=409,
+        )
+
+    return_date = _optional_form_date(returns_on)
+    if scheduling == RESCHEDULE and return_date is None:
+        return answer(
+            refused="Give the date this change should come back on.",
+            status_code=400,
+        )
+    returns_at = (
+        now
+        if scheduling == OPEN_NOW
+        else datetime.combine(return_date, time(0, 0), tzinfo=timezone.utc)
+    )
+    # The receipt in force before this act, read from the same function the
+    # reading above read it with. It is needed because the scheduling command
+    # is idempotent on the delta, the instant and the person (#457): a retried
+    # act returns the receipt already written and records nothing, and a page
+    # that announced the date it *asked* for would then state a schedule the
+    # record does not hold.
+    in_force = live_deferrals_by_project(session, (project.id,))[project.id].get(
+        delta_id
+    )
+    outcome = resolve_delta(
+        session,
+        ChildDecisionRequest(
+            project_id=project.id,
+            delta_id=delta_id,
+            action=DEFER,
+            principal=principal,
+            # Scheduling carries no idempotency key -- the delta, the instant
+            # and the person are the receipt's identity (ADR-0084, #457) --
+            # and `defer_delta` never reads this one. It is filled with what
+            # the act was so a replayed request is legible in a log.
+            idempotency_key=f"schedule:{delta_id}:{now.isoformat()}",
+            decided_at=now,
+            deferred_until=returns_at,
+            # A reschedule changes the date and keeps whatever the coordinator
+            # said they were waiting for; opening it now ends the wait, so the
+            # condition no longer governs and is not copied forward. Either
+            # way the receipt already in force keeps its own words.
+            wake_condition=(
+                schedule.wake_condition if scheduling == RESCHEDULE else None
+            ),
+            deferral_reason=scheduling_reason.strip() or None,
+        ),
+        binding=binding_for_session(session),
+    )
+    if outcome.status != DEFERRED_STATUS:
+        return answer(
+            refused=(
+                outcome.refusal.detail
+                if outcome.refusal is not None
+                else "The change could not be rescheduled."
+            ),
+            status_code=409,
+        )
+    if in_force is not None and outcome.deferral_id == in_force.id:
+        return answer(
+            scheduled=(
+                "That is already the schedule this change is under, so "
+                "nothing was recorded a second time."
+            ),
+            status_code=200,
+        )
+    session.commit()
+    return answer(
+        scheduled=(
+            "This change is back in immediate work."
+            if scheduling == OPEN_NOW
+            else f"This change now comes back on {return_date.isoformat()}."
+        ),
         status_code=201,
     )
 

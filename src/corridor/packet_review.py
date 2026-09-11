@@ -170,9 +170,13 @@ from corridor.review_packet_reading import (
     KEY_CONTRADICTED_IDENTITY,
     KEY_REASONS,
     PARTITION_RULE_VERSION,
+    RETURNED_DATE_REACHED,
+    RETURNED_OPENED_EARLY,
+    RETURNED_WAKE_CONDITION,
     SHARED_COMMITMENT,
     SOURCE_REVISION,
     ActionableItem,
+    DeferralReturn,
     DeltaReading,
     DeltaStanding,
     ReviewPacketReadingRefused,
@@ -485,6 +489,9 @@ class ChildReading:
     # Needs coordination records this question and its own responsible party.
     # None of these fields replaces an accepted Constraint owner or value.
     follow_up_plans: tuple[AcceptedFollowUpPlan, ...] = ()
+    # Set only on a change that had been deferred and is back (#835). The
+    # reading decided which release returned it; nothing here re-derives one.
+    returned: DeferralReturn | None = None
 
     @property
     def consequence_heading(self) -> str | None:
@@ -503,6 +510,42 @@ class ChildReading:
         """Whether Apply would not be refused for missing fact or support."""
 
         return self.not_ready_reason is None
+
+    @property
+    def return_sentence(self) -> str | None:
+        """Why this change is back, or ``None`` if it was never deferred.
+
+        One sentence per release the reading can make (#835), each naming what
+        the deferral receipt itself recorded.  A change that was never deferred
+        has nothing to explain and says nothing.
+        """
+
+        returned = self.returned
+        if returned is None:
+            return None
+        if returned.reason == RETURNED_OPENED_EARLY:
+            return (
+                f"{returned.scheduled_by} brought this back on "
+                f"{returned.scheduled_at.date().isoformat()}, before the date "
+                "it was waiting for"
+                + (f": {returned.note}" if returned.note else "")
+            )
+        if returned.reason == RETURNED_WAKE_CONDITION:
+            waiting = (
+                f", which is what it was waiting for: {returned.wake_condition}"
+                if returned.wake_condition
+                else ""
+            )
+            return (
+                "A newer source version arrived for this subject and field"
+                f"{waiting}"
+            )
+        if returned.reason == RETURNED_DATE_REACHED and returned.returns_at:
+            return (
+                "The date it was deferred until, "
+                f"{returned.returns_at.date().isoformat()}, has been reached"
+            )
+        return None
 
     @property
     def id(self) -> int:
@@ -1199,6 +1242,7 @@ def _child(
         support_assessment_ids=support_ids,
         not_ready_reason=not_ready,
         selected=not_ready is None,
+        returned=standing.returned,
         # Every child listed here is actionable, so the decision a customer
         # policy waits on is by construction unsettled; #529 asks the same
         # question about differences that have been decided and passes its own

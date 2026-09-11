@@ -31,6 +31,17 @@ exits are deterministic and each is derived, never stored:
                  still counted here, and simply hidden until its dated return or
                  a wake condition.
 
+**A deferral that ended says which release ended it (#835).**  Until a
+coordinator could see deferred work at all, "it came back" was the whole
+account a returned delta gave of itself.  ``standing_sets`` decides the
+release, so it also names it: the return instant the schedule recorded has
+arrived, ADR-0084's wake condition fired, or a person ended the schedule
+deliberately — a receipt whose return instant is at or before its own
+``deferred_at``, which is what opening an item early writes.  The reason
+travels on the actionable standing as ``DeferralReturn``; ``returns_at`` and
+``wake_condition`` stay the *held* delta's schedule, so nothing has to read
+one field and guess which of the two questions it answered.
+
 **No clock takes part.**  ``as_of`` is a cutoff the caller declares.  A dated
 deferral is judged against it because both sides are domain times a person
 chose; nothing here compares a PostgreSQL-assigned ``created_at`` against a
@@ -104,7 +115,7 @@ produced a receipt claiming a rule that never ran.
 from __future__ import annotations
 
 from collections import defaultdict
-from dataclasses import dataclass, fields, replace
+from dataclasses import dataclass, field, fields, replace
 from datetime import date, datetime
 from typing import Any, Mapping, Sequence
 
@@ -157,6 +168,20 @@ SUPPORTED_RULE_VERSIONS = frozenset({PARTITION_RULE_VERSION})
 ACTIONABLE = "actionable"
 SUPERSEDED = "superseded"
 STANDINGS = (ACTIONABLE, DEFERRED, STALE, SUPERSEDED, RESOLVED)
+
+# Why a scheduled Proposed Delta is back in immediate work (ADR-0084, #835).
+# A deferral holds a delta out until *something* happens, and until #835 the
+# something was never named: the delta simply reappeared.  These are the three
+# ways ``standing_sets`` below actually releases one, so a screen states the
+# reason the rule used rather than guessing at one.
+RETURNED_DATE_REACHED = "return_date_reached"
+RETURNED_WAKE_CONDITION = "wake_condition_met"
+RETURNED_OPENED_EARLY = "opened_early"
+RETURN_REASONS = (
+    RETURNED_DATE_REACHED,
+    RETURNED_WAKE_CONDITION,
+    RETURNED_OPENED_EARLY,
+)
 
 # ADR-0085's packet keys, all three of which this rule version produces.
 SOURCE_REVISION = "source_revision"
@@ -342,6 +367,25 @@ class ReviewPacketReadingRefused(refusals.Refusal, ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class DeferralReturn:
+    """Why a scheduled Proposed Delta is back in immediate work (#835).
+
+    The deferral receipt that was in force when the rule released the delta,
+    plus which of ``RETURN_REASONS`` released it.  Every value is read off
+    that one receipt, so a screen naming the date or the wake condition names
+    what the coordinator actually recorded rather than a sentence composed
+    from somewhere else.
+    """
+
+    reason: str
+    scheduled_by: str
+    scheduled_at: datetime
+    returns_at: datetime | None
+    wake_condition: str | None
+    note: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
 class DeltaStanding:
     """Where one Proposed Delta stands, and why."""
 
@@ -361,6 +405,11 @@ class DeltaStanding:
     # conflicts that left it for their own item — without asking the partition
     # a second time.
     commitment_key: str | None = None
+    # Set only on an actionable delta that had been scheduled and came back
+    # (#835).  ``returns_at`` and ``wake_condition`` above stay the *held*
+    # delta's schedule, so a reader asking "when does this return" and one
+    # asking "why is this here" cannot be answered by the same field.
+    returned: DeferralReturn | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -704,6 +753,8 @@ class DeltaStandingSets:
     stale_ids: frozenset[int]
     held: Mapping[int, DeltaDeferral]
     actionable: tuple[ProposedDelta, ...]
+    #: Every delta that was scheduled and is back, and which release did it.
+    returned: Mapping[int, DeferralReturn] = field(default_factory=dict)
 
     @property
     def actionable_ids(self) -> tuple[int, ...]:
@@ -743,11 +794,24 @@ def standing_sets(
     woken = _woken_by_a_newer_source(live_rows)
 
     held: dict[int, DeltaDeferral] = {}
+    returned: dict[int, DeferralReturn] = {}
     for delta in live_rows:
         schedule = schedules.get(delta.id)
-        if schedule is None or delta.id in woken:
+        if schedule is None:
+            continue
+        if delta.id in woken:
+            returned[delta.id] = _returned(schedule, RETURNED_WAKE_CONDITION)
             continue
         if schedule.deferred_until is not None and schedule.deferred_until <= as_of:
+            # A return instant at or before the moment the receipt itself was
+            # recorded is not a date that arrived: it is the schedule being
+            # ended deliberately, which is what "open it early" writes (#835).
+            returned[delta.id] = _returned(
+                schedule,
+                RETURNED_OPENED_EARLY
+                if schedule.deferred_until <= schedule.deferred_at
+                else RETURNED_DATE_REACHED,
+            )
             continue
         held[delta.id] = schedule
 
@@ -756,6 +820,20 @@ def standing_sets(
         stale_ids=stale_ids,
         held=held,
         actionable=tuple(delta for delta in live_rows if delta.id not in held),
+        returned=returned,
+    )
+
+
+def _returned(schedule: DeltaDeferral, reason: str) -> DeferralReturn:
+    """One release, read off the scheduling receipt that was in force."""
+
+    return DeferralReturn(
+        reason=reason,
+        scheduled_by=schedule.scheduled_by_principal,
+        scheduled_at=schedule.deferred_at,
+        returns_at=schedule.deferred_until,
+        wake_condition=schedule.wake_condition,
+        note=schedule.reason,
     )
 
 
@@ -893,6 +971,7 @@ def read_open_deltas(
     )
     stale_ids = sets.stale_ids
     held = sets.held
+    returned = sets.returned
     actionable = list(sets.actionable)
     contradicted = _contradicted_keys(actionable)
     commitments = _explicitly_scoped_commitments(session, project_id, actionable)
@@ -962,6 +1041,7 @@ def read_open_deltas(
                     attention_reasons=reasons,
                     item_key=item_of[delta.id],
                     commitment_key=commitments.get(delta.id),
+                    returned=returned.get(delta.id),
                 )
             )
 

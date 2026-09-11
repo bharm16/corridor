@@ -6,7 +6,7 @@
 
   The page holds no *record-decision* control of its own. Every proposed change
   is actionable in exactly one item on the review screen (ADR-0085), so this
-  page links to that screen and offers nothing that resolves, defers, or plans;
+  page links to that screen and offers nothing that resolves or plans;
   a Follow-up Plan is printed in the words it recorded, with no control,
   because nothing acts on a spine Follow-up Plan yet (#425).
 
@@ -22,6 +22,13 @@
   commands read. What the section does print is which of the two this reader
   holds, from that same roster, so a person is not left to discover a refusal
   by pressing something.
+
+  It also carries Work List *scheduling* for a change that is already deferred
+  (#835). ADR-0084 settles that scheduling is not a disposition: the change
+  stays open, the project record is untouched, and no revision is written. A
+  change that is not already deferred is refused by the route, so the review
+  screen remains the only place a deferral can start and no change gains a
+  second control.
 
   The Follow-up section also renders #425's contact-ready follow-up bundles
   (#658). It consumes `read_follow_up_bundles` and restates none of its rules:
@@ -127,6 +134,17 @@
       Nothing is needed from you while that happens.
     </p>
   {% endcall %}
+  {%- elif schedule_refusal %}
+  {% call ui.outcome("refused", "Nothing was rescheduled", focus) %}
+    <p>{{ schedule_refusal }}</p>
+  {% endcall %}
+  {%- elif scheduled %}
+  {% call ui.outcome("saved", "The return date is recorded", focus) %}
+    <p>
+      {{ scheduled }} Nothing about this project record changed: what was
+      proposed is still open and still undecided.
+    </p>
+  {% endcall %}
   {%- elif approved %}
   {% call ui.outcome("saved", "Approved for sharing", focus) %}
     <p>
@@ -179,6 +197,56 @@
       <p><a href="/review/{{ project.slug }}">Review these source changes</a></p>
       {%- elif workflow.review.items %}
       <p><a href="/review/{{ project.slug }}">Open the review screen anyway</a></p>
+      {%- endif %}
+
+      {#
+        Deferred work, with the date each one comes back on (#835, ADR-0084).
+
+        The two controls schedule; they decide nothing. A change listed here is
+        already open and already deferred, so moving its date or bringing it
+        back leaves the project record exactly as it was and writes no revision
+        — which is why neither button is worded as a decision and why the
+        review screen is still the only place a change can be decided or
+        deferred in the first place.
+      #}
+      {%- if workflow.deferred %}
+      <h3 id="deferred-work">Deferred until later</h3>
+      <p class="quiet">
+        These proposed changes are still open. Each one is out of the review
+        screen until the date below, and you can move that date or bring one
+        back now.
+      </p>
+      {%- for held in workflow.deferred %}
+      <section class="bundle" aria-labelledby="deferred-{{ held.delta_id }}-heading">
+        <h4 id="deferred-{{ held.delta_id }}-heading">{{ held.subject_name }} &mdash; {{ held.field_name }}</h4>
+        {{ ui.fact_list([("When it comes back", held.return_sentence)]) }}
+        <form method="post" action="/work/{{ project.slug }}/schedule">
+          {{ csrf_field() }}
+          <input type="hidden" name="delta_id" value="{{ held.delta_id }}">
+          {% call ui.field(
+               "deferred-" ~ held.delta_id ~ "-returns-on",
+               "A different date for this to come back on") %}
+          <input type="date" id="deferred-{{ held.delta_id }}-returns-on"
+                 name="returns_on"
+                 value="{{ held.returns_at.isoformat() if held.returns_at else '' }}">
+          {% endcall %}
+          {% call ui.field(
+               "deferred-" ~ held.delta_id ~ "-reason",
+               "Why you are changing this (optional)") %}
+          <input type="text" id="deferred-{{ held.delta_id }}-reason"
+                 name="scheduling_reason" value="">
+          {% endcall %}
+          {% call ui.sticky_actions("Scheduling for " ~ held.subject_name ~ " — " ~ held.field_name) %}
+          <button type="submit" name="scheduling" value="reschedule">
+            Change the date this comes back
+          </button>
+          <button type="submit" name="scheduling" value="open_now">
+            Bring this back now
+          </button>
+          {% endcall %}
+        </form>
+      </section>
+      {%- endfor %}
       {%- endif %}
 
     {%- elif section.name == "follow_up" %}
