@@ -84,6 +84,7 @@ from corridor.web.issue_section import (
     MAY_PREPARE,
     NOTHING_PREPARED,
     NOT_AUTHORIZABLE,
+    PREPARE_ACTION,
     IssueViewRefused,
     issue_view,
 )
@@ -357,10 +358,10 @@ def _packages(session, adopted) -> int:
 # --- what the section presents ---------------------------------------------
 
 
-def test_before_anything_is_prepared_the_section_says_so_and_offers_nothing(
+def test_before_anything_is_prepared_the_section_says_so_and_offers_preparation(
     session, adopted, client
 ):
-    """A project with no candidate has nothing to approve, and no control."""
+    """A project with no candidate has nothing to approve, and one way on."""
 
     configure(session, adopted)
 
@@ -378,6 +379,14 @@ def test_before_anything_is_prepared_the_section_says_so_and_offers_nothing(
     body = prose(week(client, adopted))
     assert "No issue has been prepared for this project yet" in body
     assert "/issue/authorize" not in body
+    # The summary says what the page does with that emptiness, in the words of
+    # the control that does it. It used to say preparing an issue "is not
+    # something this page does", which stopped being true when #675 put the
+    # confirmation directly beneath the sentence (#897).
+    assert f"{PREPARE_ACTION} is what prepares one" in view.summary
+    assert f"{PREPARE_ACTION} is what prepares one" in body
+    assert "not something this page does" not in body
+    assert f"/work/{adopted.project.slug}/issue/prepare" in body
 
 
 def test_the_section_presents_the_candidate_it_would_send(session, adopted, client, store):
