@@ -3026,6 +3026,221 @@ def test_no_template_mints_a_customer_sentence_in_a_set():
         "label, the reader that owns the state for a sentence about it — and "
         "render the value"
     )
+
+
+# --- Every authenticated form on a live-pilot page echoes its token (#821) ----
+#
+# `get_human_principal` refuses an unsafe method whose request-forgery token is
+# missing or does not match the session's, and the token reaches the server
+# only because a server-rendered form echoed the readable cookie back in a
+# hidden field.  So a form that omits `csrf_field()` is not "unprotected": it
+# is *inoperable*.  Both Issue forms on `project_workflow.html` omitted it, and
+# every test that drove them replaced `get_human_principal`, so nothing failed
+# until a real coordinator clicked.
+#
+# The rule below is the one a review would have to remember otherwise.  Scope
+# is the live-pilot boundary: the templates the manifest's own routes render,
+# plus the partials composed into them, because a form in a partial is markup
+# that page sends.  A `method="post"` form there must emit the field, unless
+# the route it posts to takes no signed-in person at all -- the public sign-in
+# form, which has its own contract and could not echo a token it has not been
+# issued.  An action that resolves to no route is held to the rule rather than
+# excused by it.
+
+WEB_APP = SOURCE_ROOT / "web" / "app.py"
+
+_FORM_TAG = re.compile(r"<form[^>]*>", re.I)
+_FORM_METHOD = re.compile(r'method\s*=\s*"post"', re.I)
+_FORM_ACTION = re.compile(r'action\s*=\s*"([^"]*)"', re.I)
+_JINJA_EXPRESSION = re.compile(r"\{\{.*?\}\}", re.S)
+
+
+def _web_app_functions() -> dict[str, ast.AST]:
+    """Every module-level function in the web application, by name."""
+    return {
+        node.name: node
+        for node in _tree(WEB_APP).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+
+
+def _route_decorations(node) -> tuple[tuple[str, str], ...]:
+    """The ``(METHOD, path)`` keys this function is registered under."""
+    keys = []
+    for decorator in node.decorator_list:
+        if not isinstance(decorator, ast.Call):
+            continue
+        called = decorator.func
+        if (
+            isinstance(called, ast.Attribute)
+            and isinstance(called.value, ast.Name)
+            and called.value.id == "app"
+            and called.attr in ("get", "post", "put", "patch", "delete")
+            and decorator.args
+            and isinstance(decorator.args[0], ast.Constant)
+        ):
+            keys.append((called.attr.upper(), decorator.args[0].value))
+    return tuple(keys)
+
+
+def _requires_a_signed_in_person(node) -> bool:
+    """True when this handler resolves a person through `get_human_principal`."""
+    arguments = node.args
+    defaults = list(arguments.defaults) + [
+        default for default in arguments.kw_defaults if default is not None
+    ]
+    return any(
+        isinstance(default, ast.Call)
+        and isinstance(default.func, ast.Name)
+        and default.func.id == "Depends"
+        and default.args
+        and isinstance(default.args[0], ast.Name)
+        and default.args[0].id == "get_human_principal"
+        for default in defaults
+    )
+
+
+def _templates_a_handler_renders(functions: dict[str, ast.AST], name: str) -> set[str]:
+    """Every template this handler renders, through the helpers it calls.
+
+    A route rarely names its own template: `/work/{slug}` renders through
+    `_project_workflow_response`, and a rule that read only the decorated
+    function would cover nothing it matters for.
+    """
+    rendered: set[str] = set()
+    frontier, seen = [name], set()
+    while frontier:
+        current = frontier.pop()
+        if current in seen or current not in functions:
+            continue
+        seen.add(current)
+        for node in ast.walk(functions[current]):
+            if not isinstance(node, ast.Call):
+                continue
+            if isinstance(node.func, ast.Name):
+                frontier.append(node.func.id)
+            elif (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "TemplateResponse"
+            ):
+                rendered.update(
+                    argument.value
+                    for argument in node.args
+                    if isinstance(argument, ast.Constant)
+                    and isinstance(argument.value, str)
+                    and argument.value.endswith(".html")
+                )
+    return rendered
+
+
+def _manifest_page_templates() -> frozenset[Path]:
+    """Every template a live-pilot route renders, with the partials inside it."""
+    from corridor.web_boundary import PILOT_ROUTES
+
+    functions = _web_app_functions()
+    pages = {
+        TEMPLATE_ROOT / name
+        for handler, node in functions.items()
+        for key in _route_decorations(node)
+        if key in PILOT_ROUTES
+        for name in _templates_a_handler_renders(functions, handler)
+    }
+    composition = _composed_templates()
+    closed: set[Path] = set()
+    frontier = list(pages)
+    while frontier:
+        current = frontier.pop()
+        if current in closed:
+            continue
+        closed.add(current)
+        frontier.extend(composition.get(current, frozenset()))
+    return frozenset(closed)
+
+
+def _post_forms_on_manifest_pages() -> list[tuple[str, str, bool, bool]]:
+    """Every state-changing form on a live-pilot page, classified.
+
+    One entry per `method="post"` form: where it is, the action it posts to,
+    whether that route takes a signed-in person, and whether the form emits the
+    field. A form with no `action`, or one whose action matches no route, is
+    read as authenticated: the rule holds it rather than excusing it.
+    """
+    functions = _web_app_functions()
+    posts = {
+        key: node
+        for node in functions.values()
+        for key in _route_decorations(node)
+        if key[0] == "POST"
+    }
+
+    def targeted(action: str):
+        segments = _JINJA_EXPRESSION.sub("\x00", action).strip().split("/")
+        for (_method, path), node in posts.items():
+            declared = path.split("/")
+            if len(declared) == len(segments) and all(
+                part.startswith("{") or part == given
+                for part, given in zip(declared, segments)
+            ):
+                return node
+        return None
+
+    forms = []
+    for path in sorted(_manifest_page_templates()):
+        markup = path.read_text(encoding="utf-8")
+        for opening in _FORM_TAG.finditer(markup):
+            if not _FORM_METHOD.search(opening.group(0)):
+                continue
+            closing = markup.index("</form>", opening.end())
+            action = _FORM_ACTION.search(opening.group(0))
+            action = action.group(1) if action else ""
+            route = targeted(action)
+            forms.append((
+                f"{path.name}:{markup.count(chr(10), 0, opening.start()) + 1}",
+                action,
+                route is None or _requires_a_signed_in_person(route),
+                "csrf_field()" in markup[opening.start() : closing],
+            ))
+    return forms
+
+
+def test_the_forgery_field_rule_reaches_the_pages_it_is_written_for():
+    """The check is worthless if it silently covers nothing.
+
+    Its reach is the point, and both halves of it: `project_workflow.html` and
+    `review.html` are manifest pages carrying authenticated forms, and
+    `sign_in.html` is the manifest page whose one form is public, so the
+    exemption is exercised rather than theoretical.
+    """
+    pages = {path.name for path in _manifest_page_templates()}
+    assert {"project_workflow.html", "review.html", "sign_in.html"} <= pages
+
+    forms = _post_forms_on_manifest_pages()
+    assert [where for where, _, authenticated, _ in forms if authenticated]
+    assert [where for where, _, authenticated, _ in forms if not authenticated] == [
+        where for where, action, _, _ in forms if action == "/sign-in/request"
+    ]
+
+
+def test_every_authenticated_form_on_a_pilot_page_carries_the_forgery_field():
+    """A form the write path would refuse is a control that cannot be clicked.
+
+    `get_human_principal` requires the token on every unsafe method, and a
+    server-rendered form is the only thing that can supply it, so this is the
+    difference between a working button and a 403. It is checked here rather
+    than left to each screen's own test because the screens that omitted it had
+    tests -- ones that replaced the dependency doing the checking.
+    """
+    offenders = [
+        f"{where} posts to {action!r}"
+        for where, action, authenticated, carried in _post_forms_on_manifest_pages()
+        if authenticated and not carried
+    ]
+
+    assert offenders == [], (
+        f"{offenders}: a state-changing form on a live-pilot page omits "
+        "`{{ csrf_field() }}`, so a signed-in person clicking it is refused "
+        "with 403. Emit the field as the first thing inside the form"
+    )
 # The families ADR-0081 converges on, and the constraint in each that makes a
 # duplicate unrepresentable (#457).  A dedup identity that lives in a writer —
 # a ``SECURITY DEFINER`` command's body, or the Python calling it — holds only

@@ -65,6 +65,7 @@ from corridor.release_candidate import (
     current_release_candidate,
     render_candidate_artifacts,
 )
+from corridor.web import auth
 from corridor.web.app import (
     app,
     get_human_principal,
@@ -806,7 +807,16 @@ def test_the_week_grows_no_record_decision_control_beside_the_approval(
     assert body.count("<form") == 1
     assert f'action="/work/{adopted.project.slug}/issue/authorize"' in body
     assert body.count("<button") == 1
-    assert re.findall(r'name="([a-z_]+)"', body) == ["candidate_id"]
+    # The request-forgery field is the session's own proof that this submission
+    # came from this page, not a control the week grew: every authenticated form
+    # on a live-pilot page carries it, and `test_architecture.py` fails when one
+    # does not (#821). What this test pins is that nothing *else* was added.
+    named = [
+        field
+        for field in re.findall(r'name="([a-z_]+)"', body)
+        if field != auth.CSRF_FIELD
+    ]
+    assert named == ["candidate_id"]
     for token in ("apply", "keep_current", "needs_coordination", "defer"):
         assert f'value="{token}"' not in body
 

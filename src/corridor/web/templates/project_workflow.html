@@ -436,6 +436,7 @@
 
       {%- if issue.may_authorize %}
       <form method="post" action="/work/{{ project.slug }}/issue/authorize">
+        {{ csrf_field() }}
         <input type="hidden" name="candidate_id" value="{{ issue.candidate.id }}">
         <p class="field-hint" id="approve-issue-rule">{{ issue.designation_rule }}</p>
         {% call ui.sticky_actions("Approving this issue for sharing") %}
@@ -481,6 +482,7 @@
 
       {%- if issue.may_prepare %}
       <form method="post" action="/work/{{ project.slug }}/issue/prepare">
+        {{ csrf_field() }}
         <input type="hidden" name="issue_profile_id" value="{{ issue.coverage.profile_id }}">
         <input type="hidden" name="issue_profile_version" value="{{ issue.coverage.profile_version }}">
         <input type="hidden" name="accepted_revision_id" value="{{ issue.accepted_revision_id }}">

@@ -101,15 +101,16 @@ from corridor.review_packets import (
     resolve_review_packet,
 )
 
+from browser_session_support import form_fields
 import test_issue_path_end_to_end as issue_path
 from packet_review_support import Rendition, configure_issue, subject, support
 from test_release_candidate import CHASE, SUMMARY, UCM_RENDERER, WEEKLY
 
 # #536's end-to-end module already owns an adopted project, a coordinator, a
-# designated releaser, the app on this test's own migrated database, and the
-# reader that takes a form's payload out of the rendered page. Reusing them is
-# the point: this file proves the *supervisor*, and it should submit exactly
-# what that file's coordinator submits.
+# designated releaser, and the app on this test's own migrated database.
+# Reusing them is the point: this file proves the *supervisor*, and it should
+# submit exactly what that file's coordinator submits -- through the same
+# `form_fields`, which reads a payload out of the page that rendered it.
 Adopted = issue_path.Adopted
 adopted = issue_path.adopted
 client = issue_path.client
@@ -117,7 +118,6 @@ factory = issue_path.factory
 store = issue_path.store
 week = issue_path.week
 prose = issue_path.prose
-_form = issue_path._form
 # The deployed runtime, driven the way #536's end-to-end proofs drive it: the
 # two released schedules, one declared tick, the retained weekly reading and
 # the coordinator's own confirmation. This file proves the supervisor those
@@ -232,7 +232,7 @@ def test_a_confirmed_request_reaches_a_candidate_through_a_claimed_occurrence(
     # And the coordinator sees it on the same screen, with an approval offered.
     body = week(client, adopted)
     assert "Preparing this issue" not in prose(body)
-    assert _form(body, "/issue/authorize") is not None
+    assert form_fields(body, "/issue/authorize") is not None
 
 
 def test_a_later_internal_reading_cannot_replace_the_one_the_request_bound(
@@ -848,7 +848,7 @@ def _prepare(factory, client, adopted: Adopted, *, at: datetime):
 def _authorize(client, adopted: Adopted) -> None:
     """The designated releaser approves what the section is offering."""
 
-    approval = _form(week(client, adopted), "/issue/authorize")
+    approval = form_fields(week(client, adopted), "/issue/authorize")
     assert approval is not None, (
         "the section offered no approval, so nothing here authorized a package"
     )

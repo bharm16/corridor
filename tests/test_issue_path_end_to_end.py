@@ -7,12 +7,12 @@ outcomes happened. None of them walks the path a coordinator actually walks,
 and #536's final amendment says that walking it is the thing that closes the
 ticket.
 
-So these three tests are deliberately the slow, unglamorous kind. They run
+So these four tests are deliberately the slow, unglamorous kind. They run
 against a real migrated database with real commits, they drive the screens
 through the routes, and **they take every value they submit out of the page
 they were just shown**. Nothing here composes a coverage digest, a profile
-version, an accepted revision or a candidate id of its own: `_form` reads the
-hidden inputs out of the rendered HTML, which is the only way a test can prove
+version, an accepted revision or a candidate id of its own: `form_fields`
+reads the hidden inputs out of the rendered HTML, which is the only way a test can prove
 that what the screen offers is submittable, rather than that a hand-written
 payload happens to satisfy the route.
 
@@ -43,10 +43,10 @@ value this file set.
 
 from __future__ import annotations
 
+from contextlib import ExitStack
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import html
-import re
 from uuid import uuid4
 
 import pytest
@@ -84,6 +84,7 @@ from corridor.release_preparation import (
     preparation_standing,
 )
 from corridor.release_preparation_supervisor import retained_output_template
+from corridor.web import auth
 from corridor.web.app import (
     app,
     get_human_principal,
@@ -92,6 +93,7 @@ from corridor.web.app import (
 )
 from corridor.web.issue_section import PREPARE_ACTION, issue_view
 
+from browser_session_support import form_fields, sign_in, submit_form
 from later_revision_support import BASELINE_ROWS, adopt, workbook_bytes
 from packet_review_support import configure_issue
 from test_release_candidate import CHASE, UCM_RENDERER, WEEKLY
@@ -205,6 +207,50 @@ def client(factory):
     app.dependency_overrides.clear()
 
 
+@pytest.fixture
+def sender():
+    """The replaceable mail seam, as a non-sending capture: a link is never sent."""
+
+    return auth.RecordingEmailSender()
+
+
+@pytest.fixture
+def browser(factory, sender):
+    """Signed-in browsers on this test's database, with identity left alone.
+
+    The fixture above replaces `get_human_principal`, which is the dependency
+    that checks the request-forgery token on a write, so nothing it drives can
+    tell a form that carries the token from one that omits it. Here only the
+    plumbing is replaced -- the database, the mail seam and the declared
+    instant -- and a session is established the way a person establishes one:
+    a link requested, captured by the recorder, and consumed once.
+
+    Each call returns a browser of its own, because a cookie jar is one
+    person's: the coordinator who prepares an issue and the designated releaser
+    who approves it hold different sessions carrying different tokens.
+    `https` so the Secure cookies round-trip (#821).
+    """
+
+    def sessions():
+        with factory() as one:
+            yield one
+
+    app.dependency_overrides[get_session] = sessions
+    app.dependency_overrides[auth.get_email_sender] = lambda: sender
+    app.dependency_overrides[get_review_clock] = lambda: (lambda: NOW)
+    with ExitStack() as open_browsers:
+
+        def signed_in(email: str) -> TestClient:
+            made = open_browsers.enter_context(
+                TestClient(app, base_url="https://testserver")
+            )
+            sign_in(made, sender, email)
+            return made
+
+        yield signed_in
+    app.dependency_overrides.clear()
+
+
 def as_principal(principal: HumanPrincipal) -> None:
     app.dependency_overrides[get_human_principal] = lambda: principal
 
@@ -213,32 +259,6 @@ def prose(body: str) -> str:
     """The page as a reader receives it, with markup escaping undone."""
 
     return html.unescape(body)
-
-
-_FORM = re.compile(
-    r'<form[^>]*action="(?P<action>[^"]*)"[^>]*>(?P<body>.*?)</form>', re.S
-)
-_HIDDEN = re.compile(
-    r'<input[^>]*type="hidden"[^>]*name="(?P<name>[^"]*)"[^>]*'
-    r'value="(?P<value>[^"]*)"'
-)
-
-
-def _form(body: str, action_suffix: str) -> dict[str, str] | None:
-    """The hidden inputs of the one form on the page with this action.
-
-    Reading the payload out of the rendered page is the point: a test that
-    composed its own would prove that the route accepts a payload, not that the
-    screen offers one a coordinator could submit.
-    """
-
-    for match in _FORM.finditer(body):
-        if match.group("action").endswith(action_suffix):
-            return {
-                found.group("name"): html.unescape(found.group("value"))
-                for found in _HIDDEN.finditer(match.group("body"))
-            }
-    return None
 
 
 def week(client, adopted: Adopted) -> str:
@@ -317,7 +337,7 @@ def take_weekly_reading(factory) -> None:
 def confirm_coverage(client, adopted: Adopted) -> dict[str, str]:
     """The coordinator's own act, submitted exactly as the page offered it."""
 
-    confirmation = _form(week(client, adopted), "/issue/prepare")
+    confirmation = form_fields(week(client, adopted), "/issue/prepare")
     assert confirmation is not None
     requested = client.post(
         f"/work/{adopted.slug}/issue/prepare", data=confirmation
@@ -385,7 +405,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     #    offering an approval.
     body = week(client, adopted)
     assert "No issue has been prepared for this project yet" in prose(body)
-    assert _form(body, "/issue/authorize") is None
+    assert form_fields(body, "/issue/authorize") is None
     assert _count(factory, ReleaseCandidate, adopted) == 0
     assert _count(factory, ReleasePackage, adopted) == 0
 
@@ -393,7 +413,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     #    it offers to confirm is the one `issue_coverage` derives.
     assert "Sources for this issue" in prose(body)
     assert PREPARE_ACTION in prose(body)
-    confirmation = _form(body, "/issue/prepare")
+    confirmation = form_fields(body, "/issue/prepare")
     assert confirmation is not None
     with factory() as reading:
         derived = derive_coverage_reading(
@@ -413,8 +433,8 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     # While a worker holds the request the section says so and offers nothing:
     # no second preparation, and no approval of an issue not yet made.
     assert "Preparing this issue" in prose(requested.text)
-    assert _form(requested.text, "/issue/prepare") is None
-    assert _form(requested.text, "/issue/authorize") is None
+    assert form_fields(requested.text, "/issue/prepare") is None
+    assert form_fields(requested.text, "/issue/authorize") is None
     with factory() as reading:
         assert (
             preparation_standing(reading, project_id=adopted.project_id).in_flight
@@ -438,7 +458,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     assert "Ready for your approval" in readable
     assert "the customer's updated UCM workbook" in readable
     assert "the weekly Coordination Report" in readable
-    approval = _form(body, "/issue/authorize")
+    approval = form_fields(body, "/issue/authorize")
     assert approval is not None
     assert approval["candidate_id"] == str(candidate_id)
     # The candidate names the coverage the coordinator confirmed on the screen,
@@ -474,7 +494,7 @@ def test_no_candidate_becomes_an_authorized_issue_without_leaving_the_week(
     assert "Approved and sent as this issue" in readable
     assert "is issue 1 for this project" in readable
     assert RELEASER.subject in readable
-    assert _form(week(client, adopted), "/issue/authorize") is None
+    assert form_fields(week(client, adopted), "/issue/authorize") is None
     with factory() as reading:
         package = reading.scalars(
             select(ReleasePackage).where(
@@ -511,7 +531,7 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
         prepared.handler_result
     )
     stale_candidate_id = int(prepared.handler_result["candidate_id"])
-    assert _form(week(client, adopted), "/issue/authorize") is not None
+    assert form_fields(week(client, adopted), "/issue/authorize") is not None
 
     # The candidate becomes stale: the customer's configured issue changes.
     with factory() as change:
@@ -542,11 +562,11 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
     assert "Cannot be approved as it stands" in readable
     assert "freshly prepared candidate" in readable
     # And it is not offered for approval.
-    assert _form(body, "/issue/authorize") is None
+    assert form_fields(body, "/issue/authorize") is None
 
     # Coverage is reconfirmed under #675's rules — the reading now carries the
     # profile version in force, and the form offers that reading and no other.
-    fresh = _form(body, "/issue/prepare")
+    fresh = form_fields(body, "/issue/prepare")
     assert fresh is not None
     assert fresh["issue_profile_version"] != first["issue_profile_version"]
     with factory() as reading:
@@ -594,7 +614,7 @@ def test_a_stale_candidate_stays_visible_and_is_replaced_rather_than_approved(
 
     # The replacement, prepared under the configuration now in force, is what
     # the section offers instead.
-    approval = _form(week(client, adopted), "/issue/authorize")
+    approval = form_fields(week(client, adopted), "/issue/authorize")
     assert approval is not None
     assert approval["candidate_id"] == str(replacement_candidate_id)
     assert client.post(
@@ -672,7 +692,7 @@ def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
 
     # The retry the sentence promises is offered, and it is idempotent: two
     # submissions of the same confirmed reading queue one preparation.
-    retry = _form(body, "/issue/prepare")
+    retry = form_fields(body, "/issue/prepare")
     assert retry is not None
     assert retry == confirmation, (
         "nothing the coordinator confirmed has moved, so the retry below is a "
@@ -700,8 +720,108 @@ def test_a_failed_preparation_leaves_nothing_partial_and_a_retry_puts_it_right(
         assert preparation_standing(
             reading, project_id=adopted.project_id
         ).state == PREPARED
-    approval = _form(week(client, adopted), "/issue/authorize")
+    approval = form_fields(week(client, adopted), "/issue/authorize")
     assert approval is not None
     assert approval["candidate_id"] == str(
         retried.handler_result["candidate_id"]
     )
+
+
+# --- proof four: both acts under a real signed-in session -------------------
+
+
+def test_a_signed_in_browser_can_prepare_and_approve_and_a_forgery_cannot(
+    factory, adopted, browser, store
+):
+    """The two Issue acts as a browser performs them (#821).
+
+    Every proof above replaces `get_human_principal`, and that dependency is
+    where the request-forgery check lives, so none of them could tell a form
+    that carries the token from one that omits it -- and both Issue forms
+    omitted it, which made a real coordinator's click a 403 while the suite
+    stayed green. Nothing is replaced here but the database, the mail seam and
+    the declared instant.
+
+    Each act is submitted three times: exactly as the page rendered it, with
+    the token field dropped, and with a forged one. Dropping the field is what
+    a form without `csrf_field()` produces, so the second case is the defect
+    itself rather than a hypothetical; the third is the cross-site POST the
+    token exists to refuse. Neither refusal may leave anything behind.
+    """
+
+    enable_runtime(factory, adopted)
+    take_weekly_reading(factory)
+
+    prepare_url = f"/work/{adopted.slug}/issue/prepare"
+    authorize_url = f"/work/{adopted.slug}/issue/authorize"
+
+    # 1. The coordinator signs in and reads their week. The form the page
+    #    offers carries the token, so the payload taken off the page is one the
+    #    write path can accept.
+    coordinator = browser("coordinator@example.test")
+    confirmation = form_fields(week(coordinator, adopted), "/issue/prepare")
+    assert confirmation is not None
+    assert confirmation.get(auth.CSRF_FIELD), (
+        "the rendered Prepare form must carry the request-forgery field; "
+        "without it every real coordinator's click is refused with 403"
+    )
+
+    # 2. The same payload without the field, and with a forged one, is refused
+    #    — and neither refusal asks for a preparation.
+    assert submit_form(
+        coordinator,
+        prepare_url,
+        {name: value for name, value in confirmation.items() if name != auth.CSRF_FIELD},
+    ).status_code == 403
+    assert submit_form(
+        coordinator, prepare_url, {**confirmation, auth.CSRF_FIELD: "forged"}
+    ).status_code == 403
+    assert _count(factory, ReleasePreparationRequest, adopted) == 0
+    with factory() as reading:
+        assert not preparation_standing(
+            reading, project_id=adopted.project_id
+        ).in_flight
+
+    # 3. The form as rendered is accepted, and the runtime prepares from it.
+    requested = submit_form(coordinator, prepare_url, confirmation)
+    assert requested.status_code == 202, requested.text
+    assert _count(factory, ReleasePreparationRequest, adopted) == 1
+    prepared = run_supervisor(factory, at=WORKER_AT)
+    assert prepared.handler_result["outcome"] == "prepared", prepared.handler_result
+
+    # 4. The designated releaser signs in as themselves. Their Approve form
+    #    carries their own session's token, not the coordinator's.
+    releaser = browser("releaser@example.test")
+    approval = form_fields(week(releaser, adopted), "/issue/authorize")
+    assert approval is not None
+    assert approval.get(auth.CSRF_FIELD), (
+        "the rendered Approve form must carry the request-forgery field"
+    )
+    assert approval[auth.CSRF_FIELD] != confirmation[auth.CSRF_FIELD], (
+        "two people hold two sessions, so one token cannot stand for both"
+    )
+    assert approval["candidate_id"] == str(prepared.handler_result["candidate_id"])
+
+    # 5. Approving without the field, and with a forged one, is refused, and
+    #    nothing is released by either.
+    assert submit_form(
+        releaser,
+        authorize_url,
+        {name: value for name, value in approval.items() if name != auth.CSRF_FIELD},
+    ).status_code == 403
+    assert submit_form(
+        releaser, authorize_url, {**approval, auth.CSRF_FIELD: "forged"}
+    ).status_code == 403
+    assert _count(factory, ReleasePackage, adopted) == 0
+
+    # 6. The form as rendered approves the issue.
+    authorized = submit_form(releaser, authorize_url, approval)
+    assert authorized.status_code == 201, authorized.text
+    assert _count(factory, ReleasePackage, adopted) == 1
+    with factory() as reading:
+        package = reading.scalars(
+            select(ReleasePackage).where(
+                ReleasePackage.project_id == adopted.project_id
+            )
+        ).one()
+        assert package.authorized_by_principal == RELEASER.subject
