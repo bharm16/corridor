@@ -528,8 +528,43 @@ def current_milestone_impact_decision(
 def current_deferral_decision(
     session: Session, subject: SubjectInput
 ) -> WorkDecision | None:
-    """The current explicit deferral, if immediate work was deliberately delayed."""
+    """The tail of the deferral chain, whatever that decision did.
+
+    A tail is not a state.  Resuming work appends a `RESUME_WORK` decision to
+    this same chain carrying `after_value=None`, so a subject whose work is
+    running again has a deferral tail and is not deferred.  Callers that want
+    the *state* want `current_effective_deferral`; this is for the identity of
+    the last decision, which is what an append needs in order to say what it
+    follows.
+    """
     return _tail(session, _coerce_subject(subject), DEFERRAL)
+
+
+def current_effective_deferral(
+    session: Session, subject: SubjectInput
+) -> WorkDecision | None:
+    """The deferral in force, or `None` when work is running.
+
+    The chain tail decides this and nothing else does, because a deferral is
+    only in force while the last decision about it left one in force -- which
+    is exactly what `after_value` records.  `defer_work` writes the deferral
+    there, `resume_work` writes `None`, and `undo_follow_up_plan` writes the
+    deferral it restored.
+
+    Two readings that look equivalent are wrong, and both would have rendered
+    a resumed Constraint as deferred:
+
+    * the newest `DEFER_WORK` decision -- it is still there after a resume, so
+      this reports a deferral that was lifted;
+    * a tail whose `decision_type` is `DEFER_WORK` -- an undo restores a
+      deferral under `UNDO_FOLLOW_UP_PLAN`, so this drops one that is in force.
+
+    `resume_work` already asks this question of the same field to decide
+    whether there is anything to resume; this is that predicate, named, for
+    the readers that were answering it by hand or not at all.
+    """
+    tail = current_deferral_decision(session, subject)
+    return tail if tail is not None and tail.after_value is not None else None
 
 
 def current_statement_decision_tails(

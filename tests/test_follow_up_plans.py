@@ -32,6 +32,8 @@ from corridor.work_decisions import (
     StaleFollowUpPlan,
     complete_next_action,
     current_deferral_decision,
+    current_effective_deferral,
+    UNDO_FOLLOW_UP_PLAN,
     current_follow_up_plan_receipt,
     current_internal_owner_decision,
     current_next_action_decision,
@@ -834,3 +836,179 @@ def test_the_constraint_page_defers_with_a_reason_and_return_date(
     assert deferral.deferral_return_date == date(2026, 10, 1)
     # The action is untouched by the deferral.
     assert current_next_action_decision(session, dependency.id).id == action.id
+
+
+# --- deferral history is not deferral state ---------------------------------
+#
+# A deferral chain records what was decided; it does not say what is in force.
+# Rendering the tail as though it did meant a Constraint whose work had been
+# resumed asked a `resume_work` decision for the reason it was deferred, and a
+# plain GET of the page raised (#872). These walk the chain through the real
+# routes and read the rendered page, because every one of these sequences ended
+# in a 303 before the fix -- the failure only appeared on the next GET.
+
+
+def _defer(client, project, dependency, *, reason, return_date, expected=""):
+    response = client.post(
+        f"/dependencies/{dependency.id}/defer",
+        data={
+            "slug": project.slug,
+            "expected_next_action_decision_id": expected,
+            "deferral_reason": reason,
+            "return_date": return_date,
+        },
+        follow_redirects=False,
+    )
+    assert response.status_code == 303, response.text
+    return response
+
+
+def _save_plan(client, project, dependency, roster_entry, *, action=ACTION):
+    response = client.post(
+        f"/dependencies/{dependency.id}/plan",
+        data={
+            "slug": project.slug,
+            "internal_owner_roster_entry_id": str(roster_entry.id),
+            "next_action": action,
+            "action_due_date": "2026-11-02",
+            "expected_internal_owner_decision_id": "",
+            "expected_next_action_decision_id": "",
+        },
+        follow_redirects=False,
+    )
+    return response
+
+
+def _constraint_page(client, project, dependency):
+    response = client.get(f"/ledger/{project.slug}/{dependency.id}")
+    assert response.status_code == 200, response.text
+    return response.text
+
+
+def _deferral_banner(body: str) -> str | None:
+    """The active-deferral line, or `None`. Scoped so audit history cannot match."""
+
+    for line in body.splitlines():
+        if "Deferred (" in line:
+            return line.strip()
+    return None
+
+
+def test_a_constraint_with_no_deferral_history_renders_no_deferral(
+    session, project, dependency, roster_entry
+):
+    try:
+        with _client(session) as client:
+            assert _deferral_banner(_constraint_page(client, project, dependency)) is None
+    finally:
+        _clear_overrides()
+
+
+def test_a_deferred_constraint_renders_the_reason_and_return_date_in_force(
+    session, project, dependency, roster_entry
+):
+    try:
+        with _client(session) as client:
+            _defer(
+                client, project, dependency,
+                reason="waiting_for_information", return_date="2026-10-01",
+            )
+            banner = _deferral_banner(_constraint_page(client, project, dependency))
+    finally:
+        _clear_overrides()
+
+    assert banner is not None
+    assert "waiting for information" in banner
+
+
+def test_a_resumed_constraint_renders_no_deferral_and_its_page_still_loads(
+    session, project, dependency, roster_entry
+):
+    """The reported defect: saving a plan resumes work, and the page raised.
+
+    `save_follow_up_plan` appends `resume_work` with no deferral, which is the
+    correct thing to record. Reading that tail as the deferral in force is what
+    asked a resumption for a reason it never had.
+    """
+    try:
+        with _client(session) as client:
+            _defer(
+                client, project, dependency,
+                reason="waiting_for_information", return_date="2026-10-01",
+            )
+            saved = _save_plan(client, project, dependency, roster_entry)
+            assert saved.status_code == 303, saved.text
+            body = _constraint_page(client, project, dependency)
+    finally:
+        _clear_overrides()
+
+    assert _deferral_banner(body) is None
+    assert ACTION in body
+    # The decisions are retained; only the reading of them changed.
+    assert current_deferral_decision(session, dependency.id) is not None
+    assert current_effective_deferral(session, dependency.id) is None
+
+
+def test_an_undone_save_renders_the_deferral_it_restored(
+    session, project, dependency, roster_entry
+):
+    """An undo restores a deferral under `undo_follow_up_plan`, not `defer_work`.
+
+    So a reading that filtered the tail by decision type would drop a deferral
+    that is genuinely in force -- the failure mode opposite to the reported one,
+    and the reason the rule is about the value rather than the act.
+    """
+    try:
+        with _client(session) as client:
+            _defer(
+                client, project, dependency,
+                reason="waiting_for_information", return_date="2026-10-01",
+            )
+            saved = _save_plan(client, project, dependency, roster_entry)
+            assert saved.status_code == 303
+            receipt = session.scalars(select(FollowUpPlanReceipt)).all()[-1]
+            undone = client.post(
+                f"/dependencies/{dependency.id}/plan/undo",
+                data={"slug": project.slug, "receipt_id": str(receipt.id)},
+                follow_redirects=False,
+            )
+            assert undone.status_code == 303, undone.text
+            banner = _deferral_banner(_constraint_page(client, project, dependency))
+    finally:
+        _clear_overrides()
+
+    restored = current_effective_deferral(session, dependency.id)
+    assert restored is not None
+    assert restored.decision_type == UNDO_FOLLOW_UP_PLAN
+    assert banner is not None
+    assert "waiting for information" in banner
+
+
+def test_a_second_deferral_renders_the_one_in_force_not_the_first(
+    session, project, dependency, roster_entry
+):
+    """Never search backward for the newest `defer_work`: it may be the old one."""
+    try:
+        with _client(session) as client:
+            _defer(
+                client, project, dependency,
+                reason="waiting_for_information", return_date="2026-10-01",
+            )
+            saved = _save_plan(client, project, dependency, roster_entry)
+            assert saved.status_code == 303
+            # The screen renders the decision tail its Save just created, and the
+            # stale check requires it: a defer that names no predecessor after a
+            # Save is refused with 409, which is that guard working.
+            tail = current_next_action_decision(session, dependency.id)
+            _defer(
+                client, project, dependency,
+                reason="waiting_for_external_party", return_date="2026-12-15",
+                expected=str(tail.id),
+            )
+            banner = _deferral_banner(_constraint_page(client, project, dependency))
+    finally:
+        _clear_overrides()
+
+    assert banner is not None
+    assert "waiting for external party" in banner
+    assert "waiting for information" not in banner
