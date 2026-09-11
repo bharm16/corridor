@@ -2211,6 +2211,73 @@ def test_a_constraint_page_names_the_source_passage_check_and_its_state(
     assert '"pill unver">no<' not in page.text
 
 
+def test_each_claim_names_its_own_failed_passage_check_and_only_those(
+    client, session, project, document
+):
+    """The claim-level pill, which reads the predicate at its own call site.
+
+    Two claims on one field: one whose cited passage is on its page and one
+    whose is not. Only the claim that did not pass may carry the pill, and it
+    has to name its own state rather than the one the Constraint's other
+    claims are in. Inverting the predicate here left the whole suite green.
+
+    ``not_checked`` is not exercised because no claim can reach it:
+    ``assertions.evidence_link_id`` is NOT NULL, so the outer join that
+    ``AssertionView`` is built from always finds a supporting document.
+    """
+    dependency = Dependency(
+        project_id=project.id,
+        ref_code="DEP-CLAIM-CHECK",
+        dep_type="utility_relocation",
+        title="Relocate the 12-inch main",
+    )
+    session.add(dependency)
+    session.flush()
+    found = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="the station is 1100+00",
+        verified=True,
+    )
+    absent = EvidenceLink(
+        dependency_id=dependency.id,
+        document_id=document.id,
+        page_no=1,
+        quote="a sentence that is not on the page",
+        verified=False,
+    )
+    session.add_all([found, absent])
+    session.flush()
+    session.add_all(
+        [
+            Assertion(
+                dependency_id=dependency.id,
+                field_name="station_from",
+                asserted_value="1100+00",
+                evidence_link_id=found.id,
+            ),
+            Assertion(
+                dependency_id=dependency.id,
+                field_name="station_from",
+                asserted_value="1101+00",
+                evidence_link_id=absent.id,
+            ),
+        ]
+    )
+    session.flush()
+
+    page = client.get(f"/ledger/{project.slug}/{dependency.id}")
+
+    assert page.status_code == 200
+    refused = MARKS["refused"]
+    pill = f'state-refused"><span class="mark" aria-hidden="true">{refused} </span>'
+    assert pill + "Source passage check: not found at cited location" in page.text
+    # The claim whose passage was found carries no pill, so exactly one of the
+    # two claims names a check at all.
+    assert page.text.count("Source passage check: ") == 1
+
+
 def test_documentation_review_labels_preserve_source_wording_and_current_mark(
     client, session, project, document
 ):
