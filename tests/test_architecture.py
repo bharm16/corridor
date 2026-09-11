@@ -23,12 +23,20 @@ from source_scan_support import (  # noqa: F401
 
 REPO_ROOT = Path(__file__).parents[1]
 SOURCE_ROOT = REPO_ROOT / "src" / "corridor"
+TEST_ROOT = REPO_ROOT / "tests"
 
 
-def _module_paths() -> tuple[Path, ...]:
+def _module_paths(root: Path | None = None) -> tuple[Path, ...]:
+    """Every module of one scanned tree. The source tree unless asked otherwise.
+
+    The test tree is the larger of the two and was never scanned by anything
+    here, so the rules that are about module shape rather than about the
+    Project Record read it too (#548's lesson, applied to the guards' own
+    tree).
+    """
     return tuple(
         path
-        for path in python_files(SOURCE_ROOT)
+        for path in python_files(root if root is not None else SOURCE_ROOT)
         if path.name != "__init__.py" and "migrations" not in path.parts
     )
 
@@ -314,6 +322,84 @@ def test_source_modules_do_not_import_another_module_private_implementation():
             private_imports.append(f"{path.name}:{lineno} imports {imported}")
 
     assert sorted(set(private_imports)) == []
+
+
+# The same rule in the test tree, where it is not clean yet. Five modules
+# share one collector's fixtures by reaching into each other -- reading
+# `test_native_citation_coverage.py` means opening two other test modules --
+# and the repository already has the seam that ends it: fifteen `*_support.py`
+# modules in `tests/`, which a test may reach freely. These pairs are what is
+# outstanding, each `(importer, imported private name)` rather than a line
+# number so that an unrelated edit above one does not move it. It may fall and
+# may never rise: move the fixture to a support module and delete the line.
+TEST_PRIVATE_IMPORTS = frozenset({
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._body"),
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._experiment"),
+    ("test_matrix_retirement_e2e.py", "test_native_provider_boundary._request"),
+    ("test_native_citation_coverage.py", "test_native_accepted_readers._follow_up_plan"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._baseline"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._delta"),
+    ("test_native_follow_up_reading.py", "test_issue_rendering._plan"),
+    ("test_native_pipeline.py", "test_native_matrix._document"),
+    ("test_native_reader_coverage.py", "test_native_accepted_readers._adopt_native_workbook"),
+    ("test_native_release_coverage.py", "test_native_accepted_readers._adopt_native_workbook"),
+    ("test_native_work_list_coverage.py", "test_native_accepted_readers._follow_up_plan"),
+    ("test_pilot_measurement_receipts.py", "test_packet_review_screen._revision"),
+    ("test_pipeline.py", "test_native_matrix._document"),
+    ("test_pipeline.py", "test_native_pipeline._client"),
+    ("test_pipeline.py", "test_native_pipeline._plan"),
+    ("test_pipeline.py", "test_native_pipeline._scope"),
+    ("test_pipeline.py", "test_native_provider_boundary._experiment"),
+    ("test_pipeline.py", "test_native_provider_boundary._request"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._document"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._qualify"),
+    ("test_pipeline_qualification_cli.py", "test_native_pipeline._scope"),
+    ("test_pipeline_render_identity.py", "test_native_pipeline_geometry._author_page"),
+    ("test_pipeline_render_identity.py", "test_native_pipeline_geometry._colour_deskew_profile"),
+    ("test_pipeline_selection.py", "test_native_matrix._document"),
+    ("test_pipeline_selection.py", "test_native_pipeline._client"),
+    ("test_pipeline_selection.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_selection.py", "test_native_pipeline._plan"),
+    ("test_pipeline_selection.py", "test_native_pipeline._qualify"),
+    ("test_pipeline_selection.py", "test_native_pipeline._scope"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._acceptance_fixture"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._gate_fixture"),
+    ("test_pipeline_selection_guards.py", "test_native_pipeline._qualify"),
+    ("test_project_portfolio.py", "test_project_workflow._cross_source"),
+    ("test_project_portfolio.py", "test_project_workflow._plan_every_child"),
+    ("test_project_portfolio.py", "test_project_workflow._project"),
+    ("test_project_portfolio.py", "test_release_authorization._replace_output_template"),
+    ("test_release_preparation.py", "test_release_candidate._preparation"),
+    ("test_release_preparation.py", "test_release_candidate._prepare"),
+})
+
+
+def test_test_modules_do_not_import_another_test_modules_private_implementation():
+    """A test module may reach its own fixtures, not another one's internals.
+
+    The same rule the source tree already passes, on the tree that is larger
+    than it. A shared fixture belongs in the `*_support.py` family, which is
+    importable by anyone; a private name in a sibling `test_` module is a
+    dependency between two test modules that neither declares.
+    """
+    modules = {path.stem for path in _module_paths(TEST_ROOT)}
+    private_imports = {
+        (path.name, imported)
+        for path in _module_paths(TEST_ROOT)
+        for imported, _ in imported_names(path)
+        for owner, leaf in [imported.rpartition(".")[::2]]
+        if leaf.startswith("_")
+        and owner.startswith("test_")
+        and owner in modules
+        and owner != path.stem
+    }
+
+    assert_ratchet(
+        "tests/test_architecture.py:TEST_PRIVATE_IMPORTS",
+        measured=private_imports,
+        recorded=set(TEST_PRIVATE_IMPORTS),
+    )
 
 
 def test_the_schema_package_imports_and_reexports_every_family_it_declares():
